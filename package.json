@@ -1,0 +1,19 @@
+{
+  "name": "lector-de-libros",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:api": "npm run dev --workspace @lector/api",
+    "dev:web": "npm run dev --workspace @lector/web",
+    "dev:worker": "npm run dev --workspace @lector/worker",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.11.0",
+    "npm": ">=10.0.0"
+  }
+}

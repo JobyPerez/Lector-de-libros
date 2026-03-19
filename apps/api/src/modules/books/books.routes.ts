@@ -1,0 +1,904 @@
+import { createHash, randomUUID } from "node:crypto";
+import { extname } from "node:path";
+
+import type { MultipartFile } from "@fastify/multipart";
+import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
+
+import { getConnection } from "../../config/database.js";
+import { authenticateRequest } from "../auth/auth.routes.js";
+import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
+import { isSupportedImageUpload, runOcrOnImage } from "./image-ocr.js";
+
+const createBookSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  authorName: z.string().trim().min(1).max(255).optional(),
+  synopsis: z.string().trim().max(5000).optional(),
+  sourceType: z.enum(["PDF", "EPUB", "IMAGES"])
+});
+
+const importBookFieldsSchema = z.object({
+  title: z.string().trim().min(1).max(500).optional(),
+  authorName: z.string().trim().min(1).max(255).optional(),
+  synopsis: z.string().trim().max(5000).optional(),
+  sourceType: z.enum(supportedBookSourceTypes).optional()
+});
+
+const imageBookFieldsSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  authorName: z.string().trim().min(1).max(255).optional(),
+  synopsis: z.string().trim().max(5000).optional()
+});
+
+type UploadedBinaryFile = {
+  buffer: Buffer;
+  fieldName: string;
+  fileName: string;
+  mimeType: string;
+};
+
+type ProcessedImagePage = UploadedBinaryFile & {
+  paragraphs: string[];
+  rawText: string;
+};
+
+type OwnedBookRecord = {
+  authorName: string | null;
+  bookId: string;
+  sourceType: "PDF" | "EPUB" | "IMAGES";
+  status: string;
+  synopsis: string | null;
+  title: string;
+  totalPages: number;
+  totalParagraphs: number;
+};
+
+function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
+  const fieldValue = fields[fieldName] as { value?: string } | Array<{ value?: string }> | undefined;
+
+  if (!fieldValue) {
+    return undefined;
+  }
+
+  if (Array.isArray(fieldValue)) {
+    return fieldValue[0]?.value?.trim() || undefined;
+  }
+
+  return fieldValue.value?.trim() || undefined;
+}
+
+async function readUploadedFile(file: MultipartFile): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of file.file) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks);
+}
+
+async function collectMultipartForm(request: { parts: () => AsyncIterable<unknown> }): Promise<{ fields: Record<string, string>; files: UploadedBinaryFile[] }> {
+  const fields: Record<string, string> = {};
+  const files: UploadedBinaryFile[] = [];
+
+  for await (const part of request.parts()) {
+    const multipartPart = part as {
+      fieldname?: string;
+      file?: AsyncIterable<Buffer | Uint8Array>;
+      filename?: string;
+      mimetype?: string;
+      type?: string;
+      value?: unknown;
+    };
+
+    if (multipartPart.type === "file" && multipartPart.file && multipartPart.filename && multipartPart.mimetype) {
+      const buffer = await readUploadedFile({ file: multipartPart.file } as MultipartFile);
+      files.push({
+        buffer,
+        fieldName: multipartPart.fieldname ?? "file",
+        fileName: multipartPart.filename,
+        mimeType: multipartPart.mimetype
+      });
+      continue;
+    }
+
+    if (multipartPart.fieldname) {
+      fields[multipartPart.fieldname] = String(multipartPart.value ?? "").trim();
+    }
+  }
+
+  return { fields, files };
+}
+
+function computeChecksum(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
+  if (files.length === 0) {
+    throw Object.assign(new Error("Debes adjuntar al menos una imagen de página."), {
+      statusCode: 400
+    });
+  }
+
+  for (const file of files) {
+    if (!isSupportedImageUpload(file.fileName, file.mimeType)) {
+      throw Object.assign(new Error(`Archivo no soportado para OCR: ${file.fileName}. Usa PNG, JPG o WEBP.`), {
+        statusCode: 415
+      });
+    }
+  }
+
+  return files;
+}
+
+async function ocrImageFiles(files: UploadedBinaryFile[]): Promise<ProcessedImagePage[]> {
+  const pages: ProcessedImagePage[] = [];
+
+  for (const file of files) {
+    const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType);
+    pages.push({
+      ...file,
+      paragraphs: ocrResult.paragraphs,
+      rawText: ocrResult.rawText
+    });
+  }
+
+  return pages;
+}
+
+async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, ownerUserId: string): Promise<OwnedBookRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        book_id AS "bookId",
+        title AS "title",
+        author_name AS "authorName",
+        synopsis AS "synopsis",
+        source_type AS "sourceType",
+        status AS "status",
+        total_pages AS "totalPages",
+        total_paragraphs AS "totalParagraphs"
+      FROM books
+      WHERE book_id = :bookId
+        AND owner_user_id = :ownerUserId
+    `,
+    {
+      bookId,
+      ownerUserId
+    }
+  );
+
+  const [book] = (result.rows ?? []) as OwnedBookRecord[];
+  return book ?? null;
+}
+
+async function insertProcessedImagePages(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  processedPages: ProcessedImagePage[],
+  startingPageNumber: number,
+  startingSequenceNumber: number
+): Promise<{ addedPages: number; addedParagraphs: number }> {
+  let pageNumber = startingPageNumber;
+  let sequenceNumber = startingSequenceNumber;
+
+  for (const processedPage of processedPages) {
+    const fileId = randomUUID();
+    const pageId = randomUUID();
+
+    await connection.execute(
+      `
+        INSERT INTO book_files (
+          file_id,
+          book_id,
+          file_kind,
+          file_name,
+          mime_type,
+          page_number,
+          byte_size,
+          checksum_sha256,
+          content_blob
+        ) VALUES (
+          :fileId,
+          :bookId,
+          'PAGE_IMAGE',
+          :fileName,
+          :mimeType,
+          :pageNumber,
+          :byteSize,
+          :checksumSha256,
+          :contentBlob
+        )
+      `,
+      {
+        bookId,
+        byteSize: processedPage.buffer.length,
+        checksumSha256: computeChecksum(processedPage.buffer),
+        contentBlob: processedPage.buffer,
+        fileId,
+        fileName: processedPage.fileName,
+        mimeType: processedPage.mimeType,
+        pageNumber
+      }
+    );
+
+    await connection.execute(
+      `
+        INSERT INTO book_pages (
+          page_id,
+          book_id,
+          page_number,
+          source_file_id,
+          raw_text,
+          edited_text,
+          ocr_status
+        ) VALUES (
+          :pageId,
+          :bookId,
+          :pageNumber,
+          :sourceFileId,
+          :rawText,
+          :editedText,
+          'READY'
+        )
+      `,
+      {
+        bookId,
+        editedText: processedPage.paragraphs.join("\n\n"),
+        pageId,
+        pageNumber,
+        rawText: processedPage.rawText,
+        sourceFileId: fileId
+      }
+    );
+
+    for (const [paragraphIndex, paragraphText] of processedPage.paragraphs.entries()) {
+      await connection.execute(
+        `
+          INSERT INTO book_paragraphs (
+            paragraph_id,
+            book_id,
+            page_id,
+            page_number,
+            paragraph_number,
+            sequence_number,
+            paragraph_text
+          ) VALUES (
+            :paragraphId,
+            :bookId,
+            :pageId,
+            :pageNumber,
+            :paragraphNumber,
+            :sequenceNumber,
+            :paragraphText
+          )
+        `,
+        {
+          bookId,
+          pageId,
+          pageNumber,
+          paragraphId: randomUUID(),
+          paragraphNumber: paragraphIndex + 1,
+          paragraphText,
+          sequenceNumber
+        }
+      );
+
+      sequenceNumber += 1;
+    }
+
+    await connection.execute(
+      `
+        INSERT INTO processing_jobs (
+          job_id,
+          book_id,
+          page_id,
+          job_type,
+          status,
+          attempt_count,
+          payload_json,
+          started_at,
+          finished_at
+        ) VALUES (
+          :jobId,
+          :bookId,
+          :pageId,
+          'OCR_PAGE',
+          'READY',
+          1,
+          :payloadJson,
+          SYSTIMESTAMP,
+          SYSTIMESTAMP
+        )
+      `,
+      {
+        bookId,
+        jobId: randomUUID(),
+        pageId,
+        payloadJson: JSON.stringify({
+          fileName: processedPage.fileName,
+          mimeType: processedPage.mimeType,
+          pageNumber
+        })
+      }
+    );
+
+    pageNumber += 1;
+  }
+
+  return {
+    addedPages: processedPages.length,
+    addedParagraphs: sequenceNumber - startingSequenceNumber
+  };
+}
+
+function detectSourceType(fileName: string, mimeType: string, requestedSourceType?: string): SupportedBookSourceType {
+  if (requestedSourceType) {
+    return requestedSourceType as SupportedBookSourceType;
+  }
+
+  const inferredSourceType = inferSourceType(fileName, mimeType);
+  if (!inferredSourceType) {
+    throw Object.assign(new Error(`Formato no soportado para ${extname(fileName) || mimeType}. Solo PDF y EPUB en esta fase.`), {
+      statusCode: 415
+    });
+  }
+
+  return inferredSourceType;
+}
+
+export const registerBookRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            book_id AS "bookId",
+            title AS "title",
+            author_name AS "authorName",
+            source_type AS "sourceType",
+            status AS "status",
+            total_pages AS "totalPages",
+            total_paragraphs AS "totalParagraphs",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+          FROM books
+          WHERE owner_user_id = :ownerUserId
+          ORDER BY updated_at DESC, created_at DESC
+        `,
+        {
+          ownerUserId: request.currentUser.userId
+        }
+      );
+
+      return reply.send({ books: result.rows ?? [] });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const payload = createBookSchema.parse(request.body);
+    const bookId = randomUUID();
+    const connection = await getConnection();
+
+    try {
+      await connection.execute(
+        `
+          INSERT INTO books (
+            book_id,
+            owner_user_id,
+            title,
+            author_name,
+            synopsis,
+            source_type,
+            status
+          ) VALUES (
+            :bookId,
+            :ownerUserId,
+            :title,
+            :authorName,
+            :synopsis,
+            :sourceType,
+            'DRAFT'
+          )
+        `,
+        {
+          authorName: payload.authorName ?? null,
+          bookId,
+          ownerUserId: request.currentUser.userId,
+          sourceType: payload.sourceType,
+          synopsis: payload.synopsis ?? null,
+          title: payload.title
+        },
+        {
+          autoCommit: true
+        }
+      );
+    } finally {
+      await connection.close();
+    }
+
+    return reply.status(201).send({
+      book: {
+        authorName: payload.authorName ?? null,
+        bookId,
+        sourceType: payload.sourceType,
+        status: "DRAFT",
+        synopsis: payload.synopsis ?? null,
+        title: payload.title,
+        totalPages: 0,
+        totalParagraphs: 0
+      }
+    });
+  });
+
+  app.post("/import", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const uploadedFile = await request.file();
+    if (!uploadedFile) {
+      return reply.status(400).send({ message: "Debes adjuntar un archivo PDF o EPUB." });
+    }
+
+    const rawFields = {
+      authorName: readMultipartField(uploadedFile.fields, "authorName"),
+      sourceType: readMultipartField(uploadedFile.fields, "sourceType"),
+      synopsis: readMultipartField(uploadedFile.fields, "synopsis"),
+      title: readMultipartField(uploadedFile.fields, "title")
+    };
+    const parsedFields = importBookFieldsSchema.parse(rawFields);
+    const sourceType = detectSourceType(uploadedFile.filename, uploadedFile.mimetype, parsedFields.sourceType);
+    const fileBuffer = await readUploadedFile(uploadedFile);
+    const importedDocument = await parseUploadedBook(sourceType, fileBuffer);
+    const bookId = randomUUID();
+    const originalFileId = randomUUID();
+    const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
+    const connection = await getConnection();
+
+    try {
+      await connection.execute(
+        `
+          INSERT INTO books (
+            book_id,
+            owner_user_id,
+            title,
+            author_name,
+            synopsis,
+            source_type,
+            status,
+            total_pages,
+            total_paragraphs
+          ) VALUES (
+            :bookId,
+            :ownerUserId,
+            :title,
+            :authorName,
+            :synopsis,
+            :sourceType,
+            'READY',
+            :totalPages,
+            :totalParagraphs
+          )
+        `,
+        {
+          authorName: parsedFields.authorName ?? null,
+          bookId,
+          ownerUserId: request.currentUser.userId,
+          sourceType,
+          synopsis: parsedFields.synopsis ?? null,
+          title,
+          totalPages: importedDocument.totalPages,
+          totalParagraphs: importedDocument.totalParagraphs
+        }
+      );
+
+      await connection.execute(
+        `
+          INSERT INTO book_files (
+            file_id,
+            book_id,
+            file_kind,
+            file_name,
+            mime_type,
+            byte_size,
+            checksum_sha256,
+            content_blob
+          ) VALUES (
+            :fileId,
+            :bookId,
+            :fileKind,
+            :fileName,
+            :mimeType,
+            :byteSize,
+            :checksumSha256,
+            :contentBlob
+          )
+        `,
+        {
+          bookId,
+          byteSize: fileBuffer.length,
+          checksumSha256: computeChecksum(fileBuffer),
+          contentBlob: fileBuffer,
+          fileId: originalFileId,
+          fileKind: sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB",
+          fileName: uploadedFile.filename,
+          mimeType: uploadedFile.mimetype
+        }
+      );
+
+      let sequenceNumber = 1;
+
+      for (const page of importedDocument.pages) {
+        const pageId = randomUUID();
+        await connection.execute(
+          `
+            INSERT INTO book_pages (
+              page_id,
+              book_id,
+              page_number,
+              raw_text,
+              edited_text,
+              ocr_status
+            ) VALUES (
+              :pageId,
+              :bookId,
+              :pageNumber,
+              :rawText,
+              :editedText,
+              'SKIPPED'
+            )
+          `,
+          {
+            bookId,
+            editedText: page.paragraphs.join("\n\n"),
+            pageId,
+            pageNumber: page.pageNumber,
+            rawText: page.rawText
+          }
+        );
+
+        for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
+          await connection.execute(
+            `
+              INSERT INTO book_paragraphs (
+                paragraph_id,
+                book_id,
+                page_id,
+                page_number,
+                paragraph_number,
+                sequence_number,
+                paragraph_text
+              ) VALUES (
+                :paragraphId,
+                :bookId,
+                :pageId,
+                :pageNumber,
+                :paragraphNumber,
+                :sequenceNumber,
+                :paragraphText
+              )
+            `,
+            {
+              bookId,
+              pageId,
+              pageNumber: page.pageNumber,
+              paragraphId: randomUUID(),
+              paragraphNumber: paragraphIndex + 1,
+              paragraphText,
+              sequenceNumber
+            }
+          );
+
+          sequenceNumber += 1;
+        }
+      }
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+
+    return reply.status(201).send({
+      book: {
+        authorName: parsedFields.authorName ?? null,
+        bookId,
+        sourceType,
+        status: "READY",
+        synopsis: parsedFields.synopsis ?? null,
+        title,
+        totalPages: importedDocument.totalPages,
+        totalParagraphs: importedDocument.totalParagraphs
+      }
+    });
+  });
+
+  app.post("/from-images", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const multipartForm = await collectMultipartForm(request);
+    const payload = imageBookFieldsSchema.parse({
+      authorName: multipartForm.fields.authorName,
+      synopsis: multipartForm.fields.synopsis,
+      title: multipartForm.fields.title
+    });
+    const imageFiles = ensureImageFiles(multipartForm.files);
+    const processedPages = await ocrImageFiles(imageFiles);
+    const connection = await getConnection();
+    const bookId = randomUUID();
+
+    try {
+      await connection.execute(
+        `
+          INSERT INTO books (
+            book_id,
+            owner_user_id,
+            title,
+            author_name,
+            synopsis,
+            source_type,
+            status,
+            total_pages,
+            total_paragraphs
+          ) VALUES (
+            :bookId,
+            :ownerUserId,
+            :title,
+            :authorName,
+            :synopsis,
+            'IMAGES',
+            'PROCESSING',
+            0,
+            0
+          )
+        `,
+        {
+          authorName: payload.authorName ?? null,
+          bookId,
+          ownerUserId: request.currentUser.userId,
+          synopsis: payload.synopsis ?? null,
+          title: payload.title
+        }
+      );
+
+      const insertionSummary = await insertProcessedImagePages(connection, bookId, processedPages, 1, 1);
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET status = 'READY',
+              total_pages = :totalPages,
+              total_paragraphs = :totalParagraphs
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId,
+          totalPages: insertionSummary.addedPages,
+          totalParagraphs: insertionSummary.addedParagraphs
+        }
+      );
+
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+
+    return reply.status(201).send({
+      book: {
+        authorName: payload.authorName ?? null,
+        bookId,
+        sourceType: "IMAGES",
+        status: "READY",
+        synopsis: payload.synopsis ?? null,
+        title: payload.title,
+        totalPages: processedPages.length,
+        totalParagraphs: processedPages.reduce((count, page) => count + page.paragraphs.length, 0)
+      }
+    });
+  });
+
+  app.post("/:bookId/import-images", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
+    const multipartForm = await collectMultipartForm(request);
+    const imageFiles = ensureImageFiles(multipartForm.files);
+    const processedPages = await ocrImageFiles(imageFiles);
+    const connection = await getConnection();
+
+    try {
+      const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!existingBook) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (existingBook.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "Solo puedes añadir imágenes a libros creados desde imágenes." });
+      }
+
+      const insertionSummary = await insertProcessedImagePages(
+        connection,
+        existingBook.bookId,
+        processedPages,
+        Number(existingBook.totalPages) + 1,
+        Number(existingBook.totalParagraphs) + 1
+      );
+
+      const updatedBook = {
+        ...existingBook,
+        status: "READY",
+        totalPages: Number(existingBook.totalPages) + insertionSummary.addedPages,
+        totalParagraphs: Number(existingBook.totalParagraphs) + insertionSummary.addedParagraphs
+      };
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET status = 'READY',
+              total_pages = :totalPages,
+              total_paragraphs = :totalParagraphs
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId: updatedBook.bookId,
+          totalPages: updatedBook.totalPages,
+          totalParagraphs: updatedBook.totalParagraphs
+        }
+      );
+
+      await connection.commit();
+
+      return reply.status(201).send({
+        addedPages: insertionSummary.addedPages,
+        addedParagraphs: insertionSummary.addedParagraphs,
+        book: updatedBook
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            book_id AS "bookId",
+            title AS "title",
+            author_name AS "authorName",
+            synopsis AS "synopsis",
+            source_type AS "sourceType",
+            status AS "status",
+            total_pages AS "totalPages",
+            total_paragraphs AS "totalParagraphs",
+            created_at AS "createdAt",
+            updated_at AS "updatedAt"
+          FROM books
+          WHERE book_id = :bookId
+            AND owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId
+        }
+      );
+
+      const [book] = (result.rows ?? []) as Array<Record<string, unknown>>;
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      return reply.send({ book });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/pages/:pageNumber", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({
+      bookId: z.string().uuid(),
+      pageNumber: z.coerce.number().int().min(1)
+    }).parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const bookResult = await connection.execute(
+        `
+          SELECT
+            book_id AS "bookId",
+            title AS "title",
+            author_name AS "authorName",
+            synopsis AS "synopsis",
+            source_type AS "sourceType",
+            status AS "status",
+            total_pages AS "totalPages",
+            total_paragraphs AS "totalParagraphs"
+          FROM books
+          WHERE book_id = :bookId
+            AND owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId
+        }
+      );
+
+      const [book] = (bookResult.rows ?? []) as Array<Record<string, unknown>>;
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const pageResult = await connection.execute(
+        `
+          SELECT
+            paragraph_id AS "paragraphId",
+            paragraph_number AS "paragraphNumber",
+            sequence_number AS "sequenceNumber",
+            paragraph_text AS "paragraphText"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+          ORDER BY paragraph_number ASC
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      const paragraphs = (pageResult.rows ?? []) as Array<Record<string, unknown>>;
+      if (paragraphs.length === 0) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      return reply.send({
+        book,
+        hasNextPage: params.pageNumber < Number(book.totalPages ?? 0),
+        hasPreviousPage: params.pageNumber > 1,
+        page: {
+          pageNumber: params.pageNumber,
+          paragraphs
+        }
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+};
