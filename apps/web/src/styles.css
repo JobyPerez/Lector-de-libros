@@ -293,6 +293,12 @@ textarea {
   padding: clamp(1rem, 3vw, 2rem);
 }
 
+.auth-layout-compact {
+  grid-template-columns: minmax(0, 420px);
+  align-content: center;
+  justify-content: center;
+}
+
 .page-grid {
   grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.82fr);
 }
@@ -388,6 +394,31 @@ textarea {
   align-self: center;
 }
 
+.simple-login-card {
+  width: min(100%, 420px);
+  justify-self: center;
+}
+
+.login-brand {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 0.85rem;
+  text-align: center;
+}
+
+.login-brand h1 {
+  margin: 0;
+  font-family: "Constantia", "Georgia", serif;
+  font-size: clamp(2rem, 4vw, 2.5rem);
+}
+
+.login-rabbit {
+  width: 88px;
+  height: 88px;
+}
+
 .card-heading,
 .compact-heading {
   position: relative;
@@ -410,6 +441,10 @@ textarea {
   z-index: 1;
 }
 
+.auth-form-compact {
+  margin-top: 0;
+}
+
 .auth-form label,
 .stack-form label,
 .toolbar-field {
@@ -423,6 +458,10 @@ textarea {
 .review-toolbar {
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.auth-actions-compact {
+  justify-content: flex-start;
 }
 
 .primary-button,
@@ -449,6 +488,11 @@ textarea {
   background: linear-gradient(135deg, var(--forest-900), var(--forest-500));
   color: #fcf8ef;
   box-shadow: 0 16px 36px rgba(25, 52, 40, 0.22);
+}
+
+.simple-login-card .primary-button,
+.simple-login-card .secondary-button {
+  width: 100%;
 }
 
 .secondary-button,

@@ -64,47 +64,19 @@ export function LoginPage() {
   }
 
   return (
-    <div className="auth-layout">
-      <section className="hero-card brand-hero">
-        <div className="auth-brand-block">
-          <RabbitMark className="hero-rabbit" title="El conejo lector" />
-          <div>
-            <p className="eyebrow">Biblioteca con voz</p>
-            <h1>Lee, escucha y corrige página a página.</h1>
-          </div>
-        </div>
-        <p className="hero-copy">
-          El conejo lector reúne PDF, EPUB y libros creados desde imágenes con OCR editable, audio de Deepgram y progreso guardado por usuario.
-        </p>
-        <div className="feature-grid">
-          <article>
-            <strong>Entrada única</strong>
-            <p>Accede con usuario y contraseña, y recupera la clave por correo si la olvidas.</p>
-          </article>
-          <article>
-            <strong>OCR revisable</strong>
-            <p>Edita el texto reconocido de cada página viendo la imagen original al lado.</p>
-          </article>
-          <article>
-            <strong>Gobierno por roles</strong>
-            <p>Los administradores mantienen usuarios; los editores sólo gestionan su biblioteca.</p>
-          </article>
-        </div>
-      </section>
-
-      <section className="auth-card login-card">
-        <div className="card-heading">
-          <p className="eyebrow">Bienvenida</p>
-          <h2>El conejo lector</h2>
-          <p className="subdued">Introduce tus credenciales para abrir tu estantería.</p>
+    <div className="auth-layout auth-layout-compact">
+      <section className="auth-card login-card simple-login-card">
+        <div className="login-brand">
+          <RabbitMark className="login-rabbit" title="El conejo lector" />
+          <h1>El conejo lector</h1>
         </div>
 
-        <form className="auth-form" onSubmit={handleSubmit}>
+        <form className="auth-form auth-form-compact" onSubmit={handleSubmit}>
           <label>
             Usuario
             <input
               onChange={(event) => setLoginForm((current) => ({ ...current, usernameOrEmail: event.target.value }))}
-              placeholder="Usuario o correo"
+              placeholder="Usuario"
               required
               value={loginForm.usernameOrEmail}
             />
@@ -121,7 +93,7 @@ export function LoginPage() {
             />
           </label>
 
-          <div className="auth-actions">
+          <div className="auth-actions auth-actions-compact">
             <button
               className="text-button"
               onClick={() => {
@@ -168,10 +140,6 @@ export function LoginPage() {
             </button>
           </form>
         ) : null}
-
-        <p className="helper-text">
-          Las altas de nuevos usuarios se realizan desde el menú de mantenimiento por un administrador.
-        </p>
       </section>
     </div>
   );
