@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { forgotPassword, loginUser } from "../../app/api";
@@ -7,6 +7,7 @@ import { RabbitMark } from "../../components/RabbitMark";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const loginFormRef = useRef<HTMLFormElement | null>(null);
   const accessToken = useAuthStore((state) => state.accessToken);
   const setSession = useAuthStore((state) => state.setSession);
   const [loginForm, setLoginForm] = useState({
@@ -71,7 +72,19 @@ export function LoginPage() {
           <h1>El conejo lector</h1>
         </div>
 
-        <form className="auth-form auth-form-compact" onSubmit={handleSubmit}>
+        <form
+          className="auth-form auth-form-compact"
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || isSubmitting) {
+              return;
+            }
+
+            event.preventDefault();
+            loginFormRef.current?.requestSubmit();
+          }}
+          onSubmit={handleSubmit}
+          ref={loginFormRef}
+        >
           <label>
             Usuario
             <input
