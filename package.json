@@ -8,9 +8,13 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:api": "npm run dev --workspace @lector/api",
+    "dev:all": "concurrently -n api,web,worker -c green,blue,yellow \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:worker\"",
     "dev:web": "npm run dev --workspace @lector/web",
     "dev:worker": "npm run dev --workspace @lector/worker",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   },
   "engines": {
     "node": ">=20.11.0",
