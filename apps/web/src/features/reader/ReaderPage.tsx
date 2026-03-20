@@ -1,15 +1,75 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 
 import { fetchBookPage, fetchBookPageImage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+
+function ReaderControlIcon({ children }: { children: ReactNode }) {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      {children}
+    </svg>
+  );
+}
+
+function PagePreviousIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M7 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M17 7L10 12L17 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function PageNextIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M17 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M7 7L14 12L7 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function ParagraphPreviousIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M15.5 7L9 12L15.5 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function ParagraphNextIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M8.5 7L15 12L8.5 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M9 7.5V16.5L16.5 12L9 7.5Z" fill="currentColor" />
+    </ReaderControlIcon>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M9 7H10.8V17H9V7Z" fill="currentColor" />
+      <path d="M13.2 7H15V17H13.2V7Z" fill="currentColor" />
+    </ReaderControlIcon>
+  );
+}
 
 export function ReaderPage() {
   const { bookId = "" } = useParams();
   const accessToken = useAuthStore((state) => state.accessToken);
   const [currentPageNumber, setCurrentPageNumber] = useState(1);
   const [currentParagraphNumber, setCurrentParagraphNumber] = useState(1);
+  const [isSourcePanelVisible, setIsSourcePanelVisible] = useState(false);
   const [isSavingProgress, setIsSavingProgress] = useState(false);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -115,6 +175,7 @@ export function ReaderPage() {
 
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
+  const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
 
   const readingPercentage = useMemo(() => {
     if (!pageQuery.data?.book.totalParagraphs || !currentParagraph) {
@@ -129,7 +190,7 @@ export function ReaderPage() {
       return "El libro todavía no tiene contenido legible para esta página.";
     }
 
-    return `Página ${currentPageNumber}, párrafo ${currentParagraph.paragraphNumber}, avance ${readingPercentage.toFixed(1)}%.`;
+    return `Página ${currentPageNumber}, avance ${readingPercentage.toFixed(1)}%.`;
   }, [currentPageNumber, currentParagraph, readingPercentage]);
 
   async function persistProgress(paragraph: ParagraphContent, pageNumber: number) {
@@ -168,19 +229,19 @@ export function ReaderPage() {
     }
   }
 
-  async function advanceToNextParagraphAfterPlayback() {
-    if (!currentParagraph || !pageQuery.data) {
+  async function advanceToNextParagraphAfterPlayback(finishedParagraph: ParagraphContent, pageNumber: number) {
+    if (!pageQuery.data) {
       setAutoPlay(false);
       return;
     }
 
-    const paragraphIndex = currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === currentParagraph.paragraphId);
+    const paragraphIndex = currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === finishedParagraph.paragraphId);
     const nextParagraph = currentParagraphs[paragraphIndex + 1];
 
     if (nextParagraph) {
       setCurrentParagraphNumber(nextParagraph.paragraphNumber);
-      await persistProgress(nextParagraph, currentPageNumber);
-      await playParagraph(nextParagraph, currentPageNumber, true);
+      await persistProgress(nextParagraph, pageNumber);
+      await playParagraph(nextParagraph, pageNumber, true);
       return;
     }
 
@@ -219,7 +280,7 @@ export function ReaderPage() {
       audioElement.onended = () => {
         setIsAudioPlaying(false);
         if (keepAutoPlay) {
-          void advanceToNextParagraphAfterPlayback();
+          void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
         }
       };
 
@@ -301,20 +362,32 @@ export function ReaderPage() {
   }
 
   return (
-    <div className="page-grid reader-layout">
+    <div className="page-grid reader-layout reader-floating-layout">
       <section className="panel wide-panel">
         <div className="panel-header">
           <div>
             <p className="eyebrow">Lectura</p>
             <h2>{pageQuery.data?.book.title ?? "Cargando libro..."}</h2>
           </div>
-          <Link className="secondary-button link-button" to="/">
-            Volver a la estantería
-          </Link>
+          <div className="reader-header-actions">
+            <Link className="secondary-button link-button" to="/">
+              Volver a la estantería
+            </Link>
+            {hasOriginalPanelContent ? (
+              <button
+                aria-expanded={isSourcePanelVisible}
+                className="secondary-button"
+                onClick={() => setIsSourcePanelVisible((current) => !current)}
+                type="button"
+              >
+                {isSourcePanelVisible ? "Ocultar original" : "Página original"}
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <div className="reader-canvas">
-          <div className="reader-split">
+          <div className={isSourcePanelVisible ? "reader-split reader-split-expanded" : "reader-split"}>
             <div className="reader-page">
               <p className="page-label">Estado del lector</p>
               <p className="reader-copy">{readerSummary}</p>
@@ -326,91 +399,140 @@ export function ReaderPage() {
               {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
               {readerError ? <p className="error-text">{readerError}</p> : null}
 
-              <div className="paragraph-list">
+              <article className="reader-prose">
                 {currentParagraphs.map((paragraph) => (
-                  <button
-                    className={paragraph.paragraphNumber === currentParagraph?.paragraphNumber ? "paragraph-card active" : "paragraph-card"}
+                  <p
+                    className={paragraph.paragraphNumber === currentParagraph?.paragraphNumber ? "reader-paragraph active" : "reader-paragraph"}
                     key={paragraph.paragraphId}
                     onClick={() => void selectParagraph(paragraph)}
-                    type="button"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        void selectParagraph(paragraph);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
                   >
-                    <span className="paragraph-label">Párrafo {paragraph.paragraphNumber}</span>
-                    <span>{paragraph.paragraphText}</span>
-                  </button>
+                    {paragraph.paragraphText}
+                  </p>
                 ))}
-              </div>
+              </article>
+
+              <footer className="reader-page-footer">
+                <dl className="meta-list reader-meta-list">
+                  <div>
+                    <dt>Origen</dt>
+                    <dd>{pageQuery.data?.book.sourceType ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt>Páginas</dt>
+                    <dd>{pageQuery.data?.book.totalPages ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>Párrafos</dt>
+                    <dd>{pageQuery.data?.book.totalParagraphs ?? 0}</dd>
+                  </div>
+                  <div>
+                    <dt>Posición</dt>
+                    <dd>{currentPageNumber}.{currentParagraph?.paragraphNumber ?? 1}</dd>
+                  </div>
+                </dl>
+              </footer>
             </div>
 
-            <aside className="reader-source-panel">
-              <div className="source-panel-header">
-                <div>
-                  <p className="page-label">Página original</p>
-                  <h3>Comparación OCR</h3>
+            {isSourcePanelVisible ? (
+              <aside className="reader-source-panel">
+                <div className="source-panel-header">
+                  <div>
+                    <p className="page-label">Página original</p>
+                    <h3>Comparación OCR</h3>
+                  </div>
+                  <span className="tag-chip">{pageQuery.data?.page.ocrStatus ?? "-"}</span>
                 </div>
-                <span className="tag-chip">{pageQuery.data?.page.ocrStatus ?? "-"}</span>
-              </div>
 
-              {pageImageUrl ? (
-                <img alt={`Página ${currentPageNumber} del libro`} className="preview-image" src={pageImageUrl} />
-              ) : (
-                <div className="empty-state compact-state">
-                  <p>Esta página no tiene imagen original adjunta.</p>
-                </div>
-              )}
+                {pageImageUrl ? (
+                  <img alt={`Página ${currentPageNumber} del libro`} className="preview-image" src={pageImageUrl} />
+                ) : (
+                  <div className="empty-state compact-state">
+                    <p>Esta página no tiene imagen original adjunta.</p>
+                  </div>
+                )}
 
-              {pageQuery.data?.page.rawText ? (
-                <details className="raw-text-panel">
-                  <summary>Texto OCR base</summary>
-                  <p>{pageQuery.data.page.rawText}</p>
-                </details>
-              ) : null}
-            </aside>
+                {pageQuery.data?.page.rawText ? (
+                  <details className="raw-text-panel">
+                    <summary>Texto OCR base</summary>
+                    <p>{pageQuery.data.page.rawText}</p>
+                  </details>
+                ) : null}
+              </aside>
+            ) : null}
           </div>
         </div>
       </section>
 
-      <aside className="panel controls-panel">
-        <p className="eyebrow">Controles</p>
-        <div className="controls-grid">
-          <button className="secondary-button" disabled={!pageQuery.data?.hasPreviousPage} onClick={() => void goToPage(currentPageNumber - 1)} type="button">
-            Página anterior
-          </button>
-          <button className="primary-button" disabled={!currentParagraph || isAudioLoading} onClick={() => void handlePlay()} type="button">
-            {isAudioLoading ? "Generando audio..." : isAudioPlaying ? "Reproduciendo" : "Reproducir"}
-          </button>
-          <button className="secondary-button" disabled={!isAudioPlaying && !audioRef.current} onClick={() => handlePause()} type="button">
-            Pausar
-          </button>
-          <button className="secondary-button" disabled={!pageQuery.data?.hasNextPage} onClick={() => void goToPage(currentPageNumber + 1)} type="button">
-            Página siguiente
-          </button>
-          <button className="secondary-button" disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[0]?.paragraphNumber} onClick={() => void goToParagraph(-1)} type="button">
-            Párrafo anterior
-          </button>
-          <button className="secondary-button" disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[currentParagraphs.length - 1]?.paragraphNumber} onClick={() => void goToParagraph(1)} type="button">
-            {isSavingProgress ? "Guardando..." : "Párrafo siguiente"}
-          </button>
-        </div>
-
-        <dl className="meta-list">
-          <div>
-            <dt>Origen</dt>
-            <dd>{pageQuery.data?.book.sourceType ?? "-"}</dd>
-          </div>
-          <div>
-            <dt>Páginas</dt>
-            <dd>{pageQuery.data?.book.totalPages ?? 0}</dd>
-          </div>
-          <div>
-            <dt>Párrafos</dt>
-            <dd>{pageQuery.data?.book.totalParagraphs ?? 0}</dd>
-          </div>
-          <div>
-            <dt>Posición</dt>
-            <dd>{currentPageNumber}.{currentParagraph?.paragraphNumber ?? 1}</dd>
-          </div>
-        </dl>
-      </aside>
+      <div aria-label="Controles flotantes del lector" className="reader-floating-controls" role="toolbar">
+        <button
+          aria-label="Página anterior"
+          className="reader-float-button"
+          disabled={!pageQuery.data?.hasPreviousPage}
+          onClick={() => void goToPage(currentPageNumber - 1)}
+          title="Página anterior"
+          type="button"
+        >
+          <PagePreviousIcon />
+        </button>
+        <button
+          aria-label="Párrafo anterior"
+          className="reader-float-button"
+          disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[0]?.paragraphNumber}
+          onClick={() => void goToParagraph(-1)}
+          title="Párrafo anterior"
+          type="button"
+        >
+          <ParagraphPreviousIcon />
+        </button>
+        <button
+          aria-label={isAudioLoading ? "Generando audio" : "Reproducir"}
+          className="reader-float-button primary"
+          disabled={!currentParagraph || isAudioLoading}
+          onClick={() => void handlePlay()}
+          title={isAudioLoading ? "Generando audio" : "Reproducir"}
+          type="button"
+        >
+          <PlayIcon />
+        </button>
+        <button
+          aria-label="Pausar"
+          className="reader-float-button"
+          disabled={!isAudioPlaying && !audioRef.current}
+          onClick={() => handlePause()}
+          title="Pausar"
+          type="button"
+        >
+          <PauseIcon />
+        </button>
+        <button
+          aria-label="Párrafo siguiente"
+          className="reader-float-button"
+          disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[currentParagraphs.length - 1]?.paragraphNumber}
+          onClick={() => void goToParagraph(1)}
+          title={isSavingProgress ? "Guardando progreso" : "Párrafo siguiente"}
+          type="button"
+        >
+          <ParagraphNextIcon />
+        </button>
+        <button
+          aria-label="Página siguiente"
+          className="reader-float-button"
+          disabled={!pageQuery.data?.hasNextPage}
+          onClick={() => void goToPage(currentPageNumber + 1)}
+          title="Página siguiente"
+          type="button"
+        >
+          <PageNextIcon />
+        </button>
+      </div>
     </div>
   );
 }

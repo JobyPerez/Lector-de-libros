@@ -1,6 +1,8 @@
-import type { SessionUser } from "./auth-store";
+import { useAuthStore, type SessionUser } from "./auth-store";
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+
+let refreshSessionPromise: Promise<AuthResponse> | null = null;
 
 type ApiOptions = {
   accessToken?: string | null;
@@ -8,24 +10,111 @@ type ApiOptions = {
   method?: "GET" | "POST" | "PUT" | "DELETE";
 };
 
-async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  const requestInit: RequestInit = {
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {})
-    },
-    method: options.method ?? "GET"
-  };
+type RequestHeaders = Record<string, string>;
 
-  if (options.body) {
-    requestInit.body = JSON.stringify(options.body);
+function createHeaders(options: { accessToken?: string | null | undefined; contentType?: string | undefined }): RequestHeaders {
+  return {
+    ...(options.contentType ? { "Content-Type": options.contentType } : {}),
+    ...(options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : {})
+  };
+}
+
+async function parseErrorMessage(response: Response, fallbackMessage: string): Promise<string> {
+  const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+  return payload?.message ?? fallbackMessage;
+}
+
+async function refreshAccessToken(): Promise<string> {
+  if (!refreshSessionPromise) {
+    const { clearSession, refreshToken } = useAuthStore.getState();
+
+    if (!refreshToken) {
+      clearSession();
+      throw new Error("La sesión ha caducado. Vuelve a iniciar sesión.");
+    }
+
+    refreshSessionPromise = fetch(`${apiBaseUrl}/auth/refresh`, {
+      body: JSON.stringify({ refreshToken }),
+      headers: createHeaders({ contentType: "application/json" }),
+      method: "POST"
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          const message = await parseErrorMessage(response, "No se pudo renovar la sesión.");
+          if (response.status === 400 || response.status === 401) {
+            clearSession();
+          }
+
+          throw new Error(message);
+        }
+
+        return response.json() as Promise<AuthResponse>;
+      })
+      .then((session) => {
+        useAuthStore.getState().setSession(session);
+        return session;
+      })
+      .finally(() => {
+        refreshSessionPromise = null;
+      });
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, requestInit);
+  const session = await refreshSessionPromise;
+  return session.accessToken;
+}
+
+async function fetchWithAutoRefresh(
+  path: string,
+  options: {
+    accessToken?: string | null | undefined;
+    body?: BodyInit | undefined;
+    fallbackMessage: string;
+    headers?: RequestHeaders | undefined;
+    method?: string | undefined;
+  }
+): Promise<Response> {
+  const executeFetch = (token: string | null | undefined) => {
+    const nextHeaders = {
+      ...(options.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+
+    const requestInit: RequestInit = {
+      headers: nextHeaders,
+      method: options.method ?? "GET"
+    };
+
+    if (options.body !== undefined) {
+      requestInit.body = options.body;
+    }
+
+    return fetch(`${apiBaseUrl}${path}`, requestInit);
+  };
+
+  let response = await executeFetch(options.accessToken);
+  if (response.status !== 401 || !options.accessToken) {
+    return response;
+  }
+
+  const nextAccessToken = await refreshAccessToken();
+  response = await executeFetch(nextAccessToken);
+  return response;
+}
+
+async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
+  const response = await fetchWithAutoRefresh(path, {
+    accessToken: options.accessToken,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    fallbackMessage: "La solicitud no se pudo completar.",
+    headers: createHeaders({
+      accessToken: options.accessToken,
+      contentType: options.body ? "application/json" : undefined
+    }),
+    method: options.method ?? "GET"
+  });
 
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(payload?.message ?? "La solicitud no se pudo completar.");
+    throw new Error(await parseErrorMessage(response, "La solicitud no se pudo completar."));
   }
 
   if (response.status === 204) {
@@ -36,16 +125,15 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
 }
 
 async function requestBlob(path: string, accessToken: string): Promise<Blob> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
+  const response = await fetchWithAutoRefresh(path, {
+    accessToken,
+    fallbackMessage: "La solicitud no se pudo completar.",
+    headers: createHeaders({ accessToken }),
     method: "GET"
   });
 
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(payload?.message ?? "La solicitud no se pudo completar.");
+    throw new Error(await parseErrorMessage(response, "La solicitud no se pudo completar."));
   }
 
   return response.blob();
@@ -141,51 +229,48 @@ export function createBook(accessToken: string, payload: { authorName?: string; 
 }
 
 export async function importBook(accessToken: string, payload: FormData) {
-  const response = await fetch(`${apiBaseUrl}/books/import`, {
+  const response = await fetchWithAutoRefresh("/books/import", {
+    accessToken,
     body: payload,
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
+    fallbackMessage: "No se pudo importar el libro.",
+    headers: createHeaders({ accessToken }),
     method: "POST"
   });
 
   if (!response.ok) {
-    const errorPayload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(errorPayload?.message ?? "No se pudo importar el libro.");
+    throw new Error(await parseErrorMessage(response, "No se pudo importar el libro."));
   }
 
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
 export async function createImageBook(accessToken: string, payload: FormData) {
-  const response = await fetch(`${apiBaseUrl}/books/from-images`, {
+  const response = await fetchWithAutoRefresh("/books/from-images", {
+    accessToken,
     body: payload,
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
+    fallbackMessage: "No se pudo crear el libro desde imágenes.",
+    headers: createHeaders({ accessToken }),
     method: "POST"
   });
 
   if (!response.ok) {
-    const errorPayload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(errorPayload?.message ?? "No se pudo crear el libro desde imágenes.");
+    throw new Error(await parseErrorMessage(response, "No se pudo crear el libro desde imágenes."));
   }
 
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
 export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData) {
-  const response = await fetch(`${apiBaseUrl}/books/${bookId}/import-images`, {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/import-images`, {
+    accessToken,
     body: payload,
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
+    fallbackMessage: "No se pudieron añadir imágenes al libro.",
+    headers: createHeaders({ accessToken }),
     method: "POST"
   });
 
   if (!response.ok) {
-    const errorPayload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(errorPayload?.message ?? "No se pudieron añadir imágenes al libro.");
+    throw new Error(await parseErrorMessage(response, "No se pudieron añadir imágenes al libro."));
   }
 
   return response.json() as Promise<{ addedPages: number; addedParagraphs: number; book: BookSummary }>;
@@ -220,18 +305,16 @@ export function updateProgress(accessToken: string, bookId: string, payload: Omi
 }
 
 export async function requestParagraphAudio(accessToken: string, bookId: string, paragraphId: string) {
-  const response = await fetch(`${apiBaseUrl}/books/${bookId}/tts`, {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/tts`, {
+    accessToken,
     body: JSON.stringify({ paragraphId }),
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json"
-    },
+    fallbackMessage: "No se pudo generar el audio del párrafo.",
+    headers: createHeaders({ accessToken, contentType: "application/json" }),
     method: "POST"
   });
 
   if (!response.ok) {
-    const errorPayload = (await response.json().catch(() => null)) as { message?: string } | null;
-    throw new Error(errorPayload?.message ?? "No se pudo generar el audio del párrafo.");
+    throw new Error(await parseErrorMessage(response, "No se pudo generar el audio del párrafo."));
   }
 
   return response.blob();
