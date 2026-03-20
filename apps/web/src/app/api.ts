@@ -35,6 +35,22 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
+async function requestBlob(path: string, accessToken: string): Promise<Blob> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    },
+    method: "GET"
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(payload?.message ?? "La solicitud no se pudo completar.");
+  }
+
+  return response.blob();
+}
+
 export type AuthResponse = {
   accessToken: string;
   refreshToken: string;
@@ -65,8 +81,12 @@ export type BookPageResponse = {
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   page: {
+    editedText: string | null;
+    hasSourceImage: boolean;
+    ocrStatus: string;
     pageNumber: number;
     paragraphs: ParagraphContent[];
+    rawText: string | null;
   };
 };
 
@@ -81,12 +101,31 @@ export type ReadingProgress = {
   updatedAt: string;
 };
 
+export type ManagedUser = {
+  createdAt: string;
+  displayName: string | null;
+  email: string;
+  role: SessionUser["role"];
+  totalBooks: number;
+  updatedAt: string;
+  userId: string;
+  username: string;
+};
+
 export function registerUser(payload: { displayName?: string; email: string; password: string; username: string }) {
   return request<AuthResponse>("/auth/register", { body: payload, method: "POST" });
 }
 
 export function loginUser(payload: { password: string; usernameOrEmail: string }) {
   return request<AuthResponse>("/auth/login", { body: payload, method: "POST" });
+}
+
+export function forgotPassword(payload: { email: string }) {
+  return request<{ message: string }>("/auth/forgot-password", { body: payload, method: "POST" });
+}
+
+export function resetPassword(payload: { password: string; token: string }) {
+  return request<void>("/auth/reset-password", { body: payload, method: "POST" });
 }
 
 export function fetchCurrentUser(accessToken: string) {
@@ -160,6 +199,18 @@ export function fetchBookPage(accessToken: string, bookId: string, pageNumber: n
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
 }
 
+export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number) {
+  return requestBlob(`/books/${bookId}/pages/${pageNumber}/image`, accessToken);
+}
+
+export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string }) {
+  return request<void>(`/books/${bookId}/pages/${pageNumber}/ocr`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
 export function fetchProgress(accessToken: string, bookId: string) {
   return request<{ progress: ReadingProgress | null }>(`/books/${bookId}/progress`, { accessToken });
 }
@@ -184,4 +235,38 @@ export async function requestParagraphAudio(accessToken: string, bookId: string,
   }
 
   return response.blob();
+}
+
+export function fetchUsers(accessToken: string) {
+  return request<{ users: ManagedUser[] }>("/users", { accessToken });
+}
+
+export function createManagedUser(
+  accessToken: string,
+  payload: { displayName?: string; email: string; password: string; role: SessionUser["role"]; username: string }
+) {
+  return request<{ user: SessionUser }>("/users", {
+    accessToken,
+    body: payload,
+    method: "POST"
+  });
+}
+
+export function updateManagedUser(
+  accessToken: string,
+  userId: string,
+  payload: { displayName?: string; email: string; password?: string; role: SessionUser["role"] }
+) {
+  return request<void>(`/users/${userId}`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function deleteManagedUser(accessToken: string, userId: string) {
+  return request<void>(`/users/${userId}`, {
+    accessToken,
+    method: "DELETE"
+  });
 }

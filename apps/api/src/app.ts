@@ -7,6 +7,7 @@ import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
 import { registerProgressRoutes } from "./modules/progress/progress.routes.js";
 import { registerTtsRoutes } from "./modules/tts/tts.routes.js";
+import { registerUserRoutes } from "./modules/users/users.routes.js";
 
 export function buildApp(): FastifyInstance {
   const app = Fastify({
@@ -36,6 +37,7 @@ export function buildApp(): FastifyInstance {
   void app.register(registerBookRoutes, { prefix: "/books" });
   void app.register(registerProgressRoutes);
   void app.register(registerTtsRoutes);
+  void app.register(registerUserRoutes, { prefix: "/users" });
 
   app.setErrorHandler((error, _request, reply) => {
     const statusCode = typeof (error as { statusCode?: number }).statusCode === "number"

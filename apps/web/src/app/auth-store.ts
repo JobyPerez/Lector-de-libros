@@ -3,9 +3,12 @@ import { create } from "zustand";
 const accessTokenKey = "lector.accessToken";
 const refreshTokenKey = "lector.refreshToken";
 
+export type UserRole = "ADMIN" | "EDITOR";
+
 export type SessionUser = {
   displayName: string | null;
   email: string;
+  role: UserRole;
   userId: string;
   username: string;
 };

@@ -51,7 +51,15 @@ const environmentSchema = z.object({
   DEEPGRAM_TTS_MODEL: z.string().min(1).default("aura-2-nestor-es"),
   GITHUB_MODELS_TOKEN: z.string().min(1).optional(),
   GITHUB_MODELS_ENDPOINT: z.string().url().optional(),
-  GITHUB_MODELS_VISION_MODEL: z.string().min(1).optional()
+  GITHUB_MODELS_VISION_MODEL: z.string().min(1).optional(),
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z.enum(["true", "false"]).default("false"),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+  SMTP_FROM_ADDRESS: z.string().email().optional(),
+  SMTP_FROM_NAME: z.string().min(1).default("El conejo lector"),
+  PASSWORD_RESET_URL_BASE: z.string().url().optional()
 });
 
 const parsedEnvironment = environmentSchema.safeParse(process.env);
@@ -78,5 +86,13 @@ export const appEnv = {
   deepgramTtsModel: parsedEnvironment.data.DEEPGRAM_TTS_MODEL,
   githubModelsToken: parsedEnvironment.data.GITHUB_MODELS_TOKEN,
   githubModelsEndpoint: parsedEnvironment.data.GITHUB_MODELS_ENDPOINT,
-  githubModelsVisionModel: parsedEnvironment.data.GITHUB_MODELS_VISION_MODEL
+  githubModelsVisionModel: parsedEnvironment.data.GITHUB_MODELS_VISION_MODEL,
+  smtpHost: parsedEnvironment.data.SMTP_HOST,
+  smtpPort: parsedEnvironment.data.SMTP_PORT,
+  smtpSecure: parsedEnvironment.data.SMTP_SECURE === "true",
+  smtpUser: parsedEnvironment.data.SMTP_USER,
+  smtpPassword: parsedEnvironment.data.SMTP_PASSWORD,
+  smtpFromAddress: parsedEnvironment.data.SMTP_FROM_ADDRESS,
+  smtpFromName: parsedEnvironment.data.SMTP_FROM_NAME,
+  passwordResetUrlBase: parsedEnvironment.data.PASSWORD_RESET_URL_BASE ?? `${parsedEnvironment.data.WEB_ORIGIN}/reset-password`
 };

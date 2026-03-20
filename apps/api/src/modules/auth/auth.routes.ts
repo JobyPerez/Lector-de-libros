@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import bcrypt from "bcryptjs";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
@@ -7,18 +7,24 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
+import { sendPasswordResetEmail } from "../../services/mailer.js";
+
+export type UserRole = "ADMIN" | "EDITOR";
 
 type AuthUser = {
   userId: string;
   username: string;
   email: string;
   displayName: string | null;
+  role: UserRole;
 };
 
 type AuthenticatedJwtPayload = JwtPayload & {
   sub: string;
+  displayName?: string | null;
   username?: string;
   email?: string;
+  role?: UserRole;
   type: "access" | "refresh";
   jti?: string;
 };
@@ -45,6 +51,15 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1)
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().email()
+});
+
+const resetPasswordSchema = z.object({
+  password: z.string().min(8).max(72),
+  token: z.string().min(1)
+});
+
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
@@ -52,7 +67,9 @@ function hashToken(token: string): string {
 function signAccessToken(user: AuthUser): string {
   return jwt.sign(
     {
+      displayName: user.displayName,
       email: user.email,
+      role: user.role,
       type: "access",
       username: user.username
     },
@@ -114,6 +131,7 @@ async function findUserByIdentifier(identifier: string): Promise<(AuthUser & { p
           username AS "username",
           email AS "email",
           display_name AS "displayName",
+          role AS "role",
           password_hash AS "passwordHash"
         FROM users
         WHERE LOWER(username) = :identifier OR LOWER(email) = :identifier
@@ -128,6 +146,93 @@ async function findUserByIdentifier(identifier: string): Promise<(AuthUser & { p
   } finally {
     await connection.close();
   }
+}
+
+async function findUserById(userId: string, existingConnection?: Awaited<ReturnType<typeof getConnection>>): Promise<AuthUser | null> {
+  const connection = existingConnection ?? (await getConnection());
+
+  try {
+    const result = await connection.execute(
+      `
+        SELECT
+          user_id AS "userId",
+          username AS "username",
+          email AS "email",
+          display_name AS "displayName",
+          role AS "role"
+        FROM users
+        WHERE user_id = :userId
+      `,
+      {
+        userId
+      }
+    );
+
+    const [row] = (result.rows ?? []) as AuthUser[];
+    return row ?? null;
+  } finally {
+    if (!existingConnection) {
+      await connection.close();
+    }
+  }
+}
+
+async function countUsers(): Promise<number> {
+  const connection = await getConnection();
+
+  try {
+    const result = await connection.execute(
+      `
+        SELECT COUNT(*) AS "totalUsers"
+        FROM users
+      `
+    );
+
+    const [row] = (result.rows ?? []) as Array<{ totalUsers: number }>;
+    return Number(row?.totalUsers ?? 0);
+  } finally {
+    await connection.close();
+  }
+}
+
+async function createPasswordResetToken(userId: string, connection: Awaited<ReturnType<typeof getConnection>>): Promise<string> {
+  const rawToken = randomBytes(32).toString("hex");
+
+  await connection.execute(
+    `
+      UPDATE password_reset_tokens
+      SET used_at = SYSTIMESTAMP
+      WHERE user_id = :userId
+        AND used_at IS NULL
+    `,
+    {
+      userId
+    }
+  );
+
+  await connection.execute(
+    `
+      INSERT INTO password_reset_tokens (
+        reset_token_id,
+        user_id,
+        token_hash,
+        expires_at
+      ) VALUES (
+        :resetTokenId,
+        :userId,
+        :tokenHash,
+        :expiresAt
+      )
+    `,
+    {
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      resetTokenId: randomUUID(),
+      tokenHash: hashToken(rawToken),
+      userId
+    }
+  );
+
+  return rawToken;
 }
 
 async function issueSession(user: AuthUser, metadata: { ipAddress: string | null; userAgent: string | null }) {
@@ -189,28 +294,48 @@ export async function authenticateRequest(request: FastifyRequest, reply: Fastif
   try {
     const token = authorizationHeader.slice("Bearer ".length).trim();
     const payload = verifyAccessToken(token);
+    const user = await findUserById(payload.sub);
 
-    request.currentUser = {
-      displayName: null,
-      email: payload.email ?? "",
-      userId: payload.sub,
-      username: payload.username ?? ""
-    };
+    if (!user) {
+      await reply.status(401).send({ message: "Usuario no encontrado." });
+      return;
+    }
+
+    request.currentUser = user;
   } catch {
     await reply.status(401).send({ message: "Invalid or expired access token." });
+  }
+}
+
+export async function requireAdministrator(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  if (!request.currentUser) {
+    await reply.status(401).send({ message: "Unauthenticated request." });
+    return;
+  }
+
+  if (request.currentUser.role !== "ADMIN") {
+    await reply.status(403).send({ message: "Solo los administradores pueden realizar esta acción." });
   }
 }
 
 export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
   app.post("/register", async (request, reply) => {
     const payload = registerSchema.parse(request.body);
+    const totalUsers = await countUsers();
+
+    if (totalUsers > 0) {
+      return reply.status(403).send({ message: "El alta pública está deshabilitada. Un administrador debe crear los usuarios." });
+    }
+
     const passwordHash = await bcrypt.hash(payload.password, 12);
     const userId = randomUUID();
+    const normalizedUsername = payload.username.toLowerCase();
     const user: AuthUser = {
       displayName: payload.displayName ?? null,
       email: payload.email.toLowerCase(),
+      role: normalizedUsername === "joby" || totalUsers === 0 ? "ADMIN" : "EDITOR",
       userId,
-      username: payload.username
+      username: normalizedUsername
     };
 
     const connection = await getConnection();
@@ -223,19 +348,22 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
             username,
             email,
             display_name,
-            password_hash
+            password_hash,
+            role
           ) VALUES (
             :userId,
             :username,
             :email,
             :displayName,
-            :passwordHash
+            :passwordHash,
+            :role
           )
         `,
         {
           displayName: user.displayName,
           email: user.email,
           passwordHash,
+          role: user.role,
           userId: user.userId,
           username: user.username
         },
@@ -280,6 +408,7 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
       {
         displayName: user.displayName,
         email: user.email,
+        role: user.role,
         userId: user.userId,
         username: user.username
       },
@@ -326,22 +455,7 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(401).send({ message: "Refresh token is not active." });
       }
 
-      const userResult = await connection.execute(
-        `
-          SELECT
-            user_id AS "userId",
-            username AS "username",
-            email AS "email",
-            display_name AS "displayName"
-          FROM users
-          WHERE user_id = :userId
-        `,
-        {
-          userId: refreshPayload.sub
-        }
-      );
-
-      const [user] = (userResult.rows ?? []) as AuthUser[];
+      const user = await findUserById(refreshPayload.sub, connection);
       if (!user) {
         return reply.status(404).send({ message: "User not found." });
       }
@@ -367,6 +481,122 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return reply.send(session);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/forgot-password", async (request, reply) => {
+    const payload = forgotPasswordSchema.parse(request.body);
+    const connection = await getConnection();
+    const genericResponse = { message: "Si existe una cuenta para ese correo, recibirás un mensaje con instrucciones para recuperar la contraseña." };
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            user_id AS "userId",
+            email AS "email",
+            display_name AS "displayName"
+          FROM users
+          WHERE LOWER(email) = :email
+        `,
+        {
+          email: payload.email.toLowerCase()
+        }
+      );
+
+      const [user] = (result.rows ?? []) as Array<{ displayName: string | null; email: string; userId: string }>;
+      if (!user) {
+        return reply.send(genericResponse);
+      }
+
+      const resetToken = await createPasswordResetToken(user.userId, connection);
+      await sendPasswordResetEmail({
+        resetToken,
+        toEmail: user.email,
+        toName: user.displayName
+      });
+      await connection.commit();
+
+      return reply.send(genericResponse);
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/reset-password", async (request, reply) => {
+    const payload = resetPasswordSchema.parse(request.body);
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            prt.reset_token_id AS "resetTokenId",
+            prt.user_id AS "userId"
+          FROM password_reset_tokens prt
+          WHERE prt.token_hash = :tokenHash
+            AND prt.used_at IS NULL
+            AND prt.expires_at > SYSTIMESTAMP
+        `,
+        {
+          tokenHash: hashToken(payload.token)
+        }
+      );
+
+      const [tokenRow] = (result.rows ?? []) as Array<{ resetTokenId: string; userId: string }>;
+      if (!tokenRow) {
+        return reply.status(400).send({ message: "El enlace de recuperación ya no es válido." });
+      }
+
+      const passwordHash = await bcrypt.hash(payload.password, 12);
+
+      await connection.execute(
+        `
+          UPDATE users
+          SET password_hash = :passwordHash
+          WHERE user_id = :userId
+        `,
+        {
+          passwordHash,
+          userId: tokenRow.userId
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE password_reset_tokens
+          SET used_at = SYSTIMESTAMP
+          WHERE reset_token_id = :resetTokenId
+        `,
+        {
+          resetTokenId: tokenRow.resetTokenId
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE user_refresh_tokens
+          SET revoked_at = SYSTIMESTAMP,
+              last_used_at = SYSTIMESTAMP
+          WHERE user_id = :userId
+            AND revoked_at IS NULL
+        `,
+        {
+          userId: tokenRow.userId
+        }
+      );
+
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -404,6 +634,11 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    return reply.send({ user: request.currentUser });
+    const user = await findUserById(request.currentUser.userId);
+    if (!user) {
+      return reply.status(404).send({ message: "User not found." });
+    }
+
+    return reply.send({ user });
   });
 };

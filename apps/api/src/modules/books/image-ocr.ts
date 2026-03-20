@@ -1,5 +1,6 @@
 import { extname } from "node:path";
 
+import sharp from "sharp";
 import Tesseract from "tesseract.js";
 import { z } from "zod";
 
@@ -36,6 +37,17 @@ const supportedImageMimeTypes = new Set([
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function cleanOcrText(rawText: string): string {
+  return rawText
+    .replace(/[|]/g, "I")
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([a-záéíóúñ])\n(?=[a-záéíóúñ])/giu, "$1 ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function extractAssistantText(content: ChatCompletionResponse["choices"]): string {
@@ -92,7 +104,7 @@ function inferImageMimeType(fileName: string, mimeType: string): string {
 }
 
 function buildParagraphsFromRawText(rawText: string): string[] {
-  const normalizedText = rawText.replace(/\r/g, "").trim();
+  const normalizedText = cleanOcrText(rawText.replace(/\r/g, "")).trim();
   if (!normalizedText) {
     return [];
   }
@@ -106,12 +118,30 @@ function buildParagraphsFromRawText(rawText: string): string[] {
   return sanitizeParagraphs(paragraphCandidates.length > 0 ? paragraphCandidates : [normalizedText]);
 }
 
+async function preprocessImageBuffer(fileBuffer: Buffer): Promise<Buffer> {
+  const metadata = await sharp(fileBuffer).metadata();
+  const width = metadata.width ?? 0;
+  const targetWidth = width > 0 && width < 1800 ? 1800 : undefined;
+
+  return sharp(fileBuffer)
+    .flatten({ background: "#ffffff" })
+    .grayscale()
+    .normalize()
+    .sharpen()
+    .resize(targetWidth ? { width: targetWidth } : undefined)
+    .threshold(170)
+    .png()
+    .toBuffer();
+}
+
 async function runLocalOcrWithTesseract(fileBuffer: Buffer): Promise<OcrPageResult> {
-  const result = await Tesseract.recognize(fileBuffer, "spa+eng", {
+  const processedBuffer = await preprocessImageBuffer(fileBuffer);
+  const result = await Tesseract.recognize(processedBuffer, "spa+eng", {
     logger: () => undefined
   });
-  const rawText = normalizeWhitespace(result.data.text ?? "");
-  const paragraphs = buildParagraphsFromRawText(result.data.text ?? "");
+  const cleanedText = cleanOcrText(result.data.text ?? "");
+  const rawText = normalizeWhitespace(cleanedText);
+  const paragraphs = buildParagraphsFromRawText(cleanedText);
 
   if (rawText.length === 0 || paragraphs.length === 0) {
     throw new Error("Tesseract no ha podido extraer texto legible de la imagen.");

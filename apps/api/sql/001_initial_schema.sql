@@ -4,8 +4,10 @@ CREATE TABLE users (
   email VARCHAR2(255 CHAR) NOT NULL,
   display_name VARCHAR2(120 CHAR),
   password_hash VARCHAR2(255 CHAR) NOT NULL,
+  role VARCHAR2(20 CHAR) DEFAULT 'EDITOR' NOT NULL,
   created_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
   updated_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+  CONSTRAINT ck_users_role CHECK (role IN ('ADMIN', 'EDITOR')),
   CONSTRAINT uq_users_username UNIQUE (username),
   CONSTRAINT uq_users_email UNIQUE (email)
 );
@@ -22,6 +24,17 @@ CREATE TABLE user_refresh_tokens (
   ip_address VARCHAR2(45 CHAR),
   CONSTRAINT uq_refresh_tokens_hash UNIQUE (token_hash),
   CONSTRAINT fk_refresh_tokens_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE password_reset_tokens (
+  reset_token_id VARCHAR2(36 CHAR) PRIMARY KEY,
+  user_id VARCHAR2(36 CHAR) NOT NULL,
+  token_hash VARCHAR2(64 CHAR) NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
+  used_at TIMESTAMP,
+  CONSTRAINT uq_password_reset_token_hash UNIQUE (token_hash),
+  CONSTRAINT fk_password_reset_tokens_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
 );
 
 CREATE TABLE books (
@@ -127,6 +140,7 @@ CREATE TABLE processing_jobs (
 
 CREATE INDEX idx_books_owner ON books (owner_user_id);
 CREATE INDEX idx_book_files_book_kind ON book_files (book_id, file_kind);
+CREATE INDEX idx_password_reset_tokens_user ON password_reset_tokens (user_id, expires_at);
 CREATE INDEX idx_user_refresh_tokens_user ON user_refresh_tokens (user_id, expires_at);
 CREATE INDEX idx_processing_jobs_status ON processing_jobs (status, job_type, created_at);
 

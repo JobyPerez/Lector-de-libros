@@ -3,11 +3,12 @@ import { extname } from "node:path";
 
 import type { MultipartFile } from "@fastify/multipart";
 import type { FastifyPluginAsync } from "fastify";
+import oracledb from "oracledb";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
-import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
+import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { isSupportedImageUpload, runOcrOnImage } from "./image-ocr.js";
 
 const createBookSchema = z.object({
@@ -28,6 +29,10 @@ const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional()
+});
+
+const updateOcrPageSchema = z.object({
+  editedText: z.string().trim().min(1).max(50000)
 });
 
 type UploadedBinaryFile = {
@@ -51,6 +56,15 @@ type OwnedBookRecord = {
   title: string;
   totalPages: number;
   totalParagraphs: number;
+};
+
+type BookPageRecord = {
+  editedText: string | null;
+  hasSourceImage: number;
+  ocrStatus: string;
+  pageId: string;
+  pageNumber: number;
+  rawText: string | null;
 };
 
 function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
@@ -114,6 +128,16 @@ function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+function paragraphsFromEditedText(editedText: string): string[] {
+  const normalizedText = editedText.replace(/\r/g, "").trim();
+  const paragraphCandidates = normalizedText
+    .split(/\n{2,}/u)
+    .map((paragraph) => paragraph.replace(/\n+/g, " ").trim())
+    .filter(Boolean);
+
+  return sanitizeParagraphs(paragraphCandidates);
+}
+
 function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
   if (files.length === 0) {
     throw Object.assign(new Error("Debes adjuntar al menos una imagen de página."), {
@@ -171,6 +195,97 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
 
   const [book] = (result.rows ?? []) as OwnedBookRecord[];
   return book ?? null;
+}
+
+async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, pageNumber: number): Promise<BookPageRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        page_id AS "pageId",
+        page_number AS "pageNumber",
+        raw_text AS "rawText",
+        edited_text AS "editedText",
+        ocr_status AS "ocrStatus",
+        CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
+      FROM book_pages
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  const [page] = (result.rows ?? []) as BookPageRecord[];
+  return page ?? null;
+}
+
+async function invalidateBookAudioCache(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string): Promise<void> {
+  await connection.execute(
+    `
+      UPDATE book_paragraphs
+      SET audio_file_id = NULL
+      WHERE book_id = :bookId
+        AND audio_file_id IS NOT NULL
+    `,
+    {
+      bookId
+    }
+  );
+
+  await connection.execute(
+    `
+      DELETE FROM book_files
+      WHERE book_id = :bookId
+        AND file_kind = 'TTS_AUDIO'
+    `,
+    {
+      bookId
+    }
+  );
+}
+
+async function shiftSubsequentSequenceNumbers(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number,
+  delta: number
+): Promise<void> {
+  if (delta === 0) {
+    return;
+  }
+
+  const temporaryOffset = 100000;
+
+  await connection.execute(
+    `
+      UPDATE book_paragraphs
+      SET sequence_number = sequence_number + :temporaryOffset
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_paragraphs
+      SET sequence_number = sequence_number - :temporaryOffset + :delta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      delta,
+      pageNumber,
+      temporaryOffset
+    }
+  );
 }
 
 async function insertProcessedImagePages(
@@ -865,6 +980,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const pageRecord = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!pageRecord) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
       const pageResult = await connection.execute(
         `
           SELECT
@@ -884,19 +1004,220 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       );
 
       const paragraphs = (pageResult.rows ?? []) as Array<Record<string, unknown>>;
-      if (paragraphs.length === 0) {
-        return reply.status(404).send({ message: "Page not found." });
-      }
 
       return reply.send({
         book,
         hasNextPage: params.pageNumber < Number(book.totalPages ?? 0),
         hasPreviousPage: params.pageNumber > 1,
         page: {
+          editedText: pageRecord.editedText,
+          hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
+          ocrStatus: pageRecord.ocrStatus,
           pageNumber: params.pageNumber,
+          rawText: pageRecord.rawText,
           paragraphs
         }
       });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/pages/:pageNumber/image", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({
+      bookId: z.string().uuid(),
+      pageNumber: z.coerce.number().int().min(1)
+    }).parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            bf.mime_type AS "mimeType",
+            bf.content_blob AS "contentBlob"
+          FROM books b
+          JOIN book_pages bp
+            ON bp.book_id = b.book_id
+          JOIN book_files bf
+            ON bf.file_id = bp.source_file_id
+          WHERE b.book_id = :bookId
+            AND b.owner_user_id = :ownerUserId
+            AND bp.page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId,
+          pageNumber: params.pageNumber
+        },
+        {
+          fetchInfo: {
+            contentBlob: { type: oracledb.BUFFER }
+          }
+        }
+      );
+
+      const [image] = (result.rows ?? []) as Array<{ contentBlob?: Buffer; mimeType?: string }>;
+      if (!image?.contentBlob || !image.mimeType) {
+        return reply.status(404).send({ message: "Source image not found." });
+      }
+
+      return reply
+        .header("Content-Type", image.mimeType)
+        .header("Cache-Control", "private, max-age=3600")
+        .send(image.contentBlob);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/:bookId/pages/:pageNumber/ocr", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({
+      bookId: z.string().uuid(),
+      pageNumber: z.coerce.number().int().min(1)
+    }).parse(request.params);
+    const payload = updateOcrPageSchema.parse(request.body);
+    const paragraphs = paragraphsFromEditedText(payload.editedText);
+
+    if (paragraphs.length === 0) {
+      return reply.status(422).send({ message: "El texto editado debe producir al menos un párrafo." });
+    }
+
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (book.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "La edición OCR solo está disponible para libros creados desde imágenes." });
+      }
+
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      const countResult = await connection.execute(
+        `
+          SELECT COUNT(*) AS "paragraphCount"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+      const previousCountResult = await connection.execute(
+        `
+          SELECT COUNT(*) AS "paragraphCount"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number < :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      const currentParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+      const previousParagraphCount = Number(((previousCountResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+      const delta = paragraphs.length - currentParagraphCount;
+
+      await invalidateBookAudioCache(connection, params.bookId);
+
+      await connection.execute(
+        `
+          DELETE FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      await shiftSubsequentSequenceNumbers(connection, params.bookId, params.pageNumber, delta);
+
+      for (const [paragraphIndex, paragraphText] of paragraphs.entries()) {
+        await connection.execute(
+          `
+            INSERT INTO book_paragraphs (
+              paragraph_id,
+              book_id,
+              page_id,
+              page_number,
+              paragraph_number,
+              sequence_number,
+              paragraph_text
+            ) VALUES (
+              :paragraphId,
+              :bookId,
+              :pageId,
+              :pageNumber,
+              :paragraphNumber,
+              :sequenceNumber,
+              :paragraphText
+            )
+          `,
+          {
+            bookId: params.bookId,
+            pageId: page.pageId,
+            pageNumber: params.pageNumber,
+            paragraphId: randomUUID(),
+            paragraphNumber: paragraphIndex + 1,
+            paragraphText,
+            sequenceNumber: previousParagraphCount + paragraphIndex + 1
+          }
+        );
+      }
+
+      await connection.execute(
+        `
+          UPDATE book_pages
+          SET edited_text = :editedText,
+              ocr_status = 'READY'
+          WHERE page_id = :pageId
+        `,
+        {
+          editedText: payload.editedText,
+          pageId: page.pageId
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET total_paragraphs = total_paragraphs + :delta,
+              status = 'READY'
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId: params.bookId,
+          delta
+        }
+      );
+
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }

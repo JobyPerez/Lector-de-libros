@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 
-import { fetchBookPage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
+import { fetchBookPage, fetchBookPageImage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 export function ReaderPage() {
@@ -16,6 +16,7 @@ export function ReaderPage() {
   const [autoPlay, setAutoPlay] = useState(false);
   const [pendingAutoPlayNextPage, setPendingAutoPlayNextPage] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
+  const [pageImageUrl, setPageImageUrl] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const progressHydratedRef = useRef(false);
@@ -78,6 +79,40 @@ export function ReaderPage() {
     }
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    let nextObjectUrl: string | null = null;
+
+    if (!accessToken || !pageQuery.data?.page.hasSourceImage) {
+      setPageImageUrl(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    void fetchBookPageImage(accessToken, bookId, currentPageNumber)
+      .then((imageBlob) => {
+        if (!active) {
+          return;
+        }
+
+        nextObjectUrl = URL.createObjectURL(imageBlob);
+        setPageImageUrl(nextObjectUrl);
+      })
+      .catch(() => {
+        if (active) {
+          setPageImageUrl(null);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [accessToken, bookId, currentPageNumber, pageQuery.data?.page.hasSourceImage]);
+
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
 
@@ -102,6 +137,11 @@ export function ReaderPage() {
       return;
     }
 
+    const totalParagraphs = pageQuery.data?.book.totalParagraphs ?? 0;
+    const nextReadingPercentage = totalParagraphs > 0
+      ? Math.min((paragraph.sequenceNumber / totalParagraphs) * 100, 100)
+      : 0;
+
     setIsSavingProgress(true);
 
     try {
@@ -110,7 +150,7 @@ export function ReaderPage() {
         currentPageNumber: pageNumber,
         currentParagraphNumber: paragraph.paragraphNumber,
         currentSequenceNumber: paragraph.sequenceNumber,
-        readingPercentage
+        readingPercentage: nextReadingPercentage
       });
     } finally {
       setIsSavingProgress(false);
@@ -274,30 +314,57 @@ export function ReaderPage() {
         </div>
 
         <div className="reader-canvas">
-          <div className="reader-page">
-            <p className="page-label">Estado del lector</p>
-            <p className="reader-copy">{readerSummary}</p>
-            <p className="reader-copy subdued">
-              El lector ya navega por páginas y párrafos extraídos del archivo importado, guarda la posición y sintetiza el párrafo actual con Deepgram cuando pulsas reproducir.
-            </p>
+          <div className="reader-split">
+            <div className="reader-page">
+              <p className="page-label">Estado del lector</p>
+              <p className="reader-copy">{readerSummary}</p>
+              <p className="reader-copy subdued">
+                La página muestra el texto listo para lectura y, si procede de imágenes, también conserva la fuente original para comparar el OCR.
+              </p>
 
-            {pageQuery.isLoading ? <p className="reader-copy subdued">Cargando página...</p> : null}
-            {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
-            {readerError ? <p className="error-text">{readerError}</p> : null}
+              {pageQuery.isLoading ? <p className="reader-copy subdued">Cargando página...</p> : null}
+              {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
+              {readerError ? <p className="error-text">{readerError}</p> : null}
 
-            <div className="paragraph-list">
-              {currentParagraphs.map((paragraph) => (
-                <button
-                  className={paragraph.paragraphNumber === currentParagraph?.paragraphNumber ? "paragraph-card active" : "paragraph-card"}
-                  key={paragraph.paragraphId}
-                  onClick={() => void selectParagraph(paragraph)}
-                  type="button"
-                >
-                  <span className="paragraph-label">Párrafo {paragraph.paragraphNumber}</span>
-                  <span>{paragraph.paragraphText}</span>
-                </button>
-              ))}
+              <div className="paragraph-list">
+                {currentParagraphs.map((paragraph) => (
+                  <button
+                    className={paragraph.paragraphNumber === currentParagraph?.paragraphNumber ? "paragraph-card active" : "paragraph-card"}
+                    key={paragraph.paragraphId}
+                    onClick={() => void selectParagraph(paragraph)}
+                    type="button"
+                  >
+                    <span className="paragraph-label">Párrafo {paragraph.paragraphNumber}</span>
+                    <span>{paragraph.paragraphText}</span>
+                  </button>
+                ))}
+              </div>
             </div>
+
+            <aside className="reader-source-panel">
+              <div className="source-panel-header">
+                <div>
+                  <p className="page-label">Página original</p>
+                  <h3>Comparación OCR</h3>
+                </div>
+                <span className="tag-chip">{pageQuery.data?.page.ocrStatus ?? "-"}</span>
+              </div>
+
+              {pageImageUrl ? (
+                <img alt={`Página ${currentPageNumber} del libro`} className="preview-image" src={pageImageUrl} />
+              ) : (
+                <div className="empty-state compact-state">
+                  <p>Esta página no tiene imagen original adjunta.</p>
+                </div>
+              )}
+
+              {pageQuery.data?.page.rawText ? (
+                <details className="raw-text-panel">
+                  <summary>Texto OCR base</summary>
+                  <p>{pageQuery.data.page.rawText}</p>
+                </details>
+              ) : null}
+            </aside>
           </div>
         </div>
       </section>
