@@ -27,14 +27,20 @@ async function shutdown(signal: string): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  await initializeConnectionPool();
-
   await app.listen({
     host: "0.0.0.0",
     port: appEnv.apiPort
   });
 
   app.log.info({ port: appEnv.apiPort }, "API server started.");
+
+  void initializeConnectionPool()
+    .then(() => {
+      app.log.info("Oracle connection pool initialized.");
+    })
+    .catch((error) => {
+      app.log.error(error, "Oracle connection pool unavailable.");
+    });
 }
 
 process.on("SIGINT", () => {

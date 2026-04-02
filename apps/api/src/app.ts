@@ -2,6 +2,7 @@ import multipart from "@fastify/multipart";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 
+import { getDatabaseStatus } from "./config/database.js";
 import { appEnv } from "./config/env.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
@@ -28,10 +29,18 @@ export function buildApp(): FastifyInstance {
     }
   });
 
-  app.get("/health", async () => ({
-    status: "ok",
-    service: "lector-api"
-  }));
+  app.get("/health", async (_request, reply) => {
+    const database = getDatabaseStatus();
+    const isHealthy = database.state === "ready" || database.state === "idle";
+
+    reply.status(database.state === "error" ? 503 : 200);
+
+    return {
+      database,
+      service: "lector-api",
+      status: isHealthy ? "ok" : "degraded"
+    };
+  });
 
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });

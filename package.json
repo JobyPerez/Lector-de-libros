@@ -8,7 +8,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev:api": "npm run dev --workspace @lector/api",
-    "dev:all": "concurrently --kill-others-on-fail -n api,web,worker -c green,blue,yellow \"npm run dev:api\" \"npm run dev:web:wait-api\" \"npm run dev:worker\"",
+    "dev:all": "node scripts/dev-all.mjs",
     "dev:web": "npm run dev --workspace @lector/web",
     "dev:web:wait-api": "wait-on tcp:3000 && npm run dev:web",
     "dev:worker": "npm run dev --workspace @lector/worker",
