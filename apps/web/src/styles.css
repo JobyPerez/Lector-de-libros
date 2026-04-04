@@ -132,6 +132,8 @@ textarea {
 }
 
 .topbar {
+  position: relative;
+  z-index: 70;
   gap: 1rem;
   margin-bottom: 1.75rem;
   padding: 1rem 1.1rem;
@@ -231,6 +233,137 @@ textarea {
 .session-strip {
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.overflow-visible-panel {
+  overflow: visible;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  position: relative;
+}
+
+.plus-button {
+  width: 2.85rem;
+  height: 2.85rem;
+  padding: 0;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--forest-900), var(--forest-500));
+  color: #fcf8ef;
+  font-size: 1.45rem;
+  line-height: 1;
+  box-shadow: 0 12px 28px rgba(25, 52, 40, 0.2);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.plus-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 36px rgba(25, 52, 40, 0.28);
+}
+
+.menu-panel {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 40;
+  min-width: 220px;
+  padding: 0.35rem;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 249, 240, 0.97);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 48px rgba(52, 32, 16, 0.16);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  color: var(--forest-700);
+  text-align: left;
+  transition: background 180ms ease, color 180ms ease;
+}
+
+.menu-item:hover {
+  background: rgba(42, 87, 66, 0.08);
+  color: var(--forest-900);
+}
+
+.profile-menu {
+  position: relative;
+  z-index: 90;
+}
+
+.profile-trigger {
+  width: 2.9rem;
+  height: 2.9rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(255, 253, 247, 0.9);
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  color: #1f2b23;
+  transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.profile-trigger:hover {
+  background: rgba(42, 87, 66, 0.08);
+  border-color: rgba(42, 87, 66, 0.18);
+  transform: translateY(-1px);
+}
+
+.profile-trigger svg {
+  width: 1.35rem;
+  height: 1.35rem;
+}
+
+.profile-panel {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  z-index: 120;
+  width: min(280px, calc(100vw - 2rem));
+  padding: 0.5rem;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 249, 240, 0.98);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 48px rgba(52, 32, 16, 0.16);
+  display: grid;
+  gap: 0.35rem;
+}
+
+.profile-panel .danger-button {
+  width: 100%;
+}
+
+.profile-panel-row {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: 16px;
+  background: rgba(255, 253, 247, 0.92);
+  border: 1px solid rgba(31, 43, 35, 0.08);
+}
+
+.profile-panel-row strong {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #5d665d;
+}
+
+.profile-panel-row span {
+  color: #1f2b23;
 }
 
 .user-chip {
@@ -542,6 +675,16 @@ textarea {
   max-width: 540px;
 }
 
+.import-panel-inline {
+  gap: 1rem;
+}
+
+.import-panel-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
 .shelf-grid {
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
@@ -623,6 +766,7 @@ textarea {
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .reader-page,
@@ -767,6 +911,28 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   margin-top: 1.25rem;
+}
+
+.capture-input-grid {
+  display: grid;
+  gap: 0.85rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.selected-book-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  padding: 0.85rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  background: rgba(42, 87, 66, 0.08);
+  color: var(--forest-700);
+}
+
+.align-start {
+  align-self: flex-start;
 }
 
 .file-pill-list {
@@ -924,6 +1090,15 @@ textarea {
     width: 100%;
   }
 
+  .profile-menu {
+    width: auto;
+    justify-self: end;
+  }
+
+  .profile-trigger {
+    width: 2.9rem;
+  }
+
   .reader-meta-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -943,7 +1118,8 @@ textarea {
   }
 
   .controls-grid,
-  .stats-strip {
+  .stats-strip,
+  .capture-input-grid {
     grid-template-columns: 1fr;
   }
 
@@ -961,6 +1137,22 @@ textarea {
 
   .reader-meta-list {
     grid-template-columns: 1fr;
+  }
+
+  .header-actions,
+  .import-panel-actions {
+    width: 100%;
+  }
+
+  .menu-panel,
+  .profile-panel {
+    right: 0;
+    left: 0;
+    width: auto;
+  }
+
+  .profile-trigger {
+    width: 2.9rem;
   }
 
   .app-shell {

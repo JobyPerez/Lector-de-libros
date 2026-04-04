@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
-import { fetchBookPage, fetchBookPageImage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
+import { deleteBookPage, fetchBookPage, fetchBookPageImage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 function ReaderControlIcon({ children }: { children: ReactNode }) {
@@ -66,6 +66,7 @@ function PauseIcon() {
 
 export function ReaderPage() {
   const { bookId = "" } = useParams();
+  const navigate = useNavigate();
   const accessToken = useAuthStore((state) => state.accessToken);
   const [currentPageNumber, setCurrentPageNumber] = useState(1);
   const [currentParagraphNumber, setCurrentParagraphNumber] = useState(1);
@@ -77,6 +78,7 @@ export function ReaderPage() {
   const [pendingAutoPlayNextPage, setPendingAutoPlayNextPage] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
   const [pageImageUrl, setPageImageUrl] = useState<string | null>(null);
+  const [isDeletingPage, setIsDeletingPage] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const progressHydratedRef = useRef(false);
@@ -176,6 +178,11 @@ export function ReaderPage() {
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
   const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
+  const appendPagesLink = {
+    hash: "#append-pages",
+    pathname: "/builder",
+    search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
+  };
 
   const readingPercentage = useMemo(() => {
     if (!pageQuery.data?.book.totalParagraphs || !currentParagraph) {
@@ -361,6 +368,46 @@ export function ReaderPage() {
     await persistProgress(nextParagraph, currentPageNumber);
   }
 
+  async function handleDeleteCurrentPage() {
+    if (!accessToken || !pageQuery.data || isDeletingPage) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Se borrará la página ${currentPageNumber} de este libro. Esta acción no se puede deshacer. ¿Continuar?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingPage(true);
+    setReaderError(null);
+    clearAudioResource();
+    setAutoPlay(false);
+
+    try {
+      const response = await deleteBookPage(accessToken, bookId, currentPageNumber);
+
+      if (response.nextPageNumber === null) {
+        navigate({
+          hash: "#append-pages",
+          pathname: "/builder",
+          search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=0`
+        });
+        return;
+      }
+
+      setCurrentPageNumber(response.nextPageNumber);
+      setCurrentParagraphNumber(1);
+      await progressQuery.refetch();
+      if (response.nextPageNumber === currentPageNumber) {
+        await pageQuery.refetch();
+      }
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo borrar la página actual.");
+    } finally {
+      setIsDeletingPage(false);
+    }
+  }
+
   return (
     <div className="page-grid reader-layout reader-floating-layout">
       <section className="panel wide-panel">
@@ -370,6 +417,16 @@ export function ReaderPage() {
             <h2>{pageQuery.data?.book.title ?? "Cargando libro..."}</h2>
           </div>
           <div className="reader-header-actions">
+            {pageQuery.data?.book.sourceType === "IMAGES" ? (
+              <Link className="secondary-button link-button" to={appendPagesLink}>
+                Añadir páginas
+              </Link>
+            ) : null}
+            {pageQuery.data?.book.sourceType === "IMAGES" ? (
+              <button className="danger-button" disabled={isDeletingPage} onClick={() => void handleDeleteCurrentPage()} type="button">
+                {isDeletingPage ? "Borrando página..." : "Borrar página"}
+              </button>
+            ) : null}
             <Link className="secondary-button link-button" to="/">
               Volver a la estantería
             </Link>

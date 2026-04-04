@@ -31,6 +31,19 @@ const imageBookFieldsSchema = z.object({
   synopsis: z.string().trim().max(5000).optional()
 });
 
+const importImagesParamsSchema = z.object({
+  bookId: z.string().uuid()
+});
+
+const importImagesQuerySchema = z.object({
+  afterPage: z.coerce.number().int().min(0).optional()
+});
+
+const pageParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  pageNumber: z.coerce.number().int().min(1)
+});
+
 const updateOcrPageSchema = z.object({
   editedText: z.string().trim().min(1).max(50000)
 });
@@ -65,6 +78,7 @@ type BookPageRecord = {
   pageId: string;
   pageNumber: number;
   rawText: string | null;
+  sourceFileId: string | null;
 };
 
 function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
@@ -203,6 +217,7 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
       SELECT
         page_id AS "pageId",
         page_number AS "pageNumber",
+        source_file_id AS "sourceFileId",
         raw_text AS "rawText",
         edited_text AS "editedText",
         ocr_status AS "ocrStatus",
@@ -286,6 +301,128 @@ async function shiftSubsequentSequenceNumbers(
       temporaryOffset
     }
   );
+}
+
+async function shiftSubsequentPageNumbers(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number,
+  delta: number
+): Promise<void> {
+  if (delta === 0) {
+    return;
+  }
+
+  const temporaryOffset = 100000;
+
+  await connection.execute(
+    `
+      UPDATE book_pages
+      SET page_number = page_number + :temporaryOffset
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_paragraphs
+      SET page_number = page_number + :temporaryOffset
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_files
+      SET page_number = page_number + :temporaryOffset
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_pages
+      SET page_number = page_number - :temporaryOffset + :delta
+      WHERE book_id = :bookId
+        AND page_number > :temporaryOffset
+    `,
+    {
+      bookId,
+      delta,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_paragraphs
+      SET page_number = page_number - :temporaryOffset + :delta
+      WHERE book_id = :bookId
+        AND page_number > :temporaryOffset
+    `,
+    {
+      bookId,
+      delta,
+      temporaryOffset
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE book_files
+      SET page_number = page_number - :temporaryOffset + :delta
+      WHERE book_id = :bookId
+        AND page_number > :temporaryOffset
+    `,
+    {
+      bookId,
+      delta,
+      temporaryOffset
+    }
+  );
+}
+
+async function countParagraphsUpToPage(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number
+): Promise<number> {
+  if (pageNumber <= 0) {
+    return 0;
+  }
+
+  const result = await connection.execute(
+    `
+      SELECT COUNT(*) AS "paragraphCount"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number <= :pageNumber
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  return Number(((result.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
 }
 
 async function insertProcessedImagePages(
@@ -838,7 +975,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
+    const params = importImagesParamsSchema.parse(request.params);
+    const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
     const imageFiles = ensureImageFiles(multipartForm.files);
     const processedPages = await ocrImageFiles(imageFiles);
@@ -854,12 +992,25 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "Solo puedes añadir imágenes a libros creados desde imágenes." });
       }
 
+      const insertionAfterPage = query.afterPage ?? Number(existingBook.totalPages);
+      if (insertionAfterPage > Number(existingBook.totalPages)) {
+        return reply.status(422).send({ message: "La página de inserción no existe en este libro." });
+      }
+
+      const insertionStartPageNumber = insertionAfterPage + 1;
+      const startingSequenceNumber = (await countParagraphsUpToPage(connection, existingBook.bookId, insertionAfterPage)) + 1;
+      const addedParagraphs = processedPages.reduce((count, page) => count + page.paragraphs.length, 0);
+
+      await invalidateBookAudioCache(connection, existingBook.bookId);
+      await shiftSubsequentPageNumbers(connection, existingBook.bookId, insertionAfterPage, processedPages.length);
+      await shiftSubsequentSequenceNumbers(connection, existingBook.bookId, insertionAfterPage, addedParagraphs);
+
       const insertionSummary = await insertProcessedImagePages(
         connection,
         existingBook.bookId,
         processedPages,
-        Number(existingBook.totalPages) + 1,
-        Number(existingBook.totalParagraphs) + 1
+        insertionStartPageNumber,
+        startingSequenceNumber
       );
 
       const updatedBook = {
@@ -889,7 +1040,146 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(201).send({
         addedPages: insertionSummary.addedPages,
         addedParagraphs: insertionSummary.addedParagraphs,
+        insertionStartPageNumber,
         book: updatedBook
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.delete("/:bookId/pages/:pageNumber", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = pageParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (book.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "Solo puedes borrar páginas de libros creados desde imágenes." });
+      }
+
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      const countResult = await connection.execute(
+        `
+          SELECT COUNT(*) AS "paragraphCount"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+      const deletedParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+      const updatedTotalPages = Math.max(Number(book.totalPages) - 1, 0);
+      const updatedTotalParagraphs = Math.max(Number(book.totalParagraphs) - deletedParagraphCount, 0);
+      const nextPageNumber = updatedTotalPages === 0
+        ? null
+        : Math.min(params.pageNumber, updatedTotalPages);
+
+      await invalidateBookAudioCache(connection, params.bookId);
+
+      await connection.execute(
+        `
+          DELETE FROM book_files
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      await connection.execute(
+        `
+          DELETE FROM book_pages
+          WHERE page_id = :pageId
+        `,
+        {
+          pageId: page.pageId
+        }
+      );
+
+      await shiftSubsequentPageNumbers(connection, params.bookId, params.pageNumber, -1);
+      await shiftSubsequentSequenceNumbers(connection, params.bookId, params.pageNumber, -deletedParagraphCount);
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET total_pages = :totalPages,
+              total_paragraphs = :totalParagraphs,
+              status = 'READY'
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId: params.bookId,
+          totalPages: updatedTotalPages,
+          totalParagraphs: updatedTotalParagraphs
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE user_book_progress
+          SET current_page_number = CASE
+                WHEN current_page_number > :pageNumber THEN current_page_number - 1
+                WHEN current_page_number = :pageNumber THEN :fallbackPageNumber
+                ELSE current_page_number
+              END,
+              current_paragraph_number = CASE
+                WHEN current_page_number >= :pageNumber THEN 1
+                ELSE current_paragraph_number
+              END,
+              current_sequence_number = CASE
+                WHEN current_page_number >= :pageNumber THEN 1
+                ELSE current_sequence_number
+              END,
+              audio_offset_ms = CASE
+                WHEN current_page_number >= :pageNumber THEN 0
+                ELSE audio_offset_ms
+              END,
+              reading_percentage = CASE
+                WHEN :totalParagraphs = 0 THEN 0
+                ELSE reading_percentage
+              END
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId: params.bookId,
+          fallbackPageNumber: nextPageNumber ?? 1,
+          pageNumber: params.pageNumber,
+          totalParagraphs: updatedTotalParagraphs
+        }
+      );
+
+      await connection.commit();
+
+      return reply.send({
+        book: {
+          ...book,
+          status: "READY",
+          totalPages: updatedTotalPages,
+          totalParagraphs: updatedTotalParagraphs
+        },
+        deletedPageNumber: params.pageNumber,
+        nextPageNumber
       });
     } catch (error) {
       await connection.rollback();
@@ -947,10 +1237,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const params = z.object({
-      bookId: z.string().uuid(),
-      pageNumber: z.coerce.number().int().min(1)
-    }).parse(request.params);
+    const params = pageParamsSchema.parse(request.params);
     const connection = await getConnection();
 
     try {
@@ -1028,10 +1315,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const params = z.object({
-      bookId: z.string().uuid(),
-      pageNumber: z.coerce.number().int().min(1)
-    }).parse(request.params);
+    const params = pageParamsSchema.parse(request.params);
     const connection = await getConnection();
 
     try {
@@ -1080,10 +1364,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const params = z.object({
-      bookId: z.string().uuid(),
-      pageNumber: z.coerce.number().int().min(1)
-    }).parse(request.params);
+    const params = pageParamsSchema.parse(request.params);
     const payload = updateOcrPageSchema.parse(request.body);
     const paragraphs = paragraphsFromEditedText(payload.editedText);
 

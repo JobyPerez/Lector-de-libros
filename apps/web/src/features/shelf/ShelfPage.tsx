@@ -8,6 +8,8 @@ import { useAuthStore } from "../../app/auth-store";
 export function ShelfPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const user = useAuthStore((state) => state.user);
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+  const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [importForm, setImportForm] = useState<{ authorName: string; sourceType: "PDF" | "EPUB"; title: string }>({
     authorName: "",
     sourceType: "PDF",
@@ -58,6 +60,7 @@ export function ShelfPage() {
 
       setImportForm({ authorName: "", sourceType: "PDF", title: "" });
       setSelectedFile(null);
+      setIsImportPanelVisible(false);
       await booksQuery.refetch();
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro.");
@@ -66,17 +69,42 @@ export function ShelfPage() {
     }
   }
 
+  function toggleImportPanel() {
+    setIsImportPanelVisible((current) => !current);
+    setIsCreateMenuOpen(false);
+    setCreateError(null);
+  }
+
   return (
-    <div className="page-grid">
-      <section className="panel wide-panel">
+    <div className="page-stack">
+      <section className="panel wide-panel overflow-visible-panel">
         <div className="panel-header">
           <div>
             <p className="eyebrow">Estantería</p>
             <h2>{user?.displayName ?? user?.username ?? "Tu colección"}</h2>
           </div>
-          <Link className="secondary-button link-button" to="/builder">
-            Crear desde imágenes
-          </Link>
+          <div className="header-actions">
+            <button
+              aria-expanded={isCreateMenuOpen}
+              aria-label="Abrir menú de creación"
+              className="plus-button"
+              onClick={() => setIsCreateMenuOpen((current) => !current)}
+              type="button"
+            >
+              +
+            </button>
+
+            {isCreateMenuOpen ? (
+              <div className="menu-panel" role="menu">
+                <button className="menu-item" onClick={toggleImportPanel} type="button">
+                  Importación
+                </button>
+                <Link className="menu-item" onClick={() => setIsCreateMenuOpen(false)} to="/builder">
+                  Crear desde imágenes
+                </Link>
+              </div>
+            ) : null}
+          </div>
         </div>
 
         {booksQuery.isLoading ? <p>Cargando libros...</p> : null}
@@ -105,52 +133,67 @@ export function ShelfPage() {
         </div>
       </section>
 
-      <aside className="panel form-panel">
-        <p className="eyebrow">Importación</p>
-        <h2>PDF o EPUB</h2>
-        <form className="stack-form" onSubmit={handleCreateBook}>
-          <label>
-            Título
-            <input
-              onChange={(event) => setImportForm((current) => ({ ...current, title: event.target.value }))}
-              placeholder="Si lo dejas vacío, se tomará del archivo"
-              value={importForm.title}
-            />
-          </label>
-          <label>
-            Autor
-            <input
-              onChange={(event) => setImportForm((current) => ({ ...current, authorName: event.target.value }))}
-              placeholder="Autor o autora"
-              value={importForm.authorName}
-            />
-          </label>
-          <label>
-            Origen
-            <select
-              onChange={(event) => setImportForm((current) => ({ ...current, sourceType: event.target.value as "PDF" | "EPUB" }))}
-              value={importForm.sourceType}
-            >
-              <option value="PDF">PDF</option>
-              <option value="EPUB">EPUB</option>
-            </select>
-          </label>
-          <label>
-            Archivo
-            <input
-              accept=".pdf,.epub,application/pdf,application/epub+zip"
-              onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
-              type="file"
-            />
-          </label>
+      {isImportPanelVisible ? (
+        <aside className="panel form-panel import-panel-inline">
+          <div className="panel-header compact-header">
+            <div>
+              <p className="eyebrow">Importación</p>
+              <h2>PDF o EPUB</h2>
+            </div>
+            <button className="secondary-button" onClick={() => setIsImportPanelVisible(false)} type="button">
+              Cerrar
+            </button>
+          </div>
 
-          {createError ? <p className="error-text">{createError}</p> : null}
+          <form className="stack-form auth-form-compact" onSubmit={handleCreateBook}>
+            <label>
+              Título
+              <input
+                onChange={(event) => setImportForm((current) => ({ ...current, title: event.target.value }))}
+                placeholder="Si lo dejas vacío, se tomará del archivo"
+                value={importForm.title}
+              />
+            </label>
+            <label>
+              Autor
+              <input
+                onChange={(event) => setImportForm((current) => ({ ...current, authorName: event.target.value }))}
+                placeholder="Autor o autora"
+                value={importForm.authorName}
+              />
+            </label>
+            <label>
+              Origen
+              <select
+                onChange={(event) => setImportForm((current) => ({ ...current, sourceType: event.target.value as "PDF" | "EPUB" }))}
+                value={importForm.sourceType}
+              >
+                <option value="PDF">PDF</option>
+                <option value="EPUB">EPUB</option>
+              </select>
+            </label>
+            <label>
+              Archivo
+              <input
+                accept=".pdf,.epub,application/pdf,application/epub+zip"
+                onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+            </label>
 
-          <button className="primary-button" disabled={submitting} type="submit">
-            {submitting ? "Importando..." : "Importar libro"}
-          </button>
-        </form>
-      </aside>
+            {createError ? <p className="error-text">{createError}</p> : null}
+
+            <div className="import-panel-actions">
+              <button className="primary-button" disabled={submitting} type="submit">
+                {submitting ? "Importando..." : "Importar libro"}
+              </button>
+              <button className="secondary-button" onClick={() => setIsImportPanelVisible(false)} type="button">
+                Cancelar
+              </button>
+            </div>
+          </form>
+        </aside>
+      ) : null}
     </div>
   );
 }

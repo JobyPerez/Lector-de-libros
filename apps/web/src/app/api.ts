@@ -260,8 +260,17 @@ export async function createImageBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData) {
-  const response = await fetchWithAutoRefresh(`/books/${bookId}/import-images`, {
+export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number }) {
+  const searchParams = new URLSearchParams();
+  if (options?.afterPage !== undefined) {
+    searchParams.set("afterPage", String(options.afterPage));
+  }
+
+  const path = searchParams.size > 0
+    ? `/books/${bookId}/import-images?${searchParams.toString()}`
+    : `/books/${bookId}/import-images`;
+
+  const response = await fetchWithAutoRefresh(path, {
     accessToken,
     body: payload,
     fallbackMessage: "No se pudieron añadir imágenes al libro.",
@@ -273,7 +282,23 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     throw new Error(await parseErrorMessage(response, "No se pudieron añadir imágenes al libro."));
   }
 
-  return response.json() as Promise<{ addedPages: number; addedParagraphs: number; book: BookSummary }>;
+  return response.json() as Promise<{
+    addedPages: number;
+    addedParagraphs: number;
+    book: BookSummary;
+    insertionStartPageNumber: number;
+  }>;
+}
+
+export function deleteBookPage(accessToken: string, bookId: string, pageNumber: number) {
+  return request<{
+    book: BookSummary;
+    deletedPageNumber: number;
+    nextPageNumber: number | null;
+  }>(`/books/${bookId}/pages/${pageNumber}`, {
+    accessToken,
+    method: "DELETE"
+  });
 }
 
 export function fetchBook(accessToken: string, bookId: string) {

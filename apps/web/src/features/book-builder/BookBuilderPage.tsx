@@ -1,12 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { appendImagesToBook, createImageBook, fetchBookPage, fetchBookPageImage, fetchBooks, updateOcrPage } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 export function BookBuilderPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const accessToken = useAuthStore((state) => state.accessToken);
   const [createForm, setCreateForm] = useState({ authorName: "", synopsis: "", title: "" });
   const [selectedCreateFiles, setSelectedCreateFiles] = useState<File[]>([]);
@@ -23,6 +24,8 @@ export function BookBuilderPage() {
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
+  const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
+  const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const booksQuery = useQuery({
     enabled: Boolean(accessToken),
     queryKey: ["builder-books"],
@@ -38,6 +41,11 @@ export function BookBuilderPage() {
 
   const imageBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES");
   const selectedReviewBook = imageBooks.find((book) => book.bookId === reviewBookId) ?? null;
+  const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
+  const requestedInsertAfterPage = requestedInsertAfterPageParam ? Number(requestedInsertAfterPageParam) : Number.NaN;
+  const appendAfterPageNumber = selectedAppendBook && selectedAppendBook.bookId === requestedAppendBookId && Number.isInteger(requestedInsertAfterPage)
+    ? Math.min(Math.max(requestedInsertAfterPage, 0), selectedAppendBook.totalPages)
+    : undefined;
 
   const reviewPageQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId),
@@ -53,6 +61,9 @@ export function BookBuilderPage() {
 
   useEffect(() => {
     const firstImageBook = imageBooks[0];
+    const hasRequestedAppendBook = requestedAppendBookId
+      ? imageBooks.some((book) => book.bookId === requestedAppendBookId)
+      : false;
 
     if (!firstImageBook) {
       setSelectedBookId("");
@@ -60,7 +71,13 @@ export function BookBuilderPage() {
       return;
     }
 
-    if (!imageBooks.some((book) => book.bookId === selectedBookId)) {
+    if (!selectedBookId) {
+      if (hasRequestedAppendBook) {
+        setSelectedBookId(requestedAppendBookId);
+      } else {
+        setSelectedBookId(firstImageBook.bookId);
+      }
+    } else if (!imageBooks.some((book) => book.bookId === selectedBookId)) {
       setSelectedBookId(firstImageBook.bookId);
     }
 
@@ -68,7 +85,7 @@ export function BookBuilderPage() {
       setReviewBookId(firstImageBook.bookId);
       setReviewPageNumber(1);
     }
-  }, [imageBooks, reviewBookId, selectedBookId]);
+  }, [imageBooks, requestedAppendBookId, reviewBookId, selectedBookId]);
 
   useEffect(() => {
     const page = reviewPageQuery.data?.page;
@@ -117,6 +134,38 @@ export function BookBuilderPage() {
 
   function toFileArray(fileList: FileList | null): File[] {
     return fileList ? Array.from(fileList) : [];
+  }
+
+  function isSupportedImageFile(file: File): boolean {
+    const supportedMimeTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
+    const normalizedName = file.name.toLowerCase();
+
+    return supportedMimeTypes.has(file.type) || /\.(jpe?g|png|webp)$/u.test(normalizedName);
+  }
+
+  function appendFiles(files: File[]) {
+    const validFiles = files.filter(isSupportedImageFile);
+    const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
+
+    setSelectedAppendFiles((currentFiles) => [...currentFiles, ...validFiles]);
+
+    if (invalidFiles.length > 0) {
+      const invalidNames = invalidFiles.map((file) => file.name).join(", ");
+      setAppendError(`Algunas imágenes no se pueden usar todavía (${invalidNames}). Usa PNG, JPG o WEBP.`);
+      return;
+    }
+
+    setAppendError(null);
+  }
+
+  function handleAppendFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    appendFiles(toFileArray(event.target.files));
+    event.target.value = "";
+  }
+
+  function clearAppendSelection() {
+    setSelectedAppendFiles([]);
+    setAppendError(null);
   }
 
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
@@ -188,10 +237,13 @@ export function BookBuilderPage() {
         formData.append("images", file);
       }
 
-      const response = await appendImagesToBook(accessToken, selectedBookId, formData);
+      const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
+        afterPage: appendAfterPageNumber
+      });
       await booksQuery.refetch();
+      clearAppendSelection();
       if (reviewBookId === selectedBookId) {
-        setReviewPageNumber(response.book.totalPages);
+        setReviewPageNumber(response.insertionStartPageNumber);
       }
       navigate(`/books/${response.book.bookId}`);
     } catch (error) {
@@ -318,9 +370,9 @@ export function BookBuilderPage() {
 
           <article className="builder-form-card">
             <h3>Añadir páginas a un libro existente</h3>
-            <p className="subdued">Úsalo para seguir ampliando un libro que ya empezaste a leer. Las páginas nuevas se añaden al final sin perder el progreso guardado.</p>
+            <p className="subdued">Úsalo para seguir ampliando un libro que ya empezaste a leer. Si vienes desde el lector, las páginas nuevas se insertarán justo después de la página en la que estabas.</p>
 
-            <form className="stack-form" onSubmit={handleAppendImages}>
+            <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
               <label>
                 Libro de imágenes
                 <select onChange={(event) => setSelectedBookId(event.target.value)} value={selectedBookId}>
@@ -331,22 +383,59 @@ export function BookBuilderPage() {
                 </select>
               </label>
 
-              <label>
-                Nuevas imágenes
-                <input
-                  accept="image/png,image/jpeg,image/webp"
-                  multiple
-                  onChange={(event) => setSelectedAppendFiles(toFileArray(event.target.files))}
-                  type="file"
-                />
-              </label>
+              {selectedAppendBook ? (
+                <div className="selected-book-banner">
+                  <strong>Libro seleccionado:</strong>
+                  <span>{selectedAppendBook.title}</span>
+                </div>
+              ) : null}
+
+              {selectedAppendBook && appendAfterPageNumber !== undefined ? (
+                <div className="selected-book-banner">
+                  <strong>Posición de inserción:</strong>
+                  <span>
+                    {appendAfterPageNumber === 0
+                      ? "Las nuevas páginas se añadirán al principio del libro."
+                      : `Se insertarán después de la página ${appendAfterPageNumber}.`}
+                  </span>
+                </div>
+              ) : null}
+
+              <div className="capture-input-grid">
+                <label>
+                  Nuevas imágenes
+                  <input
+                    accept="image/png,image/jpeg,image/webp"
+                    multiple
+                    onChange={handleAppendFileSelection}
+                    type="file"
+                  />
+                </label>
+
+                <label>
+                  Añadir desde cámara
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    onChange={handleAppendFileSelection}
+                    type="file"
+                  />
+                </label>
+              </div>
+
+              <p className="helper-text">Desde el móvil se abrirá la cámara si el navegador lo permite. En escritorio, la disponibilidad depende del navegador y del sistema.</p>
 
               {selectedAppendFiles.length > 0 ? (
-                <div className="file-pill-list">
-                  {selectedAppendFiles.map((file) => (
-                    <span className="file-pill" key={file.name}>{file.name}</span>
-                  ))}
-                </div>
+                <>
+                  <div className="file-pill-list">
+                    {selectedAppendFiles.map((file, index) => (
+                      <span className="file-pill" key={`${file.name}-${index}`}>{file.name}</span>
+                    ))}
+                  </div>
+                  <button className="text-button align-start" onClick={clearAppendSelection} type="button">
+                    Limpiar selección
+                  </button>
+                </>
               ) : null}
 
               {appendError ? <p className="error-text">{appendError}</p> : null}
