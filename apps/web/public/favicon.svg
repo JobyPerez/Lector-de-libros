@@ -1,9 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
-  <title>Lector de libros</title>
-  <rect width="256" height="256" rx="48" fill="#264f3d"/>
-  <path d="M56 70c0-8.837 7.163-16 16-16h42c24.301 0 44 19.699 44 44v92c0-13.255-10.745-24-24-24H72c-8.837 0-16-7.163-16-16V70z" fill="#f2e7d1"/>
-  <path d="M200 70c0-8.837-7.163-16-16-16h-42c-24.301 0-44 19.699-44 44v92c0-13.255 10.745-24 24-24h62c8.837 0 16-7.163 16-16V70z" fill="#d39b5f"/>
-  <path d="M128 96v94" stroke="#13231a" stroke-width="10" stroke-linecap="round"/>
-  <path d="M96 112h16" stroke="#13231a" stroke-width="8" stroke-linecap="round"/>
-  <path d="M144 112h16" stroke="#13231a" stroke-width="8" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title>El conejo lector</title>
+  <rect width="512" height="512" rx="112" fill="#204436"/>
+  <circle cx="256" cy="256" r="212" fill="url(#rabbitGradient)"/>
+  <path d="M184 136c0-38.049 24.68-68 55.111-68 30.43 0 55.111 29.951 55.111 68v73.556H184V136Z" fill="#fff4d6"/>
+  <path d="M248.889 117.778c0-35.522 22.619-64 49.778-64 27.158 0 49.777 28.478 49.777 64v96.444h-99.555v-96.444Z" fill="#ffe8b3"/>
+  <path d="M325.778 208.889c51.813 0 93.778 41.965 93.778 93.778s-41.965 93.778-93.778 93.778H218.222c-51.813 0-93.778-41.965-93.778-93.778s41.965-93.778 93.778-93.778h107.556Z" fill="#fff9ee"/>
+  <ellipse cx="206.222" cy="284.889" rx="15.556" ry="20" fill="#294f3d"/>
+  <ellipse cx="308.444" cy="284.889" rx="15.556" ry="20" fill="#294f3d"/>
+  <path d="M256 293.778c12.273 0 22.222 9.949 22.222 22.222 0 12.272-9.949 22.222-22.222 22.222s-22.222-9.95-22.222-22.222c0-12.273 9.949-22.222 22.222-22.222Z" fill="#dd8b54"/>
+  <path d="M215.111 342.667c13.877 13.655 26.395 20 40.889 20s27.012-6.345 40.889-20" fill="none" stroke="#b26734" stroke-linecap="round" stroke-width="15.556"/>
+  <defs>
+    <linearGradient id="rabbitGradient" x1="108" x2="404" y1="84" y2="428" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#204436"/>
+      <stop offset="0.55" stop-color="#3e6d4a"/>
+      <stop offset="1" stop-color="#d98841"/>
+    </linearGradient>
+  </defs>
 </svg>

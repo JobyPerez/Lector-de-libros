@@ -157,7 +157,9 @@ function ProtectedShell() {
             </NavLink>
           ) : null}
         </nav>
-        <ProfileMenu onLogout={clearSession} user={user} />
+        <div className="topbar-actions">
+          <ProfileMenu onLogout={clearSession} user={user} />
+        </div>
       </header>
       <main>
         <Outlet />

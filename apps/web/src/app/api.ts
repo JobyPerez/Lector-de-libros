@@ -8,6 +8,7 @@ type ApiOptions = {
   accessToken?: string | null;
   body?: unknown;
   method?: "GET" | "POST" | "PUT" | "DELETE";
+  signal?: AbortSignal;
 };
 
 type RequestHeaders = Record<string, string>;
@@ -71,6 +72,7 @@ async function fetchWithAutoRefresh(
     fallbackMessage: string;
     headers?: RequestHeaders | undefined;
     method?: string | undefined;
+    signal?: AbortSignal | undefined;
   }
 ): Promise<Response> {
   const executeFetch = (token: string | null | undefined) => {
@@ -83,6 +85,10 @@ async function fetchWithAutoRefresh(
       headers: nextHeaders,
       method: options.method ?? "GET"
     };
+
+    if (options.signal !== undefined) {
+      requestInit.signal = options.signal;
+    }
 
     if (options.body !== undefined) {
       requestInit.body = options.body;
@@ -157,6 +163,8 @@ export type BookSummary = {
   updatedAt?: string;
 };
 
+export type ImageOcrMode = "LOCAL" | "VISION";
+
 export type ParagraphContent = {
   paragraphId: string;
   paragraphNumber: number;
@@ -175,6 +183,7 @@ export type BookPageResponse = {
     pageNumber: number;
     paragraphs: ParagraphContent[];
     rawText: string | null;
+    sourceFileId: string | null;
   };
 };
 
@@ -187,6 +196,11 @@ export type ReadingProgress = {
   progressId: string;
   readingPercentage: number;
   updatedAt: string;
+};
+
+export type ReaderAudioOptions = {
+  signal?: AbortSignal;
+  voiceModel?: string;
 };
 
 export type ManagedUser = {
@@ -244,10 +258,24 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function createImageBook(accessToken: string, payload: FormData) {
+function createImageUploadPayload(payload: FormData, ocrMode?: ImageOcrMode): FormData {
+  const nextPayload = new FormData();
+
+  payload.forEach((value, key) => {
+    nextPayload.append(key, value);
+  });
+
+  if (ocrMode) {
+    nextPayload.set("ocrMode", ocrMode);
+  }
+
+  return nextPayload;
+}
+
+export async function createImageBook(accessToken: string, payload: FormData, options?: { ocrMode?: ImageOcrMode }) {
   const response = await fetchWithAutoRefresh("/books/from-images", {
     accessToken,
-    body: payload,
+    body: createImageUploadPayload(payload, options?.ocrMode),
     fallbackMessage: "No se pudo crear el libro desde imágenes.",
     headers: createHeaders({ accessToken }),
     method: "POST"
@@ -260,7 +288,7 @@ export async function createImageBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number }) {
+export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode }) {
   const searchParams = new URLSearchParams();
   if (options?.afterPage !== undefined) {
     searchParams.set("afterPage", String(options.afterPage));
@@ -272,7 +300,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
 
   const response = await fetchWithAutoRefresh(path, {
     accessToken,
-    body: payload,
+    body: createImageUploadPayload(payload, options?.ocrMode),
     fallbackMessage: "No se pudieron añadir imágenes al libro.",
     headers: createHeaders({ accessToken }),
     method: "POST"
@@ -309,8 +337,9 @@ export function fetchBookPage(accessToken: string, bookId: string, pageNumber: n
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
 }
 
-export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number) {
-  return requestBlob(`/books/${bookId}/pages/${pageNumber}/image`, accessToken);
+export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null) {
+  const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+  return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
 }
 
 export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string }) {
@@ -318,6 +347,14 @@ export function updateOcrPage(accessToken: string, bookId: string, pageNumber: n
     accessToken,
     body: payload,
     method: "PUT"
+  });
+}
+
+export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: { ocrMode?: ImageOcrMode }) {
+  return request<void>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr`, {
+    accessToken,
+    body: { ocrMode: payload?.ocrMode ?? "VISION" },
+    method: "POST"
   });
 }
 
@@ -329,13 +366,14 @@ export function updateProgress(accessToken: string, bookId: string, payload: Omi
   return request<void>(`/books/${bookId}/progress`, { accessToken, body: payload, method: "PUT" });
 }
 
-export async function requestParagraphAudio(accessToken: string, bookId: string, paragraphId: string) {
+export async function requestParagraphAudio(accessToken: string, bookId: string, paragraphId: string, options: ReaderAudioOptions = {}) {
   const response = await fetchWithAutoRefresh(`/books/${bookId}/tts`, {
     accessToken,
-    body: JSON.stringify({ paragraphId }),
+    body: JSON.stringify({ paragraphId, voiceModel: options.voiceModel }),
     fallbackMessage: "No se pudo generar el audio del párrafo.",
     headers: createHeaders({ accessToken, contentType: "application/json" }),
-    method: "POST"
+    method: "POST",
+    signal: options.signal
   });
 
   if (!response.ok) {

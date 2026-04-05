@@ -18,14 +18,15 @@ type TtsParagraphRow = {
 };
 
 const ttsRequestSchema = z.object({
-  paragraphId: z.string().uuid()
+  paragraphId: z.string().uuid(),
+  voiceModel: z.string().regex(/^aura-2-[a-z]+-es$/).optional()
 });
 
 function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-async function synthesizeTextWithDeepgram(text: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
+async function synthesizeTextWithDeepgram(text: string, voiceModel: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
   if (!appEnv.deepgramApiKey) {
     throw Object.assign(new Error("Deepgram no está configurado en el entorno."), {
       statusCode: 503
@@ -39,7 +40,7 @@ async function synthesizeTextWithDeepgram(text: string): Promise<{ audioBuffer: 
     });
   }
 
-  const response = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(appEnv.deepgramTtsModel)}`, {
+  const response = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(voiceModel)}`, {
     method: "POST",
     headers: {
       Authorization: `Token ${appEnv.deepgramApiKey}`,
@@ -74,6 +75,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
     const payload = ttsRequestSchema.parse(request.body);
+    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
+    const canUseCachedAudio = requestedVoiceModel === appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
@@ -112,67 +115,70 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Paragraph not found." });
       }
 
-      if (paragraph.audioBlob && paragraph.audioMimeType) {
+      if (canUseCachedAudio && paragraph.audioBlob && paragraph.audioMimeType) {
         return reply
           .header("Content-Type", paragraph.audioMimeType)
           .header("Cache-Control", "private, max-age=31536000")
           .send(paragraph.audioBlob);
       }
 
-      const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText);
-      const audioFileId = randomUUID();
+      const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel);
 
-      await connection.execute(
-        `
-          INSERT INTO book_files (
-            file_id,
-            book_id,
-            file_kind,
-            file_name,
-            mime_type,
-            paragraph_number,
-            byte_size,
-            checksum_sha256,
-            content_blob
-          ) VALUES (
-            :fileId,
-            :bookId,
-            'TTS_AUDIO',
-            :fileName,
-            :mimeType,
-            :paragraphNumber,
-            :byteSize,
-            :checksumSha256,
-            :contentBlob
-          )
-        `,
-        {
-          bookId: paragraph.bookId,
-          byteSize: synthesizedAudio.audioBuffer.length,
-          checksumSha256: computeChecksum(synthesizedAudio.audioBuffer),
-          contentBlob: synthesizedAudio.audioBuffer,
-          fileId: audioFileId,
-          fileName: `paragraph-${payload.paragraphId}.mp3`,
-          mimeType: synthesizedAudio.contentType,
-          paragraphNumber: paragraph.paragraphNumber
-        }
-      );
+      if (canUseCachedAudio) {
+        const audioFileId = randomUUID();
 
-      await connection.execute(
-        `
-          UPDATE book_paragraphs
-          SET audio_file_id = :audioFileId
-          WHERE book_id = :bookId
-            AND paragraph_id = :paragraphId
-        `,
-        {
-          audioFileId,
-          bookId: params.bookId,
-          paragraphId: payload.paragraphId
-        }
-      );
+        await connection.execute(
+          `
+            INSERT INTO book_files (
+              file_id,
+              book_id,
+              file_kind,
+              file_name,
+              mime_type,
+              paragraph_number,
+              byte_size,
+              checksum_sha256,
+              content_blob
+            ) VALUES (
+              :fileId,
+              :bookId,
+              'TTS_AUDIO',
+              :fileName,
+              :mimeType,
+              :paragraphNumber,
+              :byteSize,
+              :checksumSha256,
+              :contentBlob
+            )
+          `,
+          {
+            bookId: paragraph.bookId,
+            byteSize: synthesizedAudio.audioBuffer.length,
+            checksumSha256: computeChecksum(synthesizedAudio.audioBuffer),
+            contentBlob: synthesizedAudio.audioBuffer,
+            fileId: audioFileId,
+            fileName: `paragraph-${payload.paragraphId}.mp3`,
+            mimeType: synthesizedAudio.contentType,
+            paragraphNumber: paragraph.paragraphNumber
+          }
+        );
 
-      await connection.commit();
+        await connection.execute(
+          `
+            UPDATE book_paragraphs
+            SET audio_file_id = :audioFileId
+            WHERE book_id = :bookId
+              AND paragraph_id = :paragraphId
+          `,
+          {
+            audioFileId,
+            bookId: params.bookId,
+            paragraphId: payload.paragraphId
+          }
+        );
+
+        await connection.commit();
+      }
 
       return reply
         .header("Content-Type", synthesizedAudio.contentType)

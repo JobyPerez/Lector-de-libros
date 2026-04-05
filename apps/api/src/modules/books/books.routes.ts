@@ -9,7 +9,7 @@ import { z } from "zod";
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
-import { isSupportedImageUpload, runOcrOnImage } from "./image-ocr.js";
+import { isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -28,7 +28,12 @@ const importBookFieldsSchema = z.object({
 const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
-  synopsis: z.string().trim().max(5000).optional()
+  synopsis: z.string().trim().max(5000).optional(),
+  ocrMode: z.enum(supportedImageOcrModes).default("AUTO")
+});
+
+const importImagesFieldsSchema = z.object({
+  ocrMode: z.enum(supportedImageOcrModes).default("AUTO")
 });
 
 const importImagesParamsSchema = z.object({
@@ -46,6 +51,10 @@ const pageParamsSchema = z.object({
 
 const updateOcrPageSchema = z.object({
   editedText: z.string().trim().min(1).max(50000)
+});
+
+const rerunOcrPageSchema = z.object({
+  ocrMode: z.enum(supportedImageOcrModes).default("VISION")
 });
 
 type UploadedBinaryFile = {
@@ -170,11 +179,11 @@ function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
   return files;
 }
 
-async function ocrImageFiles(files: UploadedBinaryFile[]): Promise<ProcessedImagePage[]> {
+async function ocrImageFiles(files: UploadedBinaryFile[], ocrMode: ImageOcrMode): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
 
   for (const file of files) {
-    const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType);
+    const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
     pages.push({
       ...file,
       paragraphs: ocrResult.paragraphs,
@@ -423,6 +432,126 @@ async function countParagraphsUpToPage(
   );
 
   return Number(((result.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+}
+
+async function replaceBookPageParagraphs(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  options: {
+    bookId: string;
+    editedText: string;
+    ocrStatus: string;
+    page: BookPageRecord;
+    pageNumber: number;
+    paragraphs: string[];
+    rawText: string;
+  }
+): Promise<void> {
+  const countResult = await connection.execute(
+    `
+      SELECT COUNT(*) AS "paragraphCount"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+    `,
+    {
+      bookId: options.bookId,
+      pageNumber: options.pageNumber
+    }
+  );
+  const previousCountResult = await connection.execute(
+    `
+      SELECT COUNT(*) AS "paragraphCount"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number < :pageNumber
+    `,
+    {
+      bookId: options.bookId,
+      pageNumber: options.pageNumber
+    }
+  );
+
+  const currentParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+  const previousParagraphCount = Number(((previousCountResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+  const delta = options.paragraphs.length - currentParagraphCount;
+
+  await invalidateBookAudioCache(connection, options.bookId);
+
+  await connection.execute(
+    `
+      DELETE FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+    `,
+    {
+      bookId: options.bookId,
+      pageNumber: options.pageNumber
+    }
+  );
+
+  await shiftSubsequentSequenceNumbers(connection, options.bookId, options.pageNumber, delta);
+
+  for (const [paragraphIndex, paragraphText] of options.paragraphs.entries()) {
+    await connection.execute(
+      `
+        INSERT INTO book_paragraphs (
+          paragraph_id,
+          book_id,
+          page_id,
+          page_number,
+          paragraph_number,
+          sequence_number,
+          paragraph_text
+        ) VALUES (
+          :paragraphId,
+          :bookId,
+          :pageId,
+          :pageNumber,
+          :paragraphNumber,
+          :sequenceNumber,
+          :paragraphText
+        )
+      `,
+      {
+        bookId: options.bookId,
+        pageId: options.page.pageId,
+        pageNumber: options.pageNumber,
+        paragraphId: randomUUID(),
+        paragraphNumber: paragraphIndex + 1,
+        paragraphText,
+        sequenceNumber: previousParagraphCount + paragraphIndex + 1
+      }
+    );
+  }
+
+  await connection.execute(
+    `
+      UPDATE book_pages
+      SET raw_text = :rawText,
+          edited_text = :editedText,
+          ocr_status = :ocrStatus
+      WHERE page_id = :pageId
+    `,
+    {
+      editedText: options.editedText,
+      ocrStatus: options.ocrStatus,
+      pageId: options.page.pageId,
+      rawText: options.rawText
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE books
+      SET total_paragraphs = total_paragraphs + :delta,
+          status = 'READY'
+      WHERE book_id = :bookId
+    `,
+    {
+      bookId: options.bookId,
+      delta
+    }
+  );
 }
 
 async function insertProcessedImagePages(
@@ -889,11 +1018,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const multipartForm = await collectMultipartForm(request);
     const payload = imageBookFieldsSchema.parse({
       authorName: multipartForm.fields.authorName,
+      ocrMode: multipartForm.fields.ocrMode,
       synopsis: multipartForm.fields.synopsis,
       title: multipartForm.fields.title
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const processedPages = await ocrImageFiles(imageFiles);
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode);
     const connection = await getConnection();
     const bookId = randomUUID();
 
@@ -978,8 +1108,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const params = importImagesParamsSchema.parse(request.params);
     const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
+    const payload = importImagesFieldsSchema.parse({
+      ocrMode: multipartForm.fields.ocrMode
+    });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const processedPages = await ocrImageFiles(imageFiles);
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode);
     const connection = await getConnection();
 
     try {
@@ -1117,8 +1250,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
-      await shiftSubsequentPageNumbers(connection, params.bookId, params.pageNumber, -1);
       await shiftSubsequentSequenceNumbers(connection, params.bookId, params.pageNumber, -deletedParagraphCount);
+      await shiftSubsequentPageNumbers(connection, params.bookId, params.pageNumber, -1);
 
       await connection.execute(
         `
@@ -1301,6 +1434,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
           ocrStatus: pageRecord.ocrStatus,
           pageNumber: params.pageNumber,
+          sourceFileId: pageRecord.sourceFileId,
           rawText: pageRecord.rawText,
           paragraphs
         }
@@ -1352,7 +1486,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       return reply
         .header("Content-Type", image.mimeType)
-        .header("Cache-Control", "private, max-age=3600")
+        .header("Cache-Control", "private, no-cache")
         .send(image.contentBlob);
     } finally {
       await connection.close();
@@ -1389,109 +1523,97 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Page not found." });
       }
 
-      const countResult = await connection.execute(
-        `
-          SELECT COUNT(*) AS "paragraphCount"
-          FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND page_number = :pageNumber
-        `,
-        {
-          bookId: params.bookId,
-          pageNumber: params.pageNumber
-        }
-      );
-      const previousCountResult = await connection.execute(
-        `
-          SELECT COUNT(*) AS "paragraphCount"
-          FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND page_number < :pageNumber
-        `,
-        {
-          bookId: params.bookId,
-          pageNumber: params.pageNumber
-        }
-      );
+      await replaceBookPageParagraphs(connection, {
+        bookId: params.bookId,
+        editedText: payload.editedText,
+        ocrStatus: "READY",
+        page,
+        pageNumber: params.pageNumber,
+        paragraphs,
+        rawText: page.rawText ?? payload.editedText
+      });
 
-      const currentParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
-      const previousParagraphCount = Number(((previousCountResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
-      const delta = paragraphs.length - currentParagraphCount;
+      await connection.commit();
 
-      await invalidateBookAudioCache(connection, params.bookId);
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
 
-      await connection.execute(
-        `
-          DELETE FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND page_number = :pageNumber
-        `,
-        {
-          bookId: params.bookId,
-          pageNumber: params.pageNumber
-        }
-      );
+  app.post("/:bookId/pages/:pageNumber/rerun-ocr", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
 
-      await shiftSubsequentSequenceNumbers(connection, params.bookId, params.pageNumber, delta);
+    const params = pageParamsSchema.parse(request.params);
+    const payload = rerunOcrPageSchema.parse(request.body);
+    const connection = await getConnection();
 
-      for (const [paragraphIndex, paragraphText] of paragraphs.entries()) {
-        await connection.execute(
-          `
-            INSERT INTO book_paragraphs (
-              paragraph_id,
-              book_id,
-              page_id,
-              page_number,
-              paragraph_number,
-              sequence_number,
-              paragraph_text
-            ) VALUES (
-              :paragraphId,
-              :bookId,
-              :pageId,
-              :pageNumber,
-              :paragraphNumber,
-              :sequenceNumber,
-              :paragraphText
-            )
-          `,
-          {
-            bookId: params.bookId,
-            pageId: page.pageId,
-            pageNumber: params.pageNumber,
-            paragraphId: randomUUID(),
-            paragraphNumber: paragraphIndex + 1,
-            paragraphText,
-            sequenceNumber: previousParagraphCount + paragraphIndex + 1
-          }
-        );
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
       }
 
-      await connection.execute(
-        `
-          UPDATE book_pages
-          SET edited_text = :editedText,
-              ocr_status = 'READY'
-          WHERE page_id = :pageId
-        `,
-        {
-          editedText: payload.editedText,
-          pageId: page.pageId
-        }
-      );
+      if (book.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "El OCR manual solo está disponible para libros creados desde imágenes." });
+      }
 
-      await connection.execute(
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      if (!page.sourceFileId) {
+        return reply.status(409).send({ message: "Esta página no tiene imagen original para volver a reconocer el OCR." });
+      }
+
+      const sourceFileResult = await connection.execute(
         `
-          UPDATE books
-          SET total_paragraphs = total_paragraphs + :delta,
-              status = 'READY'
+          SELECT
+            file_name AS "fileName",
+            mime_type AS "mimeType",
+            content_blob AS "contentBlob"
+          FROM book_files
           WHERE book_id = :bookId
+            AND file_id = :fileId
         `,
         {
           bookId: params.bookId,
-          delta
+          fileId: page.sourceFileId
+        },
+        {
+          fetchInfo: {
+            contentBlob: { type: oracledb.BUFFER }
+          }
         }
       );
+
+      const [sourceFile] = (sourceFileResult.rows ?? []) as Array<{ contentBlob?: Buffer; fileName?: string | null; mimeType?: string }>;
+      if (!sourceFile?.contentBlob || !sourceFile.mimeType) {
+        return reply.status(404).send({ message: "Source image not found." });
+      }
+
+      const ocrResult = await runOcrOnImage(
+        sourceFile.contentBlob,
+        sourceFile.fileName ?? `page-${params.pageNumber}.png`,
+        sourceFile.mimeType,
+        payload.ocrMode
+      );
+
+      await replaceBookPageParagraphs(connection, {
+        bookId: params.bookId,
+        editedText: ocrResult.paragraphs.join("\n\n"),
+        ocrStatus: "READY",
+        page,
+        pageNumber: params.pageNumber,
+        paragraphs: ocrResult.paragraphs,
+        rawText: ocrResult.rawText
+      });
 
       await connection.commit();
 

@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
-        includeAssets: ["favicon.svg"],
+        includeAssets: ["apple-touch-icon.png", "favicon.svg", "pwa-192x192.png", "pwa-512x512.png"],
         manifest: {
           background_color: "#f2e7d1",
           description: "Biblioteca personal para leer y escuchar libros.",
@@ -25,19 +25,19 @@ export default defineConfig(({ mode }) => {
             {
               purpose: "any",
               sizes: "192x192",
-              src: "favicon.svg",
-              type: "image/svg+xml"
+              src: "pwa-192x192.png",
+              type: "image/png"
             },
             {
-              purpose: "maskable",
+              purpose: "any maskable",
               sizes: "512x512",
-              src: "favicon.svg",
-              type: "image/svg+xml"
+              src: "pwa-512x512.png",
+              type: "image/png"
             }
           ],
           lang: "es",
-          name: "Lector de libros",
-          short_name: "Lector",
+          name: "El conejo lector",
+          short_name: "Conejo lector",
           scope: appBasePath,
           start_url: appBasePath,
           theme_color: "#264f3d"
