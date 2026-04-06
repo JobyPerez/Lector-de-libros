@@ -1,8 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
-import { deleteBookPage, fetchBookPage, fetchBookPageImage, fetchProgress, requestParagraphAudio, updateProgress, type ParagraphContent } from "../../app/api";
+import {
+  createBookmark,
+  createHighlight,
+  createNote,
+  deleteBookmark,
+  deleteBookPage,
+  deleteNote,
+  fetchBookPage,
+  fetchBookPageImage,
+  fetchPageAnnotations,
+  fetchProgress,
+  fetchReaderNavigation,
+  requestParagraphAudio,
+  updateProgress,
+  type HighlightColor,
+  type ParagraphContent,
+  type ReaderHighlight,
+  type ReaderNote,
+  type ReaderTocEntry
+} from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
@@ -13,6 +32,13 @@ const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
 const PAGE_TURN_DURATION_MS = 760;
+
+const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
+  { color: "YELLOW", label: "Amarillo" },
+  { color: "GREEN", label: "Verde" },
+  { color: "BLUE", label: "Azul" },
+  { color: "PINK", label: "Rosa" }
+];
 
 type PageTurnDirection = "forward" | "backward";
 
@@ -31,6 +57,55 @@ type PrefetchedParagraphAudio = {
   promise?: Promise<Blob>;
   voiceModel: string;
 };
+
+type SelectionDraft = {
+  charEnd: number;
+  charStart: number;
+  paragraph: ParagraphContent;
+  rect: { left: number; top: number };
+  selectedText: string;
+};
+
+type HighlightSegment = {
+  color: HighlightColor;
+  highlightId: string;
+  text: string;
+};
+
+type PlainTextSegment = {
+  highlight: HighlightSegment | null;
+  text: string;
+};
+
+type NavigationListItem =
+  | {
+      isActive: boolean;
+      key: string;
+      level: number;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "toc";
+    }
+  | {
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "bookmark";
+    }
+  | {
+      color: HighlightColor | null;
+      excerpt: string;
+      isActive: boolean;
+      key: string;
+      noteId: string;
+      noteText: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "note";
+    };
 
 const TTS_VOICE_OPTIONS = [
   { description: "Femenina, expresiva, ideal para narración", label: "Diana", value: "aura-2-diana-es" },
@@ -152,6 +227,238 @@ function AudioSettingsIcon() {
   );
 }
 
+function BookmarkIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" fill="currentColor" />
+    </ReaderControlIcon>
+  );
+}
+
+function BookmarkOutlineIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
+function NavigationIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M5.5 7.25H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.5 12H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.5 16.75H14.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="17.5" cy="16.75" fill="currentColor" r="1.2" />
+    </ReaderControlIcon>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M8 8L16 16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M16 8L8 16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function highlightClassName(color: HighlightColor) {
+  return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
+}
+
+function buildTextSegments(
+  sourceText: string,
+  highlights: Array<Pick<ReaderHighlight, "charEnd" | "charStart" | "color" | "highlightId">>
+): PlainTextSegment[] {
+  if (highlights.length === 0 || sourceText.length === 0) {
+    return [{ highlight: null, text: sourceText }];
+  }
+
+  const boundaries = new Set<number>([0, sourceText.length]);
+  for (const highlight of highlights) {
+    boundaries.add(Math.max(0, Math.min(sourceText.length, highlight.charStart)));
+    boundaries.add(Math.max(0, Math.min(sourceText.length, highlight.charEnd)));
+  }
+
+  const orderedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
+  const segments: PlainTextSegment[] = [];
+
+  for (let index = 0; index < orderedBoundaries.length - 1; index += 1) {
+    const start = orderedBoundaries[index] ?? 0;
+    const end = orderedBoundaries[index + 1] ?? 0;
+    if (end <= start) {
+      continue;
+    }
+
+    const matchingHighlight = [...highlights]
+      .reverse()
+      .find((highlight) => highlight.charStart < end && highlight.charEnd > start)
+      ?? null;
+
+    segments.push({
+      highlight: matchingHighlight
+        ? {
+            color: matchingHighlight.color,
+            highlightId: matchingHighlight.highlightId,
+            text: sourceText.slice(start, end)
+          }
+        : null,
+      text: sourceText.slice(start, end)
+    });
+  }
+
+  return segments;
+}
+
+function applyHighlightsToRichParagraph(paragraphElement: HTMLElement, highlights: ReaderHighlight[]) {
+  if (typeof document === "undefined" || highlights.length === 0) {
+    return;
+  }
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(paragraphElement, NodeFilter.SHOW_TEXT);
+  let nextNode = walker.nextNode();
+
+  while (nextNode) {
+    if (nextNode.textContent) {
+      textNodes.push(nextNode as Text);
+    }
+
+    nextNode = walker.nextNode();
+  }
+
+  let cursor = 0;
+
+  for (const textNode of textNodes) {
+    const textValue = textNode.data;
+    const nodeStart = cursor;
+    const nodeEnd = cursor + textValue.length;
+    const localHighlights = highlights
+      .filter((highlight) => highlight.charStart < nodeEnd && highlight.charEnd > nodeStart)
+      .map((highlight) => ({
+        charEnd: Math.min(textValue.length, highlight.charEnd - nodeStart),
+        charStart: Math.max(0, highlight.charStart - nodeStart),
+        color: highlight.color,
+        highlightId: highlight.highlightId
+      }));
+
+    if (localHighlights.length > 0) {
+      const fragment = document.createDocumentFragment();
+      const segments = buildTextSegments(textValue, localHighlights);
+
+      for (const segment of segments) {
+        if (!segment.highlight) {
+          fragment.append(document.createTextNode(segment.text));
+          continue;
+        }
+
+        const span = document.createElement("span");
+        span.className = highlightClassName(segment.highlight.color);
+        span.dataset.highlightId = segment.highlight.highlightId;
+        span.textContent = segment.text;
+        fragment.append(span);
+      }
+
+      textNode.parentNode?.replaceChild(fragment, textNode);
+    }
+
+    cursor = nodeEnd;
+  }
+}
+
+function findParagraphElement(target: Node | null): HTMLElement | null {
+  if (!target) {
+    return null;
+  }
+
+  if (target instanceof HTMLElement) {
+    return target.closest<HTMLElement>("[data-paragraph-id]");
+  }
+
+  return target.parentElement?.closest<HTMLElement>("[data-paragraph-id]") ?? null;
+}
+
+function buildSelectionDraft(
+  selection: Selection,
+  paragraphsById: Map<string, ParagraphContent>,
+  container: HTMLElement
+): SelectionDraft | null {
+  if (selection.rangeCount === 0 || selection.isCollapsed) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (!container.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+
+  const startParagraphElement = findParagraphElement(range.startContainer);
+  const endParagraphElement = findParagraphElement(range.endContainer);
+  if (!startParagraphElement || !endParagraphElement || startParagraphElement !== endParagraphElement) {
+    return null;
+  }
+
+  const paragraphId = startParagraphElement.dataset.paragraphId;
+  if (!paragraphId) {
+    return null;
+  }
+
+  const paragraph = paragraphsById.get(paragraphId);
+  if (!paragraph) {
+    return null;
+  }
+
+  const startRange = document.createRange();
+  startRange.selectNodeContents(startParagraphElement);
+  startRange.setEnd(range.startContainer, range.startOffset);
+
+  const endRange = document.createRange();
+  endRange.selectNodeContents(startParagraphElement);
+  endRange.setEnd(range.endContainer, range.endOffset);
+
+  const charStart = startRange.toString().length;
+  const charEnd = endRange.toString().length;
+  const selectedText = selection.toString().trim();
+  const rect = range.getBoundingClientRect();
+
+  if (charEnd <= charStart || !selectedText || rect.width === 0) {
+    return null;
+  }
+
+  return {
+    charEnd,
+    charStart,
+    paragraph,
+    rect: {
+      left: rect.left + (rect.width / 2),
+      top: Math.max(72, rect.top)
+    },
+    selectedText
+  };
+}
+
+function formatRelativeAnchor(pageNumber: number, paragraphNumber: number | null | undefined) {
+  return paragraphNumber ? `Pág. ${pageNumber} · párr. ${paragraphNumber}` : `Pág. ${pageNumber}`;
+}
+
+function formatPageAnchor(pageNumber: number) {
+  return `Pág. ${pageNumber}`;
+}
+
+function notePreview(note: ReaderNote) {
+  const sourceExcerpt = note.highlightedText?.trim();
+  if (sourceExcerpt) {
+    return sourceExcerpt;
+  }
+
+  return note.noteText;
+}
+
+function tocEntryKey(entry: ReaderTocEntry) {
+  return `${entry.pageNumber}:${entry.paragraphNumber}:${entry.title}`;
+}
+
 function AddPagesIcon() {
   return (
     <ReaderControlIcon>
@@ -221,6 +528,13 @@ export function ReaderPage() {
   const [pendingPageTurnDirection, setPendingPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnDirection, setPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnSnapshot, setPageTurnSnapshot] = useState<PageTurnSnapshot | null>(null);
+  const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
+  const [selectionColor, setSelectionColor] = useState<HighlightColor>("YELLOW");
+  const [selectionNoteText, setSelectionNoteText] = useState("");
+  const [isSavingSelection, setIsSavingSelection] = useState(false);
+  const [quickNoteText, setQuickNoteText] = useState("");
+  const [isSavingQuickNote, setIsSavingQuickNote] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -232,6 +546,11 @@ export function ReaderPage() {
   const pageTurnTimeoutRef = useRef<number | null>(null);
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const richContentRef = useRef<HTMLDivElement | null>(null);
+  const livePageRef = useRef<HTMLDivElement | null>(null);
+  const navigationPanelRef = useRef<HTMLDivElement | null>(null);
+  const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
+  const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
+  const pendingParagraphTargetRef = useRef<number | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
 
@@ -262,6 +581,30 @@ export function ReaderPage() {
       }
 
       return fetchBookPage(accessToken, bookId, currentPageNumber);
+    }
+  });
+
+  const annotationsQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["reader-annotations", bookId, currentPageNumber],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchPageAnnotations(accessToken, bookId, currentPageNumber);
+    }
+  });
+
+  const navigationQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["reader-navigation", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchReaderNavigation(accessToken, bookId);
     }
   });
 
@@ -435,6 +778,9 @@ export function ReaderPage() {
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentHtmlContent = pageQuery.data?.page.htmlContent ?? null;
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
+  const currentBookmarks = annotationsQuery.data?.bookmarks ?? [];
+  const currentHighlights = annotationsQuery.data?.highlights ?? [];
+  const currentNotes = annotationsQuery.data?.notes ?? [];
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
   const isRichEpubPage = pageQuery.data?.book.sourceType === "EPUB" && Boolean(currentHtmlContent);
@@ -451,6 +797,107 @@ export function ReaderPage() {
 
     return Math.min((currentParagraph.sequenceNumber / pageQuery.data.book.totalParagraphs) * 100, 100);
   }, [currentParagraph, pageQuery.data?.book.totalParagraphs]);
+
+  const paragraphsById = useMemo(
+    () => new Map(currentParagraphs.map((paragraph) => [paragraph.paragraphId, paragraph])),
+    [currentParagraphs]
+  );
+
+  const highlightsByParagraphId = useMemo(() => {
+    const nextMap = new Map<string, ReaderHighlight[]>();
+
+    for (const highlight of currentHighlights) {
+      const bucket = nextMap.get(highlight.paragraphId) ?? [];
+      bucket.push(highlight);
+      nextMap.set(highlight.paragraphId, bucket);
+    }
+
+    for (const [paragraphId, bucket] of nextMap) {
+      bucket.sort((left, right) => left.charStart - right.charStart || left.charEnd - right.charEnd);
+      nextMap.set(paragraphId, bucket);
+    }
+
+    return nextMap;
+  }, [currentHighlights]);
+
+  const noteCountsByParagraphId = useMemo(() => {
+    const nextMap = new Map<string, number>();
+
+    for (const note of currentNotes) {
+      if (!note.paragraphId) {
+        continue;
+      }
+
+      nextMap.set(note.paragraphId, (nextMap.get(note.paragraphId) ?? 0) + 1);
+    }
+
+    return nextMap;
+  }, [currentNotes]);
+
+  const currentPageBookmark = useMemo(() => currentBookmarks[0] ?? null, [currentBookmarks]);
+  const isCurrentPageBookmarked = currentBookmarks.length > 0;
+
+  const activeTocEntryKey = useMemo(() => {
+    const tocEntries = navigationQuery.data?.toc ?? [];
+    let activeEntry: ReaderTocEntry | null = null;
+
+    for (const entry of tocEntries) {
+      const isBeforeCurrentPage = entry.pageNumber < currentPageNumber;
+      const isCurrentPageEntry = entry.pageNumber === currentPageNumber && entry.paragraphNumber <= currentParagraphNumber;
+      if (isBeforeCurrentPage || isCurrentPageEntry) {
+        activeEntry = entry;
+      }
+    }
+
+    return activeEntry ? tocEntryKey(activeEntry) : null;
+  }, [currentPageNumber, currentParagraphNumber, navigationQuery.data?.toc]);
+
+  const orderedNavigationItems = useMemo<NavigationListItem[]>(() => {
+    const tocItems: NavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
+      isActive: activeTocEntryKey === tocEntryKey(entry),
+      key: `toc:${tocEntryKey(entry)}`,
+      level: entry.level,
+      pageNumber: entry.pageNumber,
+      paragraphNumber: entry.paragraphNumber,
+      title: entry.title,
+      type: "toc"
+    }));
+
+    const bookmarkItems: NavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      isActive: bookmark.pageNumber === currentPageNumber && bookmark.paragraphNumber === currentParagraphNumber,
+      key: `bookmark:${bookmark.bookmarkId}`,
+      pageNumber: bookmark.pageNumber,
+      paragraphNumber: bookmark.paragraphNumber,
+      title: "Marcador guardado",
+      type: "bookmark"
+    }));
+
+    const noteItems: NavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
+      color: note.highlightColor,
+      excerpt: notePreview(note),
+      isActive: note.pageNumber === currentPageNumber && (note.paragraphNumber ?? currentParagraphNumber) === currentParagraphNumber,
+      key: `note:${note.noteId}`,
+      noteId: note.noteId,
+      noteText: note.noteText,
+      pageNumber: note.pageNumber,
+      paragraphNumber: note.paragraphNumber ?? 1,
+      type: "note"
+    }));
+
+    const sortWeight = { bookmark: 1, note: 2, toc: 0 } as const;
+
+    return [...tocItems, ...bookmarkItems, ...noteItems].sort((left, right) => {
+      if (left.pageNumber !== right.pageNumber) {
+        return left.pageNumber - right.pageNumber;
+      }
+
+      if (left.paragraphNumber !== right.paragraphNumber) {
+        return left.paragraphNumber - right.paragraphNumber;
+      }
+
+      return sortWeight[left.type] - sortWeight[right.type];
+    });
+  }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data?.bookmarks, navigationQuery.data?.notes, navigationQuery.data?.toc]);
 
   useEffect(() => {
     if (typeof window === "undefined" || pageTurnDirection || !currentParagraph) {
@@ -485,6 +932,11 @@ export function ReaderPage() {
     };
   }, [currentPageNumber, currentParagraph, pageTurnDirection]);
 
+  useEffect(() => {
+    setSelectionDraft(null);
+    setSelectionNoteText("");
+  }, [currentPageNumber]);
+
   const isPageTurningBackward = pageTurnDirection === "backward";
   const baseParagraphs = isPageTurningBackward && pageTurnSnapshot
     ? pageTurnSnapshot.paragraphs
@@ -506,10 +958,11 @@ export function ReaderPage() {
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);
 
   useEffect(() => {
-    if (!isRichEpubPage || !richContentRef.current) {
+    if (!isRichEpubPage || !richContentRef.current || !currentHtmlContent) {
       return;
     }
 
+    richContentRef.current.innerHTML = currentHtmlContent;
     paragraphRefs.current.clear();
 
     const paragraphNodes = richContentRef.current.querySelectorAll<HTMLElement>("[data-paragraph-number]");
@@ -519,10 +972,26 @@ export function ReaderPage() {
         return;
       }
 
+      const paragraph = currentParagraphs.find((entry) => entry.paragraphNumber === paragraphNumber);
+      if (!paragraph) {
+        return;
+      }
+
+      node.dataset.paragraphId = paragraph.paragraphId;
       node.classList.toggle("active", paragraphNumber === currentParagraphNumber);
+
+      const noteCount = noteCountsByParagraphId.get(paragraph.paragraphId) ?? 0;
+      node.classList.toggle("has-note", noteCount > 0);
+      if (noteCount > 0) {
+        node.dataset.noteCount = String(noteCount);
+      } else {
+        delete node.dataset.noteCount;
+      }
+
+      applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
       paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
     });
-  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, isRichEpubPage]);
+  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, currentParagraphs, highlightsByParagraphId, isRichEpubPage, noteCountsByParagraphId]);
 
   useEffect(() => {
     if (!pendingPageTurnDirection || pageQuery.data?.page.pageNumber !== currentPageNumber) {
@@ -546,6 +1015,118 @@ export function ReaderPage() {
       pageTurnTimeoutRef.current = null;
     }, PAGE_TURN_DURATION_MS);
   }, [currentPageNumber, pageQuery.data?.page.pageNumber, pendingPageTurnDirection]);
+
+  useEffect(() => {
+    const pendingParagraphNumber = pendingParagraphTargetRef.current;
+    if (pendingParagraphNumber === null || pageQuery.data?.page.pageNumber !== currentPageNumber) {
+      return;
+    }
+
+    const targetParagraph = pageQuery.data.page.paragraphs.find((paragraph) => paragraph.paragraphNumber === pendingParagraphNumber)
+      ?? pageQuery.data.page.paragraphs[0]
+      ?? null;
+    pendingParagraphTargetRef.current = null;
+
+    if (!targetParagraph) {
+      return;
+    }
+
+    setCurrentParagraphNumber(targetParagraph.paragraphNumber);
+    void persistProgress(targetParagraph, currentPageNumber);
+  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.data?.page.paragraphs]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    function handleSelectionChange() {
+      const selection = window.getSelection();
+      const activeElement = document.activeElement;
+      const isInteractingWithPopover = Boolean(
+        activeElement
+        && selectionPopoverRef.current?.contains(activeElement)
+      );
+
+      if ((!selection || selection.isCollapsed || !livePageRef.current) && !isInteractingWithPopover) {
+        setSelectionDraft(null);
+        setSelectionNoteText("");
+        return;
+      }
+
+      if (!selection || selection.isCollapsed || !livePageRef.current) {
+        return;
+      }
+
+      const nextDraft = buildSelectionDraft(selection, paragraphsById, livePageRef.current);
+      if (!nextDraft && isInteractingWithPopover) {
+        return;
+      }
+
+      setSelectionDraft(nextDraft);
+      if (!nextDraft) {
+        setSelectionNoteText("");
+      }
+    }
+
+    document.addEventListener("mouseup", handleSelectionChange);
+    document.addEventListener("keyup", handleSelectionChange);
+    document.addEventListener("touchend", handleSelectionChange);
+
+    return () => {
+      document.removeEventListener("mouseup", handleSelectionChange);
+      document.removeEventListener("keyup", handleSelectionChange);
+      document.removeEventListener("touchend", handleSelectionChange);
+    };
+  }, [paragraphsById]);
+
+  useEffect(() => {
+    if ((!isNavigationPanelVisible && !selectionDraft) || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const targetNode = event.target as Node;
+      if (selectionPopoverRef.current?.contains(targetNode)) {
+        return;
+      }
+
+      if (isNavigationPanelVisible && navigationPanelRef.current?.contains(targetNode)) {
+        return;
+      }
+
+      setIsNavigationPanelVisible(false);
+      setSelectionDraft(null);
+      setSelectionNoteText("");
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setIsNavigationPanelVisible(false);
+      setSelectionDraft(null);
+      setSelectionNoteText("");
+      window.getSelection()?.removeAllRanges();
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isNavigationPanelVisible, selectionDraft]);
+
+  useEffect(() => {
+    if (!isNavigationPanelVisible) {
+      return;
+    }
+
+    activeNavigationItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, isNavigationPanelVisible]);
 
   async function persistProgress(paragraph: ParagraphContent, pageNumber: number) {
     if (!accessToken) {
@@ -799,6 +1380,9 @@ export function ReaderPage() {
           return (
             <p
               className={isActive ? "reader-paragraph active" : "reader-paragraph"}
+              data-note-count={noteCountsByParagraphId.get(paragraph.paragraphId) ?? undefined}
+              data-paragraph-id={paragraph.paragraphId}
+              data-paragraph-number={paragraph.paragraphNumber}
               key={paragraph.paragraphId}
               ref={interactive
                 ? (element) => {
@@ -822,7 +1406,7 @@ export function ReaderPage() {
               role={interactive ? "button" : undefined}
               tabIndex={interactive ? 0 : undefined}
             >
-              {paragraph.paragraphText}
+              {renderParagraphText(paragraph)}
             </p>
           );
         })}
@@ -1024,12 +1608,27 @@ export function ReaderPage() {
     await persistProgress(paragraph, currentPageNumber);
   }
 
-  async function goToPage(nextPageNumber: number) {
+  async function refreshReaderMetadata() {
+    await Promise.all([annotationsQuery.refetch(), navigationQuery.refetch()]);
+  }
+
+  async function goToLocation(nextPageNumber: number, targetParagraphNumber = 1) {
     const boundedPageNumber = totalPages > 0
       ? Math.min(Math.max(nextPageNumber, 1), totalPages)
       : nextPageNumber;
 
-    if (!Number.isInteger(boundedPageNumber) || boundedPageNumber < 1 || boundedPageNumber === currentPageNumber) {
+    if (!Number.isInteger(boundedPageNumber) || boundedPageNumber < 1) {
+      return;
+    }
+
+    if (boundedPageNumber === currentPageNumber) {
+      const targetParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === targetParagraphNumber) ?? currentParagraphs[0] ?? null;
+      if (!targetParagraph) {
+        return;
+      }
+
+      setCurrentParagraphNumber(targetParagraph.paragraphNumber);
+      await persistProgress(targetParagraph, currentPageNumber);
       return;
     }
 
@@ -1037,9 +1636,13 @@ export function ReaderPage() {
     clearPrefetchedAudio();
     setAutoPlay(false);
     setIsPageJumpActive(false);
+    pendingParagraphTargetRef.current = targetParagraphNumber;
     preparePageTurn(boundedPageNumber);
     setCurrentPageNumber(boundedPageNumber);
-    setCurrentParagraphNumber(1);
+  }
+
+  async function goToPage(nextPageNumber: number) {
+    await goToLocation(nextPageNumber, 1);
   }
 
   function parsePageJumpValue() {
@@ -1131,6 +1734,116 @@ export function ReaderPage() {
     }
   }
 
+  async function handleToggleBookmark() {
+    if (!accessToken) {
+      return;
+    }
+
+    setReaderError(null);
+
+    try {
+      if (currentBookmarks.length > 0) {
+        await Promise.all(currentBookmarks.map((bookmark) => deleteBookmark(accessToken, bookId, bookmark.bookmarkId)));
+      } else {
+        const bookmarkParagraph = currentParagraph ?? currentParagraphs[0] ?? null;
+        if (!bookmarkParagraph) {
+          return;
+        }
+
+        await createBookmark(accessToken, bookId, { paragraphId: bookmarkParagraph.paragraphId });
+      }
+
+      await refreshReaderMetadata();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo actualizar el marcador actual.");
+    }
+  }
+
+  async function handleSaveSelection() {
+    if (!accessToken || !selectionDraft || selectionDraft.charEnd <= selectionDraft.charStart) {
+      return;
+    }
+
+    setIsSavingSelection(true);
+    setReaderError(null);
+
+    try {
+      const { highlight } = await createHighlight(accessToken, bookId, {
+        charEnd: selectionDraft.charEnd,
+        charStart: selectionDraft.charStart,
+        color: selectionColor,
+        highlightedText: selectionDraft.selectedText,
+        paragraphId: selectionDraft.paragraph.paragraphId
+      });
+
+      if (selectionNoteText.trim()) {
+        await createNote(accessToken, bookId, {
+          highlightId: highlight.highlightId,
+          noteText: selectionNoteText.trim()
+        });
+      }
+
+      await refreshReaderMetadata();
+      setSelectionDraft(null);
+      setSelectionNoteText("");
+      window.getSelection()?.removeAllRanges();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo guardar el texto resaltado.");
+    } finally {
+      setIsSavingSelection(false);
+    }
+  }
+
+  async function handleCreateQuickNote() {
+    if (!accessToken || !quickNoteText.trim()) {
+      return;
+    }
+
+    setIsSavingQuickNote(true);
+    setReaderError(null);
+
+    try {
+      await createNote(accessToken, bookId, currentParagraph
+        ? { noteText: quickNoteText.trim(), paragraphId: currentParagraph.paragraphId }
+        : { noteText: quickNoteText.trim(), pageNumber: currentPageNumber });
+      setQuickNoteText("");
+      await refreshReaderMetadata();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo guardar la nota.");
+    } finally {
+      setIsSavingQuickNote(false);
+    }
+  }
+
+  async function handleDeleteSavedNote(noteId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteNote(accessToken, bookId, noteId);
+      await refreshReaderMetadata();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
+    }
+  }
+
+  function renderParagraphText(paragraph: ParagraphContent) {
+    const segments = buildTextSegments(paragraph.paragraphText, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
+
+    return segments.map((segment, index) => {
+      if (!segment.highlight) {
+        return <span key={`${paragraph.paragraphId}-text-${index}`}>{segment.text}</span>;
+      }
+
+      return (
+        <span className={highlightClassName(segment.highlight.color)} data-highlight-id={segment.highlight.highlightId} key={`${paragraph.paragraphId}-highlight-${index}`}>
+          {segment.text}
+        </span>
+      );
+    });
+  }
+
   return (
     <div className="page-grid reader-layout reader-floating-layout reader-full-bleed-layout">
       <section className="panel wide-panel reader-full-bleed-panel">
@@ -1178,7 +1891,12 @@ export function ReaderPage() {
         <div className="reader-canvas">
           <div className={isSourcePanelVisible ? "reader-split reader-split-expanded" : "reader-split"}>
             <div className={pageTurnDirection ? `reader-page-turn reader-page-turn-${pageTurnDirection}` : "reader-page-turn"}>
-              <div className={pageTurnDirection === "forward" ? "reader-page reader-page-live reader-page-live-animating" : "reader-page reader-page-live"}>
+              <div className={pageTurnDirection === "forward" ? "reader-page reader-page-live reader-page-live-animating" : "reader-page reader-page-live"} ref={livePageRef}>
+                {isCurrentPageBookmarked ? (
+                  <div className="reader-page-corner-bookmark" title="Página marcada">
+                    <BookmarkIcon />
+                  </div>
+                ) : null}
                 {pageQuery.isLoading ? <p className="reader-copy subdued">Cargando página...</p> : null}
                 {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
                 {readerError ? <p className="error-text">{readerError}</p> : null}
@@ -1224,6 +1942,198 @@ export function ReaderPage() {
           </div>
         </div>
       </section>
+
+      {isNavigationPanelVisible ? (
+        <aside aria-label="Índice, marcadores y notas" className="reader-navigation-panel" ref={navigationPanelRef}>
+          <div className="reader-navigation-header">
+            <div>
+              <p className="eyebrow">Navegación</p>
+              <h3>Índice y notas</h3>
+            </div>
+            <button
+              aria-label="Cerrar panel de navegación"
+              className="reader-icon-ghost"
+              onClick={() => setIsNavigationPanelVisible(false)}
+              type="button"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+
+          <section className="reader-navigation-section">
+            <div className="reader-navigation-section-heading">
+              <strong>Índice del libro</strong>
+              <span>{orderedNavigationItems.length}</span>
+            </div>
+            {orderedNavigationItems.length ? (
+              <div className="reader-navigation-list">
+                {orderedNavigationItems.map((item) => {
+                  if (item.type === "toc") {
+                    return (
+                      <button
+                        className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
+                        key={item.key}
+                        onClick={() => {
+                          void goToLocation(item.pageNumber, item.paragraphNumber);
+                          setIsNavigationPanelVisible(false);
+                        }}
+                        ref={item.isActive
+                          ? (element) => {
+                              activeNavigationItemRef.current = element;
+                            }
+                          : undefined}
+                        style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as CSSProperties}
+                        type="button"
+                      >
+                        <div className="reader-navigation-item-topline">
+                          <strong>{item.title}</strong>
+                          <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                        </div>
+                      </button>
+                    );
+                  }
+
+                  if (item.type === "bookmark") {
+                    return (
+                      <button
+                        className={item.isActive ? "reader-navigation-item reader-navigation-item-bookmark active" : "reader-navigation-item reader-navigation-item-bookmark"}
+                        key={item.key}
+                        onClick={() => {
+                          void goToLocation(item.pageNumber, item.paragraphNumber);
+                          setIsNavigationPanelVisible(false);
+                        }}
+                        ref={item.isActive
+                          ? (element) => {
+                              activeNavigationItemRef.current = element;
+                            }
+                          : undefined}
+                        type="button"
+                      >
+                        <div className="reader-navigation-item-topline">
+                          <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
+                          <strong>{item.title}</strong>
+                          <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                        </div>
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note active" : "reader-note-card reader-navigation-item-note"} key={item.key}>
+                      <button
+                        className="reader-note-jump"
+                        onClick={() => {
+                          void goToLocation(item.pageNumber, item.paragraphNumber);
+                          setIsNavigationPanelVisible(false);
+                        }}
+                        ref={item.isActive
+                          ? (element) => {
+                              activeNavigationItemRef.current = element;
+                            }
+                          : undefined}
+                        type="button"
+                      >
+                        <div className="reader-navigation-item-topline">
+                          <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                          <strong>{item.excerpt}</strong>
+                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                        </div>
+                      </button>
+                      <p>{item.noteText}</p>
+                      <button
+                        aria-label="Borrar nota"
+                        className="reader-note-delete"
+                        onClick={() => void handleDeleteSavedNote(item.noteId)}
+                        title="Borrar nota"
+                        type="button"
+                      >
+                        <DeletePageIcon />
+                      </button>
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+            )}
+          </section>
+
+          <section className="reader-navigation-section">
+            <div className="reader-navigation-section-heading">
+              <strong>Notas</strong>
+              <span>{navigationQuery.data?.notes.length ?? 0}</span>
+            </div>
+            <label className="reader-note-composer">
+              <span>Nueva nota aquí</span>
+              <textarea
+                onChange={(event) => setQuickNoteText(event.target.value)}
+                placeholder="Anota una idea, resumen o recordatorio en el punto actual."
+                rows={3}
+                value={quickNoteText}
+              />
+            </label>
+            <button
+              className="secondary-button"
+              disabled={isSavingQuickNote || !quickNoteText.trim()}
+              onClick={() => void handleCreateQuickNote()}
+              type="button"
+            >
+              {isSavingQuickNote ? "Guardando nota..." : "Guardar nota"}
+            </button>
+            <p className="reader-navigation-empty">Las notas y marcadores aparecen integrados dentro del índice según su posición en el libro.</p>
+          </section>
+        </aside>
+      ) : null}
+
+      {selectionDraft ? (
+        <div
+          className="reader-selection-popover"
+          ref={selectionPopoverRef}
+          style={{ left: `${selectionDraft.rect.left}px`, top: `${selectionDraft.rect.top}px` }}
+        >
+          <div className="reader-selection-swatches" role="radiogroup" aria-label="Color del resaltado">
+            {HIGHLIGHT_OPTIONS.map((option) => (
+              <button
+                aria-checked={selectionColor === option.color}
+                className={selectionColor === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
+                key={option.color}
+                onClick={() => setSelectionColor(option.color)}
+                role="radio"
+                title={option.label}
+                type="button"
+              >
+                <span>{option.label}</span>
+              </button>
+            ))}
+          </div>
+          <p className="reader-selection-preview">{selectionDraft.selectedText}</p>
+          <label className="reader-note-composer compact">
+            <span>Nota opcional</span>
+            <textarea
+              onChange={(event) => setSelectionNoteText(event.target.value)}
+              placeholder="Añade una nota a este fragmento."
+              rows={3}
+              value={selectionNoteText}
+            />
+          </label>
+          <div className="reader-selection-actions">
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setSelectionDraft(null);
+                setSelectionNoteText("");
+                window.getSelection()?.removeAllRanges();
+              }}
+              type="button"
+            >
+              Cancelar
+            </button>
+            <button className="primary-button" disabled={isSavingSelection} onClick={() => void handleSaveSelection()} type="button">
+              {isSavingSelection ? "Guardando..." : "Guardar resaltado"}
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <div aria-label="Controles flotantes del lector" className="reader-floating-controls" role="toolbar">
         <div className="reader-floating-audio-menu" ref={audioSettingsRef}>
@@ -1300,6 +2210,26 @@ export function ReaderPage() {
           </form>
           <span>{readingPercentage.toFixed(1)}%</span>
         </div>
+        <button
+          aria-label={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
+          className={isCurrentPageBookmarked ? "reader-float-button active" : "reader-float-button"}
+          disabled={!currentParagraphs.length}
+          onClick={() => void handleToggleBookmark()}
+          title={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
+          type="button"
+        >
+          {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
+        </button>
+        <button
+          aria-expanded={isNavigationPanelVisible}
+          aria-label="Abrir panel de índice, marcadores y notas"
+          className={isNavigationPanelVisible ? "reader-float-button active" : "reader-float-button"}
+          onClick={() => setIsNavigationPanelVisible((current) => !current)}
+          title="Índice, marcadores y notas"
+          type="button"
+        >
+          <NavigationIcon />
+        </button>
         <button
           aria-label="Página anterior"
           className="reader-float-button"

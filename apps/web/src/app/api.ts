@@ -173,6 +173,67 @@ export type ParagraphContent = {
   sequenceNumber: number;
 };
 
+export type HighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
+
+export type ReaderBookmark = {
+  bookmarkId: string;
+  createdAt: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  sequenceNumber: number;
+};
+
+export type ReaderHighlight = {
+  charEnd: number;
+  charStart: number;
+  color: HighlightColor;
+  createdAt: string;
+  highlightId: string;
+  highlightedText: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  sequenceNumber: number;
+  updatedAt: string;
+};
+
+export type ReaderNote = {
+  createdAt: string;
+  highlightCharEnd: number | null;
+  highlightCharStart: number | null;
+  highlightColor: HighlightColor | null;
+  highlightId: string | null;
+  highlightedText: string | null;
+  noteId: string;
+  noteText: string;
+  pageNumber: number;
+  paragraphId: string | null;
+  paragraphNumber: number | null;
+  sequenceNumber: number | null;
+  updatedAt: string;
+};
+
+export type ReaderTocEntry = {
+  level: number;
+  pageNumber: number;
+  paragraphNumber: number;
+  sequenceNumber: number | null;
+  title: string;
+};
+
+export type ReaderPageAnnotations = {
+  bookmarks: ReaderBookmark[];
+  highlights: ReaderHighlight[];
+  notes: ReaderNote[];
+};
+
+export type ReaderNavigationSummary = {
+  bookmarks: ReaderBookmark[];
+  notes: ReaderNote[];
+  toc: ReaderTocEntry[];
+};
+
 export type BookPageResponse = {
   book: BookSummary & { synopsis?: string | null };
   hasNextPage: boolean;
@@ -352,6 +413,75 @@ export function fetchBook(accessToken: string, bookId: string) {
 
 export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number) {
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
+}
+
+export function fetchPageAnnotations(accessToken: string, bookId: string, pageNumber: number) {
+  return request<ReaderPageAnnotations>(`/books/${bookId}/annotations?pageNumber=${encodeURIComponent(String(pageNumber))}`, { accessToken });
+}
+
+export function fetchReaderNavigation(accessToken: string, bookId: string) {
+  return request<ReaderNavigationSummary>(`/books/${bookId}/navigation`, { accessToken });
+}
+
+export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string }) {
+  return request<{ bookmark: ReaderBookmark }>(`/books/${bookId}/bookmarks`, {
+    accessToken,
+    body: payload,
+    method: "POST"
+  });
+}
+
+export function deleteBookmark(accessToken: string, bookId: string, bookmarkId: string) {
+  return request<void>(`/books/${bookId}/bookmarks/${bookmarkId}`, {
+    accessToken,
+    method: "DELETE"
+  });
+}
+
+export function createHighlight(
+  accessToken: string,
+  bookId: string,
+  payload: { charEnd: number; charStart: number; color: HighlightColor; highlightedText: string; paragraphId: string }
+) {
+  return request<{ highlight: ReaderHighlight }>(`/books/${bookId}/highlights`, {
+    accessToken,
+    body: payload,
+    method: "POST"
+  });
+}
+
+export function deleteHighlight(accessToken: string, bookId: string, highlightId: string) {
+  return request<void>(`/books/${bookId}/highlights/${highlightId}`, {
+    accessToken,
+    method: "DELETE"
+  });
+}
+
+export function createNote(
+  accessToken: string,
+  bookId: string,
+  payload: { highlightId?: string; noteText: string; pageNumber?: number; paragraphId?: string }
+) {
+  return request<{ note: ReaderNote }>(`/books/${bookId}/notes`, {
+    accessToken,
+    body: payload,
+    method: "POST"
+  });
+}
+
+export function updateNote(accessToken: string, bookId: string, noteId: string, payload: { noteText: string }) {
+  return request<void>(`/books/${bookId}/notes/${noteId}`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function deleteNote(accessToken: string, bookId: string, noteId: string) {
+  return request<void>(`/books/${bookId}/notes/${noteId}`, {
+    accessToken,
+    method: "DELETE"
+  });
 }
 
 export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null) {

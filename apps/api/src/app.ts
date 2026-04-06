@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import { getDatabaseStatus } from "./config/database.js";
 import { appEnv } from "./config/env.js";
+import { registerAnnotationRoutes } from "./modules/annotations/annotations.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
 import { registerProgressRoutes } from "./modules/progress/progress.routes.js";
@@ -42,6 +43,7 @@ export function buildApp(): FastifyInstance {
     };
   });
 
+  void app.register(registerAnnotationRoutes);
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });
   void app.register(registerProgressRoutes);
