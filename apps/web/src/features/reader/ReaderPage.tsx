@@ -25,7 +25,11 @@ import {
 import { useAuthStore } from "../../app/auth-store";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
+const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
+const READER_DEVICE_VOICE_STORAGE_KEY = "lector.reader.deviceVoiceUri";
 const READER_SPEED_STORAGE_KEY = "lector.reader.playbackRate";
+const DEFAULT_TTS_ENGINE = "deepgram";
+const DEFAULT_DEVICE_VOICE_URI = "";
 const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
 const DEFAULT_PLAYBACK_RATE = 1.1;
 const MIN_PLAYBACK_RATE = 0.8;
@@ -42,6 +46,8 @@ const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
 
 type PageTurnDirection = "forward" | "backward";
 
+type TtsEngine = "deepgram" | "device";
+
 type PageTurnSnapshot = {
   activeParagraphNumber: number | null;
   htmlContent: string | null;
@@ -56,6 +62,12 @@ type PrefetchedParagraphAudio = {
   paragraphId: string;
   promise?: Promise<Blob>;
   voiceModel: string;
+};
+
+type DeviceVoiceOption = {
+  description: string;
+  label: string;
+  value: string;
 };
 
 type SelectionDraft = {
@@ -115,6 +127,38 @@ const TTS_VOICE_OPTIONS = [
   { description: "Masculina, voz actual del sistema", label: "Néstor", value: "aura-2-nestor-es" }
 ] as const;
 
+const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: TtsEngine }> = [
+  { description: "Deepgram, mayor calidad con coste por uso", label: "IA", value: "deepgram" },
+  { description: "Voces nativas gratuitas del navegador o del sistema", label: "Dispositivo", value: "device" }
+];
+
+function getSpeechSynthesisApi() {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return null;
+  }
+
+  return window.speechSynthesis;
+}
+
+function readStoredTtsEngine(): TtsEngine {
+  if (typeof window === "undefined") {
+    return DEFAULT_TTS_ENGINE;
+  }
+
+  const storedEngine = window.localStorage.getItem(READER_TTS_ENGINE_STORAGE_KEY);
+  return storedEngine === "device" || storedEngine === "deepgram"
+    ? storedEngine
+    : DEFAULT_TTS_ENGINE;
+}
+
+function readStoredDeviceVoiceUri() {
+  if (typeof window === "undefined") {
+    return DEFAULT_DEVICE_VOICE_URI;
+  }
+
+  return window.localStorage.getItem(READER_DEVICE_VOICE_STORAGE_KEY) ?? DEFAULT_DEVICE_VOICE_URI;
+}
+
 function readStoredVoiceModel() {
   if (typeof window === "undefined") {
     return DEFAULT_VOICE_MODEL;
@@ -141,6 +185,63 @@ function readStoredPlaybackRate() {
   }
 
   return Math.min(Math.max(storedPlaybackRate, MIN_PLAYBACK_RATE), MAX_PLAYBACK_RATE);
+}
+
+function buildDeviceVoiceOptions(voices: SpeechSynthesisVoice[]): DeviceVoiceOption[] {
+  const uniqueVoices = new Map<string, DeviceVoiceOption>();
+
+  for (const voice of voices) {
+    if (!voice.voiceURI || uniqueVoices.has(voice.voiceURI)) {
+      continue;
+    }
+
+    const language = voice.lang.trim() || "Sin idioma";
+    const descriptionParts = [language];
+    if (voice.default) {
+      descriptionParts.push("predeterminada");
+    }
+    if (voice.localService) {
+      descriptionParts.push("local");
+    }
+
+    uniqueVoices.set(voice.voiceURI, {
+      description: descriptionParts.join(" · "),
+      label: voice.name,
+      value: voice.voiceURI
+    });
+  }
+
+  const sortedOptions = Array.from(uniqueVoices.values()).sort((left, right) => {
+    const leftIsSpanish = left.description.toLowerCase().startsWith("es");
+    const rightIsSpanish = right.description.toLowerCase().startsWith("es");
+
+    if (leftIsSpanish !== rightIsSpanish) {
+      return leftIsSpanish ? -1 : 1;
+    }
+
+    return left.label.localeCompare(right.label, "es");
+  });
+
+  return [
+    {
+      description: "Usa la voz predeterminada del dispositivo",
+      label: "Predeterminada",
+      value: DEFAULT_DEVICE_VOICE_URI
+    },
+    ...sortedOptions
+  ];
+}
+
+function findDeviceVoice(voices: SpeechSynthesisVoice[], voiceUri: string) {
+  if (!voiceUri) {
+    return null;
+  }
+
+  return voices.find((voice) => voice.voiceURI === voiceUri) ?? null;
+}
+
+function pickFallbackDeviceVoice(voices: SpeechSynthesisVoice[]) {
+  return voices.find((voice) => voice.lang.toLowerCase().startsWith("es")) ?? voices[0] ?? null;
 }
 
 function isAbortError(error: unknown) {
@@ -523,8 +624,12 @@ export function ReaderPage() {
   const [isAudioSettingsVisible, setIsAudioSettingsVisible] = useState(false);
   const [isPageJumpActive, setIsPageJumpActive] = useState(false);
   const [pageJumpValue, setPageJumpValue] = useState("1");
+  const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
   const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
+  const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
+  const [availableDeviceVoices, setAvailableDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [playbackRate, setPlaybackRate] = useState<number>(readStoredPlaybackRate);
+  const [hasActivePlaybackSession, setHasActivePlaybackSession] = useState(false);
   const [pendingPageTurnDirection, setPendingPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnDirection, setPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnSnapshot, setPageTurnSnapshot] = useState<PageTurnSnapshot | null>(null);
@@ -539,6 +644,7 @@ export function ReaderPage() {
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
   const prefetchedAudioRef = useRef<PrefetchedParagraphAudio | null>(null);
+  const deviceUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const playbackAttemptRef = useRef(0);
   const progressHydratedRef = useRef(false);
   const audioSettingsRef = useRef<HTMLDivElement | null>(null);
@@ -608,6 +714,67 @@ export function ReaderPage() {
     }
   });
 
+  const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
+  const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
+  const selectedDeviceVoice = useMemo(
+    () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri),
+    [availableDeviceVoices, selectedDeviceVoiceUri]
+  );
+
+  useEffect(() => {
+    const speechSynthesisApi = getSpeechSynthesisApi();
+    if (!speechSynthesisApi) {
+      setAvailableDeviceVoices([]);
+      return;
+    }
+
+    let isMounted = true;
+    let firstRefreshTimeoutId: number | null = null;
+    let secondRefreshTimeoutId: number | null = null;
+
+    const refreshVoices = () => {
+      if (!isMounted) {
+        return;
+      }
+
+      setAvailableDeviceVoices(speechSynthesisApi.getVoices());
+    };
+
+    refreshVoices();
+    speechSynthesisApi.addEventListener("voiceschanged", refreshVoices);
+
+    if (typeof window !== "undefined") {
+      firstRefreshTimeoutId = window.setTimeout(refreshVoices, 250);
+      secondRefreshTimeoutId = window.setTimeout(refreshVoices, 1000);
+    }
+
+    return () => {
+      isMounted = false;
+      speechSynthesisApi.removeEventListener("voiceschanged", refreshVoices);
+
+      if (typeof window !== "undefined") {
+        if (firstRefreshTimeoutId !== null) {
+          window.clearTimeout(firstRefreshTimeoutId);
+        }
+        if (secondRefreshTimeoutId !== null) {
+          window.clearTimeout(secondRefreshTimeoutId);
+        }
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isDeviceTtsSupported && selectedTtsEngine === "device") {
+      setSelectedTtsEngine("deepgram");
+    }
+  }, [isDeviceTtsSupported, selectedTtsEngine]);
+
+  useEffect(() => {
+    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
+      setSelectedDeviceVoiceUri(DEFAULT_DEVICE_VOICE_URI);
+    }
+  }, [availableDeviceVoices, selectedDeviceVoiceUri]);
+
   useEffect(() => {
     if (Number.isInteger(requestedPageNumber) && requestedPageNumber >= 1) {
       progressHydratedRef.current = true;
@@ -646,6 +813,8 @@ export function ReaderPage() {
     playbackAttemptRef.current += 1;
     activeAudioRequestRef.current?.abort();
     prefetchedAudioRef.current?.controller?.abort();
+    getSpeechSynthesisApi()?.cancel();
+    deviceUtteranceRef.current = null;
     audioRef.current?.pause();
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
@@ -663,8 +832,24 @@ export function ReaderPage() {
       return;
     }
 
+    window.localStorage.setItem(READER_TTS_ENGINE_STORAGE_KEY, selectedTtsEngine);
+  }, [selectedTtsEngine]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
     window.localStorage.setItem(READER_VOICE_STORAGE_KEY, selectedVoiceModel);
   }, [selectedVoiceModel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(READER_DEVICE_VOICE_STORAGE_KEY, selectedDeviceVoiceUri);
+  }, [selectedDeviceVoiceUri]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -686,7 +871,7 @@ export function ReaderPage() {
     clearPrefetchedAudio();
     clearAudioResource();
     setAutoPlay(false);
-  }, [selectedVoiceModel]);
+  }, [selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
 
   useEffect(() => {
     clearPrefetchedAudio();
@@ -783,7 +968,7 @@ export function ReaderPage() {
   const currentNotes = annotationsQuery.data?.notes ?? [];
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
-  const isRichEpubPage = pageQuery.data?.book.sourceType === "EPUB" && Boolean(currentHtmlContent);
+  const hasRichPageContent = Boolean(currentHtmlContent);
   const appendPagesLink = {
     hash: "#append-pages",
     pathname: "/builder",
@@ -958,7 +1143,7 @@ export function ReaderPage() {
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);
 
   useEffect(() => {
-    if (!isRichEpubPage || !richContentRef.current || !currentHtmlContent) {
+    if (!hasRichPageContent || !richContentRef.current || !currentHtmlContent) {
       return;
     }
 
@@ -991,7 +1176,7 @@ export function ReaderPage() {
       applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
       paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
     });
-  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, currentParagraphs, highlightsByParagraphId, isRichEpubPage, noteCountsByParagraphId]);
+  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, currentParagraphs, hasRichPageContent, highlightsByParagraphId, noteCountsByParagraphId]);
 
   useEffect(() => {
     if (!pendingPageTurnDirection || pageQuery.data?.page.pageNumber !== currentPageNumber) {
@@ -1174,9 +1359,12 @@ export function ReaderPage() {
 
     activeAudioRequestRef.current?.abort();
     activeAudioRequestRef.current = null;
+    getSpeechSynthesisApi()?.cancel();
+    deviceUtteranceRef.current = null;
     audioRef.current?.pause();
     audioRef.current = null;
     setIsAudioPlaying(false);
+    setHasActivePlaybackSession(false);
 
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
@@ -1439,6 +1627,97 @@ export function ReaderPage() {
 
     setAutoPlay(false);
     setIsAudioPlaying(false);
+    setHasActivePlaybackSession(false);
+  }
+
+  async function playParagraphWithDeviceVoice(
+    paragraph: ParagraphContent,
+    pageNumber: number,
+    keepAutoPlay: boolean,
+    playbackAttempt: number
+  ) {
+    const speechSynthesisApi = getSpeechSynthesisApi();
+    if (!speechSynthesisApi) {
+      throw new Error("Este navegador no ofrece voces del dispositivo.");
+    }
+
+    const normalizedText = paragraph.paragraphText.trim();
+    if (!normalizedText) {
+      throw new Error("El párrafo no contiene texto para leer en voz alta.");
+    }
+
+    const utterance = new SpeechSynthesisUtterance(normalizedText);
+    const voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices);
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    } else {
+      utterance.lang = "es-ES";
+    }
+
+    utterance.rate = playbackRate;
+    utterance.onstart = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      setIsAudioLoading(false);
+      setIsAudioPlaying(true);
+      setHasActivePlaybackSession(true);
+    };
+    utterance.onpause = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      setIsAudioPlaying(false);
+    };
+    utterance.onresume = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      setIsAudioPlaying(true);
+      setHasActivePlaybackSession(true);
+    };
+    utterance.onend = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      deviceUtteranceRef.current = null;
+      setIsAudioLoading(false);
+      setIsAudioPlaying(false);
+      setHasActivePlaybackSession(false);
+
+      if (keepAutoPlay) {
+        void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
+      }
+    };
+    utterance.onerror = (event) => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      deviceUtteranceRef.current = null;
+      setIsAudioLoading(false);
+      setIsAudioPlaying(false);
+      setHasActivePlaybackSession(false);
+
+      if (event.error !== "canceled" && event.error !== "interrupted") {
+        setAutoPlay(false);
+        setReaderError("No se pudo reproducir la voz del dispositivo en este párrafo.");
+      }
+    };
+
+    setCurrentParagraphNumber(paragraph.paragraphNumber);
+    await persistProgress(paragraph, pageNumber);
+
+    speechSynthesisApi.cancel();
+    deviceUtteranceRef.current = utterance;
+    setHasActivePlaybackSession(true);
+    speechSynthesisApi.speak(utterance);
+    setIsAudioLoading(false);
   }
 
   async function playParagraph(paragraph: ParagraphContent, pageNumber: number, keepAutoPlay: boolean) {
@@ -1454,6 +1733,12 @@ export function ReaderPage() {
 
     try {
       clearAudioResource({ invalidatePlayback: false });
+
+      if (selectedTtsEngine === "device") {
+        await playParagraphWithDeviceVoice(paragraph, pageNumber, keepAutoPlay, playbackAttempt);
+        return;
+      }
+
       const audioBlob = await resolveParagraphAudio(paragraph, pageNumber, selectedVoiceModel);
       if (playbackAttempt !== playbackAttemptRef.current) {
         return;
@@ -1465,6 +1750,7 @@ export function ReaderPage() {
       const audioElement = new Audio(audioUrl);
       audioRef.current = audioElement;
       audioElement.playbackRate = playbackRate;
+      setHasActivePlaybackSession(true);
       audioElement.onplay = () => {
         setIsAudioPlaying(true);
       };
@@ -1473,9 +1759,14 @@ export function ReaderPage() {
       };
       audioElement.onended = () => {
         setIsAudioPlaying(false);
+        setHasActivePlaybackSession(false);
         if (keepAutoPlay) {
           void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
         }
+      };
+      audioElement.onerror = () => {
+        setIsAudioPlaying(false);
+        setHasActivePlaybackSession(false);
       };
 
       setCurrentParagraphNumber(paragraph.paragraphNumber);
@@ -1521,8 +1812,19 @@ export function ReaderPage() {
 
     setAutoPlay(true);
 
+    if (selectedTtsEngine === "device") {
+      const speechSynthesisApi = getSpeechSynthesisApi();
+      if (speechSynthesisApi?.paused) {
+        speechSynthesisApi.resume();
+        setIsAudioPlaying(true);
+        setHasActivePlaybackSession(true);
+        return;
+      }
+    }
+
     if (audioRef.current?.paused && audioRef.current.src) {
       await audioRef.current.play();
+      setHasActivePlaybackSession(true);
       return;
     }
 
@@ -1531,6 +1833,16 @@ export function ReaderPage() {
 
   function handlePause() {
     setAutoPlay(false);
+
+    if (selectedTtsEngine === "device") {
+      const speechSynthesisApi = getSpeechSynthesisApi();
+      if (speechSynthesisApi && (speechSynthesisApi.speaking || speechSynthesisApi.pending)) {
+        speechSynthesisApi.pause();
+      }
+      setIsAudioPlaying(false);
+      return;
+    }
+
     audioRef.current?.pause();
     setIsAudioPlaying(false);
   }
@@ -2152,15 +2464,58 @@ export function ReaderPage() {
           {isAudioSettingsVisible ? (
             <section aria-label="Opciones de audio" className="reader-floating-audio-panel" id="reader-audio-settings-panel">
               <label className="reader-audio-field">
-                <span>Voz</span>
-                <select onChange={(event) => setSelectedVoiceModel(event.target.value)} value={selectedVoiceModel}>
-                  {TTS_VOICE_OPTIONS.map((voice) => (
-                    <option key={voice.value} value={voice.value}>
-                      {voice.label} · {voice.description}
+                <span>Motor</span>
+                <select
+                  onChange={(event) => setSelectedTtsEngine(event.target.value as TtsEngine)}
+                  value={selectedTtsEngine}
+                >
+                  {TTS_ENGINE_OPTIONS.map((engine) => (
+                    <option disabled={engine.value === "device" && !isDeviceTtsSupported} key={engine.value} value={engine.value}>
+                      {engine.label} · {engine.description}
                     </option>
                   ))}
                 </select>
               </label>
+
+              {selectedTtsEngine === "deepgram" ? (
+                <label className="reader-audio-field">
+                  <span>Voz</span>
+                  <select onChange={(event) => setSelectedVoiceModel(event.target.value)} value={selectedVoiceModel}>
+                    {TTS_VOICE_OPTIONS.map((voice) => (
+                      <option key={voice.value} value={voice.value}>
+                        {voice.label} · {voice.description}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <label className="reader-audio-field">
+                  <span>Voz del dispositivo</span>
+                  <select
+                    disabled={!isDeviceTtsSupported}
+                    onChange={(event) => setSelectedDeviceVoiceUri(event.target.value)}
+                    value={selectedDeviceVoiceUri}
+                  >
+                    {deviceVoiceOptions.map((voice) => (
+                      <option key={voice.value || "device-default"} value={voice.value}>
+                        {voice.label} · {voice.description}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              <p className="reader-audio-note">
+                {selectedTtsEngine === "deepgram"
+                  ? "La voz IA usa Deepgram y mantiene la calidad actual del lector."
+                  : isDeviceTtsSupported
+                    ? "Las voces del dispositivo son gratuitas y dependen del navegador y del sistema operativo."
+                    : "Este navegador no expone voces nativas. Mantén el modo IA para reproducir audio."}
+              </p>
+
+              {selectedTtsEngine === "device" && selectedDeviceVoice ? (
+                <p className="reader-audio-note">Voz activa: {selectedDeviceVoice.name} · {selectedDeviceVoice.lang}</p>
+              ) : null}
 
               <label className="reader-audio-field reader-audio-field-range">
                 <span>
@@ -2251,11 +2606,11 @@ export function ReaderPage() {
           <ParagraphPreviousIcon />
         </button>
         <button
-          aria-label={isAudioLoading ? "Generando audio" : "Reproducir"}
+          aria-label={isAudioLoading ? (selectedTtsEngine === "device" ? "Preparando voz" : "Generando audio") : "Reproducir"}
           className="reader-float-button primary"
           disabled={!currentParagraph || isAudioLoading}
           onClick={() => void handlePlay()}
-          title={isAudioLoading ? "Generando audio" : "Reproducir"}
+          title={isAudioLoading ? (selectedTtsEngine === "device" ? "Preparando voz" : "Generando audio") : "Reproducir"}
           type="button"
         >
           <PlayIcon />
@@ -2263,7 +2618,7 @@ export function ReaderPage() {
         <button
           aria-label="Pausar"
           className="reader-float-button"
-          disabled={!isAudioPlaying && !audioRef.current}
+          disabled={!hasActivePlaybackSession}
           onClick={() => handlePause()}
           title="Pausar"
           type="button"
