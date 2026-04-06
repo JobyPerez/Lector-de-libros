@@ -635,7 +635,19 @@ export function BookBuilderPage() {
                     />
                   </label>
 
-                  <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos.</p>
+                  <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva y ![alt](url) para incrustar una imagen.</p>
+
+                  {reviewPageQuery.data?.page.htmlContent ? (
+                    <div>
+                      <p className="page-label">Vista estructurada guardada</p>
+                      <article className="reader-prose reader-prose-rich">
+                        <div
+                          className="reader-rich-content"
+                          dangerouslySetInnerHTML={{ __html: reviewPageQuery.data.page.htmlContent }}
+                        />
+                      </article>
+                    </div>
+                  ) : null}
 
                   <label>
                     Volver a reconocer con

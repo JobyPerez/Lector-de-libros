@@ -6,11 +6,33 @@ import { z } from "zod";
 
 import { appEnv } from "../../config/env.js";
 import { sanitizeParagraphs } from "./book-import.js";
+import { buildRichPageFromParagraphs, normalizeWhitespace as normalizeRichWhitespace } from "./rich-content.js";
 
 export type OcrPageResult = {
+  editedText: string;
+  htmlContent: string | null;
   paragraphs: string[];
   rawText: string;
 };
+
+type VisionBoundingBox = {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+};
+
+type VisionStructuredBlock =
+  | {
+      altText?: string;
+      bbox: VisionBoundingBox;
+      type: "image";
+    }
+  | {
+      level?: number;
+      text: string;
+      type: "heading" | "paragraph";
+    };
 
 export const supportedImageOcrModes = ["AUTO", "LOCAL", "VISION"] as const;
 
@@ -35,6 +57,27 @@ type VisionOcrPromptAttempt = {
 };
 
 const ocrResponseSchema = z.object({
+  blocks: z.array(z.discriminatedUnion("type", [
+    z.object({
+      level: z.coerce.number().int().min(1).max(6).optional(),
+      text: z.string().trim().min(1),
+      type: z.literal("heading")
+    }),
+    z.object({
+      text: z.string().trim().min(1),
+      type: z.literal("paragraph")
+    }),
+    z.object({
+      altText: z.string().trim().max(300).optional(),
+      bbox: z.object({
+        height: z.coerce.number().min(1).max(1000),
+        width: z.coerce.number().min(1).max(1000),
+        x: z.coerce.number().min(0).max(1000),
+        y: z.coerce.number().min(0).max(1000)
+      }),
+      type: z.literal("image")
+    })
+  ])).default([]),
   paragraphs: z.array(z.string()).default([]),
   rawText: z.string().default("")
 });
@@ -52,6 +95,70 @@ const minimumHeightForMarginCrop = 900;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function emphasizeBiographyLead(text: string): string {
+  if (/\*\*/u.test(text)) {
+    return text;
+  }
+
+  const biographyLeadMatch = text.match(/^([A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'’-]+){1,5})\.(?=\s+[A-ZÁÉÍÓÚÑ][^\n]*\d{4})/u);
+  if (!biographyLeadMatch?.[1]) {
+    return text;
+  }
+
+  return text.replace(biographyLeadMatch[1], `**${biographyLeadMatch[1]}**`);
+}
+
+function stripInlineMarkdown(text: string): string {
+  return text.replace(/[*_`~]/g, "").trim();
+}
+
+function shouldDemoteHeading(text: string): boolean {
+  const normalizedText = stripInlineMarkdown(normalizeRichWhitespace(text));
+  if (!normalizedText) {
+    return true;
+  }
+
+  if (/\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b/u.test(normalizedText)) {
+    return true;
+  }
+
+  if (/^[A-ZÁÉÍÓÚÑ][\p{L}'’.-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'’.-]+){0,4}\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u.test(normalizedText)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isStandaloneDateText(text: string): boolean {
+  return /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u.test(stripInlineMarkdown(normalizeRichWhitespace(text)));
+}
+
+function looksLikeSignatureHeading(text: string): boolean {
+  const normalizedText = stripInlineMarkdown(normalizeRichWhitespace(text));
+  if (!normalizedText || normalizedText.length > 48) {
+    return false;
+  }
+
+  return /^[A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+(?:[A-ZÁÉÍÓÚÑ][\p{L}'’-]+|[A-ZÁÉÍÓÚÑ]\.)){1,4}$/u.test(normalizedText);
+}
+
+function formatStructuredTextBlock(
+  block: Extract<VisionStructuredBlock, { type: "heading" | "paragraph" }>,
+  nextBlock?: VisionStructuredBlock
+): string {
+  const hasAdjacentDate = Boolean(nextBlock && nextBlock.type !== "image" && isStandaloneDateText(nextBlock.text));
+
+  if (block.type === "heading" && !shouldDemoteHeading(block.text) && !(hasAdjacentDate && looksLikeSignatureHeading(block.text))) {
+    return `${"#".repeat(Math.max(1, Math.min(6, block.level ?? 1)))} ${block.text}`;
+  }
+
+  return emphasizeBiographyLead(block.text);
 }
 
 function cleanOcrText(rawText: string): string {
@@ -213,7 +320,84 @@ async function runLocalOcrWithTesseract(fileBuffer: Buffer): Promise<OcrPageResu
     throw new Error("Tesseract no ha podido extraer texto legible de la imagen.");
   }
 
+  const richPage = buildRichPageFromParagraphs(paragraphs);
+
   return {
+    editedText: richPage.editedText,
+    htmlContent: richPage.htmlContent,
+    paragraphs,
+    rawText
+  };
+}
+
+async function cropInlineImageFromBoundingBox(pageBuffer: Buffer, bbox: VisionBoundingBox): Promise<string | null> {
+  const metadata = await sharp(pageBuffer).metadata();
+  const width = metadata.width ?? 0;
+  const height = metadata.height ?? 0;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const left = clamp(Math.round((bbox.x / 1000) * width), 0, Math.max(0, width - 1));
+  const top = clamp(Math.round((bbox.y / 1000) * height), 0, Math.max(0, height - 1));
+  const extractedWidth = clamp(Math.round((bbox.width / 1000) * width), 24, width - left);
+  const extractedHeight = clamp(Math.round((bbox.height / 1000) * height), 24, height - top);
+
+  if (extractedWidth < 24 || extractedHeight < 24) {
+    return null;
+  }
+
+  const imageBuffer = await sharp(pageBuffer)
+    .extract({
+      height: extractedHeight,
+      left,
+      top,
+      width: extractedWidth
+    })
+    .png()
+    .toBuffer();
+
+  return `data:image/png;base64,${imageBuffer.toString("base64")}`;
+}
+
+async function buildStructuredVisionPage(
+  croppedBuffer: Buffer,
+  blocks: VisionStructuredBlock[],
+  fallbackParagraphs: string[],
+  fallbackRawText: string
+): Promise<OcrPageResult> {
+  const paragraphCandidates: string[] = [];
+  const embeddedImages = new Map<string, string>();
+  let embeddedImageIndex = 1;
+
+  for (const [index, block] of blocks.entries()) {
+    const nextBlock = blocks[index + 1];
+
+    if (block.type === "image") {
+      const source = await cropInlineImageFromBoundingBox(croppedBuffer, block.bbox);
+      if (!source) {
+        continue;
+      }
+
+      const placeholder = `embedded-image-${embeddedImageIndex}`;
+      embeddedImages.set(placeholder, source);
+      paragraphCandidates.push(`![${normalizeRichWhitespace(block.altText ?? "Imagen integrada")}](${placeholder})`);
+      embeddedImageIndex += 1;
+      continue;
+    }
+
+    paragraphCandidates.push(formatStructuredTextBlock(block, nextBlock));
+  }
+
+  const richPage = paragraphCandidates.length > 0
+    ? buildRichPageFromParagraphs(paragraphCandidates, { embeddedImages })
+    : buildRichPageFromParagraphs(fallbackParagraphs);
+  const paragraphs = sanitizeParagraphs(richPage.paragraphs.length > 0 ? richPage.paragraphs : fallbackParagraphs);
+  const rawText = normalizeWhitespace(richPage.rawText || fallbackRawText || paragraphs.join(" "));
+
+  return {
+    editedText: richPage.editedText,
+    htmlContent: richPage.htmlContent,
     paragraphs,
     rawText
   };
@@ -224,14 +408,14 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
   const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
   const promptAttempts: VisionOcrPromptAttempt[] = [
     {
-      maxTokens: 2200,
-      system: "Transcribe el texto principal de una página de libro en español. Responde con JSON estricto usando solo las claves rawText y paragraphs. rawText debe contener el texto continuo de lectura y paragraphs debe contener bloques listos para lectura en voz alta.",
-      user: "Procesa esta imagen de una página de libro y devuelve el texto principal de lectura en el orden natural. Omite cabeceras repetidas y numeración de página. Devuelve solo el JSON solicitado."
+      maxTokens: 2600,
+      system: "Analiza una página de libro en español y devuelve una reconstrucción editorial estructurada. Responde solo JSON con las claves rawText, paragraphs y blocks. Usa blocks en orden de lectura con type=heading, paragraph o image. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Los párrafos deben respetar el layout real, no los saltos de línea impresos. Omite cabeceras repetidas, pies y números de página. No clasifiques como heading las firmas, dedicatorias manuscritas, nombres firmados ni las fechas.",
+      user: "Procesa esta página. Detecta retratos, ilustraciones o imágenes relevantes que formen parte del contenido y devuélvelas como blocks de tipo image. Si el nombre del autor está en negrita, márcalo con **. Si títulos de obras están en cursiva, márcalos con *. Las firmas y fechas deben ir como paragraph. Una firma seguida por una fecha nunca es heading. Devuelve solo JSON válido."
     },
     {
-      maxTokens: 3200,
-      system: "Realiza una transcripción OCR de una página de libro en español. Devuelve únicamente JSON válido en una sola línea. Usa la clave paragraphs como prioritaria y puedes dejar rawText vacío si la página es larga. No uses markdown ni bloques de código.",
-      user: "Transcribe esta página de libro en orden de lectura y devuelve solo JSON válido con paragraphs y rawText. Omite cabeceras repetidas y numeración de página."
+      maxTokens: 3600,
+      system: "Haz OCR estructurado de una página de libro. Devuelve una sola línea JSON válida con rawText, paragraphs y blocks. paragraphs debe contener el texto limpio por párrafos. blocks debe contener headings, paragraphs e imágenes en orden de lectura. Usa markdown dentro del texto para negrita y cursiva. Usa bbox normalizado 0-1000 para imágenes no decorativas. Las firmas, dedicatorias y fechas nunca deben ir como heading.",
+      user: "Reconstruye esta página para un EPUB: conserva títulos, énfasis tipográficos e imágenes del contenido. No inventes texto. Devuelve firmas y fechas como paragraph. Una firma seguida de fecha no debe ir como heading. Devuelve solo JSON válido."
     }
   ];
 
@@ -312,20 +496,17 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
       continue;
     }
 
-    const paragraphs = sanitizeParagraphs(parsedPayload.paragraphs);
+    const paragraphs = sanitizeParagraphs(parsedPayload.paragraphs.map(normalizeWhitespace).filter(Boolean));
     const rawText = normalizeWhitespace(parsedPayload.rawText || paragraphs.join(" "));
 
-    if (paragraphs.length === 0 || rawText.length === 0) {
+    if (paragraphs.length === 0 && parsedPayload.blocks.length === 0) {
       lastError = Object.assign(new Error("GitHub Models no ha podido extraer texto legible de la imagen."), {
         statusCode: 422
       });
       continue;
     }
 
-    return {
-      paragraphs,
-      rawText
-    };
+    return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
   }
 
   throw lastError ?? Object.assign(new Error("GitHub Models no ha podido completar el OCR de la imagen."), {

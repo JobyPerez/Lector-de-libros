@@ -779,6 +779,29 @@ textarea {
   flex-wrap: wrap;
 }
 
+.outline-editor-panel {
+  display: grid;
+  gap: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(31, 43, 35, 0.08);
+}
+
+.outline-editor-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.outline-editor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) repeat(3, minmax(92px, 0.45fr)) auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.outline-delete-button {
+  white-space: nowrap;
+}
+
 .shelf-grid {
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
@@ -2112,6 +2135,10 @@ textarea {
   .header-actions,
   .import-panel-actions {
     width: 100%;
+  }
+
+  .outline-editor-row {
+    grid-template-columns: 1fr;
   }
 
   .shelf-header {

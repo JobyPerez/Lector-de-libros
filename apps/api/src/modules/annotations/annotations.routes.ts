@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { load } from "cheerio";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
+import { resolveBookOutline } from "../books/book-outline.js";
 
 const highlightColors = ["YELLOW", "GREEN", "BLUE", "PINK"] as const;
 
@@ -107,10 +107,6 @@ type NoteRecord = {
   sequenceNumber: number | null;
   updatedAt: string;
 };
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-}
 
 async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, ownerUserId: string): Promise<OwnedBookRecord | null> {
   const result = await connection.execute(
@@ -303,76 +299,6 @@ async function listNotes(
   return (result.rows ?? []) as NoteRecord[];
 }
 
-async function buildBookToc(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string) {
-  const [pageResult, paragraphResult] = await Promise.all([
-    connection.execute(
-      `
-        SELECT
-          page_number AS "pageNumber",
-          html_content AS "htmlContent"
-        FROM book_pages
-        WHERE book_id = :bookId
-          AND html_content IS NOT NULL
-        ORDER BY page_number ASC
-      `,
-      { bookId }
-    ),
-    connection.execute(
-      `
-        SELECT
-          page_number AS "pageNumber",
-          paragraph_number AS "paragraphNumber",
-          sequence_number AS "sequenceNumber"
-        FROM book_paragraphs
-        WHERE book_id = :bookId
-      `,
-      { bookId }
-    )
-  ]);
-
-  const paragraphLookup = new Map<string, number>();
-  for (const row of (paragraphResult.rows ?? []) as Array<{ pageNumber: number; paragraphNumber: number; sequenceNumber: number }>) {
-    paragraphLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, Number(row.sequenceNumber));
-  }
-
-  const toc: Array<{ level: number; pageNumber: number; paragraphNumber: number; sequenceNumber: number | null; title: string }> = [];
-  const seenEntries = new Set<string>();
-
-  for (const row of (pageResult.rows ?? []) as Array<{ htmlContent: string | null; pageNumber: number }>) {
-    if (!row.htmlContent) {
-      continue;
-    }
-
-    const document = load(row.htmlContent);
-    document("h1[data-paragraph-number], h2[data-paragraph-number], h3[data-paragraph-number], h4[data-paragraph-number], h5[data-paragraph-number], h6[data-paragraph-number]").each((_, node) => {
-      const element = document(node);
-      const title = normalizeWhitespace(element.text());
-      const paragraphNumber = Number.parseInt(element.attr("data-paragraph-number") ?? "", 10);
-      const tagName = node.tagName?.toLowerCase() ?? "h1";
-      const level = Number.parseInt(tagName.replace("h", ""), 10);
-      if (!title || !Number.isInteger(paragraphNumber) || !Number.isInteger(level)) {
-        return;
-      }
-
-      const entryKey = `${row.pageNumber}:${paragraphNumber}:${title}`;
-      if (seenEntries.has(entryKey)) {
-        return;
-      }
-
-      seenEntries.add(entryKey);
-      toc.push({
-        level,
-        pageNumber: row.pageNumber,
-        paragraphNumber,
-        sequenceNumber: paragraphLookup.get(`${row.pageNumber}:${paragraphNumber}`) ?? null,
-        title
-      });
-    });
-  }
-
-  return toc;
-}
-
 export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
   app.get("/books/:bookId/annotations", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
@@ -418,7 +344,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       const [bookmarks, notes, toc] = await Promise.all([
         listBookmarks(connection, request.currentUser.userId, params.bookId),
         listNotes(connection, request.currentUser.userId, params.bookId),
-        book.sourceType === "EPUB" ? buildBookToc(connection, params.bookId) : Promise.resolve([])
+        resolveBookOutline(connection, params.bookId)
       ]);
 
       return reply.send({ bookmarks, notes, toc });
