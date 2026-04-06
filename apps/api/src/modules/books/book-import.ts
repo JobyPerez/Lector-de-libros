@@ -8,6 +8,7 @@ export const supportedBookSourceTypes = ["PDF", "EPUB"] as const;
 export type SupportedBookSourceType = (typeof supportedBookSourceTypes)[number];
 
 export type ImportedPage = {
+  htmlContent?: string | null;
   pageNumber: number;
   paragraphs: string[];
   rawText: string;
@@ -119,16 +120,23 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
     : await parseEpubBuffer(fileBuffer);
 
   const normalizedPages = importedDocument.pages
-    .map((page, index) => ({
-      pageNumber: index + 1,
+    .map((page) => ({
+      htmlContent: page.htmlContent?.trim() || null,
       paragraphs: sanitizeParagraphs(page.paragraphs),
       rawText: page.rawText.trim()
     }))
-    .filter((page) => page.paragraphs.length > 0 || page.rawText.length > 0);
+    .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
+    .map((page, index) => ({
+      htmlContent: page.htmlContent,
+      pageNumber: index + 1,
+      paragraphs: page.paragraphs,
+      rawText: page.rawText
+    }));
 
   const totalParagraphs = normalizedPages.reduce((paragraphCount, page) => paragraphCount + page.paragraphs.length, 0);
+  const hasRenderableContent = normalizedPages.some((page) => Boolean(page.htmlContent) || page.rawText.length > 0);
 
-  if (normalizedPages.length === 0 || totalParagraphs === 0) {
+  if (normalizedPages.length === 0 || !hasRenderableContent) {
     throw Object.assign(new Error("No se ha podido extraer texto legible del archivo. Si es un PDF escaneado, el flujo OCR se implementará en el siguiente corte."), {
       statusCode: 422
     });

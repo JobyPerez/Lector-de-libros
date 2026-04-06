@@ -44,6 +44,16 @@ const importImagesQuerySchema = z.object({
   afterPage: z.coerce.number().int().min(0).optional()
 });
 
+const bookParamsSchema = z.object({
+  bookId: z.string().uuid()
+});
+
+const updateBookSchema = z.object({
+  title: z.string().trim().min(1).max(500),
+  authorName: z.string().trim().min(1).max(255).optional(),
+  synopsis: z.string().trim().max(5000).optional()
+});
+
 const pageParamsSchema = z.object({
   bookId: z.string().uuid(),
   pageNumber: z.coerce.number().int().min(1)
@@ -83,6 +93,7 @@ type OwnedBookRecord = {
 type BookPageRecord = {
   editedText: string | null;
   hasSourceImage: number;
+  htmlContent: string | null;
   ocrStatus: string;
   pageId: string;
   pageNumber: number;
@@ -228,6 +239,7 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         page_number AS "pageNumber",
         source_file_id AS "sourceFileId",
         raw_text AS "rawText",
+        html_content AS "htmlContent",
         edited_text AS "editedText",
         ocr_status AS "ocrStatus",
         CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
@@ -744,6 +756,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             book_id AS "bookId",
             title AS "title",
             author_name AS "authorName",
+            synopsis AS "synopsis",
             source_type AS "sourceType",
             status AS "status",
             total_pages AS "totalPages",
@@ -760,6 +773,90 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       );
 
       return reply.send({ books: result.rows ?? [] });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/:bookId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const payload = updateBookSchema.parse(request.body);
+    const connection = await getConnection();
+
+    try {
+      const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!existingBook) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET title = :title,
+              author_name = :authorName,
+              synopsis = :synopsis
+          WHERE book_id = :bookId
+            AND owner_user_id = :ownerUserId
+        `,
+        {
+          authorName: payload.authorName ?? null,
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId,
+          synopsis: payload.synopsis ?? null,
+          title: payload.title
+        },
+        {
+          autoCommit: true
+        }
+      );
+
+      return reply.send({
+        book: {
+          ...existingBook,
+          authorName: payload.authorName ?? null,
+          synopsis: payload.synopsis ?? null,
+          title: payload.title
+        }
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.delete("/:bookId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!existingBook) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      await connection.execute(
+        `
+          DELETE FROM books
+          WHERE book_id = :bookId
+            AND owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId
+        },
+        {
+          autoCommit: true
+        }
+      );
+
+      return reply.status(204).send();
     } finally {
       await connection.close();
     }
@@ -932,6 +1029,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               book_id,
               page_number,
               raw_text,
+              html_content,
               edited_text,
               ocr_status
             ) VALUES (
@@ -939,6 +1037,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               :bookId,
               :pageNumber,
               :rawText,
+              :htmlContent,
               :editedText,
               'SKIPPED'
             )
@@ -946,6 +1045,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           {
             bookId,
             editedText: page.paragraphs.join("\n\n"),
+            htmlContent: page.htmlContent ?? null,
             pageId,
             pageNumber: page.pageNumber,
             rawText: page.rawText
@@ -1432,6 +1532,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         page: {
           editedText: pageRecord.editedText,
           hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
+          htmlContent: pageRecord.htmlContent,
           ocrStatus: pageRecord.ocrStatus,
           pageNumber: params.pageNumber,
           sourceFileId: pageRecord.sourceFileId,

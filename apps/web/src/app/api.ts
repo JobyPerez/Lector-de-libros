@@ -155,6 +155,7 @@ export type BookSummary = {
   authorName: string | null;
   bookId: string;
   createdAt?: string;
+  synopsis?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
   title: string;
@@ -179,6 +180,7 @@ export type BookPageResponse = {
   page: {
     editedText: string | null;
     hasSourceImage: boolean;
+    htmlContent: string | null;
     ocrStatus: string;
     pageNumber: number;
     paragraphs: ParagraphContent[];
@@ -256,6 +258,21 @@ export async function importBook(accessToken: string, payload: FormData) {
   }
 
   return response.json() as Promise<{ book: BookSummary }>;
+}
+
+export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; synopsis?: string; title: string }) {
+  return request<{ book: BookSummary }>(`/books/${bookId}`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function deleteBook(accessToken: string, bookId: string) {
+  return request<void>(`/books/${bookId}`, {
+    accessToken,
+    method: "DELETE"
+  });
 }
 
 function createImageUploadPayload(payload: FormData, ocrMode?: ImageOcrMode): FormData {

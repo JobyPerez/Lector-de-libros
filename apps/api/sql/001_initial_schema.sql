@@ -76,6 +76,7 @@ CREATE TABLE book_pages (
   page_number NUMBER NOT NULL,
   source_file_id VARCHAR2(36 CHAR),
   raw_text CLOB,
+  html_content CLOB,
   edited_text CLOB,
   ocr_status VARCHAR2(20 CHAR) DEFAULT 'PENDING' NOT NULL,
   created_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,

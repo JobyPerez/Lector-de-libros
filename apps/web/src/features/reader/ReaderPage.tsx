@@ -18,6 +18,7 @@ type PageTurnDirection = "forward" | "backward";
 
 type PageTurnSnapshot = {
   activeParagraphNumber: number | null;
+  htmlContent: string | null;
   pageNumber: number;
   paragraphs: ParagraphContent[];
 };
@@ -230,6 +231,7 @@ export function ReaderPage() {
   const pageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const pageTurnTimeoutRef = useRef<number | null>(null);
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
+  const richContentRef = useRef<HTMLDivElement | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
 
@@ -431,9 +433,11 @@ export function ReaderPage() {
   }, [accessToken, bookId, currentPageNumber, pageQuery.data?.page.hasSourceImage, pageQuery.data?.page.sourceFileId]);
 
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
+  const currentHtmlContent = pageQuery.data?.page.htmlContent ?? null;
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
+  const isRichEpubPage = pageQuery.data?.book.sourceType === "EPUB" && Boolean(currentHtmlContent);
   const appendPagesLink = {
     hash: "#append-pages",
     pathname: "/builder",
@@ -485,15 +489,40 @@ export function ReaderPage() {
   const baseParagraphs = isPageTurningBackward && pageTurnSnapshot
     ? pageTurnSnapshot.paragraphs
     : currentParagraphs;
+  const baseHtmlContent = isPageTurningBackward && pageTurnSnapshot
+    ? pageTurnSnapshot.htmlContent
+    : currentHtmlContent;
   const baseActiveParagraphNumber = isPageTurningBackward && pageTurnSnapshot
     ? pageTurnSnapshot.activeParagraphNumber
     : (currentParagraph?.paragraphNumber ?? null);
   const overlayParagraphs = isPageTurningBackward
     ? currentParagraphs
     : (pageTurnSnapshot?.paragraphs ?? []);
+  const overlayHtmlContent = isPageTurningBackward
+    ? currentHtmlContent
+    : (pageTurnSnapshot?.htmlContent ?? null);
   const overlayActiveParagraphNumber = isPageTurningBackward
     ? (currentParagraph?.paragraphNumber ?? null)
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);
+
+  useEffect(() => {
+    if (!isRichEpubPage || !richContentRef.current) {
+      return;
+    }
+
+    paragraphRefs.current.clear();
+
+    const paragraphNodes = richContentRef.current.querySelectorAll<HTMLElement>("[data-paragraph-number]");
+    paragraphNodes.forEach((node) => {
+      const paragraphNumber = Number.parseInt(node.dataset.paragraphNumber ?? "", 10);
+      if (!Number.isInteger(paragraphNumber)) {
+        return;
+      }
+
+      node.classList.toggle("active", paragraphNumber === currentParagraphNumber);
+      paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
+    });
+  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, isRichEpubPage]);
 
   useEffect(() => {
     if (!pendingPageTurnDirection || pageQuery.data?.page.pageNumber !== currentPageNumber) {
@@ -694,9 +723,67 @@ export function ReaderPage() {
     setPendingPageTurnDirection(nextPageNumber > currentPageNumber ? "forward" : "backward");
     setPageTurnSnapshot({
       activeParagraphNumber: currentParagraph?.paragraphNumber ?? null,
+      htmlContent: currentHtmlContent,
       pageNumber: currentPageNumber,
       paragraphs: currentParagraphs
     });
+  }
+
+  function findParagraphFromNode(target: EventTarget | null) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+
+    const paragraphElement = target.closest<HTMLElement>("[data-paragraph-number]");
+    const paragraphNumber = Number.parseInt(paragraphElement?.dataset.paragraphNumber ?? "", 10);
+    if (!Number.isInteger(paragraphNumber)) {
+      return null;
+    }
+
+    return currentParagraphs.find((paragraph) => paragraph.paragraphNumber === paragraphNumber) ?? null;
+  }
+
+  function renderRichContent(htmlContent: string, interactive: boolean) {
+    return (
+      <article className="reader-prose reader-prose-rich">
+        <div
+          className="reader-rich-content"
+          dangerouslySetInnerHTML={{ __html: htmlContent }}
+          onClick={interactive
+            ? (event) => {
+                const paragraph = findParagraphFromNode(event.target);
+                if (paragraph) {
+                  void selectParagraph(paragraph);
+                }
+              }
+            : undefined}
+          onKeyDown={interactive
+            ? (event) => {
+                if (event.key !== "Enter" && event.key !== " ") {
+                  return;
+                }
+
+                const paragraph = findParagraphFromNode(event.target);
+                if (!paragraph) {
+                  return;
+                }
+
+                event.preventDefault();
+                void selectParagraph(paragraph);
+              }
+            : undefined}
+          ref={interactive ? richContentRef : undefined}
+        />
+      </article>
+    );
+  }
+
+  function renderPageContent(paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null, interactive: boolean) {
+    if (htmlContent) {
+      return renderRichContent(htmlContent, interactive);
+    }
+
+    return renderParagraphs(paragraphs, activeParagraphNumber, interactive);
   }
 
   function renderParagraphs(paragraphs: ParagraphContent[], activeParagraphNumber: number | null, interactive: boolean) {
@@ -1095,7 +1182,7 @@ export function ReaderPage() {
                 {pageQuery.isLoading ? <p className="reader-copy subdued">Cargando página...</p> : null}
                 {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
                 {readerError ? <p className="error-text">{readerError}</p> : null}
-                {renderParagraphs(baseParagraphs, baseActiveParagraphNumber, !pageTurnDirection)}
+                {renderPageContent(baseParagraphs, baseHtmlContent, baseActiveParagraphNumber, !pageTurnDirection)}
               </div>
 
               {pageTurnSnapshot && overlayParagraphs.length > 0 ? (
@@ -1105,7 +1192,7 @@ export function ReaderPage() {
                     ? `reader-page reader-page-overlay reader-page-overlay-${pageTurnDirection}`
                     : "reader-page reader-page-overlay"}
                 >
-                  {renderParagraphs(overlayParagraphs, overlayActiveParagraphNumber, false)}
+                  {renderPageContent(overlayParagraphs, overlayHtmlContent, overlayActiveParagraphNumber, false)}
                 </div>
               ) : null}
             </div>
