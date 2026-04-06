@@ -5,7 +5,7 @@ import oracledb from "oracledb";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
-import { appEnv } from "../../config/env.js";
+import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 
 type TtsParagraphRow = {
@@ -19,7 +19,7 @@ type TtsParagraphRow = {
 
 const ttsRequestSchema = z.object({
   paragraphId: z.string().uuid(),
-  voiceModel: z.string().regex(/^aura-2-[a-z]+-es$/).optional()
+  voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
 });
 
 function computeChecksum(buffer: Buffer): string {

@@ -5,6 +5,15 @@ import process from "node:process";
 import dotenv from "dotenv";
 import { z } from "zod";
 
+const allowedDeepgramTtsModels = [
+  "aura-2-nestor-es",
+  "aura-2-carina-es",
+  "aura-2-alvaro-es",
+  "aura-2-diana-es",
+  "aura-2-agustina-es",
+  "aura-2-silvia-es"
+] as const;
+
 function findWorkspaceRoot(startDirectory: string): string {
   let currentDirectory = startDirectory;
   let packageJsonCandidate = startDirectory;
@@ -48,7 +57,7 @@ const environmentSchema = z.object({
   ORACLE_WALLET_LOCATION: z.string().min(1),
   ORACLE_WALLET_PASSWORD: z.string().min(1),
   DEEPGRAM_API_KEY: z.string().min(1).optional(),
-  DEEPGRAM_TTS_MODEL: z.string().min(1).default("aura-2-nestor-es"),
+  DEEPGRAM_TTS_MODEL: z.enum(allowedDeepgramTtsModels).default("aura-2-nestor-es"),
   GITHUB_MODELS_TOKEN: z.string().min(1).optional(),
   GITHUB_MODELS_ENDPOINT: z.string().url().optional(),
   GITHUB_MODELS_VISION_MODEL: z.string().min(1).optional(),
@@ -96,3 +105,5 @@ export const appEnv = {
   smtpFromName: parsedEnvironment.data.SMTP_FROM_NAME,
   passwordResetUrlBase: parsedEnvironment.data.PASSWORD_RESET_URL_BASE ?? `${parsedEnvironment.data.WEB_ORIGIN}/reset-password`
 };
+
+export const ALLOWED_DEEPGRAM_TTS_MODELS = allowedDeepgramTtsModels;

@@ -1,11 +1,158 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
-import { appendImagesToBook, createImageBook, fetchBookPage, fetchBookPageImage, fetchBooks, rerunOcrPage, updateOcrPage, type ImageOcrMode } from "../../app/api";
+import {
+  appendImagesToBook,
+  createImageBook,
+  fetchBookPage,
+  fetchBookPageImage,
+  fetchBooks,
+  fetchReaderNavigation,
+  rerunOcrPage,
+  updateOcrPage,
+  type ImageOcrMode,
+  type ReaderBookmark,
+  type ReaderNote,
+  type ReaderTocEntry,
+  type HighlightColor
+} from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { buildOcrPreviewHtml } from "./ocr-preview";
+
+function BackIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function ToolbarIcon({ children }: { children: React.ReactNode }) {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+      {children}
+    </svg>
+  );
+}
+
+function NavigationIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M5.5 7.25H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.5 12H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.5 16.75H14.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="17.5" cy="16.75" fill="currentColor" r="1.2" />
+    </ToolbarIcon>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M8 8L16 16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M16 8L8 16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
+function PagePreviousIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M7 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M17 7L10 12L17 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
+function PageNextIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M17 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M7 7L14 12L7 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
+function SaveOcrIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M7 5.5H15.8L18.5 8.2V18C18.5 18.8284 17.8284 19.5 17 19.5H7C6.17157 19.5 5.5 18.8284 5.5 18V7C5.5 6.17157 6.17157 5.5 7 5.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M8.5 5.5V10H14.5V5.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 15H15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+type ReviewNavigationItem =
+  | {
+      isActive: boolean;
+      key: string;
+      level: number;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "toc";
+    }
+  | {
+      bookmarkId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "bookmark";
+    }
+  | {
+      color: HighlightColor | null;
+      excerpt: string;
+      isActive: boolean;
+      key: string;
+      noteId: string;
+      noteText: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "note";
+    };
+
+function formatRelativeAnchor(pageNumber: number, paragraphNumber: number | null | undefined) {
+  return paragraphNumber ? `Pág. ${pageNumber} · párr. ${paragraphNumber}` : `Pág. ${pageNumber}`;
+}
+
+function formatPageAnchor(pageNumber: number) {
+  return `Pág. ${pageNumber}`;
+}
+
+function notePreview(note: ReaderNote) {
+  const sourceExcerpt = note.highlightedText?.trim();
+  if (sourceExcerpt) {
+    return sourceExcerpt;
+  }
+
+  return note.noteText;
+}
+
+function tocEntryKey(entry: ReaderTocEntry) {
+  return `${entry.pageNumber}:${entry.paragraphNumber}:${entry.title}`;
+}
+
+function highlightClassName(color: HighlightColor) {
+  switch (color) {
+    case "GREEN":
+      return "reader-text-highlight-green";
+    case "BLUE":
+      return "reader-text-highlight-blue";
+    case "PINK":
+      return "reader-text-highlight-pink";
+    case "YELLOW":
+    default:
+      return "reader-text-highlight-yellow";
+  }
+}
 
 export function BookBuilderPage() {
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const accessToken = useAuthStore((state) => state.accessToken);
@@ -16,6 +163,7 @@ export function BookBuilderPage() {
   const [reviewBookId, setReviewBookId] = useState("");
   const [reviewPageNumber, setReviewPageNumber] = useState(1);
   const [editedText, setEditedText] = useState("");
+  const [originalEditedText, setOriginalEditedText] = useState("");
   const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("VISION");
   const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("VISION");
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("VISION");
@@ -26,11 +174,22 @@ export function BookBuilderPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
+  const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
+  const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
+  const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
+  const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
+  const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
   const requestedReviewPageParam = searchParams.get("reviewPage")?.trim() ?? "";
+  const returnTo = typeof location.state === "object"
+    && location.state !== null
+    && "returnTo" in location.state
+    && typeof location.state.returnTo === "string"
+      ? location.state.returnTo
+      : null;
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
   const booksQuery = useQuery({
@@ -64,6 +223,18 @@ export function BookBuilderPage() {
       }
 
       return fetchBookPage(accessToken, reviewBookId, reviewPageNumber);
+    }
+  });
+
+  const reviewNavigationQuery = useQuery({
+    enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
+    queryKey: ["builder-navigation", reviewBookId],
+    queryFn: async () => {
+      if (!accessToken || !reviewBookId) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchReaderNavigation(accessToken, reviewBookId);
     }
   });
 
@@ -122,9 +293,34 @@ export function BookBuilderPage() {
       return;
     }
 
-    setEditedText(page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n\n"));
+    const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n\n");
+    setEditedText(nextEditedText);
+    setOriginalEditedText(nextEditedText);
     setReviewError(null);
   }, [reviewBookId, reviewPageNumber, reviewPageQuery.data?.page]);
+
+  useEffect(() => {
+    if (isReviewPageJumpActive) {
+      return;
+    }
+
+    setReviewPageJumpValue(String(reviewPageNumber));
+  }, [isReviewPageJumpActive, reviewPageNumber]);
+
+  useEffect(() => {
+    if (!isReviewPageJumpActive || typeof window === "undefined") {
+      return;
+    }
+
+    const animationFrameId = window.requestAnimationFrame(() => {
+      reviewPageJumpInputRef.current?.focus();
+      reviewPageJumpInputRef.current?.select();
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [isReviewPageJumpActive]);
 
   useEffect(() => {
     let active = true;
@@ -301,6 +497,7 @@ export function BookBuilderPage() {
 
     try {
       await updateOcrPage(accessToken, reviewBookId, reviewPageNumber, { editedText });
+      setOriginalEditedText(editedText);
       setReviewMessage("El texto OCR de la página se actualizó correctamente.");
       await Promise.all([reviewPageQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
@@ -310,17 +507,21 @@ export function BookBuilderPage() {
     }
   }
 
-  async function handleRerunOcr() {
+  async function handleRerunOcr(modeOverride?: ImageOcrMode) {
     if (!accessToken || !reviewBookId) {
       return;
     }
 
+    const nextMode = modeOverride ?? reviewOcrMode;
+
     setReviewError(null);
     setReviewMessage(null);
     setIsSavingReview(true);
+    setIsReviewOcrMenuVisible(false);
 
     try {
-      await rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: reviewOcrMode });
+      setReviewOcrMode(nextMode);
+      await rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode });
       setReviewMessage("El OCR de la página se volvió a reconocer correctamente.");
       await Promise.all([reviewPageQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
@@ -328,13 +529,6 @@ export function BookBuilderPage() {
     } finally {
       setIsSavingReview(false);
     }
-  }
-
-  function handleReviewBookChange(nextBookId: string) {
-    setReviewBookId(nextBookId);
-    setReviewPageNumber(1);
-    setReviewMessage(null);
-    setReviewError(null);
   }
 
   function changeReviewPage(delta: -1 | 1) {
@@ -346,6 +540,121 @@ export function BookBuilderPage() {
     setReviewMessage(null);
     setReviewError(null);
   }
+
+  function jumpToReviewPage(pageNumber: number) {
+    const totalPages = selectedReviewBook?.totalPages ?? 0;
+    setReviewPageNumber(Math.min(Math.max(pageNumber, 1), Math.max(totalPages, 1)));
+    setReviewMessage(null);
+    setReviewError(null);
+    setIsReviewIndexVisible(false);
+  }
+
+  function cancelReviewPageJump() {
+    setIsReviewPageJumpActive(false);
+    setReviewPageJumpValue(String(reviewPageNumber));
+  }
+
+  function parseReviewPageJumpValue() {
+    const parsedValue = Number.parseInt(reviewPageJumpValue.trim(), 10);
+    if (!Number.isFinite(parsedValue)) {
+      return null;
+    }
+
+    const totalPages = selectedReviewBook?.totalPages ?? 0;
+    return Math.min(Math.max(parsedValue, 1), Math.max(totalPages, 1));
+  }
+
+  function handleReviewPageJumpSubmit(event?: React.FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+
+    const nextPageNumber = parseReviewPageJumpValue();
+    if (nextPageNumber === null) {
+      cancelReviewPageJump();
+      return;
+    }
+
+    setIsReviewPageJumpActive(false);
+    jumpToReviewPage(nextPageNumber);
+  }
+
+  function handleBackFromReview() {
+    if (returnTo) {
+      navigate(returnTo);
+      return;
+    }
+
+    if (selectedReviewBook) {
+      navigate(`/books/${selectedReviewBook.bookId}?page=${reviewPageNumber}`);
+      return;
+    }
+
+    navigate("/");
+  }
+
+  const isReviewDirty = editedText !== originalEditedText;
+  const reviewPreviewHtml = useMemo(
+    () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
+    [editedText, reviewPageQuery.data?.page.htmlContent]
+  );
+  const activeTocEntryKey = useMemo(() => {
+    const tocEntries = reviewNavigationQuery.data?.toc ?? [];
+    let activeEntry: ReaderTocEntry | null = null;
+
+    for (const entry of tocEntries) {
+      if (entry.pageNumber <= reviewPageNumber) {
+        activeEntry = entry;
+      }
+    }
+
+    return activeEntry ? tocEntryKey(activeEntry) : null;
+  }, [reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  const orderedNavigationItems = useMemo<ReviewNavigationItem[]>(() => {
+    const tocItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.toc ?? []).map((entry) => ({
+      isActive: activeTocEntryKey === tocEntryKey(entry),
+      key: `toc:${tocEntryKey(entry)}`,
+      level: entry.level,
+      pageNumber: entry.pageNumber,
+      paragraphNumber: entry.paragraphNumber,
+      title: entry.title,
+      type: "toc"
+    }));
+
+    const bookmarkItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.bookmarks ?? []).map((bookmark: ReaderBookmark) => ({
+      bookmarkId: bookmark.bookmarkId,
+      isActive: bookmark.pageNumber === reviewPageNumber,
+      key: `bookmark:${bookmark.bookmarkId}`,
+      pageNumber: bookmark.pageNumber,
+      paragraphNumber: bookmark.paragraphNumber,
+      title: "Marcador guardado",
+      type: "bookmark"
+    }));
+
+    const noteItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.notes ?? []).map((note: ReaderNote) => ({
+      color: note.highlightColor,
+      excerpt: notePreview(note),
+      isActive: note.pageNumber === reviewPageNumber,
+      key: `note:${note.noteId}`,
+      noteId: note.noteId,
+      noteText: note.noteText,
+      pageNumber: note.pageNumber,
+      paragraphNumber: note.paragraphNumber ?? 1,
+      type: "note"
+    }));
+
+    const sortWeight = { bookmark: 1, note: 2, toc: 0 } as const;
+
+    return [...tocItems, ...bookmarkItems, ...noteItems].sort((left, right) => {
+      if (left.pageNumber !== right.pageNumber) {
+        return left.pageNumber - right.pageNumber;
+      }
+
+      if (left.paragraphNumber !== right.paragraphNumber) {
+        return left.paragraphNumber - right.paragraphNumber;
+      }
+
+      return sortWeight[left.type] - sortWeight[right.type];
+    });
+  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
 
   return (
     <div className="page-stack">
@@ -542,17 +851,22 @@ export function BookBuilderPage() {
       ) : null}
 
       {isReviewOnlyMode ? (
-      <section className="panel wide-panel" id="review-ocr">
+      <>
+      <section className="panel wide-panel review-ocr-panel" id="review-ocr">
         <div className="panel-header">
           <div>
-            <p className="eyebrow">Revisión</p>
-            <h2>Edición manual del OCR</h2>
+            <p className="eyebrow">Edición</p>
+            <h2>{selectedReviewBook?.title ?? "Cargando libro..."}</h2>
           </div>
-          {selectedReviewBook ? (
-            <Link className="secondary-button link-button" to={`/books/${selectedReviewBook.bookId}`}>
-              Abrir lector
-            </Link>
-          ) : null}
+          <button
+            aria-label="Volver al lector"
+            className="secondary-button reader-header-icon-button"
+            onClick={handleBackFromReview}
+            title="Volver al lector"
+            type="button"
+          >
+            <BackIcon />
+          </button>
         </div>
 
         {imageBooks.length === 0 ? (
@@ -561,39 +875,6 @@ export function BookBuilderPage() {
           </div>
         ) : (
           <>
-            <div className="review-toolbar">
-              <label className="toolbar-field">
-                Libro de imágenes
-                <select onChange={(event) => handleReviewBookChange(event.target.value)} value={reviewBookId}>
-                  {imageBooks.map((book) => (
-                    <option key={book.bookId} value={book.bookId}>{book.title}</option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="page-switcher">
-                <button
-                  className="secondary-button"
-                  disabled={reviewPageNumber <= 1}
-                  onClick={() => changeReviewPage(-1)}
-                  type="button"
-                >
-                  Página anterior
-                </button>
-                <span className="page-counter">
-                  Página {reviewPageNumber} de {selectedReviewBook?.totalPages ?? 0}
-                </span>
-                <button
-                  className="secondary-button"
-                  disabled={reviewPageNumber >= (selectedReviewBook?.totalPages ?? 0)}
-                  onClick={() => changeReviewPage(1)}
-                  type="button"
-                >
-                  Página siguiente
-                </button>
-              </div>
-            </div>
-
             {reviewPageQuery.isLoading ? <p className="subdued">Cargando página para revisión...</p> : null}
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
 
@@ -601,10 +882,8 @@ export function BookBuilderPage() {
               <article className="review-panel">
                 <div className="source-panel-header">
                   <div>
-                    <p className="page-label">Original</p>
-                    <h3>Imagen de la página</h3>
+                    <p className="page-label">Imagen original</p>
                   </div>
-                  <span className="tag-chip">{reviewPageQuery.data?.page.ocrStatus ?? "-"}</span>
                 </div>
 
                 {reviewImageUrl ? (
@@ -617,16 +896,9 @@ export function BookBuilderPage() {
               </article>
 
               <article className="review-panel">
-                <form className="stack-form" onSubmit={handleSaveOcr}>
-                  <div className="source-panel-header">
-                    <div>
-                      <p className="page-label">Edición</p>
-                      <h3>Texto corregido</h3>
-                    </div>
-                  </div>
-
+                <form className="stack-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
                   <label>
-                    Texto de la página
+                    Edición de la página
                     <textarea
                       className="ocr-editor"
                       onChange={(event) => setEditedText(event.target.value)}
@@ -637,44 +909,238 @@ export function BookBuilderPage() {
 
                   <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva y ![alt](url) para incrustar una imagen.</p>
 
-                  {reviewPageQuery.data?.page.htmlContent ? (
+                  {reviewPreviewHtml ? (
                     <div>
-                      <p className="page-label">Vista estructurada guardada</p>
+                      <p className="page-label">Previsualización de la página guardada</p>
                       <article className="reader-prose reader-prose-rich">
                         <div
                           className="reader-rich-content"
-                          dangerouslySetInnerHTML={{ __html: reviewPageQuery.data.page.htmlContent }}
+                          dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
                         />
                       </article>
                     </div>
                   ) : null}
 
-                  <label>
-                    Volver a reconocer con
-                    <select onChange={(event) => setReviewOcrMode(event.target.value as ImageOcrMode)} value={reviewOcrMode}>
-                      <option value="VISION">OCR preciso con IA</option>
-                      <option value="LOCAL">OCR rápido</option>
-                    </select>
-                  </label>
-
-                  <p className="helper-text">{describeOcrMode(reviewOcrMode)}</p>
-
                   {reviewError ? <p className="error-text">{reviewError}</p> : null}
                   {reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
-
-                  <button className="secondary-button" disabled={isSavingReview || !reviewBookId} onClick={() => void handleRerunOcr()} type="button">
-                    {isSavingReview ? "Reconociendo OCR..." : "Volver a reconocer OCR"}
-                  </button>
-
-                  <button className="primary-button" disabled={isSavingReview || !reviewBookId} type="submit">
-                    {isSavingReview ? "Guardando OCR..." : "Guardar corrección de página"}
-                  </button>
                 </form>
               </article>
             </div>
           </>
         )}
       </section>
+      {imageBooks.length > 0 ? (
+        <>
+          {isReviewIndexVisible ? (
+            <aside aria-label="Índice de páginas para OCR" className="reader-navigation-panel" role="dialog">
+              <div className="reader-navigation-header">
+                <div>
+                  <p className="eyebrow">Navegación</p>
+                  <h3>Índice y notas</h3>
+                </div>
+                <button
+                  aria-label="Cerrar índice"
+                  className="reader-icon-ghost"
+                  onClick={() => setIsReviewIndexVisible(false)}
+                  type="button"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+
+              <section className="reader-navigation-section">
+                <div className="reader-navigation-section-heading">
+                  <strong>Índice del libro</strong>
+                  <span>{orderedNavigationItems.length}</span>
+                </div>
+                {orderedNavigationItems.length ? (
+                  <div className="reader-navigation-list">
+                    {orderedNavigationItems.map((item) => {
+                      if (item.type === "toc") {
+                        return (
+                          <button
+                            className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
+                            key={item.key}
+                            onClick={() => jumpToReviewPage(item.pageNumber)}
+                            style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as React.CSSProperties}
+                            type="button"
+                          >
+                            <div className="reader-navigation-item-topline">
+                              <strong>{item.title}</strong>
+                              <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                            </div>
+                          </button>
+                        );
+                      }
+
+                      if (item.type === "bookmark") {
+                        return (
+                          <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
+                            <button
+                              className="reader-navigation-item reader-navigation-item-bookmark"
+                              onClick={() => jumpToReviewPage(item.pageNumber)}
+                              type="button"
+                            >
+                              <div className="reader-navigation-item-topline">
+                                <span className="reader-navigation-chip reader-navigation-chip-bookmark">■</span>
+                                <strong>{item.title}</strong>
+                                <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                              </div>
+                            </button>
+                          </article>
+                        );
+                      }
+
+                      return (
+                        <article className={item.isActive ? "reader-note-card reader-navigation-item-note active" : "reader-note-card reader-navigation-item-note"} key={item.key}>
+                          <button
+                            className="reader-note-jump"
+                            onClick={() => jumpToReviewPage(item.pageNumber)}
+                            type="button"
+                          >
+                            <div className="reader-navigation-item-topline">
+                              <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                              <strong>{item.excerpt}</strong>
+                              <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                            </div>
+                          </button>
+                          <p>{item.noteText}</p>
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+                )}
+              </section>
+
+              <section className="reader-navigation-section">
+                <div className="reader-navigation-section-heading">
+                  <strong>Notas</strong>
+                  <span>{reviewNavigationQuery.data?.notes.length ?? 0}</span>
+                </div>
+                <p className="reader-navigation-empty">Las notas y marcadores aparecen integrados dentro del índice según su posición en el libro.</p>
+              </section>
+            </aside>
+          ) : null}
+
+          <div aria-label="Controles de edición OCR" className="review-floating-controls" role="toolbar">
+            <div aria-live="polite" className="reader-floating-status review-floating-status">
+              <form className="reader-page-jump-form" onSubmit={(event) => handleReviewPageJumpSubmit(event)}>
+                <label className="reader-page-jump-label">
+                  <input
+                    aria-label="Página actual"
+                    className="reader-page-jump-input"
+                    inputMode="numeric"
+                    max={selectedReviewBook?.totalPages || undefined}
+                    min={1}
+                    onBlur={() => {
+                      handleReviewPageJumpSubmit();
+                    }}
+                    onChange={(event) => setReviewPageJumpValue(event.target.value.replace(/[^\d]/gu, ""))}
+                    onFocus={() => setIsReviewPageJumpActive(true)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelReviewPageJump();
+                      }
+                    }}
+                    onPointerDown={() => setIsReviewPageJumpActive(true)}
+                    ref={reviewPageJumpInputRef}
+                    size={Math.max(String(selectedReviewBook?.totalPages || reviewPageNumber).length, 2)}
+                    type="text"
+                    value={isReviewPageJumpActive ? reviewPageJumpValue : String(reviewPageNumber)}
+                  />
+                  <strong>/ {selectedReviewBook?.totalPages ?? 0}</strong>
+                </label>
+              </form>
+            </div>
+
+            <button
+              aria-expanded={isReviewIndexVisible}
+              aria-label="Abrir índice de páginas"
+              className={isReviewIndexVisible ? "reader-float-button active" : "reader-float-button"}
+              onClick={() => setIsReviewIndexVisible((current) => !current)}
+              title="Índice de páginas"
+              type="button"
+            >
+              <NavigationIcon />
+            </button>
+
+            <button
+              aria-label="Página anterior"
+              className="reader-float-button"
+              disabled={reviewPageNumber <= 1}
+              onClick={() => changeReviewPage(-1)}
+              title="Página anterior"
+              type="button"
+            >
+              <PagePreviousIcon />
+            </button>
+
+            <button
+              aria-label="Página siguiente"
+              className="reader-float-button"
+              disabled={reviewPageNumber >= (selectedReviewBook?.totalPages ?? 0)}
+              onClick={() => changeReviewPage(1)}
+              title="Página siguiente"
+              type="button"
+            >
+              <PageNextIcon />
+            </button>
+
+            <div className="review-floating-ocr-menu">
+              {isReviewOcrMenuVisible ? (
+                <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" role="dialog">
+                  <p className="review-floating-ocr-title">Volver a reconocer con</p>
+                  <button
+                    className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
+                    disabled={isSavingReview || !reviewBookId}
+                    onClick={() => void handleRerunOcr("VISION")}
+                    type="button"
+                  >
+                    <strong>Preciso con IA</strong>
+                    <span>Mayor precisión para páginas difíciles.</span>
+                  </button>
+                  <button
+                    className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
+                    disabled={isSavingReview || !reviewBookId}
+                    onClick={() => void handleRerunOcr("LOCAL")}
+                    type="button"
+                  >
+                    <strong>Rápido local</strong>
+                    <span>Más veloz para páginas limpias.</span>
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                aria-expanded={isReviewOcrMenuVisible}
+                aria-label={isSavingReview ? "Reconociendo OCR" : "Opciones de OCR"}
+                className={isReviewOcrMenuVisible ? "reader-float-button review-ocr-text-button active" : "reader-float-button review-ocr-text-button"}
+                disabled={isSavingReview || !reviewBookId}
+                onClick={() => setIsReviewOcrMenuVisible((current) => !current)}
+                title={isSavingReview ? "Reconociendo OCR..." : "Opciones de OCR"}
+                type="button"
+              >
+                <span>OCR</span>
+              </button>
+            </div>
+
+            <button
+              aria-label={isSavingReview ? "Guardando correcciones" : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar correcciones")}
+              className="reader-float-button primary"
+              disabled={isSavingReview || !reviewBookId || !isReviewDirty}
+              form="ocr-review-form"
+              title={isSavingReview ? "Guardando correcciones..." : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar correcciones")}
+              type="submit"
+            >
+              <SaveOcrIcon />
+            </button>
+          </div>
+        </>
+      ) : null}
+      </>
       ) : null}
     </div>
   );

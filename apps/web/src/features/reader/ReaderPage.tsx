@@ -10,7 +10,6 @@ import {
   deleteBookPage,
   deleteNote,
   fetchBookPage,
-  fetchBookPageImage,
   fetchPageAnnotations,
   fetchProgress,
   fetchReaderNavigation,
@@ -100,6 +99,7 @@ type NavigationListItem =
       type: "toc";
     }
   | {
+      bookmarkId: string;
       isActive: boolean;
       key: string;
       pageNumber: number;
@@ -120,11 +120,12 @@ type NavigationListItem =
     };
 
 const TTS_VOICE_OPTIONS = [
-  { description: "Femenina, expresiva, ideal para narración", label: "Diana", value: "aura-2-diana-es" },
+  { description: "Femenina, expresiva y profesional para narración", label: "Diana", value: "aura-2-diana-es" },
   { description: "Femenina, cálida y natural", label: "Silvia", value: "aura-2-silvia-es" },
-  { description: "Femenina, acento latino neutro", label: "Selena", value: "aura-2-selena-es" },
-  { description: "Femenina, serena y pausada", label: "Estrella", value: "aura-2-estrella-es" },
-  { description: "Masculina, voz actual del sistema", label: "Néstor", value: "aura-2-nestor-es" }
+  { description: "Masculina, clara y profesional", label: "Néstor", value: "aura-2-nestor-es" },
+  { description: "Masculina, serena y fiable", label: "Álvaro", value: "aura-2-alvaro-es" },
+  { description: "Femenina, energética y segura", label: "Carina", value: "aura-2-carina-es" },
+  { description: "Femenina, clara y profesional", label: "Agustina", value: "aura-2-agustina-es" }
 ] as const;
 
 const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: TtsEngine }> = [
@@ -187,11 +188,16 @@ function readStoredPlaybackRate() {
   return Math.min(Math.max(storedPlaybackRate, MIN_PLAYBACK_RATE), MAX_PLAYBACK_RATE);
 }
 
+function isPeninsularSpanishVoice(voice: SpeechSynthesisVoice) {
+  const normalizedLanguage = voice.lang.trim().toLowerCase();
+  return normalizedLanguage === "es-es" || normalizedLanguage.startsWith("es-es-");
+}
+
 function buildDeviceVoiceOptions(voices: SpeechSynthesisVoice[]): DeviceVoiceOption[] {
   const uniqueVoices = new Map<string, DeviceVoiceOption>();
 
   for (const voice of voices) {
-    if (!voice.voiceURI || uniqueVoices.has(voice.voiceURI)) {
+    if (!voice.voiceURI || uniqueVoices.has(voice.voiceURI) || !isPeninsularSpanishVoice(voice)) {
       continue;
     }
 
@@ -211,16 +217,7 @@ function buildDeviceVoiceOptions(voices: SpeechSynthesisVoice[]): DeviceVoiceOpt
     });
   }
 
-  const sortedOptions = Array.from(uniqueVoices.values()).sort((left, right) => {
-    const leftIsSpanish = left.description.toLowerCase().startsWith("es");
-    const rightIsSpanish = right.description.toLowerCase().startsWith("es");
-
-    if (leftIsSpanish !== rightIsSpanish) {
-      return leftIsSpanish ? -1 : 1;
-    }
-
-    return left.label.localeCompare(right.label, "es");
-  });
+  const sortedOptions = Array.from(uniqueVoices.values()).sort((left, right) => left.label.localeCompare(right.label, "es"));
 
   return [
     {
@@ -237,11 +234,11 @@ function findDeviceVoice(voices: SpeechSynthesisVoice[], voiceUri: string) {
     return null;
   }
 
-  return voices.find((voice) => voice.voiceURI === voiceUri) ?? null;
+  return voices.find((voice) => voice.voiceURI === voiceUri && isPeninsularSpanishVoice(voice)) ?? null;
 }
 
 function pickFallbackDeviceVoice(voices: SpeechSynthesisVoice[]) {
-  return voices.find((voice) => voice.lang.toLowerCase().startsWith("es")) ?? voices[0] ?? null;
+  return voices.find((voice) => isPeninsularSpanishVoice(voice)) ?? null;
 }
 
 function isAbortError(error: unknown) {
@@ -565,8 +562,6 @@ function AddPagesIcon() {
     <ReaderControlIcon>
       <path d="M12 7V17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M7 12H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M5.5 4.5H14.5C15.6046 4.5 16.5 5.39543 16.5 6.5V9.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
-      <path d="M9.5 19.5H18.5C19.6046 19.5 20.5 18.6046 20.5 17.5V10.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
     </ReaderControlIcon>
   );
 }
@@ -586,10 +581,8 @@ function DeletePageIcon() {
 function ShelfIcon() {
   return (
     <ReaderControlIcon>
-      <path d="M5 7.5C5 6.39543 5.89543 5.5 7 5.5H17C18.1046 5.5 19 6.39543 19 7.5V16.5C19 17.6046 18.1046 18.5 17 18.5H7C5.89543 18.5 5 17.6046 5 16.5V7.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M8.5 8.5H15.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M8.5 12H15.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M8.5 15.5H13" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
     </ReaderControlIcon>
   );
 }
@@ -597,10 +590,9 @@ function ShelfIcon() {
 function OriginalPageIcon() {
   return (
     <ReaderControlIcon>
-      <rect height="13" rx="2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" width="13" x="5.5" y="5.5" />
-      <path d="M8.5 14L10.7 11.8C11.0905 11.4095 11.7237 11.4095 12.1142 11.8L14.5 14.1858" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <circle cx="10" cy="9.5" fill="currentColor" r="1.1" />
-      <path d="M13.5 12.5L14.2 11.8C14.5905 11.4095 15.2237 11.4095 15.6142 11.8L18 14.1858" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.75 18.25L9.25 17.5L17.9 8.85C18.4858 8.26421 18.4858 7.31446 17.9 6.72868L17.2713 6.1C16.6855 5.51421 15.7358 5.51421 15.15 6.1L6.5 14.75L5.75 18.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M14.5 6.75L17.25 9.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 17.5L6.5 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ReaderControlIcon>
   );
 }
@@ -612,14 +604,12 @@ export function ReaderPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const [currentPageNumber, setCurrentPageNumber] = useState(1);
   const [currentParagraphNumber, setCurrentParagraphNumber] = useState(1);
-  const [isSourcePanelVisible, setIsSourcePanelVisible] = useState(false);
   const [isSavingProgress, setIsSavingProgress] = useState(false);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [autoPlay, setAutoPlay] = useState(false);
   const [pendingAutoPlayNextPage, setPendingAutoPlayNextPage] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
-  const [pageImageUrl, setPageImageUrl] = useState<string | null>(null);
   const [isDeletingPage, setIsDeletingPage] = useState(false);
   const [isAudioSettingsVisible, setIsAudioSettingsVisible] = useState(false);
   const [isPageJumpActive, setIsPageJumpActive] = useState(false);
@@ -926,40 +916,6 @@ export function ReaderPage() {
     };
   }, [isAudioSettingsVisible]);
 
-  useEffect(() => {
-    let active = true;
-    let nextObjectUrl: string | null = null;
-
-    if (!accessToken || !pageQuery.data?.page.hasSourceImage) {
-      setPageImageUrl(null);
-      return () => {
-        active = false;
-      };
-    }
-
-    void fetchBookPageImage(accessToken, bookId, currentPageNumber, pageQuery.data?.page.sourceFileId)
-      .then((imageBlob) => {
-        if (!active) {
-          return;
-        }
-
-        nextObjectUrl = URL.createObjectURL(imageBlob);
-        setPageImageUrl(nextObjectUrl);
-      })
-      .catch(() => {
-        if (active) {
-          setPageImageUrl(null);
-        }
-      });
-
-    return () => {
-      active = false;
-      if (nextObjectUrl) {
-        URL.revokeObjectURL(nextObjectUrl);
-      }
-    };
-  }, [accessToken, bookId, currentPageNumber, pageQuery.data?.page.hasSourceImage, pageQuery.data?.page.sourceFileId]);
-
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentHtmlContent = pageQuery.data?.page.htmlContent ?? null;
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
@@ -967,12 +923,16 @@ export function ReaderPage() {
   const currentHighlights = annotationsQuery.data?.highlights ?? [];
   const currentNotes = annotationsQuery.data?.notes ?? [];
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
-  const hasOriginalPanelContent = Boolean(pageQuery.data?.page.hasSourceImage || pageQuery.data?.page.rawText);
   const hasRichPageContent = Boolean(currentHtmlContent);
   const appendPagesLink = {
     hash: "#append-pages",
     pathname: "/builder",
     search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
+  };
+  const reviewOcrLink = {
+    hash: "#review-ocr",
+    pathname: "/builder",
+    search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
   };
 
   const readingPercentage = useMemo(() => {
@@ -1049,6 +1009,7 @@ export function ReaderPage() {
     }));
 
     const bookmarkItems: NavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      bookmarkId: bookmark.bookmarkId,
       isActive: bookmark.pageNumber === currentPageNumber && bookmark.paragraphNumber === currentParagraphNumber,
       key: `bookmark:${bookmark.bookmarkId}`,
       pageNumber: bookmark.pageNumber,
@@ -2140,6 +2101,19 @@ export function ReaderPage() {
     }
   }
 
+  async function handleDeleteSavedBookmark(bookmarkId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteBookmark(accessToken, bookId, bookmarkId);
+      await refreshReaderMetadata();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
+    }
+  }
+
   function renderParagraphText(paragraph: ParagraphContent) {
     const segments = buildTextSegments(paragraph.paragraphText, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
 
@@ -2157,17 +2131,31 @@ export function ReaderPage() {
   }
 
   return (
-    <div className="page-grid reader-layout reader-floating-layout reader-full-bleed-layout">
-      <section className="panel wide-panel reader-full-bleed-panel">
+    <div className="page-grid reader-layout reader-floating-layout">
+      <section className="panel wide-panel">
         <div className="panel-header">
           <div>
             <p className="eyebrow">Lectura</p>
             <h2>{pageQuery.data?.book.title ?? "Cargando libro..."}</h2>
           </div>
           <div className="reader-header-actions">
+            <Link aria-label="Volver a la estantería" className="secondary-button link-button reader-header-icon-button" title="Volver a la estantería" to="/">
+              <ShelfIcon />
+            </Link>
             {pageQuery.data?.book.sourceType === "IMAGES" ? (
               <Link aria-label="Añadir páginas" className="secondary-button link-button reader-header-icon-button" title="Añadir páginas" to={appendPagesLink}>
                 <AddPagesIcon />
+              </Link>
+            ) : null}
+            {pageQuery.data?.book.sourceType === "IMAGES" ? (
+              <Link
+                aria-label="Editar OCR de esta página"
+                className="secondary-button link-button reader-header-icon-button"
+                state={{ returnTo: `/books/${bookId}?page=${currentPageNumber}` }}
+                title="Editar OCR de esta página"
+                to={reviewOcrLink}
+              >
+                <OriginalPageIcon />
               </Link>
             ) : null}
             {pageQuery.data?.book.sourceType === "IMAGES" ? (
@@ -2182,26 +2170,11 @@ export function ReaderPage() {
                 <DeletePageIcon />
               </button>
             ) : null}
-            <Link aria-label="Volver a la estantería" className="secondary-button link-button reader-header-icon-button" title="Volver a la estantería" to="/">
-              <ShelfIcon />
-            </Link>
-            {hasOriginalPanelContent ? (
-              <button
-                aria-expanded={isSourcePanelVisible}
-                aria-label={isSourcePanelVisible ? "Ocultar página original" : "Mostrar página original"}
-                className="secondary-button reader-header-icon-button"
-                onClick={() => setIsSourcePanelVisible((current) => !current)}
-                title={isSourcePanelVisible ? "Ocultar página original" : "Página original"}
-                type="button"
-              >
-                <OriginalPageIcon />
-              </button>
-            ) : null}
           </div>
         </div>
 
         <div className="reader-canvas">
-          <div className={isSourcePanelVisible ? "reader-split reader-split-expanded" : "reader-split"}>
+          <div className="reader-split">
             <div className={pageTurnDirection ? `reader-page-turn reader-page-turn-${pageTurnDirection}` : "reader-page-turn"}>
               <div className={pageTurnDirection === "forward" ? "reader-page reader-page-live reader-page-live-animating" : "reader-page reader-page-live"} ref={livePageRef}>
                 {isCurrentPageBookmarked ? (
@@ -2226,31 +2199,6 @@ export function ReaderPage() {
                 </div>
               ) : null}
             </div>
-
-            {isSourcePanelVisible ? (
-              <aside className="reader-source-panel">
-                <div className="source-panel-header">
-                  <div>
-                    <p className="page-label">Página original</p>
-                  </div>
-                </div>
-
-                {pageImageUrl ? (
-                  <img alt={`Página ${currentPageNumber} del libro`} className="preview-image" src={pageImageUrl} />
-                ) : (
-                  <div className="empty-state compact-state">
-                    <p>Esta página no tiene imagen original adjunta.</p>
-                  </div>
-                )}
-
-                <Link
-                  className="secondary-button link-button"
-                  to={`/builder?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}#review-ocr`}
-                >
-                  Editar OCR de esta página
-                </Link>
-              </aside>
-            ) : null}
           </div>
         </div>
       </section>
@@ -2307,26 +2255,36 @@ export function ReaderPage() {
 
                   if (item.type === "bookmark") {
                     return (
-                      <button
-                        className={item.isActive ? "reader-navigation-item reader-navigation-item-bookmark active" : "reader-navigation-item reader-navigation-item-bookmark"}
-                        key={item.key}
-                        onClick={() => {
-                          void goToLocation(item.pageNumber, item.paragraphNumber);
-                          setIsNavigationPanelVisible(false);
-                        }}
-                        ref={item.isActive
-                          ? (element) => {
-                              activeNavigationItemRef.current = element;
-                            }
-                          : undefined}
-                        type="button"
-                      >
-                        <div className="reader-navigation-item-topline">
-                          <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
-                          <strong>{item.title}</strong>
-                          <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
-                        </div>
-                      </button>
+                      <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
+                        <button
+                          className="reader-navigation-item reader-navigation-item-bookmark"
+                          onClick={() => {
+                            void goToLocation(item.pageNumber, item.paragraphNumber);
+                            setIsNavigationPanelVisible(false);
+                          }}
+                          ref={item.isActive
+                            ? (element) => {
+                                activeNavigationItemRef.current = element;
+                              }
+                            : undefined}
+                          type="button"
+                        >
+                          <div className="reader-navigation-item-topline">
+                            <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
+                            <strong>{item.title}</strong>
+                            <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                          </div>
+                        </button>
+                        <button
+                          aria-label="Borrar marcador"
+                          className="reader-note-delete"
+                          onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
+                          title="Borrar marcador"
+                          type="button"
+                        >
+                          <DeletePageIcon />
+                        </button>
+                      </article>
                     );
                   }
 
