@@ -1,4 +1,5 @@
 import type { ImportedDocument, ImportedPage } from "./book-import.js";
+import { buildRichPageFromParagraphs } from "./rich-content.js";
 
 type PdfTextItem = {
   str?: string;
@@ -99,11 +100,13 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
 
     const lines = buildLines(textItems);
     const paragraphs = linesToParagraphs(lines);
+    const richContent = buildRichPageFromParagraphs(paragraphs);
 
     pages.push({
+      htmlContent: richContent.htmlContent,
       pageNumber,
-      paragraphs,
-      rawText: lines.map((line) => line.text).join("\n")
+      paragraphs: richContent.paragraphs,
+      rawText: richContent.rawText || lines.map((line) => line.text).join("\n")
     });
   }
 

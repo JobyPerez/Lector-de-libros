@@ -215,6 +215,8 @@ export type ReaderNote = {
 };
 
 export type ReaderTocEntry = {
+  chapterId?: string;
+  isGenerated?: boolean;
   level: number;
   pageNumber: number;
   paragraphNumber: number;
@@ -243,11 +245,23 @@ export type BookPageResponse = {
     hasSourceImage: boolean;
     htmlContent: string | null;
     ocrStatus: string;
+    pageLabel?: string | null;
     pageNumber: number;
+    pageType?: string;
     paragraphs: ParagraphContent[];
     rawText: string | null;
     sourceFileId: string | null;
   };
+};
+
+export type BookOutlineEntry = {
+  chapterId?: string;
+  isGenerated?: boolean;
+  level: number;
+  pageNumber: number;
+  paragraphNumber: number;
+  sequenceNumber?: number | null;
+  title: string;
 };
 
 export type ReadingProgress = {
@@ -423,6 +437,18 @@ export function fetchReaderNavigation(accessToken: string, bookId: string) {
   return request<ReaderNavigationSummary>(`/books/${bookId}/navigation`, { accessToken });
 }
 
+export function fetchBookOutline(accessToken: string, bookId: string) {
+  return request<{ outline: BookOutlineEntry[] }>(`/books/${bookId}/outline`, { accessToken });
+}
+
+export function updateBookOutline(accessToken: string, bookId: string, payload: { entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">> }) {
+  return request<void>(`/books/${bookId}/outline`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
 export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string }) {
   return request<{ bookmark: ReaderBookmark }>(`/books/${bookId}/bookmarks`, {
     accessToken,
@@ -487,6 +513,10 @@ export function deleteNote(accessToken: string, bookId: string, noteId: string) 
 export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null) {
   const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
   return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
+}
+
+export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf") {
+  return requestBlob(`/books/${bookId}/export/${format}`, accessToken);
 }
 
 export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string }) {

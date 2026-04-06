@@ -8,8 +8,11 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
+import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
+import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
 import { isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
+import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "./rich-content.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -67,6 +70,15 @@ const rerunOcrPageSchema = z.object({
   ocrMode: z.enum(supportedImageOcrModes).default("VISION")
 });
 
+const updateOutlineSchema = z.object({
+  entries: z.array(z.object({
+    level: z.coerce.number().int().min(1).max(6),
+    pageNumber: z.coerce.number().int().min(1),
+    paragraphNumber: z.coerce.number().int().min(1),
+    title: z.string().trim().min(1).max(500)
+  })).max(400)
+});
+
 type UploadedBinaryFile = {
   buffer: Buffer;
   fieldName: string;
@@ -75,6 +87,8 @@ type UploadedBinaryFile = {
 };
 
 type ProcessedImagePage = UploadedBinaryFile & {
+  editedText: string;
+  htmlContent: string | null;
   paragraphs: string[];
   rawText: string;
 };
@@ -96,6 +110,8 @@ type BookPageRecord = {
   htmlContent: string | null;
   ocrStatus: string;
   pageId: string;
+  pageLabel: string | null;
+  pageType: string;
   pageNumber: number;
   rawText: string | null;
   sourceFileId: string | null;
@@ -163,13 +179,7 @@ function computeChecksum(buffer: Buffer): string {
 }
 
 function paragraphsFromEditedText(editedText: string): string[] {
-  const normalizedText = editedText.replace(/\r/g, "").trim();
-  const paragraphCandidates = normalizedText
-    .split(/\n{2,}/u)
-    .map((paragraph) => paragraph.replace(/\n+/g, " ").trim())
-    .filter(Boolean);
-
-  return sanitizeParagraphs(paragraphCandidates);
+  return sanitizeParagraphs(buildRichPageFromEditableText(editedText).paragraphs);
 }
 
 function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
@@ -197,6 +207,8 @@ async function ocrImageFiles(files: UploadedBinaryFile[], ocrMode: ImageOcrMode)
     const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
     pages.push({
       ...file,
+      editedText: ocrResult.editedText,
+      htmlContent: ocrResult.htmlContent,
       paragraphs: ocrResult.paragraphs,
       rawText: ocrResult.rawText
     });
@@ -241,6 +253,8 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         raw_text AS "rawText",
         html_content AS "htmlContent",
         edited_text AS "editedText",
+        page_label AS "pageLabel",
+        page_type AS "pageType",
         ocr_status AS "ocrStatus",
         CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
       FROM book_pages
@@ -451,6 +465,7 @@ async function replaceBookPageParagraphs(
   options: {
     bookId: string;
     editedText: string;
+    htmlContent: string | null;
     ocrStatus: string;
     page: BookPageRecord;
     pageNumber: number;
@@ -540,12 +555,14 @@ async function replaceBookPageParagraphs(
     `
       UPDATE book_pages
       SET raw_text = :rawText,
+          html_content = :htmlContent,
           edited_text = :editedText,
           ocr_status = :ocrStatus
       WHERE page_id = :pageId
     `,
     {
       editedText: options.editedText,
+      htmlContent: options.htmlContent,
       ocrStatus: options.ocrStatus,
       pageId: options.page.pageId,
       rawText: options.rawText
@@ -624,6 +641,7 @@ async function insertProcessedImagePages(
           page_number,
           source_file_id,
           raw_text,
+          html_content,
           edited_text,
           ocr_status
         ) VALUES (
@@ -632,13 +650,15 @@ async function insertProcessedImagePages(
           :pageNumber,
           :sourceFileId,
           :rawText,
+          :htmlContent,
           :editedText,
           'READY'
         )
       `,
       {
         bookId,
-        editedText: processedPage.paragraphs.join("\n\n"),
+        editedText: processedPage.editedText,
+        htmlContent: processedPage.htmlContent,
         pageId,
         pageNumber,
         rawText: processedPage.rawText,
@@ -1534,6 +1554,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
           htmlContent: pageRecord.htmlContent,
           ocrStatus: pageRecord.ocrStatus,
+          pageLabel: pageRecord.pageLabel,
+          pageType: pageRecord.pageType,
           pageNumber: params.pageNumber,
           sourceFileId: pageRecord.sourceFileId,
           rawText: pageRecord.rawText,
@@ -1601,11 +1623,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     const params = pageParamsSchema.parse(request.params);
     const payload = updateOcrPageSchema.parse(request.body);
-    const paragraphs = paragraphsFromEditedText(payload.editedText);
-
-    if (paragraphs.length === 0) {
-      return reply.status(422).send({ message: "El texto editado debe producir al menos un párrafo." });
-    }
 
     const connection = await getConnection();
 
@@ -1624,14 +1641,23 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Page not found." });
       }
 
+      const pageEmbeddedImages = extractEmbeddedImageSources(page.htmlContent);
+      const richPage = buildRichPageFromEditableText(payload.editedText, { embeddedImages: pageEmbeddedImages });
+      const paragraphs = paragraphsFromEditedText(payload.editedText);
+
+      if (paragraphs.length === 0) {
+        return reply.status(422).send({ message: "El texto editado debe producir al menos un párrafo." });
+      }
+
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,
         editedText: payload.editedText,
+        htmlContent: richPage.htmlContent,
         ocrStatus: "READY",
         page,
         pageNumber: params.pageNumber,
         paragraphs,
-        rawText: page.rawText ?? payload.editedText
+        rawText: richPage.rawText || (page.rawText ?? payload.editedText)
       });
 
       await connection.commit();
@@ -1708,7 +1734,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,
-        editedText: ocrResult.paragraphs.join("\n\n"),
+        editedText: ocrResult.editedText,
+        htmlContent: ocrResult.htmlContent,
         ocrStatus: "READY",
         page,
         pageNumber: params.pageNumber,
@@ -1722,6 +1749,162 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     } catch (error) {
       await connection.rollback();
       throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/outline", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const outline = await resolveBookOutline(connection, params.bookId);
+      return reply.send({ outline });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/:bookId/outline", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const payload = updateOutlineSchema.parse(request.body);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      await replaceBookOutline(connection, params.bookId, payload.entries);
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/export/:format", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({
+      bookId: z.string().uuid(),
+      format: z.enum(["epub", "pdf"])
+    }).parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const [pagesResult, paragraphsResult, outlineResult, coverResult] = await Promise.all([
+        connection.execute(
+          `
+            SELECT
+              page_number AS "pageNumber",
+              page_label AS "pageLabel",
+              html_content AS "htmlContent"
+            FROM book_pages
+            WHERE book_id = :bookId
+            ORDER BY page_number ASC
+          `,
+          { bookId: params.bookId }
+        ),
+        connection.execute(
+          `
+            SELECT
+              page_number AS "pageNumber",
+              paragraph_text AS "paragraphText"
+            FROM book_paragraphs
+            WHERE book_id = :bookId
+            ORDER BY sequence_number ASC
+          `,
+          { bookId: params.bookId }
+        ),
+        resolveBookOutline(connection, params.bookId),
+        connection.execute(
+          `
+            SELECT
+              file_name AS "fileName",
+              mime_type AS "mimeType",
+              content_blob AS "contentBlob"
+            FROM book_files
+            WHERE book_id = :bookId
+              AND file_kind IN ('COVER_IMAGE', 'PAGE_IMAGE')
+            ORDER BY CASE WHEN file_kind = 'COVER_IMAGE' THEN 0 ELSE 1 END, NVL(page_number, 0) ASC, created_at ASC
+            FETCH FIRST 1 ROWS ONLY
+          `,
+          { bookId: params.bookId },
+          {
+            fetchInfo: {
+              contentBlob: { type: oracledb.BUFFER }
+            }
+          }
+        )
+      ]);
+
+      const paragraphsByPage = new Map<number, Array<{ paragraphText: string }>>();
+      for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string }>) {
+        const bucket = paragraphsByPage.get(row.pageNumber) ?? [];
+        bucket.push({ paragraphText: row.paragraphText });
+        paragraphsByPage.set(row.pageNumber, bucket);
+      }
+
+      const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => ({
+        htmlContent: row.htmlContent,
+        pageLabel: row.pageLabel,
+        pageNumber: row.pageNumber,
+        paragraphs: paragraphsByPage.get(row.pageNumber) ?? []
+      }));
+
+      const [coverAsset] = (coverResult.rows ?? []) as Array<{ contentBlob?: Buffer; fileName?: string | null; mimeType?: string }>;
+      const exportPayload = {
+        book: {
+          authorName: book.authorName,
+          synopsis: book.synopsis,
+          title: book.title
+        },
+        coverAsset: coverAsset?.contentBlob && coverAsset.mimeType
+          ? {
+              buffer: coverAsset.contentBlob,
+              fileName: coverAsset.fileName ?? `${book.title}-cover`,
+              mimeType: coverAsset.mimeType
+            }
+          : null,
+        outline: outlineResult,
+        pages
+      };
+      const fileBuffer = params.format === "epub"
+        ? await buildEpubExport(exportPayload)
+        : await buildPdfExport(exportPayload);
+      const fileName = `${deriveTitleFromFileName(book.title).replace(/\s+/gu, "-").toLowerCase() || "libro"}.${params.format}`;
+
+      return reply
+        .header("Content-Type", params.format === "epub" ? "application/epub+zip" : "application/pdf")
+        .header("Content-Disposition", `attachment; filename="${fileName}"`)
+        .send(fileBuffer);
     } finally {
       await connection.close();
     }
