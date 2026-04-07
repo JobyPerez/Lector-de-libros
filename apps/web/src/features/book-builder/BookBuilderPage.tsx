@@ -151,6 +151,69 @@ function highlightClassName(color: HighlightColor) {
   }
 }
 
+type ReviewTextAlignment = "center" | "left" | "right";
+
+const reviewAlignmentMarkerPattern = /^::(left|center|right)::\s*/u;
+const reviewHeadingMarkerPattern = /^(#{1,6})\s+/u;
+
+function parseReviewAlignmentMarker(value: string): { alignment: ReviewTextAlignment | null; content: string } {
+  const match = value.match(reviewAlignmentMarkerPattern);
+  if (!match) {
+    return { alignment: null, content: value };
+  }
+
+  return {
+    alignment: match[1] as ReviewTextAlignment,
+    content: value.slice(match[0].length)
+  };
+}
+
+function findReviewBlockStart(value: string, index: number) {
+  const cursor = Math.max(0, Math.min(index, value.length));
+  const separatorPattern = /\n{2,}/gu;
+  let start = 0;
+  let match = separatorPattern.exec(value);
+
+  while (match && match.index < cursor) {
+    start = match.index + match[0].length;
+    match = separatorPattern.exec(value);
+  }
+
+  return start;
+}
+
+function findReviewBlockEnd(value: string, index: number) {
+  const cursor = Math.max(0, Math.min(index, value.length));
+  const match = value.slice(cursor).match(/\n{2,}/u);
+  return match && typeof match.index === "number" ? cursor + match.index : value.length;
+}
+
+function detectReviewSelectionAlignment(value: string, selectionStart: number, selectionEnd: number): ReviewTextAlignment | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  const blockStart = findReviewBlockStart(value, selectionStart);
+  const blockEnd = findReviewBlockEnd(value, selectionEnd);
+  const blocks = value
+    .slice(blockStart, blockEnd)
+    .split(/\n{2,}/u)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  const alignments = blocks.map((block) => parseReviewAlignmentMarker(block).alignment);
+  const firstAlignment = alignments[0] ?? null;
+  return alignments.every((alignment) => alignment === firstAlignment) ? firstAlignment : null;
+}
+
+function stripReviewHeadingMarker(value: string) {
+  return value.replace(reviewHeadingMarkerPattern, "");
+}
+
 export function BookBuilderPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -177,8 +240,10 @@ export function BookBuilderPage() {
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
+  const [reviewSelectedAlignment, setReviewSelectedAlignment] = useState<ReviewTextAlignment | null>(null);
   const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
+  const reviewEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
@@ -298,6 +363,7 @@ export function BookBuilderPage() {
     const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n\n");
     setEditedText(nextEditedText);
     setOriginalEditedText(nextEditedText);
+    setReviewSelectedAlignment(null);
     setReviewError(null);
   }, [reviewBookId, reviewPageNumber, reviewPageQuery.data?.page]);
 
@@ -618,6 +684,159 @@ export function BookBuilderPage() {
     navigate("/");
   }
 
+  function syncReviewSelectedAlignment(selectionStart: number, selectionEnd: number, nextValue = editedText) {
+    setReviewSelectedAlignment(detectReviewSelectionAlignment(nextValue, selectionStart, selectionEnd));
+  }
+
+  function updateReviewEditor(nextValue: string, selectionStart: number, selectionEnd: number) {
+    setEditedText(nextValue);
+    syncReviewSelectedAlignment(selectionStart, selectionEnd, nextValue);
+
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        reviewEditorRef.current?.focus();
+        reviewEditorRef.current?.setSelectionRange(selectionStart, selectionEnd);
+      });
+    }
+  }
+
+  function toggleReviewInlineFormat(marker: "**" | "*") {
+    const editor = reviewEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selectionStart = editor.selectionStart ?? 0;
+    const selectionEnd = editor.selectionEnd ?? selectionStart;
+    const hasSelection = selectionEnd > selectionStart;
+    const selectedText = editedText.slice(selectionStart, selectionEnd);
+    const markerLength = marker.length;
+    const hasWrappedSelection = hasSelection
+      && selectionStart >= markerLength
+      && editedText.slice(selectionStart - markerLength, selectionStart) === marker
+      && editedText.slice(selectionEnd, selectionEnd + markerLength) === marker;
+
+    if (hasWrappedSelection) {
+      const nextValue = `${editedText.slice(0, selectionStart - markerLength)}${selectedText}${editedText.slice(selectionEnd + markerLength)}`;
+      updateReviewEditor(nextValue, selectionStart - markerLength, selectionEnd - markerLength);
+      return;
+    }
+
+    const content = hasSelection ? selectedText : "texto";
+    const wrapped = `${marker}${content}${marker}`;
+    const nextValue = `${editedText.slice(0, selectionStart)}${wrapped}${editedText.slice(selectionEnd)}`;
+    const nextSelectionStart = selectionStart + markerLength;
+    const nextSelectionEnd = nextSelectionStart + content.length;
+    updateReviewEditor(nextValue, nextSelectionStart, nextSelectionEnd);
+  }
+
+  function toggleReviewHeading(level: 1 | 2) {
+    const editor = reviewEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selectionStart = editor.selectionStart ?? 0;
+    const selectionEnd = editor.selectionEnd ?? selectionStart;
+    const blockStart = findReviewBlockStart(editedText, selectionStart);
+    const blockEnd = findReviewBlockEnd(editedText, selectionEnd);
+    const selectedText = editedText.slice(blockStart, blockEnd);
+    const segments = selectedText.split(/(\n{2,})/u);
+    const marker = `${"#".repeat(level)} `;
+
+    const currentLevels = segments
+      .filter((segment, index) => index % 2 === 0)
+      .map((segment) => {
+        const trimmedSegment = segment.trim();
+        if (!trimmedSegment) {
+          return null;
+        }
+
+        const parsedSegment = parseReviewAlignmentMarker(trimmedSegment);
+        const headingMatch = parsedSegment.content.match(reviewHeadingMarkerPattern);
+        return headingMatch ? headingMatch[1].length : 0;
+      })
+      .filter((segmentLevel): segmentLevel is number => segmentLevel !== null);
+
+    const shouldRemoveHeading = currentLevels.length > 0 && currentLevels.every((segmentLevel) => segmentLevel === level);
+    const nextSelectedText = segments.map((segment, index) => {
+      if (index % 2 === 1) {
+        return segment;
+      }
+
+      const trimmedSegment = segment.trim();
+      if (!trimmedSegment) {
+        return segment;
+      }
+
+      const parsedSegment = parseReviewAlignmentMarker(trimmedSegment);
+      const contentWithoutHeading = stripReviewHeadingMarker(parsedSegment.content).trim();
+      const content = shouldRemoveHeading ? contentWithoutHeading : `${marker}${contentWithoutHeading}`;
+      return parsedSegment.alignment ? `::${parsedSegment.alignment}:: ${content}` : content;
+    }).join("");
+
+    const nextValue = `${editedText.slice(0, blockStart)}${nextSelectedText}${editedText.slice(blockEnd)}`;
+    updateReviewEditor(nextValue, blockStart, blockStart + nextSelectedText.length);
+  }
+
+  function insertReviewImageTemplate() {
+    const editor = reviewEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selectionStart = editor.selectionStart ?? 0;
+    const selectionEnd = editor.selectionEnd ?? selectionStart;
+    const selectedText = editedText.slice(selectionStart, selectionEnd).trim();
+    const imageTemplate = `![${selectedText || "descripción"}](url)`;
+    const nextValue = `${editedText.slice(0, selectionStart)}${imageTemplate}${editedText.slice(selectionEnd)}`;
+    const altStart = selectionStart + 2;
+    const altEnd = altStart + (selectedText || "descripción").length;
+    updateReviewEditor(nextValue, altStart, altEnd);
+  }
+
+  function applyReviewAlignment(alignment: ReviewTextAlignment) {
+    const editor = reviewEditorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selectionStart = editor.selectionStart ?? 0;
+    const selectionEnd = editor.selectionEnd ?? selectionStart;
+    const blockStart = findReviewBlockStart(editedText, selectionStart);
+    const blockEnd = findReviewBlockEnd(editedText, selectionEnd);
+    const selectedText = editedText.slice(blockStart, blockEnd);
+    const segments = selectedText.split(/(\n{2,})/u);
+
+    const currentAlignments = segments
+      .filter((segment, index) => index % 2 === 0)
+      .map((segment) => parseReviewAlignmentMarker(segment.trim()).alignment)
+      .filter((segmentAlignment): segmentAlignment is ReviewTextAlignment => segmentAlignment !== null);
+    const shouldRemoveAlignment = currentAlignments.length > 0 && currentAlignments.every((segmentAlignment) => segmentAlignment === alignment);
+
+    const nextSelectedText = segments.map((segment, index) => {
+      if (index % 2 === 1) {
+        return segment;
+      }
+
+      const trimmedSegment = segment.trim();
+      if (!trimmedSegment) {
+        return segment;
+      }
+
+      const parsedSegment = parseReviewAlignmentMarker(trimmedSegment);
+      if (shouldRemoveAlignment) {
+        return parsedSegment.content.trim();
+      }
+
+      return `::${alignment}:: ${parsedSegment.content.trim()}`;
+    }).join("");
+
+    const nextEditedText = `${editedText.slice(0, blockStart)}${nextSelectedText}${editedText.slice(blockEnd)}`;
+    setReviewSelectedAlignment(shouldRemoveAlignment ? null : alignment);
+    updateReviewEditor(nextEditedText, blockStart, blockStart + nextSelectedText.length);
+  }
+
   const isReviewDirty = editedText !== originalEditedText;
   const reviewPreviewHtml = useMemo(
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
@@ -928,13 +1147,103 @@ export function BookBuilderPage() {
                     Edición de la página
                     <textarea
                       className="ocr-editor"
-                      onChange={(event) => setEditedText(event.target.value)}
+                      onChange={(event) => {
+                        setEditedText(event.target.value);
+                        syncReviewSelectedAlignment(event.target.selectionStart, event.target.selectionEnd, event.target.value);
+                      }}
+                      onClick={(event) => syncReviewSelectedAlignment(event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.currentTarget.value)}
+                      onKeyUp={(event) => syncReviewSelectedAlignment(event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.currentTarget.value)}
+                      onSelect={(event) => syncReviewSelectedAlignment(event.currentTarget.selectionStart, event.currentTarget.selectionEnd, event.currentTarget.value)}
+                      ref={reviewEditorRef}
                       rows={18}
                       value={editedText}
                     />
                   </label>
 
-                  <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva y ![alt](url) para incrustar una imagen.</p>
+                  <div aria-label="Barra de formato del editor OCR" className="review-format-toolbar" role="toolbar">
+                    <button
+                      className="review-format-button"
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => toggleReviewHeading(1)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Título principal"
+                      type="button"
+                    >
+                      <span>T1</span>
+                    </button>
+                    <button
+                      className="review-format-button"
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => toggleReviewHeading(2)}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Subtítulo"
+                      type="button"
+                    >
+                      <span>T2</span>
+                    </button>
+                    <button
+                      className="review-format-button"
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => toggleReviewInlineFormat("**")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Negrita"
+                      type="button"
+                    >
+                      <strong>B</strong>
+                    </button>
+                    <button
+                      className="review-format-button"
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => toggleReviewInlineFormat("*")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Cursiva"
+                      type="button"
+                    >
+                      <em>I</em>
+                    </button>
+                    <button
+                      className={reviewSelectedAlignment === "left" ? "review-format-button active" : "review-format-button"}
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => applyReviewAlignment("left")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Alinear a la izquierda"
+                      type="button"
+                    >
+                      <span>L</span>
+                    </button>
+                    <button
+                      className={reviewSelectedAlignment === "center" ? "review-format-button active" : "review-format-button"}
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => applyReviewAlignment("center")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Centrar bloque"
+                      type="button"
+                    >
+                      <span>C</span>
+                    </button>
+                    <button
+                      className={reviewSelectedAlignment === "right" ? "review-format-button active" : "review-format-button"}
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={() => applyReviewAlignment("right")}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Alinear a la derecha"
+                      type="button"
+                    >
+                      <span>R</span>
+                    </button>
+                    <button
+                      className="review-format-button review-format-button-wide"
+                      disabled={isSavingReview || !reviewBookId}
+                      onClick={insertReviewImageTemplate}
+                      onMouseDown={(event) => event.preventDefault()}
+                      title="Insertar imagen"
+                      type="button"
+                    >
+                      <span>IMG</span>
+                    </button>
+                  </div>
+
+                  <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva, ::left::, ::center:: o ::right:: para alinear un bloque y ![alt](url) para incrustar una imagen.</p>
 
                   {reviewPreviewHtml ? (
                     <div>

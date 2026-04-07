@@ -1,5 +1,8 @@
+type TextAlignment = "center" | "left" | "right";
+
 const headingPattern = /^(#{1,6})\s+(.+)$/u;
 const imagePattern = /^!\[(.*?)\]\((.+?)\)$/u;
+const alignmentPattern = /^::(left|center|right)::\s*([\s\S]+)$/u;
 const headingKeywordPattern = /^(cap[ií]tulo|chapter|parte|section|pr[oó]logo|ep[ií]logo|prefacio|introducci[oó]n)\b/iu;
 const embeddedImageSourcePattern = /^embedded-image-\d+$/u;
 const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
@@ -22,9 +25,29 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function parseAlignment(value: string): { alignment: TextAlignment | null; content: string } {
+  const match = value.match(alignmentPattern);
+  if (!match) {
+    return { alignment: null, content: value };
+  }
+
+  const alignment = match[1] as TextAlignment;
+  const content = match[2]?.trim() ?? "";
+  return { alignment, content };
+}
+
+function buildAlignmentAttributes(alignment: TextAlignment | null): string {
+  if (!alignment) {
+    return "";
+  }
+
+  return ` data-text-align="${alignment}" style="text-align: ${alignment};"`;
+}
+
 function stripInlineMarkdown(value: string): string {
   return normalizeWhitespace(
     value
+      .replace(alignmentPattern, "$2")
       .replace(/^#{1,6}\s+/u, "")
       .replace(/!\[(.*?)\]\((.+?)\)/gu, "")
       .replace(/\*\*(.+?)\*\*/gu, "$1")
@@ -124,7 +147,13 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     return null;
   }
 
-  const imageMatch = normalizedParagraph.match(imagePattern);
+  const { alignment, content } = parseAlignment(normalizedParagraph);
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return null;
+  }
+
+  const imageMatch = normalizedContent.match(imagePattern);
   if (imageMatch) {
     const altText = normalizeWhitespace(imageMatch[1] ?? "");
     const sourceToken = (imageMatch[2] ?? "").trim();
@@ -134,11 +163,11 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     }
 
     return {
-      html: `<figure class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`
+      html: `<figure class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`
     };
   }
 
-  const headingMatch = normalizedParagraph.match(headingPattern);
+  const headingMatch = normalizedContent.match(headingPattern);
   if (headingMatch) {
     const level = Math.min(6, headingMatch[1]?.length ?? 1);
     const headingText = headingMatch[2] ?? "";
@@ -148,11 +177,11 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     }
 
     return {
-      html: `<h${level} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0">${renderInlineMarkdown(headingText)}</h${level}>`
+      html: `<h${level} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(headingText)}</h${level}>`
     };
   }
 
-  const text = stripInlineMarkdown(normalizedParagraph);
+  const text = stripInlineMarkdown(normalizedContent);
   if (!text) {
     return null;
   }
@@ -160,12 +189,12 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
   const inferredLevel = looksLikeHeading(text, index);
   if (inferredLevel) {
     return {
-      html: `<h${inferredLevel} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0">${renderInlineMarkdown(normalizedParagraph)}</h${inferredLevel}>`
+      html: `<h${inferredLevel} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent)}</h${inferredLevel}>`
     };
   }
 
   return {
-    html: `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0">${renderInlineMarkdown(normalizedParagraph).replace(/\n+/gu, "<br />")}</p>`
+    html: `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`
   };
 }
 

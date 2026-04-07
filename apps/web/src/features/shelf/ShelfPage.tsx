@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { deleteBook, downloadBookExport, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BookOutlineEntry, type BookSummary } from "../../app/api";
+import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 type BookEditFormState = {
@@ -38,6 +38,32 @@ function DeleteIcon() {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="M12 3v10.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="m7.5 10.5 4.5 4.5 4.5-4.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M4.5 16.5v1.2c0 1 .8 1.8 1.8 1.8h11.4c1 0 1.8-.8 1.8-1.8v-1.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function buildFallbackFileName(book: BookSummary, format: "epub" | "pdf"): string {
+  const normalizedTitle = book.title.trim().replace(/\s+/gu, "-").toLowerCase() || "libro";
+  return `${normalizedTitle}.${format}`;
+}
+
+function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
+  const objectUrl = URL.createObjectURL(download.blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = download.fileName || fallbackFileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 export function ShelfPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
@@ -61,6 +87,8 @@ export function ShelfPage() {
   const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
+  const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
+  const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
 
   const booksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -148,6 +176,7 @@ export function ShelfPage() {
     setEditingBook(null);
     setBookActionError(null);
     setBookActionSuccess(null);
+    setDownloadMenuBookId(null);
   }
 
   function startEditingBook(book: BookSummary) {
@@ -163,6 +192,7 @@ export function ShelfPage() {
     setBookActionSuccess(null);
     setOutlineError(null);
     setOutlineSuccess(null);
+    setDownloadMenuBookId(null);
   }
 
   function resetBookForm() {
@@ -171,6 +201,7 @@ export function ShelfPage() {
     setBookActionError(null);
     setOutlineError(null);
     setOutlineSuccess(null);
+    setDownloadMenuBookId(null);
   }
 
   function updateOutlineEntry(index: number, patch: Partial<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>) {
@@ -215,20 +246,70 @@ export function ShelfPage() {
     setExportingFormat(format);
 
     try {
-      const blob = await downloadBookExport(accessToken, editingBook.bookId, format);
-      const objectUrl = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = objectUrl;
-      anchor.download = `${editingBook.title.replace(/\s+/gu, "-").toLowerCase() || "libro"}.${format}`;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(objectUrl);
+      const download = await downloadBookExport(accessToken, editingBook.bookId, format);
+      saveBlobDownload(download, buildFallbackFileName(editingBook, format));
     } catch (error) {
       setOutlineError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
       setExportingFormat(null);
     }
+  }
+
+  async function handleDownloadOriginal(book: BookSummary) {
+    if (!accessToken) {
+      return;
+    }
+
+    setBookActionError(null);
+    setBookActionSuccess(null);
+    setDownloadMenuBookId(null);
+    setDownloadingBookId(book.bookId);
+
+    try {
+      const format = book.sourceType === "PDF" ? "pdf" : "epub";
+      const download = await downloadOriginalBook(accessToken, book.bookId);
+      saveBlobDownload(download, buildFallbackFileName(book, format));
+    } catch (error) {
+      setBookActionError(error instanceof Error ? error.message : "No se pudo descargar el archivo original del libro.");
+    } finally {
+      setDownloadingBookId(null);
+    }
+  }
+
+  async function handleExportFromCard(book: BookSummary, format: "epub" | "pdf") {
+    if (!accessToken) {
+      return;
+    }
+
+    setBookActionError(null);
+    setBookActionSuccess(null);
+    setDownloadMenuBookId(null);
+    setDownloadingBookId(book.bookId);
+
+    try {
+      const download = await downloadBookExport(accessToken, book.bookId, format);
+      saveBlobDownload(download, buildFallbackFileName(book, format));
+    } catch (error) {
+      setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
+    } finally {
+      setDownloadingBookId(null);
+    }
+  }
+
+  function handleDownloadAction(book: BookSummary, event: React.MouseEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (downloadingBookId === book.bookId) {
+      return;
+    }
+
+    if (book.sourceType === "IMAGES") {
+      setDownloadMenuBookId((current) => current === book.bookId ? null : book.bookId);
+      return;
+    }
+
+    void handleDownloadOriginal(book);
   }
 
   async function handleUpdateBook(event: React.FormEvent<HTMLFormElement>) {
@@ -328,11 +409,34 @@ export function ShelfPage() {
         <div className="shelf-grid">
           {booksQuery.data?.map((book) => (
             <article className="book-card shelf-book-card" key={book.bookId}>
-              <div className="book-card-actions">
+              <div
+                className="book-card-actions"
+                onBlur={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setDownloadMenuBookId((current) => current === book.bookId ? null : current);
+                  }
+                }}
+              >
+                <button
+                  aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
+                  aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
+                  aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
+                  className="book-card-icon-button book-card-download-button"
+                  disabled={downloadingBookId === book.bookId}
+                  onClick={(event) => handleDownloadAction(book, event)}
+                  title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
+                  type="button"
+                >
+                  <DownloadIcon />
+                </button>
                 <button
                   aria-label={`Editar ${book.title}`}
                   className="book-card-icon-button book-card-edit-button"
-                  onClick={() => startEditingBook(book)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    startEditingBook(book);
+                  }}
                   title="Editar libro"
                   type="button"
                 >
@@ -342,12 +446,48 @@ export function ShelfPage() {
                   aria-label={`Eliminar ${book.title}`}
                   className="book-card-icon-button book-card-delete-button"
                   disabled={deletingBookId === book.bookId}
-                  onClick={() => void handleDeleteBook(book)}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void handleDeleteBook(book);
+                  }}
                   title="Eliminar libro"
                   type="button"
                 >
                   <DeleteIcon />
                 </button>
+
+                {downloadMenuBookId === book.bookId ? (
+                  <div className="book-card-download-menu" role="menu">
+                    <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
+                    <button
+                      className="menu-item book-card-download-option"
+                      disabled={downloadingBookId === book.bookId}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleExportFromCard(book, "epub");
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      EPUB
+                    </button>
+                    <button
+                      className="menu-item book-card-download-option"
+                      disabled={downloadingBookId === book.bookId}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleExportFromCard(book, "pdf");
+                      }}
+                      role="menuitem"
+                      type="button"
+                    >
+                      PDF
+                    </button>
+                  </div>
+                ) : null}
               </div>
 
               <Link className="book-card-link" to={`/books/${book.bookId}`}>

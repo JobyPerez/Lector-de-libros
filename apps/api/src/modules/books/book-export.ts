@@ -26,11 +26,30 @@ type ExportCoverAsset = {
 } | null;
 
 type RenderBlock = {
+  alignment?: "center" | "justify" | "left" | "right";
   level?: number;
   source?: string;
   text?: string;
   type: "blockquote" | "heading" | "image" | "list-item" | "paragraph";
 };
+
+function resolveBlockAlignment(
+  explicitAlignmentValue: string | undefined,
+  styleAttribute: string | undefined
+): "center" | "justify" | "left" | "right" | undefined {
+  const explicitAlignment = explicitAlignmentValue?.trim().toLowerCase();
+  if (explicitAlignment === "left" || explicitAlignment === "center" || explicitAlignment === "right" || explicitAlignment === "justify") {
+    return explicitAlignment;
+  }
+
+  const styleMatch = (styleAttribute ?? "").match(/text-align\s*:\s*(left|center|right|justify)/iu);
+  const styleAlignment = styleMatch?.[1]?.toLowerCase();
+  if (styleAlignment === "left" || styleAlignment === "center" || styleAlignment === "right" || styleAlignment === "justify") {
+    return styleAlignment;
+  }
+
+  return undefined;
+}
 
 function escapeXml(value: string): string {
   return value
@@ -104,7 +123,9 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
     if (/^h[1-6]$/u.test(tagName)) {
       const text = normalizeWhitespace(element.text());
       if (text) {
+        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
         blocks.push({
+          ...(alignment ? { alignment } : {}),
           level: Number.parseInt(tagName.replace("h", ""), 10),
           text,
           type: "heading"
@@ -116,7 +137,8 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
     if (tagName === "p") {
       const text = normalizeWhitespace(element.text());
       if (text) {
-        blocks.push({ text, type: "paragraph" });
+        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
+        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "paragraph" });
       }
       return;
     }
@@ -124,7 +146,8 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
     if (tagName === "blockquote") {
       const text = normalizeWhitespace(element.text());
       if (text) {
-        blocks.push({ text, type: "blockquote" });
+        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
+        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "blockquote" });
       }
       return;
     }
@@ -132,7 +155,8 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
     if (tagName === "li") {
       const text = normalizeWhitespace(element.text());
       if (text) {
-        blocks.push({ text, type: "list-item" });
+        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
+        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "list-item" });
       }
       return;
     }
@@ -170,13 +194,16 @@ function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
     if (block.type === "heading" && block.text) {
       const fontSize = Math.max(16, 28 - ((block.level ?? 1) - 1) * 2);
       document.moveDown(0.5);
-      document.font("Helvetica-Bold").fontSize(fontSize).fillColor("#111111").text(block.text);
+      document.font("Helvetica-Bold").fontSize(fontSize).fillColor("#111111").text(block.text, {
+        align: block.alignment ?? "left"
+      });
       document.moveDown(0.35);
       continue;
     }
 
     if (block.type === "blockquote" && block.text) {
       document.font("Helvetica-Oblique").fontSize(12).fillColor("#333333").text(block.text, {
+        align: block.alignment ?? "left",
         indent: 24,
         paragraphGap: 10
       });
@@ -185,6 +212,7 @@ function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
 
     if (block.type === "list-item" && block.text) {
       document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(`• ${block.text}`, {
+        align: block.alignment ?? "left",
         indent: 12,
         paragraphGap: 6
       });
@@ -214,6 +242,7 @@ function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
 
     if (block.text) {
       document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(block.text, {
+        align: block.alignment ?? "justify",
         paragraphGap: 10
       });
     }

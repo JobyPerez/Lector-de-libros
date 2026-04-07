@@ -117,6 +117,12 @@ type BookPageRecord = {
   sourceFileId: string | null;
 };
 
+type BookBinaryFileRecord = {
+  contentBlob?: Buffer;
+  fileName?: string | null;
+  mimeType?: string | null;
+};
+
 function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
   const fieldValue = fields[fieldName] as { value?: string } | Array<{ value?: string }> | undefined;
 
@@ -176,6 +182,11 @@ async function collectMultipartForm(request: { parts: () => AsyncIterable<unknow
 
 function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
+}
+
+function buildDownloadFileName(baseName: string, extension: string): string {
+  const normalizedBaseName = deriveTitleFromFileName(baseName).replace(/\s+/gu, "-").toLowerCase() || "libro";
+  return `${normalizedBaseName}.${extension}`;
 }
 
 function paragraphsFromEditedText(editedText: string): string[] {
@@ -1899,12 +1910,72 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const fileBuffer = params.format === "epub"
         ? await buildEpubExport(exportPayload)
         : await buildPdfExport(exportPayload);
-      const fileName = `${deriveTitleFromFileName(book.title).replace(/\s+/gu, "-").toLowerCase() || "libro"}.${params.format}`;
+      const fileName = buildDownloadFileName(book.title, params.format);
 
       return reply
         .header("Content-Type", params.format === "epub" ? "application/epub+zip" : "application/pdf")
         .header("Content-Disposition", `attachment; filename="${fileName}"`)
         .send(fileBuffer);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/download-original", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (book.sourceType === "IMAGES") {
+        return reply.status(409).send({ message: "Los libros creados desde imágenes deben exportarse como EPUB o PDF." });
+      }
+
+      const originalFileKind = book.sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB";
+      const originalResult = await connection.execute(
+        `
+          SELECT
+            file_name AS "fileName",
+            mime_type AS "mimeType",
+            content_blob AS "contentBlob"
+          FROM book_files
+          WHERE book_id = :bookId
+            AND file_kind = :fileKind
+          ORDER BY created_at ASC
+          FETCH FIRST 1 ROWS ONLY
+        `,
+        {
+          bookId: params.bookId,
+          fileKind: originalFileKind
+        },
+        {
+          fetchInfo: {
+            contentBlob: { type: oracledb.BUFFER }
+          }
+        }
+      );
+
+      const [originalFile] = (originalResult.rows ?? []) as BookBinaryFileRecord[];
+      if (!originalFile?.contentBlob) {
+        return reply.status(404).send({ message: "No se encontró el archivo original de este libro." });
+      }
+
+      const extension = book.sourceType === "PDF" ? "pdf" : "epub";
+      const fileName = originalFile.fileName?.trim() || buildDownloadFileName(book.title, extension);
+      const mimeType = originalFile.mimeType?.trim() || (book.sourceType === "PDF" ? "application/pdf" : "application/epub+zip");
+
+      return reply
+        .header("Content-Type", mimeType)
+        .header("Content-Disposition", `attachment; filename="${fileName}"`)
+        .send(originalFile.contentBlob);
     } finally {
       await connection.close();
     }

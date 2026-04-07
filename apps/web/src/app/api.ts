@@ -13,6 +13,11 @@ type ApiOptions = {
 
 type RequestHeaders = Record<string, string>;
 
+export type BlobDownload = {
+  blob: Blob;
+  fileName: string | null;
+};
+
 function createHeaders(options: { accessToken?: string | null | undefined; contentType?: string | undefined }): RequestHeaders {
   return {
     ...(options.contentType ? { "Content-Type": options.contentType } : {}),
@@ -131,6 +136,30 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
 }
 
 async function requestBlob(path: string, accessToken: string): Promise<Blob> {
+  const result = await requestBlobDownload(path, accessToken);
+  return result.blob;
+}
+
+function parseContentDispositionFileName(contentDisposition: string | null): string | null {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/iu);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/iu);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/iu);
+  return plainMatch?.[1]?.trim() ?? null;
+}
+
+async function requestBlobDownload(path: string, accessToken: string): Promise<BlobDownload> {
   const response = await fetchWithAutoRefresh(path, {
     accessToken,
     fallbackMessage: "La solicitud no se pudo completar.",
@@ -142,7 +171,10 @@ async function requestBlob(path: string, accessToken: string): Promise<Blob> {
     throw new Error(await parseErrorMessage(response, "La solicitud no se pudo completar."));
   }
 
-  return response.blob();
+  return {
+    blob: await response.blob(),
+    fileName: parseContentDispositionFileName(response.headers.get("Content-Disposition"))
+  };
 }
 
 export type AuthResponse = {
@@ -516,7 +548,11 @@ export function fetchBookPageImage(accessToken: string, bookId: string, pageNumb
 }
 
 export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf") {
-  return requestBlob(`/books/${bookId}/export/${format}`, accessToken);
+  return requestBlobDownload(`/books/${bookId}/export/${format}`, accessToken);
+}
+
+export function downloadOriginalBook(accessToken: string, bookId: string) {
+  return requestBlobDownload(`/books/${bookId}/download-original`, accessToken);
 }
 
 export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string }) {

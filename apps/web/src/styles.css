@@ -867,12 +867,45 @@ textarea {
   color: var(--forest-900);
 }
 
+.book-card-download-button:hover:not(:disabled) {
+  background: rgba(217, 137, 65, 0.16);
+  color: var(--amber-700);
+}
+
 .book-card-delete-button {
   color: var(--danger);
 }
 
 .book-card-delete-button:hover:not(:disabled) {
   background: rgba(140, 31, 49, 0.1);
+}
+
+.book-card-download-menu {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 4;
+  min-width: 200px;
+  padding: 0.45rem;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 249, 240, 0.98);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 48px rgba(52, 32, 16, 0.16);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.book-card-download-menu-title {
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.45rem;
+  color: var(--forest-900);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.book-card-download-option {
+  justify-content: flex-start;
 }
 
 .book-card::before {
@@ -1323,22 +1356,45 @@ textarea {
   text-indent: 0 !important;
 }
 
-.reader-rich-content .ocr-page-body p.reader-rich-node,
-.reader-rich-content .ocr-page-body li.reader-rich-node,
-.reader-rich-content .ocr-page-body blockquote.reader-rich-node {
+.reader-rich-content .ocr-page-body p.reader-rich-node:not([data-text-align]),
+.reader-rich-content .ocr-page-body li.reader-rich-node:not([data-text-align]),
+.reader-rich-content .ocr-page-body blockquote.reader-rich-node:not([data-text-align]) {
   text-align: justify;
   text-justify: inter-word;
   margin-top: 0;
   margin-bottom: 0;
 }
 
-.reader-rich-content.ocr-rich-content p.reader-rich-node,
-.reader-rich-content.ocr-rich-content li.reader-rich-node,
-.reader-rich-content.ocr-rich-content blockquote.reader-rich-node {
+.reader-rich-content.ocr-rich-content p.reader-rich-node:not([data-text-align]),
+.reader-rich-content.ocr-rich-content li.reader-rich-node:not([data-text-align]),
+.reader-rich-content.ocr-rich-content blockquote.reader-rich-node:not([data-text-align]) {
   text-align: justify;
   text-justify: inter-word;
   margin-top: 0;
   margin-bottom: 0;
+}
+
+.reader-rich-content .reader-rich-node[data-text-align="left"] {
+  text-align: left !important;
+  text-justify: auto;
+}
+
+.reader-rich-content .reader-rich-node[data-text-align="center"] {
+  text-align: center !important;
+  text-justify: auto;
+}
+
+.reader-rich-content .reader-rich-node[data-text-align="right"] {
+  text-align: right !important;
+  text-justify: auto;
+}
+
+.reader-rich-content figure.reader-rich-node[data-text-align="center"] img {
+  margin-inline: auto;
+}
+
+.reader-rich-content figure.reader-rich-node[data-text-align="right"] img {
+  margin-inline-start: auto;
 }
 
 .reader-rich-content .reader-rich-node:hover {
@@ -1935,7 +1991,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 0.65rem;
-  width: min(28rem, calc(100vw - 2rem));
+  width: min(41rem, calc(100vw - 1rem));
   padding: 0.65rem 1rem;
   border: 1px solid rgba(31, 43, 35, 0.1);
   border-radius: 999px;
@@ -1949,6 +2005,59 @@ textarea {
   min-width: 4.9rem;
   padding: 0;
   text-align: center;
+}
+
+.review-format-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  border-radius: 18px;
+  background: rgba(42, 87, 66, 0.04);
+}
+
+.review-format-button {
+  min-width: 2.35rem;
+  height: 2.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: 0.7rem;
+  border-radius: 999px;
+  color: var(--forest-700);
+  background: transparent;
+  transition: transform 180ms ease, background 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+
+.review-format-button span,
+.review-format-button strong,
+.review-format-button em {
+  font-family: "Alegreya Sans", "Segoe UI", sans-serif;
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.review-format-button-wide {
+  min-width: 3.6rem;
+}
+
+.review-format-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(42, 87, 66, 0.12);
+}
+
+.review-format-button.active:not(:disabled) {
+  background: rgba(42, 87, 66, 0.2);
+  color: var(--forest-900);
+  box-shadow: 0 8px 18px rgba(25, 52, 40, 0.12);
+}
+
+.review-format-button:disabled {
+  opacity: 0.45;
 }
 
 .review-ocr-panel {
@@ -2081,6 +2190,21 @@ textarea {
   font-family: "Palatino Linotype", "Book Antiqua", serif;
   font-size: 1rem;
   line-height: 1.65;
+}
+
+@media (max-width: 860px) {
+  .review-floating-controls {
+    width: min(31rem, calc(100vw - 1rem));
+    justify-content: center;
+    flex-wrap: wrap;
+    border-radius: 28px;
+  }
+
+  .review-floating-status {
+    min-width: auto;
+    order: -1;
+    width: 100%;
+  }
 }
 
 .book-option-list,

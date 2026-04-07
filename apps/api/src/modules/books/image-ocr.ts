@@ -15,6 +15,8 @@ export type OcrPageResult = {
   rawText: string;
 };
 
+type VisionTextAlignment = "center" | "left" | "right";
+
 type VisionBoundingBox = {
   height: number;
   width: number;
@@ -29,6 +31,7 @@ type VisionStructuredBlock =
       type: "image";
     }
   | {
+      alignment?: VisionTextAlignment;
       level?: number;
       text: string;
       type: "heading" | "paragraph";
@@ -59,11 +62,13 @@ type VisionOcrPromptAttempt = {
 const ocrResponseSchema = z.object({
   blocks: z.array(z.discriminatedUnion("type", [
     z.object({
+      alignment: z.enum(["left", "center", "right"]).optional(),
       level: z.coerce.number().int().min(1).max(6).optional(),
       text: z.string().trim().min(1),
       type: z.literal("heading")
     }),
     z.object({
+      alignment: z.enum(["left", "center", "right"]).optional(),
       text: z.string().trim().min(1),
       type: z.literal("paragraph")
     }),
@@ -155,7 +160,12 @@ function formatStructuredTextBlock(
   const hasAdjacentDate = Boolean(nextBlock && nextBlock.type !== "image" && isStandaloneDateText(nextBlock.text));
 
   if (block.type === "heading" && !shouldDemoteHeading(block.text) && !(hasAdjacentDate && looksLikeSignatureHeading(block.text))) {
-    return `${"#".repeat(Math.max(1, Math.min(6, block.level ?? 1)))} ${block.text}`;
+    const headingPrefix = `${"#".repeat(Math.max(1, Math.min(6, block.level ?? 1)))} ${block.text}`;
+    if (block.alignment === "center" || block.alignment === "left" || block.alignment === "right") {
+      return `::${block.alignment}:: ${headingPrefix}`;
+    }
+
+    return headingPrefix;
   }
 
   return emphasizeBiographyLead(block.text);
@@ -409,13 +419,13 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
   const promptAttempts: VisionOcrPromptAttempt[] = [
     {
       maxTokens: 2600,
-      system: "Analiza una página de libro en español y devuelve una reconstrucción editorial estructurada. Responde solo JSON con las claves rawText, paragraphs y blocks. Usa blocks en orden de lectura con type=heading, paragraph o image. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Los párrafos deben respetar el layout real, no los saltos de línea impresos. Omite cabeceras repetidas, pies y números de página. No clasifiques como heading las firmas, dedicatorias manuscritas, nombres firmados ni las fechas.",
-      user: "Procesa esta página. Detecta retratos, ilustraciones o imágenes relevantes que formen parte del contenido y devuélvelas como blocks de tipo image. Si el nombre del autor está en negrita, márcalo con **. Si títulos de obras están en cursiva, márcalos con *. Las firmas y fechas deben ir como paragraph. Una firma seguida por una fecha nunca es heading. Devuelve solo JSON válido."
+      system: "Analiza una página de libro en español y devuelve una reconstrucción editorial estructurada. Responde solo JSON con las claves rawText, paragraphs y blocks. Usa blocks en orden de lectura con type=heading, paragraph o image. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Los párrafos deben respetar el layout real, no los saltos de línea impresos. Omite cabeceras repetidas, pies y números de página. No clasifiques como heading las firmas, dedicatorias manuscritas, nombres firmados ni las fechas.",
+      user: "Procesa esta página. Detecta retratos, ilustraciones o imágenes relevantes que formen parte del contenido y devuélvelas como blocks de tipo image. Si el nombre del autor está en negrita, márcalo con **. Si títulos de obras están en cursiva, márcalos con *. Si un heading está claramente centrado o alineado a la derecha, indícalo en alignment. Las firmas y fechas deben ir como paragraph. Una firma seguida por una fecha nunca es heading. Devuelve solo JSON válido."
     },
     {
       maxTokens: 3600,
-      system: "Haz OCR estructurado de una página de libro. Devuelve una sola línea JSON válida con rawText, paragraphs y blocks. paragraphs debe contener el texto limpio por párrafos. blocks debe contener headings, paragraphs e imágenes en orden de lectura. Usa markdown dentro del texto para negrita y cursiva. Usa bbox normalizado 0-1000 para imágenes no decorativas. Las firmas, dedicatorias y fechas nunca deben ir como heading.",
-      user: "Reconstruye esta página para un EPUB: conserva títulos, énfasis tipográficos e imágenes del contenido. No inventes texto. Devuelve firmas y fechas como paragraph. Una firma seguida de fecha no debe ir como heading. Devuelve solo JSON válido."
+      system: "Haz OCR estructurado de una página de libro. Devuelve una sola línea JSON válida con rawText, paragraphs y blocks. paragraphs debe contener el texto limpio por párrafos. blocks debe contener headings, paragraphs e imágenes en orden de lectura. Usa markdown dentro del texto para negrita y cursiva. Usa bbox normalizado 0-1000 para imágenes no decorativas. Para headings puedes añadir alignment con left, center o right solo cuando la alineación sea clara. Las firmas, dedicatorias y fechas nunca deben ir como heading.",
+      user: "Reconstruye esta página para un EPUB: conserva títulos, énfasis tipográficos e imágenes del contenido. No inventes texto. Si un título está claramente centrado o alineado a la derecha, añádelo en alignment. Devuelve firmas y fechas como paragraph. Una firma seguida de fecha no debe ir como heading. Devuelve solo JSON válido."
     }
   ];
 
