@@ -1058,6 +1058,41 @@ textarea {
   font-size: 1.08rem;
 }
 
+.reader-page-corner-bookmark {
+  position: absolute;
+  top: -0.25rem;
+  right: 1.35rem;
+  z-index: 4;
+  width: 3rem;
+  height: 4.4rem;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0.65rem;
+  border-radius: 0 0 1rem 1rem;
+  background: linear-gradient(180deg, #194835 0%, #2f6d52 100%);
+  color: #fcf8ef;
+  box-shadow: 0 14px 24px rgba(25, 52, 40, 0.18);
+}
+
+.reader-page-corner-bookmark::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -0.8rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  background: #fcf8ef;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.reader-page-corner-bookmark svg {
+  position: relative;
+  z-index: 1;
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
 .reader-audio-field {
   display: grid;
   gap: 0.45rem;
@@ -2048,6 +2083,12 @@ textarea {
     width: auto;
     bottom: 5.6rem;
     max-height: min(72vh, 42rem);
+  }
+
+  .reader-page-corner-bookmark {
+    right: 0.9rem;
+    width: 2.7rem;
+    height: 4rem;
   }
 
   .header-actions,
