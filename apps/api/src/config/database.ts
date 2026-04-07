@@ -115,7 +115,9 @@ export async function initializeConnectionPool(): Promise<OracleConnectionPool> 
 
 export async function getConnection(): Promise<OracleConnection> {
   if (connectionPool) {
-    return connectionPool.getConnection();
+    const connection = await connectionPool.getConnection();
+    await connection.execute("ALTER SESSION DISABLE PARALLEL DML");
+    return connection;
   }
 
   if (initializationPromise) {

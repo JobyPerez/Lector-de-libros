@@ -418,6 +418,10 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     searchParams.set("afterPage", String(options.afterPage));
   }
 
+  if ((options as { progressId?: string } | undefined)?.progressId) {
+    searchParams.set("progressId", (options as { progressId?: string }).progressId ?? "");
+  }
+
   const path = searchParams.size > 0
     ? `/books/${bookId}/import-images?${searchParams.toString()}`
     : `/books/${bookId}/import-images`;
@@ -440,6 +444,23 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     book: BookSummary;
     insertionStartPageNumber: number;
   }>;
+}
+
+export type AppendImagesImportProgress = {
+  bookId: string;
+  completedFiles: number;
+  currentFileIndex: number | null;
+  currentFileName: string | null;
+  errorMessage: string | null;
+  stage: "ocr" | "saving" | "completed" | "failed";
+  totalFiles: number;
+};
+
+export function fetchAppendImagesImportProgress(accessToken: string, progressId: string) {
+  return request<{ progress: AppendImagesImportProgress }>(`/books/import-images/progress/${progressId}`, {
+    accessToken,
+    method: "GET"
+  });
 }
 
 export function deleteBookPage(accessToken: string, bookId: string, pageNumber: number) {

@@ -5,12 +5,14 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import {
   appendImagesToBook,
   createImageBook,
+  fetchAppendImagesImportProgress,
   fetchBookPage,
   fetchBookPageImage,
   fetchBooks,
   fetchReaderNavigation,
   rerunOcrPage,
   updateOcrPage,
+  type AppendImagesImportProgress,
   type ImageOcrMode,
   type ReaderBookmark,
   type ReaderNote,
@@ -85,6 +87,73 @@ function SaveOcrIcon() {
   );
 }
 
+function FilesIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M8 6.5H13.8L16.5 9.2V17C16.5 17.8284 15.8284 18.5 15 18.5H8C7.17157 18.5 6.5 17.8284 6.5 17V8C6.5 7.17157 7.17157 6.5 8 6.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.5 6.7V9.5H16.3" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10 11.5H13" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10 14.5H13" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M16.5 10.5H18C18.8284 10.5 19.5 11.1716 19.5 12V16C19.5 16.8284 18.8284 17.5 18 17.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function CameraIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M7.5 8.5H9.2L10.4 6.8H13.6L14.8 8.5H16.5C17.6046 8.5 18.5 9.39543 18.5 10.5V16C18.5 17.1046 17.6046 18 16.5 18H7.5C6.39543 18 5.5 17.1046 5.5 16V10.5C5.5 9.39543 6.39543 8.5 7.5 8.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="12" cy="13.2" r="2.7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 8.5L9.8 7.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function cameraDevicePriority(device: MediaDeviceInfo) {
+  const label = device.label.trim().toLowerCase();
+
+  if (!label) {
+    return 50;
+  }
+
+  let priority = 0;
+
+  if (/(enlace|phone link|link to windows|movil|m[oó]vil|telefono|tel[eé]fono|virtual|obs|droidcam|epoccam|iriun|snap camera|camo)/iu.test(label)) {
+    priority += 100;
+  }
+
+  if (/(webcam|integrated|integrada|built-in|builtin|hd webcam|usb camera|logitech|facetime|camera)/iu.test(label)) {
+    priority -= 20;
+  }
+
+  return priority;
+}
+
+function choosePreferredCameraDevice(devices: MediaDeviceInfo[], currentDeviceId?: string) {
+  const videoInputs = devices.filter((device) => device.kind === "videoinput");
+  if (videoInputs.length === 0) {
+    return null;
+  }
+
+  return [...videoInputs]
+    .sort((left, right) => {
+      const priorityDiff = cameraDevicePriority(left) - cameraDevicePriority(right);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+
+      if (currentDeviceId && left.deviceId === currentDeviceId) {
+        return -1;
+      }
+
+      if (currentDeviceId && right.deviceId === currentDeviceId) {
+        return 1;
+      }
+
+      return left.label.localeCompare(right.label, "es");
+    })[0];
+}
+
 type ReviewNavigationItem =
   | {
       isActive: boolean;
@@ -152,6 +221,7 @@ function highlightClassName(color: HighlightColor) {
 }
 
 type ReviewTextAlignment = "center" | "left" | "right";
+type AppendInsertionSide = "before" | "after";
 
 const reviewAlignmentMarkerPattern = /^::(left|center|right)::\s*/u;
 const reviewHeadingMarkerPattern = /^(#{1,6})\s+/u;
@@ -229,6 +299,14 @@ export function BookBuilderPage() {
   const [originalEditedText, setOriginalEditedText] = useState("");
   const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("VISION");
   const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("VISION");
+  const [appendInsertionSide, setAppendInsertionSide] = useState<AppendInsertionSide>("after");
+  const [appendReferencePageInput, setAppendReferencePageInput] = useState("1");
+  const [appendProgressId, setAppendProgressId] = useState<string | null>(null);
+  const [appendImportProgress, setAppendImportProgress] = useState<AppendImagesImportProgress | null>(null);
+  const [isAppendCameraModalOpen, setIsAppendCameraModalOpen] = useState(false);
+  const [appendCameraStream, setAppendCameraStream] = useState<MediaStream | null>(null);
+  const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
+  const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("VISION");
   const [createError, setCreateError] = useState<string | null>(null);
   const [appendError, setAppendError] = useState<string | null>(null);
@@ -248,6 +326,9 @@ export function BookBuilderPage() {
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
+  const appendCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const appendCameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const appendCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -278,9 +359,91 @@ export function BookBuilderPage() {
   const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
   const requestedReviewPage = requestedReviewPageParam ? Number(requestedReviewPageParam) : Number.NaN;
   const requestedInsertAfterPage = requestedInsertAfterPageParam ? Number(requestedInsertAfterPageParam) : Number.NaN;
-  const appendAfterPageNumber = selectedAppendBook && selectedAppendBook.bookId === requestedAppendBookId && Number.isInteger(requestedInsertAfterPage)
-    ? Math.min(Math.max(requestedInsertAfterPage, 0), selectedAppendBook.totalPages)
+  const appendReferencePageMax = Math.max(selectedAppendBook?.totalPages ?? 1, 1);
+  const initialAppendReferencePage = selectedAppendBook && selectedAppendBook.bookId === requestedAppendBookId && Number.isInteger(requestedInsertAfterPage)
+    ? Math.min(Math.max(requestedInsertAfterPage, 1), appendReferencePageMax)
     : undefined;
+  const parsedAppendReferencePageInput = Number.parseInt(appendReferencePageInput, 10);
+  const appendReferencePageNumber = Number.isFinite(parsedAppendReferencePageInput)
+    ? Math.min(Math.max(parsedAppendReferencePageInput, 1), appendReferencePageMax)
+    : initialAppendReferencePage;
+  const appendAfterPageNumber = appendReferencePageNumber === undefined
+    ? undefined
+    : appendInsertionSide === "before"
+      ? Math.max(appendReferencePageNumber - 1, 0)
+      : appendReferencePageNumber;
+
+  useEffect(() => {
+    setAppendInsertionSide("after");
+  }, [requestedAppendBookId, requestedInsertAfterPageParam]);
+
+  useEffect(() => {
+    if (initialAppendReferencePage !== undefined) {
+      setAppendReferencePageInput(String(initialAppendReferencePage));
+    }
+  }, [initialAppendReferencePage]);
+
+  useEffect(() => {
+    if (!isAppendCameraModalOpen || !appendCameraStream || !appendCameraVideoRef.current) {
+      return;
+    }
+
+    const videoElement = appendCameraVideoRef.current;
+    videoElement.srcObject = appendCameraStream;
+    void videoElement.play().catch(() => undefined);
+
+    return () => {
+      videoElement.pause();
+      videoElement.srcObject = null;
+    };
+  }, [appendCameraStream, isAppendCameraModalOpen]);
+
+  useEffect(() => {
+    if (!isAppendCameraModalOpen || typeof document === "undefined") {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !isAppendCameraCapturing) {
+        closeAppendCameraModal();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isAppendCameraCapturing, isAppendCameraModalOpen]);
+
+  useEffect(() => {
+    if (!isAppending || !appendProgressId || !accessToken) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const pollProgress = async () => {
+      try {
+        const response = await fetchAppendImagesImportProgress(accessToken, appendProgressId);
+        if (!cancelled) {
+          setAppendImportProgress(response.progress);
+        }
+      } catch {
+        // Ignore polling failures while the main request is still in progress.
+      }
+    };
+
+    void pollProgress();
+    const intervalId = window.setInterval(() => {
+      void pollProgress();
+    }, 800);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, appendProgressId, isAppending]);
 
   const reviewPageQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
@@ -481,8 +644,132 @@ export function BookBuilderPage() {
     event.target.value = "";
   }
 
+  function stopAppendCameraStream() {
+    setAppendCameraStream((currentStream) => {
+      currentStream?.getTracks().forEach((track) => track.stop());
+      return null;
+    });
+  }
+
+  function closeAppendCameraModal() {
+    setIsAppendCameraCapturing(false);
+    setIsAppendCameraStarting(false);
+    setIsAppendCameraModalOpen(false);
+    stopAppendCameraStream();
+  }
+
+  function shouldPreferNativeCameraCapture() {
+    if (typeof navigator === "undefined") {
+      return false;
+    }
+
+    return /Android|iPhone|iPad|iPod|Mobile/iu.test(navigator.userAgent);
+  }
+
+  async function handleOpenAppendCamera() {
+    if (isAppending || isAppendCameraStarting) {
+      return;
+    }
+
+    if (shouldPreferNativeCameraCapture()) {
+      appendCameraInputRef.current?.click();
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setAppendError("Este navegador no puede abrir la camara en escritorio. Usa la subida de archivos o prueba otro navegador.");
+      return;
+    }
+
+    setAppendError(null);
+    setIsAppendCameraStarting(true);
+
+    try {
+      const initialStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: true
+      });
+
+      const currentTrack = initialStream.getVideoTracks()[0] ?? null;
+      const currentDeviceId = currentTrack?.getSettings().deviceId;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const preferredDevice = choosePreferredCameraDevice(devices, currentDeviceId);
+
+      let stream = initialStream;
+      if (preferredDevice?.deviceId && preferredDevice.deviceId !== currentDeviceId) {
+        try {
+          const preferredStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              deviceId: { exact: preferredDevice.deviceId }
+            }
+          });
+
+          initialStream.getTracks().forEach((track) => track.stop());
+          stream = preferredStream;
+        } catch {
+          stream = initialStream;
+        }
+      }
+
+      setAppendCameraStream(stream);
+      setIsAppendCameraModalOpen(true);
+    } catch {
+      setAppendError("No se pudo abrir la camara. Revisa el permiso del navegador y que haya una webcam disponible.");
+    } finally {
+      setIsAppendCameraStarting(false);
+    }
+  }
+
+  function handleCaptureAppendCameraFrame() {
+    const videoElement = appendCameraVideoRef.current;
+    const canvasElement = appendCameraCanvasRef.current;
+
+    if (!videoElement || !canvasElement || videoElement.videoWidth <= 0 || videoElement.videoHeight <= 0) {
+      setAppendError("La camara todavia no esta lista para capturar una imagen.");
+      return;
+    }
+
+    const renderingContext = canvasElement.getContext("2d");
+    if (!renderingContext) {
+      setAppendError("No se pudo capturar la imagen de la camara.");
+      return;
+    }
+
+    setIsAppendCameraCapturing(true);
+    canvasElement.width = videoElement.videoWidth;
+    canvasElement.height = videoElement.videoHeight;
+    renderingContext.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+    canvasElement.toBlob((blob) => {
+      if (!blob) {
+        setAppendError("No se pudo capturar la imagen de la camara.");
+        setIsAppendCameraCapturing(false);
+        return;
+      }
+
+      const fileName = `camara-${new Date().toISOString().replace(/[:.]/gu, "-")}.jpg`;
+      appendFiles([new File([blob], fileName, { type: "image/jpeg" })]);
+      closeAppendCameraModal();
+    }, "image/jpeg", 0.92);
+  }
+
   function clearAppendSelection() {
     setSelectedAppendFiles([]);
+    setAppendError(null);
+  }
+
+  function handleAppendReferencePageInputChange(event: React.ChangeEvent<HTMLInputElement>) {
+    const rawValue = Number.parseInt(event.target.value, 10);
+    const nextValue = Number.isFinite(rawValue)
+      ? Math.min(Math.max(rawValue, 1), appendReferencePageMax)
+      : 1;
+
+    setAppendReferencePageInput(String(nextValue));
+  }
+
+  function removeAppendFile(indexToRemove: number) {
+    setSelectedAppendFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setAppendError(null);
   }
 
@@ -554,6 +841,17 @@ export function BookBuilderPage() {
 
     setIsAppending(true);
     setAppendError(null);
+    const progressId = crypto.randomUUID();
+    setAppendProgressId(progressId);
+    setAppendImportProgress({
+      bookId: selectedBookId,
+      completedFiles: 0,
+      currentFileIndex: selectedAppendFiles.length > 0 ? 0 : null,
+      currentFileName: selectedAppendFiles[0]?.name ?? null,
+      errorMessage: null,
+      stage: "ocr",
+      totalFiles: selectedAppendFiles.length
+    });
 
     try {
       const formData = new FormData();
@@ -563,7 +861,8 @@ export function BookBuilderPage() {
 
       const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
         ...(appendAfterPageNumber !== undefined ? { afterPage: appendAfterPageNumber } : {}),
-        ocrMode: appendOcrMode
+        ocrMode: appendOcrMode,
+        progressId
       });
       await booksQuery.refetch();
       clearAppendSelection();
@@ -575,6 +874,8 @@ export function BookBuilderPage() {
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
     } finally {
       setIsAppending(false);
+      setAppendProgressId(null);
+      setAppendImportProgress(null);
     }
   }
 
@@ -681,6 +982,23 @@ export function BookBuilderPage() {
 
     if (selectedReviewBook) {
       navigate(`/books/${selectedReviewBook.bookId}?page=${reviewPageNumber}`);
+      return;
+    }
+
+    navigate("/");
+  }
+
+  function handleBackFromAppend() {
+    if (returnTo) {
+      navigate(returnTo);
+      return;
+    }
+
+    if (selectedAppendBook) {
+      const pageQuery = appendAfterPageNumber && appendAfterPageNumber > 0
+        ? `?page=${appendAfterPageNumber}`
+        : "";
+      navigate(`/books/${selectedAppendBook.bookId}${pageQuery}`);
       return;
     }
 
@@ -911,15 +1229,27 @@ export function BookBuilderPage() {
         <section className="panel wide-panel">
           <div className="panel-header">
             <div>
-              <p className="eyebrow">{isAppendOnlyMode ? "Libro actual" : "Constructor de libros"}</p>
-              <h2>{isAppendOnlyMode ? "Añadir páginas al libro" : "OCR desde imágenes"}</h2>
+              <p className="eyebrow">{isAppendOnlyMode ? "Añadir páginas" : "Constructor de libros"}</p>
+              <h2>{isAppendOnlyMode ? (selectedAppendBook?.title ?? "Cargando libro...") : "OCR desde imágenes"}</h2>
             </div>
-            <Link className="secondary-button link-button" to="/">
-              Volver
-            </Link>
+            {isAppendOnlyMode ? (
+              <button
+                aria-label="Volver al lector"
+                className="secondary-button reader-header-icon-button"
+                onClick={handleBackFromAppend}
+                title="Volver al lector"
+                type="button"
+              >
+                <BackIcon />
+              </button>
+            ) : (
+              <Link className="secondary-button link-button" to="/">
+                Volver
+              </Link>
+            )}
           </div>
 
-          <div className="builder-board">
+          <div className={isAppendOnlyMode ? "builder-board builder-board-append" : "builder-board"}>
             {!isAppendOnlyMode ? (
               <article className="builder-form-card">
                 <h3>Crear un libro nuevo</h3>
@@ -995,86 +1325,165 @@ export function BookBuilderPage() {
               </article>
             ) : null}
 
-            <article className="builder-form-card">
-              <h3>Añadir páginas a un libro existente</h3>
-              <p className="subdued">Úsalo para seguir ampliando un libro que ya empezaste a leer. Si vienes desde el lector, las páginas nuevas se insertarán justo después de la página en la que estabas.</p>
+            <article className={isAppendOnlyMode ? "builder-form-card builder-form-card-append" : "builder-form-card"}>
+              {!isAppendOnlyMode ? (
+                <>
+                  <h3>Añadir páginas a un libro existente</h3>
+                  <p className="subdued">Úsalo para seguir ampliando un libro que ya empezaste a leer. Si vienes desde el lector, las páginas nuevas se insertarán justo después de la página en la que estabas.</p>
+                </>
+              ) : null}
 
               <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
-                <label>
-                  Libro de imágenes
-                  <select onChange={(event) => setSelectedBookId(event.target.value)} value={selectedBookId}>
-                    <option value="">Selecciona un libro</option>
-                    {imageBooks.map((book) => (
-                      <option key={book.bookId} value={book.bookId}>{book.title}</option>
-                    ))}
-                  </select>
-                </label>
-
-                {selectedAppendBook ? (
-                  <div className="selected-book-banner">
-                    <strong>Libro seleccionado:</strong>
-                    <span>{selectedAppendBook.title}</span>
-                  </div>
+                {!isAppendOnlyMode ? (
+                  <label>
+                    Libro de imágenes
+                    <select onChange={(event) => setSelectedBookId(event.target.value)} value={selectedBookId}>
+                      <option value="">Selecciona un libro</option>
+                      {imageBooks.map((book) => (
+                        <option key={book.bookId} value={book.bookId}>{book.title}</option>
+                      ))}
+                    </select>
+                  </label>
                 ) : null}
 
-                {selectedAppendBook && appendAfterPageNumber !== undefined ? (
+                {selectedAppendBook && appendReferencePageNumber !== undefined ? (
                   <div className="selected-book-banner">
-                    <strong>Posición de inserción:</strong>
-                    <span>
-                      {appendAfterPageNumber === 0
-                        ? "Las nuevas páginas se añadirán al principio del libro."
-                        : `Se insertarán después de la página ${appendAfterPageNumber}.`}
-                    </span>
+                    <span>Las páginas añadidas se insertarán</span>
+                    <div className="append-placement-picker" role="radiogroup" aria-label="Posición respecto a la página actual">
+                      <button
+                        aria-checked={appendInsertionSide === "before"}
+                        className={appendInsertionSide === "before" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setAppendInsertionSide("before")}
+                        role="radio"
+                        type="button"
+                      >
+                        Antes
+                      </button>
+                      <button
+                        aria-checked={appendInsertionSide === "after"}
+                        className={appendInsertionSide === "after" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setAppendInsertionSide("after")}
+                        role="radio"
+                        type="button"
+                      >
+                        Después
+                      </button>
+                    </div>
+                    <span>de la página</span>
+                    <label className="append-reference-page-field" aria-label="Página de referencia">
+                      <input
+                        className="append-reference-page-input"
+                        inputMode="numeric"
+                        max={appendReferencePageMax}
+                        min={1}
+                        onChange={handleAppendReferencePageInputChange}
+                        type="number"
+                        value={appendReferencePageNumber}
+                      />
+                    </label>
+                    <span>{`/ ${appendReferencePageMax}.`}</span>
                   </div>
                 ) : null}
 
                 <div className="capture-input-grid">
-                  <label>
-                    Nuevas imágenes
+                  <label aria-label="Nuevas imágenes" className="capture-action-card capture-action-card-icon-only" title="Nuevas imágenes">
+                    <span className="capture-action-icon" aria-hidden="true">
+                      <FilesIcon />
+                    </span>
                     <input
                       accept="image/png,image/jpeg,image/webp"
+                      className="capture-action-input"
+                      disabled={isAppending}
                       multiple
                       onChange={handleAppendFileSelection}
                       type="file"
                     />
                   </label>
 
-                  <label>
-                    Añadir desde cámara
-                    <input
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handleAppendFileSelection}
-                      type="file"
-                    />
-                  </label>
+                  <button
+                    aria-label="Añadir desde cámara"
+                    className="capture-action-card capture-action-card-icon-only"
+                    disabled={isAppending || isAppendCameraStarting}
+                    onClick={handleOpenAppendCamera}
+                    title="Añadir desde cámara"
+                    type="button"
+                  >
+                    <span className="capture-action-icon" aria-hidden="true">
+                      <CameraIcon />
+                    </span>
+                  </button>
                 </div>
 
-                <p className="helper-text">Desde el móvil se abrirá la cámara si el navegador lo permite. En escritorio, la disponibilidad depende del navegador y del sistema.</p>
-
-                <label>
-                  Modo OCR
-                  <select onChange={(event) => setAppendOcrMode(event.target.value as ImageOcrMode)} value={appendOcrMode}>
-                    <option value="VISION">OCR preciso con IA</option>
-                    <option value="LOCAL">OCR rápido</option>
-                  </select>
-                </label>
-
-                <p className="helper-text">{describeOcrMode(appendOcrMode)}</p>
-                <p className="helper-text">También aquí se recorta automáticamente el encabezado y el pie antes de reconocer el contenido.</p>
+                <input
+                  accept="image/*"
+                  capture="environment"
+                  className="capture-action-input-hidden"
+                  onChange={handleAppendFileSelection}
+                  ref={appendCameraInputRef}
+                  type="file"
+                />
 
                 {selectedAppendFiles.length > 0 ? (
-                  <>
-                    <div className="file-pill-list">
-                      {selectedAppendFiles.map((file, index) => (
-                        <span className="file-pill" key={`${file.name}-${index}`}>{file.name}</span>
-                      ))}
-                    </div>
-                    <button className="text-button align-start" onClick={clearAppendSelection} type="button">
-                      Limpiar selección
-                    </button>
-                  </>
+                  <div className="file-pill-list file-pill-list-append">
+                    {selectedAppendFiles.map((file, index) => (
+                      <span
+                        className={[
+                          "file-pill",
+                          "file-pill-removable",
+                          isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? "file-pill-completed" : "",
+                          isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? "file-pill-processing" : "",
+                          isAppending && (appendImportProgress?.completedFiles ?? 0) <= index && appendImportProgress?.currentFileIndex !== index ? "file-pill-pending" : ""
+                        ].filter(Boolean).join(" ")}
+                        key={`${file.name}-${index}`}
+                      >
+                        <span>{file.name}</span>
+                        {isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? (
+                          <span className="file-pill-status file-pill-status-completed">Hecho</span>
+                        ) : null}
+                        {isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? (
+                          <span className="file-pill-status">OCR...</span>
+                        ) : null}
+                        <button
+                          aria-label={`Eliminar ${file.name}`}
+                          className="file-pill-remove"
+                          disabled={isAppending}
+                          onClick={() => removeAppendFile(index)}
+                          type="button"
+                        >
+                          x
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 ) : null}
+
+                {isAppending && appendImportProgress?.stage === "saving" ? (
+                  <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
+                ) : null}
+
+                <div className="selected-book-banner">
+                  <span>Modo OCR</span>
+                  <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
+                    <button
+                      aria-checked={appendOcrMode === "VISION"}
+                      className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                      onClick={() => setAppendOcrMode("VISION")}
+                      role="radio"
+                      type="button"
+                    >
+                      Preciso con IA
+                    </button>
+                    <button
+                      aria-checked={appendOcrMode === "LOCAL"}
+                      className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                      onClick={() => setAppendOcrMode("LOCAL")}
+                      role="radio"
+                      type="button"
+                    >
+                      Rápido local
+                    </button>
+                  </div>
+                </div>
 
                 {appendError ? <p className="error-text">{appendError}</p> : null}
 
@@ -1083,19 +1492,71 @@ export function BookBuilderPage() {
                 </button>
               </form>
 
-              <div className="book-option-list">
-                <h3>Tus libros de imágenes</h3>
-                {booksQuery.isLoading ? <p className="subdued">Cargando libros...</p> : null}
-                {!booksQuery.isLoading && imageBooks.length === 0 ? <p className="subdued">Todavía no tienes libros creados desde imágenes.</p> : null}
-                {imageBooks.map((book) => (
-                  <Link className="book-option-card" key={book.bookId} to={`/books/${book.bookId}`}>
-                    <strong>{book.title}</strong>
-                    <span>{book.totalPages} páginas, {book.totalParagraphs} párrafos</span>
-                  </Link>
-                ))}
-              </div>
+              {!isAppendOnlyMode ? (
+                <div className="book-option-list">
+                  <h3>Tus libros de imágenes</h3>
+                  {booksQuery.isLoading ? <p className="subdued">Cargando libros...</p> : null}
+                  {!booksQuery.isLoading && imageBooks.length === 0 ? <p className="subdued">Todavía no tienes libros creados desde imágenes.</p> : null}
+                  {imageBooks.map((book) => (
+                    <Link className="book-option-card" key={book.bookId} to={`/books/${book.bookId}`}>
+                      <strong>{book.title}</strong>
+                      <span>{book.totalPages} páginas, {book.totalParagraphs} párrafos</span>
+                    </Link>
+                  ))}
+                </div>
+              ) : null}
             </article>
           </div>
+
+          {isAppendCameraModalOpen ? (
+            <div className="camera-capture-backdrop" role="presentation">
+              <div aria-label="Captura desde camara" aria-modal="true" className="camera-capture-modal" role="dialog">
+                <div className="camera-capture-header">
+                  <div>
+                    <p className="eyebrow">Camara</p>
+                    <h3>Capturar pagina</h3>
+                  </div>
+                  <button
+                    aria-label="Cerrar camara"
+                    className="secondary-button reader-header-icon-button"
+                    disabled={isAppendCameraCapturing}
+                    onClick={closeAppendCameraModal}
+                    type="button"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+
+                <div className="camera-capture-preview">
+                  {appendCameraStream ? (
+                    <>
+                      <video muted playsInline ref={appendCameraVideoRef} />
+                      <div className="camera-capture-overlay-actions">
+                        <button
+                          className="primary-button camera-capture-primary-button"
+                          disabled={!appendCameraStream || isAppendCameraCapturing}
+                          onClick={handleCaptureAppendCameraFrame}
+                          type="button"
+                        >
+                          {isAppendCameraCapturing ? "Guardando..." : "Tomar foto"}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="subdued">Abriendo camara...</p>
+                  )}
+                </div>
+
+                <canvas className="camera-capture-canvas" ref={appendCameraCanvasRef} />
+
+                <div className="camera-capture-actions">
+                  <button className="secondary-button" disabled={isAppendCameraCapturing} onClick={closeAppendCameraModal} type="button">
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
       ) : null}
 

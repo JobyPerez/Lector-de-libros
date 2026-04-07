@@ -44,7 +44,8 @@ const importImagesParamsSchema = z.object({
 });
 
 const importImagesQuerySchema = z.object({
-  afterPage: z.coerce.number().int().min(0).optional()
+  afterPage: z.coerce.number().int().min(0).optional(),
+  progressId: z.string().uuid().optional()
 });
 
 const bookParamsSchema = z.object({
@@ -122,6 +123,39 @@ type BookBinaryFileRecord = {
   fileName?: string | null;
   mimeType?: string | null;
 };
+
+type ImportImagesProgressRecord = {
+  bookId: string;
+  completedFiles: number;
+  currentFileIndex: number | null;
+  currentFileName: string | null;
+  errorMessage: string | null;
+  stage: "ocr" | "saving" | "completed" | "failed";
+  totalFiles: number;
+  updatedAt: number;
+  userId: string;
+};
+
+const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
+const importImagesProgressTtlMs = 10 * 60 * 1000;
+
+function pruneImportImagesProgressStore() {
+  const expiresBefore = Date.now() - importImagesProgressTtlMs;
+
+  for (const [progressId, progress] of importImagesProgressStore.entries()) {
+    if (progress.updatedAt < expiresBefore) {
+      importImagesProgressStore.delete(progressId);
+    }
+  }
+}
+
+function setImportImagesProgress(progressId: string, progress: ImportImagesProgressRecord) {
+  pruneImportImagesProgressStore();
+  importImagesProgressStore.set(progressId, {
+    ...progress,
+    updatedAt: Date.now()
+  });
+}
 
 function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
   const fieldValue = fields[fieldName] as { value?: string } | Array<{ value?: string }> | undefined;
@@ -211,10 +245,26 @@ function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
   return files;
 }
 
-async function ocrImageFiles(files: UploadedBinaryFile[], ocrMode: ImageOcrMode): Promise<ProcessedImagePage[]> {
+async function ocrImageFiles(
+  files: UploadedBinaryFile[],
+  ocrMode: ImageOcrMode,
+  onProgress?: (progress: {
+    completedFiles: number;
+    currentFileIndex: number;
+    currentFileName: string;
+    totalFiles: number;
+  }) => void
+): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
 
-  for (const file of files) {
+  for (const [index, file] of files.entries()) {
+    onProgress?.({
+      completedFiles: index,
+      currentFileIndex: index,
+      currentFileName: file.fileName,
+      totalFiles: files.length
+    });
+
     const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
     pages.push({
       ...file,
@@ -222,6 +272,13 @@ async function ocrImageFiles(files: UploadedBinaryFile[], ocrMode: ImageOcrMode)
       htmlContent: ocrResult.htmlContent,
       paragraphs: ocrResult.paragraphs,
       rawText: ocrResult.rawText
+    });
+
+    onProgress?.({
+      completedFiles: index + 1,
+      currentFileIndex: index,
+      currentFileName: file.fileName,
+      totalFiles: files.length
     });
   }
 
@@ -442,6 +499,139 @@ async function shiftSubsequentPageNumbers(
       bookId,
       delta,
       temporaryOffset
+    }
+  );
+
+}
+
+async function shiftSubsequentRelatedReferences(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number,
+  pageDelta: number,
+  sequenceDelta: number
+): Promise<void> {
+  if (pageDelta === 0 && sequenceDelta === 0) {
+    return;
+  }
+
+  const temporaryOffset = 100000;
+
+  if (sequenceDelta !== 0) {
+    await connection.execute(
+      `
+        UPDATE book_chapters
+        SET sequence_number = sequence_number + :temporaryOffset
+        WHERE book_id = :bookId
+          AND page_number > :pageNumber
+      `,
+      {
+        bookId,
+        pageNumber,
+        temporaryOffset
+      }
+    );
+  }
+
+  await connection.execute(
+    `
+      UPDATE user_bookmarks
+      SET page_number = page_number + :pageDelta,
+          sequence_number = sequence_number + :sequenceDelta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageDelta,
+      pageNumber,
+      sequenceDelta
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE user_highlights
+      SET page_number = page_number + :pageDelta,
+          sequence_number = sequence_number + :sequenceDelta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageDelta,
+      pageNumber,
+      sequenceDelta
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE user_notes
+      SET page_number = page_number + :pageDelta,
+          sequence_number = CASE
+            WHEN sequence_number IS NULL THEN NULL
+            ELSE sequence_number + :sequenceDelta
+          END
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageDelta,
+      pageNumber,
+      sequenceDelta
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE user_book_progress
+      SET current_page_number = current_page_number + :pageDelta,
+          current_sequence_number = current_sequence_number + :sequenceDelta
+      WHERE book_id = :bookId
+        AND current_page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageDelta,
+      pageNumber,
+      sequenceDelta
+    }
+  );
+
+  if (sequenceDelta !== 0) {
+    await connection.execute(
+      `
+        UPDATE book_chapters
+        SET page_number = page_number + :pageDelta,
+            sequence_number = sequence_number - :temporaryOffset + :sequenceDelta
+        WHERE book_id = :bookId
+          AND page_number > :pageNumber
+      `,
+      {
+        bookId,
+        pageDelta,
+        pageNumber,
+        sequenceDelta,
+        temporaryOffset
+      }
+    );
+
+    return;
+  }
+
+  await connection.execute(
+    `
+      UPDATE book_chapters
+      SET page_number = page_number + :pageDelta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      pageDelta,
+      pageNumber
     }
   );
 }
@@ -773,6 +963,32 @@ function detectSourceType(fileName: string, mimeType: string, requestedSourceTyp
 }
 
 export const registerBookRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/import-images/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    pruneImportImagesProgressStore();
+    const params = z.object({ progressId: z.string().uuid() }).parse(request.params);
+    const progress = importImagesProgressStore.get(params.progressId);
+
+    if (!progress || progress.userId !== request.currentUser.userId) {
+      return reply.status(404).send({ message: "Progreso no encontrado." });
+    }
+
+    return reply.send({
+      progress: {
+        bookId: progress.bookId,
+        completedFiles: progress.completedFiles,
+        currentFileIndex: progress.currentFileIndex,
+        currentFileName: progress.currentFileName,
+        errorMessage: progress.errorMessage,
+        stage: progress.stage,
+        totalFiles: progress.totalFiles
+      }
+    });
+  });
+
   app.get("/", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -1236,6 +1452,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
+    const currentUser = request.currentUser;
+
     const params = importImagesParamsSchema.parse(request.params);
     const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
@@ -1243,11 +1461,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       ocrMode: multipartForm.fields.ocrMode
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode);
     const connection = await getConnection();
+    let progressId = query.progressId;
 
     try {
-      const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const existingBook = await findOwnedBook(connection, params.bookId, currentUser.userId);
       if (!existingBook) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -1255,6 +1473,38 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (existingBook.sourceType !== "IMAGES") {
         return reply.status(409).send({ message: "Solo puedes añadir imágenes a libros creados desde imágenes." });
       }
+
+      if (progressId) {
+        setImportImagesProgress(progressId, {
+          bookId: existingBook.bookId,
+          completedFiles: 0,
+          currentFileIndex: imageFiles.length > 0 ? 0 : null,
+          currentFileName: imageFiles[0]?.fileName ?? null,
+          errorMessage: null,
+          stage: "ocr",
+          totalFiles: imageFiles.length,
+          updatedAt: Date.now(),
+          userId: currentUser.userId
+        });
+      }
+
+      const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, (progress) => {
+        if (!progressId) {
+          return;
+        }
+
+        setImportImagesProgress(progressId, {
+          bookId: existingBook.bookId,
+          completedFiles: progress.completedFiles,
+          currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileIndex,
+          currentFileName: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileName,
+          errorMessage: null,
+          stage: "ocr",
+          totalFiles: progress.totalFiles,
+          updatedAt: Date.now(),
+          userId: currentUser.userId
+        });
+      });
 
       const insertionAfterPage = query.afterPage ?? Number(existingBook.totalPages);
       if (insertionAfterPage > Number(existingBook.totalPages)) {
@@ -1265,17 +1515,60 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const startingSequenceNumber = (await countParagraphsUpToPage(connection, existingBook.bookId, insertionAfterPage)) + 1;
       const addedParagraphs = processedPages.reduce((count, page) => count + page.paragraphs.length, 0);
 
-      await invalidateBookAudioCache(connection, existingBook.bookId);
-      await shiftSubsequentPageNumbers(connection, existingBook.bookId, insertionAfterPage, processedPages.length);
-      await shiftSubsequentSequenceNumbers(connection, existingBook.bookId, insertionAfterPage, addedParagraphs);
+      if (progressId) {
+        setImportImagesProgress(progressId, {
+          bookId: existingBook.bookId,
+          completedFiles: processedPages.length,
+          currentFileIndex: null,
+          currentFileName: null,
+          errorMessage: null,
+          stage: "saving",
+          totalFiles: imageFiles.length,
+          updatedAt: Date.now(),
+          userId: currentUser.userId
+        });
+      }
 
-      const insertionSummary = await insertProcessedImagePages(
-        connection,
-        existingBook.bookId,
-        processedPages,
-        insertionStartPageNumber,
-        startingSequenceNumber
-      );
+      try {
+        await shiftSubsequentPageNumbers(connection, existingBook.bookId, insertionAfterPage, processedPages.length);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Error al desplazar numeros de pagina: ${message}`);
+      }
+
+      try {
+        await shiftSubsequentSequenceNumbers(connection, existingBook.bookId, insertionAfterPage, addedParagraphs);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Error al desplazar secuencias y anotaciones: ${message}`);
+      }
+
+      try {
+        await shiftSubsequentRelatedReferences(
+          connection,
+          existingBook.bookId,
+          insertionAfterPage,
+          processedPages.length,
+          addedParagraphs
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Error al reajustar referencias del lector: ${message}`);
+      }
+
+      let insertionSummary;
+      try {
+        insertionSummary = await insertProcessedImagePages(
+          connection,
+          existingBook.bookId,
+          processedPages,
+          insertionStartPageNumber,
+          startingSequenceNumber
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Error al insertar las nuevas paginas: ${message}`);
+      }
 
       const updatedBook = {
         ...existingBook,
@@ -1301,6 +1594,20 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       await connection.commit();
 
+      if (progressId) {
+        setImportImagesProgress(progressId, {
+          bookId: existingBook.bookId,
+          completedFiles: processedPages.length,
+          currentFileIndex: null,
+          currentFileName: null,
+          errorMessage: null,
+          stage: "completed",
+          totalFiles: imageFiles.length,
+          updatedAt: Date.now(),
+          userId: currentUser.userId
+        });
+      }
+
       return reply.status(201).send({
         addedPages: insertionSummary.addedPages,
         addedParagraphs: insertionSummary.addedParagraphs,
@@ -1308,6 +1615,20 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         book: updatedBook
       });
     } catch (error) {
+      if (progressId) {
+        setImportImagesProgress(progressId, {
+          bookId: params.bookId,
+          completedFiles: 0,
+          currentFileIndex: null,
+          currentFileName: null,
+          errorMessage: error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.",
+          stage: "failed",
+          totalFiles: imageFiles.length,
+          updatedAt: Date.now(),
+          userId: currentUser.userId
+        });
+      }
+
       await connection.rollback();
       throw error;
     } finally {
@@ -1357,8 +1678,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         ? null
         : Math.min(params.pageNumber, updatedTotalPages);
 
-      await invalidateBookAudioCache(connection, params.bookId);
-
       await connection.execute(
         `
           DELETE FROM book_files
@@ -1383,6 +1702,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       await shiftSubsequentSequenceNumbers(connection, params.bookId, params.pageNumber, -deletedParagraphCount);
       await shiftSubsequentPageNumbers(connection, params.bookId, params.pageNumber, -1);
+      await shiftSubsequentRelatedReferences(connection, params.bookId, params.pageNumber, -1, -deletedParagraphCount);
 
       await connection.execute(
         `
