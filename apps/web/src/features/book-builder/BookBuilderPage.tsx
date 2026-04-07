@@ -237,6 +237,7 @@ export function BookBuilderPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
+  const [isRerunningOcr, setIsRerunningOcr] = useState(false);
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
@@ -610,6 +611,7 @@ export function BookBuilderPage() {
     setReviewError(null);
     setReviewMessage(null);
     setIsSavingReview(true);
+    setIsRerunningOcr(true);
     setIsReviewOcrMenuVisible(false);
 
     try {
@@ -620,6 +622,7 @@ export function BookBuilderPage() {
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.");
     } finally {
+      setIsRerunningOcr(false);
       setIsSavingReview(false);
     }
   }
@@ -1125,7 +1128,7 @@ export function BookBuilderPage() {
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
 
             <div className="builder-review-grid">
-              <article className="review-panel">
+              <article className={isRerunningOcr ? "review-panel review-panel-processing" : "review-panel"}>
                 <div className="source-panel-header">
                   <div>
                     <p className="page-label">Imagen original</p>
@@ -1133,7 +1136,15 @@ export function BookBuilderPage() {
                 </div>
 
                 {reviewImageUrl ? (
-                  <img alt={`Página ${reviewPageNumber} para revisión OCR`} className="preview-image" src={reviewImageUrl} />
+                  <div className={isRerunningOcr ? "review-image-frame is-processing" : "review-image-frame"}>
+                    <img alt={`Página ${reviewPageNumber} para revisión OCR`} className="preview-image" src={reviewImageUrl} />
+                    {isRerunningOcr ? (
+                      <div aria-live="polite" className="review-image-processing-overlay">
+                        <span className="review-processing-spinner" />
+                        <strong>Reconociendo OCR...</strong>
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <div className="empty-state compact-state">
                     <p>No hay imagen asociada a esta página.</p>
@@ -1142,9 +1153,9 @@ export function BookBuilderPage() {
               </article>
 
               <article className="review-panel">
-                <form className="stack-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
-                  <label>
-                    Edición de la página
+                <form className="stack-form review-editor-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
+                  <label className="review-editor-label">
+                    <span className="page-label">Edición de la página</span>
                     <textarea
                       className="ocr-editor"
                       onChange={(event) => {
@@ -1248,7 +1259,7 @@ export function BookBuilderPage() {
                   {reviewPreviewHtml ? (
                     <div>
                       <p className="page-label">Previsualización de la página guardada</p>
-                      <article className="reader-prose reader-prose-rich">
+                      <article className="reader-prose reader-prose-rich review-preview-panel">
                         <div
                           className="reader-rich-content"
                           dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
@@ -1453,11 +1464,13 @@ export function BookBuilderPage() {
 
               <button
                 aria-expanded={isReviewOcrMenuVisible}
-                aria-label={isSavingReview ? "Reconociendo OCR" : "Opciones de OCR"}
-                className={isReviewOcrMenuVisible ? "reader-float-button review-ocr-text-button active" : "reader-float-button review-ocr-text-button"}
+                aria-label={isRerunningOcr ? "Reconociendo OCR" : "Opciones de OCR"}
+                className={isRerunningOcr
+                  ? "reader-float-button review-ocr-text-button review-ocr-text-button-loading"
+                  : (isReviewOcrMenuVisible ? "reader-float-button review-ocr-text-button active" : "reader-float-button review-ocr-text-button")}
                 disabled={isSavingReview || !reviewBookId}
                 onClick={() => setIsReviewOcrMenuVisible((current) => !current)}
-                title={isSavingReview ? "Reconociendo OCR..." : "Opciones de OCR"}
+                title={isRerunningOcr ? "Reconociendo OCR..." : "Opciones de OCR"}
                 type="button"
               >
                 <span>OCR</span>
