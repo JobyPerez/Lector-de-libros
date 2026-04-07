@@ -1075,7 +1075,7 @@ export function BookBuilderPage() {
 
         const parsedSegment = parseReviewAlignmentMarker(trimmedSegment);
         const headingMatch = parsedSegment.content.match(reviewHeadingMarkerPattern);
-        return headingMatch ? headingMatch[1].length : 0;
+        return headingMatch?.[1]?.length ?? 0;
       })
       .filter((segmentLevel): segmentLevel is number => segmentLevel !== null);
 

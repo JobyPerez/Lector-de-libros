@@ -14,9 +14,11 @@ import {
   fetchProgress,
   fetchReaderNavigation,
   requestParagraphAudio,
+  requestParagraphAudioBlock,
   updateProgress,
   type HighlightColor,
   type ParagraphContent,
+  type ReaderAudioBlockParagraph,
   type ReaderHighlight,
   type ReaderNote,
   type ReaderTocEntry
@@ -35,6 +37,10 @@ const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
 const PAGE_TURN_DURATION_MS = 760;
+const AUDIO_BLOCK_PARAGRAPH_COUNT = 5;
+const AUDIO_BLOCK_QUEUE_SIZE = 2;
+const AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT = 1;
+const AUDIO_BLOCK_FALLBACK_DURATION_MS = 18_000;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -42,6 +48,20 @@ const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "BLUE", label: "Azul" },
   { color: "PINK", label: "Rosa" }
 ];
+
+const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: "deepgram" | "device" }> = [
+  { description: "Voz en la nube", label: "Deepgram", value: "deepgram" },
+  { description: "Voz local del navegador", label: "Dispositivo", value: "device" }
+];
+
+const TTS_VOICE_OPTIONS = [
+  { description: "Español peninsular natural", label: "Diana", value: "aura-2-diana-es" },
+  { description: "Español peninsular natural", label: "Néstor", value: "aura-2-nestor-es" },
+  { description: "Español peninsular natural", label: "Carina", value: "aura-2-carina-es" },
+  { description: "Español peninsular natural", label: "Álvaro", value: "aura-2-alvaro-es" },
+  { description: "Español peninsular natural", label: "Agustina", value: "aura-2-agustina-es" },
+  { description: "Español peninsular natural", label: "Silvia", value: "aura-2-silvia-es" }
+] as const;
 
 type PageTurnDirection = "forward" | "backward";
 
@@ -53,93 +73,6 @@ type PageTurnSnapshot = {
   pageNumber: number;
   paragraphs: ParagraphContent[];
 };
-
-type PrefetchedParagraphAudio = {
-  blob?: Blob;
-  controller?: AbortController;
-  pageNumber: number;
-  paragraphId: string;
-  promise?: Promise<Blob>;
-  voiceModel: string;
-};
-
-type DeviceVoiceOption = {
-  description: string;
-  label: string;
-  value: string;
-};
-
-type SelectionDraft = {
-  charEnd: number;
-  charStart: number;
-  paragraph: ParagraphContent;
-  rect: { left: number; top: number };
-  selectedText: string;
-};
-
-type HighlightSegment = {
-  color: HighlightColor;
-  highlightId: string;
-  text: string;
-};
-
-type PlainTextSegment = {
-  highlight: HighlightSegment | null;
-  text: string;
-};
-
-type NavigationListItem =
-  | {
-      isActive: boolean;
-      key: string;
-      level: number;
-      pageNumber: number;
-      paragraphNumber: number;
-      title: string;
-      type: "toc";
-    }
-  | {
-      bookmarkId: string;
-      isActive: boolean;
-      key: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      title: string;
-      type: "bookmark";
-    }
-  | {
-      color: HighlightColor | null;
-      excerpt: string;
-      isActive: boolean;
-      key: string;
-      noteId: string;
-      noteText: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      type: "note";
-    };
-
-const TTS_VOICE_OPTIONS = [
-  { description: "Femenina, expresiva y profesional para narración", label: "Diana", value: "aura-2-diana-es" },
-  { description: "Femenina, cálida y natural", label: "Silvia", value: "aura-2-silvia-es" },
-  { description: "Masculina, clara y profesional", label: "Néstor", value: "aura-2-nestor-es" },
-  { description: "Masculina, serena y fiable", label: "Álvaro", value: "aura-2-alvaro-es" },
-  { description: "Femenina, energética y segura", label: "Carina", value: "aura-2-carina-es" },
-  { description: "Femenina, clara y profesional", label: "Agustina", value: "aura-2-agustina-es" }
-] as const;
-
-const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: TtsEngine }> = [
-  { description: "Deepgram, mayor calidad con coste por uso", label: "IA", value: "deepgram" },
-  { description: "Voces nativas gratuitas del navegador o del sistema", label: "Dispositivo", value: "device" }
-];
-
-function getSpeechSynthesisApi() {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-    return null;
-  }
-
-  return window.speechSynthesis;
-}
 
 function readStoredTtsEngine(): TtsEngine {
   if (typeof window === "undefined") {
@@ -186,6 +119,14 @@ function readStoredPlaybackRate() {
   }
 
   return Math.min(Math.max(storedPlaybackRate, MIN_PLAYBACK_RATE), MAX_PLAYBACK_RATE);
+}
+
+function getSpeechSynthesisApi() {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return null;
+  }
+
+  return window.speechSynthesis;
 }
 
 function isPeninsularSpanishVoice(voice: SpeechSynthesisVoice) {
@@ -245,12 +186,85 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
 
+function isMissingAudioBlockRouteError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.toLowerCase();
+  return normalizedMessage.includes("/tts/block") && normalizedMessage.includes("not found");
+}
+
 function setMediaSessionPlaybackState(state: MediaSessionPlaybackState) {
   if (typeof navigator === "undefined" || !("mediaSession" in navigator)) {
     return;
   }
 
   navigator.mediaSession.playbackState = state;
+}
+
+function waitForAudioMetadata(audioElement: HTMLAudioElement) {
+  if (audioElement.readyState >= 1) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const handleLoadedMetadata = () => {
+      cleanup();
+      resolve();
+    };
+
+    const handleError = () => {
+      cleanup();
+      reject(new Error("No se pudieron leer los metadatos del bloque de audio."));
+    };
+
+    const cleanup = () => {
+      audioElement.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      audioElement.removeEventListener("error", handleError);
+    };
+
+    audioElement.addEventListener("loadedmetadata", handleLoadedMetadata, { once: true });
+    audioElement.addEventListener("error", handleError, { once: true });
+  });
+}
+
+function buildAudioBlockTimings(paragraphs: ReaderAudioBlockParagraph[], durationMs: number): TimedAudioBlockParagraph[] {
+  if (paragraphs.length === 0) {
+    return [];
+  }
+
+  const safeDurationMs = Number.isFinite(durationMs) && durationMs > 0
+    ? durationMs
+    : AUDIO_BLOCK_FALLBACK_DURATION_MS;
+  const paragraphWeights = paragraphs.map((paragraph) => Math.max(paragraph.textLength, 48));
+  const totalWeight = paragraphWeights.reduce((sum, weight) => sum + weight, 0);
+  let cursorMs = 0;
+
+  return paragraphs.map((paragraph, index) => {
+    const isLastParagraph = index === paragraphs.length - 1;
+    const paragraphDurationMs = isLastParagraph
+      ? Math.max(safeDurationMs - cursorMs, 0)
+      : Math.round((safeDurationMs * (paragraphWeights[index] ?? 48)) / totalWeight);
+    const nextTiming: TimedAudioBlockParagraph = {
+      ...paragraph,
+      endMs: cursorMs + paragraphDurationMs,
+      startMs: cursorMs
+    };
+
+    cursorMs = nextTiming.endMs;
+    return nextTiming;
+  });
+}
+
+function findParagraphTimingForTime(paragraphTimings: TimedAudioBlockParagraph[], currentTimeMs: number) {
+  if (paragraphTimings.length === 0) {
+    return null;
+  }
+
+  return paragraphTimings.find((paragraphTiming) => currentTimeMs < paragraphTiming.endMs)
+    ?? paragraphTimings[paragraphTimings.length - 1]
+    ?? null;
 }
 
 function ReaderControlIcon({ children }: { children: ReactNode }) {
@@ -300,6 +314,16 @@ function PlayIcon() {
     <ReaderControlIcon>
       <path d="M9 7.5V16.5L16.5 12L9 7.5Z" fill="currentColor" />
     </ReaderControlIcon>
+  );
+}
+
+function LoadingAudioIcon() {
+  return (
+    <span aria-hidden="true" className="reader-loading-bars">
+      <span className="reader-loading-bar" />
+      <span className="reader-loading-bar" />
+      <span className="reader-loading-bar" />
+    </span>
   );
 }
 
@@ -633,7 +657,12 @@ export function ReaderPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
-  const prefetchedAudioRef = useRef<PrefetchedParagraphAudio | null>(null);
+  const audioBlockQueueRef = useRef<QueuedAudioBlock[]>([]);
+  const activeAudioBlockRef = useRef<ActiveAudioBlock | null>(null);
+  const audioBlockModeAvailableRef = useRef(true);
+  const currentPageNumberRef = useRef(1);
+  const currentParagraphNumberRef = useRef(1);
+  const lastPersistedProgressRef = useRef<string | null>(null);
   const deviceUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const playbackAttemptRef = useRef(0);
   const progressHydratedRef = useRef(false);
@@ -646,15 +675,28 @@ export function ReaderPage() {
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
   const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
-  const pendingParagraphTargetRef = useRef<number | null>(null);
+  const pendingParagraphTargetRef = useRef<number | "last" | null>(null);
+  const pendingParagraphScrollRef = useRef<number | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
 
   useEffect(() => {
     progressHydratedRef.current = false;
+    audioBlockModeAvailableRef.current = true;
+    lastPersistedProgressRef.current = null;
+    currentPageNumberRef.current = 1;
+    currentParagraphNumberRef.current = 1;
     setCurrentPageNumber(1);
     setCurrentParagraphNumber(1);
   }, [bookId]);
+
+  useEffect(() => {
+    currentPageNumberRef.current = currentPageNumber;
+  }, [currentPageNumber]);
+
+  useEffect(() => {
+    currentParagraphNumberRef.current = currentParagraphNumber;
+  }, [currentParagraphNumber]);
 
   const progressQuery = useQuery({
     enabled: Boolean(accessToken && bookId),
@@ -802,7 +844,10 @@ export function ReaderPage() {
   useEffect(() => () => {
     playbackAttemptRef.current += 1;
     activeAudioRequestRef.current?.abort();
-    prefetchedAudioRef.current?.controller?.abort();
+    audioBlockQueueRef.current.forEach((entry) => {
+      entry.controller?.abort();
+      releaseQueuedAudioBlockMedia(entry);
+    });
     getSpeechSynthesisApi()?.cancel();
     deviceUtteranceRef.current = null;
     audioRef.current?.pause();
@@ -858,14 +903,15 @@ export function ReaderPage() {
   }, [playbackRate]);
 
   useEffect(() => {
-    clearPrefetchedAudio();
+    audioBlockQueueRef.current.forEach((entry) => {
+      entry.controller?.abort();
+      releaseQueuedAudioBlockMedia(entry);
+    });
+    audioBlockQueueRef.current = [];
+    activeAudioBlockRef.current = null;
     clearAudioResource();
     setAutoPlay(false);
   }, [selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
-
-  useEffect(() => {
-    clearPrefetchedAudio();
-  }, [currentPageNumber]);
 
   useEffect(() => {
     if (isPageJumpActive) {
@@ -919,11 +965,24 @@ export function ReaderPage() {
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
   const currentHtmlContent = pageQuery.data?.page.htmlContent ?? null;
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
+  const currentParagraphIndex = currentParagraph
+    ? currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === currentParagraph.paragraphId)
+    : -1;
+  const canGoToPreviousParagraph = Boolean(currentParagraph) && (currentParagraphIndex > 0 || Boolean(pageQuery.data?.hasPreviousPage));
+  const canGoToNextParagraph = Boolean(currentParagraph)
+    && (currentParagraphIndex < currentParagraphs.length - 1 || Boolean(pageQuery.data?.hasNextPage));
   const currentBookmarks = annotationsQuery.data?.bookmarks ?? [];
   const currentHighlights = annotationsQuery.data?.highlights ?? [];
   const currentNotes = annotationsQuery.data?.notes ?? [];
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasRichPageContent = Boolean(currentHtmlContent);
+
+  function getLiveParagraphElement(paragraphNumber: number) {
+    return livePageRef.current?.querySelector<HTMLElement>(`[data-paragraph-number="${paragraphNumber}"]`)
+      ?? paragraphRefs.current.get(paragraphNumber)
+      ?? null;
+  }
+
   const appendPagesLink = {
     hash: "#append-pages",
     pathname: "/builder",
@@ -1046,12 +1105,74 @@ export function ReaderPage() {
   }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data?.bookmarks, navigationQuery.data?.notes, navigationQuery.data?.toc]);
 
   useEffect(() => {
+    setSelectionDraft(null);
+    setSelectionNoteText("");
+  }, [currentPageNumber]);
+
+  const isPageTurningBackward = pageTurnDirection === "backward";
+  const baseParagraphs = isPageTurningBackward && pageTurnSnapshot
+    ? pageTurnSnapshot.paragraphs
+    : currentParagraphs;
+  const baseHtmlContent = isPageTurningBackward && pageTurnSnapshot
+    ? pageTurnSnapshot.htmlContent
+    : currentHtmlContent;
+  const baseActiveParagraphNumber = isPageTurningBackward && pageTurnSnapshot
+    ? pageTurnSnapshot.activeParagraphNumber
+    : (currentParagraph?.paragraphNumber ?? null);
+  const overlayParagraphs = isPageTurningBackward
+    ? currentParagraphs
+    : (pageTurnSnapshot?.paragraphs ?? []);
+  const overlayHtmlContent = isPageTurningBackward
+    ? currentHtmlContent
+    : (pageTurnSnapshot?.htmlContent ?? null);
+  const overlayActiveParagraphNumber = isPageTurningBackward
+    ? (currentParagraph?.paragraphNumber ?? null)
+    : (pageTurnSnapshot?.activeParagraphNumber ?? null);
+  const effectiveCurrentParagraphNumber = currentParagraph?.paragraphNumber ?? currentParagraphNumber;
+
+  useEffect(() => {
+    if (!hasRichPageContent || !richContentRef.current || !currentHtmlContent) {
+      return;
+    }
+
+    richContentRef.current.innerHTML = currentHtmlContent;
+    paragraphRefs.current.clear();
+
+    const paragraphNodes = richContentRef.current.querySelectorAll<HTMLElement>("[data-paragraph-number]");
+    paragraphNodes.forEach((node) => {
+      const paragraphNumber = Number.parseInt(node.dataset.paragraphNumber ?? "", 10);
+      if (!Number.isInteger(paragraphNumber)) {
+        return;
+      }
+
+      const paragraph = currentParagraphs.find((entry) => entry.paragraphNumber === paragraphNumber);
+      if (!paragraph) {
+        return;
+      }
+
+      node.dataset.paragraphId = paragraph.paragraphId;
+      node.classList.toggle("active", paragraphNumber === effectiveCurrentParagraphNumber);
+
+      const noteCount = noteCountsByParagraphId.get(paragraph.paragraphId) ?? 0;
+      node.classList.toggle("has-note", noteCount > 0);
+      if (noteCount > 0) {
+        node.dataset.noteCount = String(noteCount);
+      } else {
+        delete node.dataset.noteCount;
+      }
+
+      applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
+      paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
+    });
+  }, [currentHtmlContent, currentPageNumber, currentParagraphs, effectiveCurrentParagraphNumber, hasRichPageContent, highlightsByParagraphId, noteCountsByParagraphId]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || pageTurnDirection || !currentParagraph) {
       return;
     }
 
     const animationFrameId = window.requestAnimationFrame(() => {
-      const paragraphElement = paragraphRefs.current.get(currentParagraph.paragraphNumber);
+      const paragraphElement = getLiveParagraphElement(currentParagraph.paragraphNumber);
       if (!paragraphElement) {
         return;
       }
@@ -1076,68 +1197,61 @@ export function ReaderPage() {
     return () => {
       window.cancelAnimationFrame(animationFrameId);
     };
-  }, [currentPageNumber, currentParagraph, pageTurnDirection]);
+  }, [currentPageNumber, currentParagraph, pageTurnDirection, hasRichPageContent, currentHtmlContent]);
 
   useEffect(() => {
-    setSelectionDraft(null);
-    setSelectionNoteText("");
-  }, [currentPageNumber]);
-
-  const isPageTurningBackward = pageTurnDirection === "backward";
-  const baseParagraphs = isPageTurningBackward && pageTurnSnapshot
-    ? pageTurnSnapshot.paragraphs
-    : currentParagraphs;
-  const baseHtmlContent = isPageTurningBackward && pageTurnSnapshot
-    ? pageTurnSnapshot.htmlContent
-    : currentHtmlContent;
-  const baseActiveParagraphNumber = isPageTurningBackward && pageTurnSnapshot
-    ? pageTurnSnapshot.activeParagraphNumber
-    : (currentParagraph?.paragraphNumber ?? null);
-  const overlayParagraphs = isPageTurningBackward
-    ? currentParagraphs
-    : (pageTurnSnapshot?.paragraphs ?? []);
-  const overlayHtmlContent = isPageTurningBackward
-    ? currentHtmlContent
-    : (pageTurnSnapshot?.htmlContent ?? null);
-  const overlayActiveParagraphNumber = isPageTurningBackward
-    ? (currentParagraph?.paragraphNumber ?? null)
-    : (pageTurnSnapshot?.activeParagraphNumber ?? null);
-
-  useEffect(() => {
-    if (!hasRichPageContent || !richContentRef.current || !currentHtmlContent) {
+    if (typeof window === "undefined" || pageTurnDirection) {
       return;
     }
 
-    richContentRef.current.innerHTML = currentHtmlContent;
-    paragraphRefs.current.clear();
+    const targetParagraphNumber = pendingParagraphScrollRef.current;
+    if (targetParagraphNumber === null) {
+      return;
+    }
 
-    const paragraphNodes = richContentRef.current.querySelectorAll<HTMLElement>("[data-paragraph-number]");
-    paragraphNodes.forEach((node) => {
-      const paragraphNumber = Number.parseInt(node.dataset.paragraphNumber ?? "", 10);
-      if (!Number.isInteger(paragraphNumber)) {
+    let animationFrameId = 0;
+    let retryTimeoutId = 0;
+    let attempts = 0;
+
+    const attemptScroll = () => {
+      const paragraphElement = getLiveParagraphElement(targetParagraphNumber);
+      if (!paragraphElement) {
+        if (attempts >= 8) {
+          return;
+        }
+
+        attempts += 1;
+        retryTimeoutId = window.setTimeout(() => {
+          animationFrameId = window.requestAnimationFrame(attemptScroll);
+        }, 60);
         return;
       }
 
-      const paragraph = currentParagraphs.find((entry) => entry.paragraphNumber === paragraphNumber);
-      if (!paragraph) {
+      const paragraphBounds = paragraphElement.getBoundingClientRect();
+      const controlsElement = document.querySelector<HTMLElement>(".reader-floating-controls");
+      const controlsHeight = controlsElement?.getBoundingClientRect().height ?? 0;
+      const viewportTargetCenter = (window.innerHeight - controlsHeight - 24) / 2;
+      const paragraphCenter = paragraphBounds.top + (paragraphBounds.height / 2);
+      const nextScrollTop = window.scrollY + paragraphCenter - viewportTargetCenter;
+
+      pendingParagraphScrollRef.current = null;
+      if (Math.abs(nextScrollTop - window.scrollY) < 4) {
         return;
       }
 
-      node.dataset.paragraphId = paragraph.paragraphId;
-      node.classList.toggle("active", paragraphNumber === currentParagraphNumber);
+      window.scrollTo({
+        behavior: "smooth",
+        top: Math.max(0, nextScrollTop)
+      });
+    };
 
-      const noteCount = noteCountsByParagraphId.get(paragraph.paragraphId) ?? 0;
-      node.classList.toggle("has-note", noteCount > 0);
-      if (noteCount > 0) {
-        node.dataset.noteCount = String(noteCount);
-      } else {
-        delete node.dataset.noteCount;
-      }
+    animationFrameId = window.requestAnimationFrame(attemptScroll);
 
-      applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
-      paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
-    });
-  }, [currentHtmlContent, currentPageNumber, currentParagraphNumber, currentParagraphs, hasRichPageContent, highlightsByParagraphId, noteCountsByParagraphId]);
+    return () => {
+      window.cancelAnimationFrame(animationFrameId);
+      window.clearTimeout(retryTimeoutId);
+    };
+  }, [currentPageNumber, currentParagraphNumber, pageTurnDirection, currentHtmlContent]);
 
   useEffect(() => {
     if (!pendingPageTurnDirection || pageQuery.data?.page.pageNumber !== currentPageNumber) {
@@ -1163,23 +1277,37 @@ export function ReaderPage() {
   }, [currentPageNumber, pageQuery.data?.page.pageNumber, pendingPageTurnDirection]);
 
   useEffect(() => {
-    const pendingParagraphNumber = pendingParagraphTargetRef.current;
-    if (pendingParagraphNumber === null || pageQuery.data?.page.pageNumber !== currentPageNumber) {
+    const pendingParagraphTarget = pendingParagraphTargetRef.current;
+    if ((pendingParagraphTarget === null && !pendingAutoPlayNextPage) || pageQuery.data?.page.pageNumber !== currentPageNumber) {
       return;
     }
 
-    const targetParagraph = pageQuery.data.page.paragraphs.find((paragraph) => paragraph.paragraphNumber === pendingParagraphNumber)
+    const targetParagraph = (pendingParagraphTarget === "last"
+      ? pageQuery.data.page.paragraphs[pageQuery.data.page.paragraphs.length - 1]
+      : pendingParagraphTarget === null
+        ? pageQuery.data.page.paragraphs[0]
+        : pageQuery.data.page.paragraphs.find((paragraph) => paragraph.paragraphNumber === pendingParagraphTarget))
       ?? pageQuery.data.page.paragraphs[0]
       ?? null;
     pendingParagraphTargetRef.current = null;
 
     if (!targetParagraph) {
+      if (pendingAutoPlayNextPage) {
+        setPendingAutoPlayNextPage(false);
+      }
       return;
     }
 
     setCurrentParagraphNumber(targetParagraph.paragraphNumber);
+    pendingParagraphScrollRef.current = targetParagraph.paragraphNumber;
+    if (pendingAutoPlayNextPage) {
+      setPendingAutoPlayNextPage(false);
+      void playParagraph(targetParagraph, currentPageNumber, true);
+      return;
+    }
+
     void persistProgress(targetParagraph, currentPageNumber);
-  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.data?.page.paragraphs]);
+  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.data?.page.paragraphs, pendingAutoPlayNextPage]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -1274,8 +1402,13 @@ export function ReaderPage() {
     activeNavigationItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, isNavigationPanelVisible]);
 
-  async function persistProgress(paragraph: ParagraphContent, pageNumber: number) {
+  async function persistProgress(paragraph: PersistedParagraphProgress, pageNumber: number) {
     if (!accessToken) {
+      return;
+    }
+
+    const progressKey = `${pageNumber}:${paragraph.sequenceNumber}`;
+    if (lastPersistedProgressRef.current === progressKey) {
       return;
     }
 
@@ -1285,6 +1418,7 @@ export function ReaderPage() {
       : 0;
 
     setIsSavingProgress(true);
+    lastPersistedProgressRef.current = progressKey;
 
     try {
       await updateProgress(accessToken, bookId, {
@@ -1294,23 +1428,24 @@ export function ReaderPage() {
         currentSequenceNumber: paragraph.sequenceNumber,
         readingPercentage: nextReadingPercentage
       });
+    } catch (error) {
+      if (lastPersistedProgressRef.current === progressKey) {
+        lastPersistedProgressRef.current = null;
+      }
+
+      throw error;
     } finally {
       setIsSavingProgress(false);
     }
   }
 
-  function matchesPrefetchedAudio(entry: PrefetchedParagraphAudio | null, paragraph: ParagraphContent, pageNumber: number, voiceModel: string) {
-    return Boolean(
-      entry
-      && entry.pageNumber === pageNumber
-      && entry.paragraphId === paragraph.paragraphId
-      && entry.voiceModel === voiceModel
-    );
-  }
-
-  function clearPrefetchedAudio() {
-    prefetchedAudioRef.current?.controller?.abort();
-    prefetchedAudioRef.current = null;
+  function clearQueuedAudioBlocks() {
+    audioBlockQueueRef.current.forEach((entry) => {
+      entry.controller?.abort();
+      releaseQueuedAudioBlockMedia(entry);
+    });
+    audioBlockQueueRef.current = [];
+    activeAudioBlockRef.current = null;
   }
 
   function clearAudioResource(options: { invalidatePlayback?: boolean } = {}) {
@@ -1324,6 +1459,7 @@ export function ReaderPage() {
     deviceUtteranceRef.current = null;
     audioRef.current?.pause();
     audioRef.current = null;
+    activeAudioBlockRef.current = null;
     setIsAudioPlaying(false);
     setHasActivePlaybackSession(false);
 
@@ -1333,110 +1469,203 @@ export function ReaderPage() {
     }
   }
 
-  async function resolveParagraphAudio(paragraph: ParagraphContent, pageNumber: number, voiceModel: string) {
-    if (!accessToken) {
-      throw new Error("Missing access token.");
-    }
+  function getQueuedAudioBlock(startSequenceNumber: number, voiceModel: string) {
+    return audioBlockQueueRef.current.find(
+      (entry) => entry.startSequenceNumber === startSequenceNumber && entry.voiceModel === voiceModel
+    ) ?? null;
+  }
 
-    const prefetchedAudio = prefetchedAudioRef.current;
+  function getNextAudioBlockParagraphCount(currentParagraphCount: number) {
+    return Math.min(
+      AUDIO_BLOCK_PARAGRAPH_COUNT,
+      Math.max(AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT, currentParagraphCount + 1)
+    );
+  }
 
-    if (matchesPrefetchedAudio(prefetchedAudio, paragraph, pageNumber, voiceModel)) {
-      prefetchedAudioRef.current = null;
+  function releaseQueuedAudioBlockMedia(entry: QueuedAudioBlock) {
+    entry.audioElement?.pause();
+    delete entry.audioElement;
+    delete entry.metadataPromise;
 
-      if (prefetchedAudio?.blob) {
-        return prefetchedAudio.blob;
-      }
-
-      if (prefetchedAudio?.promise) {
-        activeAudioRequestRef.current = prefetchedAudio.controller ?? null;
-
-        try {
-          return await prefetchedAudio.promise;
-        } finally {
-          if (activeAudioRequestRef.current === prefetchedAudio.controller) {
-            activeAudioRequestRef.current = null;
-          }
-        }
-      }
-    }
-
-    const controller = new AbortController();
-    activeAudioRequestRef.current = controller;
-
-    try {
-      return await requestParagraphAudio(accessToken, bookId, paragraph.paragraphId, {
-        signal: controller.signal,
-        voiceModel
-      });
-    } finally {
-      if (activeAudioRequestRef.current === controller) {
-        activeAudioRequestRef.current = null;
-      }
+    if (entry.audioUrl) {
+      URL.revokeObjectURL(entry.audioUrl);
+      delete entry.audioUrl;
     }
   }
 
-  function prefetchParagraphAudio(paragraph: ParagraphContent, pageNumber: number, voiceModel: string) {
+  function createQueuedAudioBlock(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
     if (!accessToken) {
-      return;
+      return null;
     }
-
-    const existingPrefetch = prefetchedAudioRef.current;
-    if (matchesPrefetchedAudio(existingPrefetch, paragraph, pageNumber, voiceModel)) {
-      return;
-    }
-
-    clearPrefetchedAudio();
 
     const controller = new AbortController();
-    const nextPrefetch: PrefetchedParagraphAudio = {
+    const nextBlock: QueuedAudioBlock = {
       controller,
-      pageNumber,
-      paragraphId: paragraph.paragraphId,
+      paragraphCount,
+      paragraphs: [],
+      startSequenceNumber,
       voiceModel
     };
 
-    nextPrefetch.promise = requestParagraphAudio(accessToken, bookId, paragraph.paragraphId, {
+    nextBlock.promise = requestParagraphAudioBlock(accessToken, bookId, startSequenceNumber, {
+      paragraphCount,
       signal: controller.signal,
       voiceModel
     })
-      .then((audioBlob) => {
-        if (prefetchedAudioRef.current === nextPrefetch) {
-          prefetchedAudioRef.current = {
-            blob: audioBlob,
-            pageNumber,
-            paragraphId: paragraph.paragraphId,
-            voiceModel
-          };
-        }
-
-        return audioBlob;
+      .then((response) => {
+        nextBlock.blob = response.blob;
+        nextBlock.paragraphs = response.paragraphs;
+        nextBlock.audioUrl = URL.createObjectURL(response.blob);
+        nextBlock.audioElement = new Audio(nextBlock.audioUrl);
+        nextBlock.audioElement.preload = "auto";
+        nextBlock.audioElement.playbackRate = playbackRate;
+        nextBlock.audioElement.load();
+        nextBlock.metadataPromise = waitForAudioMetadata(nextBlock.audioElement);
+        return response;
       })
       .catch((error: unknown) => {
-        if (prefetchedAudioRef.current === nextPrefetch) {
-          prefetchedAudioRef.current = null;
-        }
+        audioBlockQueueRef.current = audioBlockQueueRef.current.filter((entry) => entry !== nextBlock);
+        releaseQueuedAudioBlockMedia(nextBlock);
 
-        if (!isAbortError(error)) {
-          console.warn("No se pudo precargar el audio del siguiente párrafo.", error);
+        if (
+          !isAbortError(error)
+          && !(error instanceof Error && error.message.toLowerCase().includes("no se encontraron párrafos"))
+        ) {
+          console.warn("No se pudo precargar el siguiente bloque de audio.", error);
         }
 
         throw error;
+      })
+      .finally(() => {
+        delete nextBlock.controller;
+        delete nextBlock.promise;
       });
 
-    prefetchedAudioRef.current = nextPrefetch;
-    void nextPrefetch.promise.catch(() => undefined);
+    return nextBlock;
   }
 
-  function prefetchNextParagraph(paragraph: ParagraphContent, pageNumber: number, voiceModel: string) {
-    const paragraphIndex = currentParagraphs.findIndex((current) => current.paragraphId === paragraph.paragraphId);
-    const nextParagraph = currentParagraphs[paragraphIndex + 1];
+  function ensureQueuedAudioBlocks(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
+    const desiredBlocks: Array<{ paragraphCount: number; startSequenceNumber: number }> = [];
 
-    if (!nextParagraph) {
-      clearPrefetchedAudio();
-      return;
+    let nextBlockStartSequenceNumber = startSequenceNumber;
+    let nextBlockParagraphCount = paragraphCount;
+    for (let queueIndex = 0; queueIndex < AUDIO_BLOCK_QUEUE_SIZE; queueIndex += 1) {
+      desiredBlocks.push({
+        paragraphCount: nextBlockParagraphCount,
+        startSequenceNumber: nextBlockStartSequenceNumber
+      });
+      nextBlockStartSequenceNumber += nextBlockParagraphCount;
+      nextBlockParagraphCount = getNextAudioBlockParagraphCount(nextBlockParagraphCount);
     }
 
-    prefetchParagraphAudio(nextParagraph, pageNumber, voiceModel);
+    if (activeAudioBlockRef.current?.voiceModel === voiceModel) {
+      desiredBlocks.push({
+        paragraphCount: activeAudioBlockRef.current.paragraphCount,
+        startSequenceNumber: activeAudioBlockRef.current.startSequenceNumber
+      });
+    }
+
+    const retainedBlocks: QueuedAudioBlock[] = [];
+    for (const entry of audioBlockQueueRef.current) {
+      if (entry.voiceModel === voiceModel && desiredBlocks.some((block) => block.startSequenceNumber === entry.startSequenceNumber && block.paragraphCount === entry.paragraphCount)) {
+        retainedBlocks.push(entry);
+        continue;
+      }
+
+      entry.controller?.abort();
+      releaseQueuedAudioBlockMedia(entry);
+    }
+
+    for (const desiredBlock of desiredBlocks) {
+      if (retainedBlocks.some((entry) => entry.startSequenceNumber === desiredBlock.startSequenceNumber && entry.paragraphCount === desiredBlock.paragraphCount)) {
+        continue;
+      }
+
+      const nextEntry = createQueuedAudioBlock(desiredBlock.startSequenceNumber, voiceModel, desiredBlock.paragraphCount);
+      if (nextEntry) {
+        retainedBlocks.push(nextEntry);
+      }
+    }
+
+    retainedBlocks.sort((left, right) => left.startSequenceNumber - right.startSequenceNumber);
+    audioBlockQueueRef.current = retainedBlocks;
+    retainedBlocks.forEach((entry) => {
+      void entry.promise?.catch(() => undefined);
+    });
+  }
+
+  async function resolveAudioBlock(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
+    const queuedBlock = getQueuedAudioBlock(startSequenceNumber, voiceModel) ?? createQueuedAudioBlock(startSequenceNumber, voiceModel, paragraphCount);
+    if (!queuedBlock) {
+      throw new Error("Missing access token.");
+    }
+
+    if (!audioBlockQueueRef.current.includes(queuedBlock)) {
+      audioBlockQueueRef.current = [...audioBlockQueueRef.current, queuedBlock].sort(
+        (left, right) => left.startSequenceNumber - right.startSequenceNumber
+      );
+    }
+
+    if (!queuedBlock.blob || queuedBlock.paragraphs.length === 0) {
+      activeAudioRequestRef.current = queuedBlock.controller ?? null;
+
+      try {
+        if (queuedBlock.promise) {
+          await queuedBlock.promise;
+        }
+      } finally {
+        if (activeAudioRequestRef.current === queuedBlock.controller) {
+          activeAudioRequestRef.current = null;
+        }
+      }
+    }
+
+    if (!queuedBlock.blob || queuedBlock.paragraphs.length === 0) {
+      throw new Error("No se pudo preparar el bloque de audio solicitado.");
+    }
+
+    audioBlockQueueRef.current = audioBlockQueueRef.current.filter((entry) => entry !== queuedBlock);
+
+    return queuedBlock;
+  }
+
+  function findActiveAudioBlockParagraph(sequenceNumber: number) {
+    return activeAudioBlockRef.current?.paragraphTimings.find(
+      (paragraphTiming) => paragraphTiming.sequenceNumber === sequenceNumber
+    ) ?? null;
+  }
+
+  async function jumpWithinActiveAudioBlock(paragraph: ParagraphContent) {
+    const audioElement = audioRef.current;
+    const paragraphTiming = findActiveAudioBlockParagraph(paragraph.sequenceNumber);
+    if (!audioElement || !paragraphTiming) {
+      return false;
+    }
+
+    const shouldKeepPlaying = !audioElement.paused;
+    audioElement.currentTime = paragraphTiming.startMs / 1000;
+    syncReaderLocationFromBlockParagraph(paragraphTiming);
+
+    if (shouldKeepPlaying) {
+      await audioElement.play();
+    }
+
+    return true;
+  }
+
+  function syncReaderLocationFromBlockParagraph(paragraph: ReaderAudioBlockParagraph) {
+    if (paragraph.pageNumber !== currentPageNumberRef.current) {
+      preparePageTurn(paragraph.pageNumber);
+      currentPageNumberRef.current = paragraph.pageNumber;
+      setCurrentPageNumber(paragraph.pageNumber);
+    }
+
+    if (paragraph.paragraphNumber !== currentParagraphNumberRef.current) {
+      currentParagraphNumberRef.current = paragraph.paragraphNumber;
+      setCurrentParagraphNumber(paragraph.paragraphNumber);
+    }
+
+    void persistProgress(paragraph, paragraph.pageNumber);
   }
 
   function preparePageTurn(nextPageNumber: number) {
@@ -1473,12 +1702,30 @@ export function ReaderPage() {
     return currentParagraphs.find((paragraph) => paragraph.paragraphNumber === paragraphNumber) ?? null;
   }
 
-  function renderRichContent(htmlContent: string, interactive: boolean) {
+  function decorateRichHtmlContent(htmlContent: string, activeParagraphNumber: number | null) {
+    if (!htmlContent || activeParagraphNumber === null || typeof DOMParser === "undefined") {
+      return htmlContent;
+    }
+
+    const document = new DOMParser().parseFromString(htmlContent, "text/html");
+    const paragraphNodes = document.querySelectorAll<HTMLElement>("[data-paragraph-number]");
+
+    paragraphNodes.forEach((node) => {
+      const paragraphNumber = Number.parseInt(node.dataset.paragraphNumber ?? "", 10);
+      node.classList.toggle("active", Number.isInteger(paragraphNumber) && paragraphNumber === activeParagraphNumber);
+    });
+
+    return document.body.innerHTML;
+  }
+
+  function renderRichContent(htmlContent: string, activeParagraphNumber: number | null, interactive: boolean) {
+    const renderedHtmlContent = decorateRichHtmlContent(htmlContent, activeParagraphNumber);
+
     return (
       <article className="reader-prose reader-prose-rich">
         <div
           className={pageQuery.data?.book.sourceType === "IMAGES" ? "reader-rich-content ocr-rich-content" : "reader-rich-content"}
-          dangerouslySetInnerHTML={{ __html: htmlContent }}
+          dangerouslySetInnerHTML={{ __html: renderedHtmlContent }}
           onClick={interactive
             ? (event) => {
                 const paragraph = findParagraphFromNode(event.target);
@@ -1510,7 +1757,7 @@ export function ReaderPage() {
 
   function renderPageContent(paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null, interactive: boolean) {
     if (htmlContent) {
-      return renderRichContent(htmlContent, interactive);
+      return renderRichContent(htmlContent, activeParagraphNumber, interactive);
     }
 
     return renderParagraphs(paragraphs, activeParagraphNumber, interactive);
@@ -1672,7 +1919,7 @@ export function ReaderPage() {
     };
 
     setCurrentParagraphNumber(paragraph.paragraphNumber);
-    await persistProgress(paragraph, pageNumber);
+    void persistProgress(paragraph, pageNumber);
 
     speechSynthesisApi.cancel();
     deviceUtteranceRef.current = utterance;
@@ -1681,28 +1928,196 @@ export function ReaderPage() {
     setIsAudioLoading(false);
   }
 
-  async function playParagraph(paragraph: ParagraphContent, pageNumber: number, keepAutoPlay: boolean) {
-    if (!accessToken) {
+  async function activateResolvedAudioBlock(
+    audioBlock: QueuedAudioBlock,
+    targetSequenceNumber: number,
+    voiceModel: string,
+    keepAutoPlay: boolean,
+    playbackAttempt: number
+  ) {
+    const targetParagraph = audioBlock.paragraphs.find(
+      (blockParagraph) => blockParagraph.sequenceNumber === targetSequenceNumber
+    ) ?? audioBlock.paragraphs[0];
+
+    if (!targetParagraph || !audioBlock.blob) {
+      throw new Error("No se pudo localizar el párrafo dentro del bloque de audio.");
+    }
+
+    ensureQueuedAudioBlocks(
+      audioBlock.startSequenceNumber + audioBlock.paragraphs.length,
+      voiceModel,
+      getNextAudioBlockParagraphCount(audioBlock.paragraphs.length)
+    );
+
+    const audioUrl = audioBlock.audioUrl ?? URL.createObjectURL(audioBlock.blob);
+    audioUrlRef.current = audioUrl;
+
+    const audioElement = audioBlock.audioElement ?? new Audio(audioUrl);
+    audioRef.current = audioElement;
+    audioElement.preload = "auto";
+    audioElement.playbackRate = playbackRate;
+
+    const blockStartsAtTargetParagraph = audioBlock.paragraphs[0]?.sequenceNumber === targetParagraph.sequenceNumber;
+    if (!blockStartsAtTargetParagraph) {
+      await (audioBlock.metadataPromise ?? waitForAudioMetadata(audioElement));
+    }
+
+    if (playbackAttempt !== playbackAttemptRef.current) {
       return;
     }
 
+    const paragraphTimings = buildAudioBlockTimings(audioBlock.paragraphs, audioElement.duration * 1000);
+    const targetParagraphTiming = paragraphTimings.find(
+      (timing) => timing.sequenceNumber === targetParagraph.sequenceNumber
+    ) ?? paragraphTimings[0];
+
+    if (!targetParagraphTiming) {
+      throw new Error("No se pudo calcular la posición del bloque de audio.");
+    }
+
+    activeAudioBlockRef.current = {
+      paragraphCount: audioBlock.paragraphs.length,
+      paragraphTimings,
+      startSequenceNumber: audioBlock.startSequenceNumber,
+      voiceModel
+    };
+
+    if (blockStartsAtTargetParagraph) {
+      void (audioBlock.metadataPromise ?? waitForAudioMetadata(audioElement))
+        .then(() => {
+          if (playbackAttempt !== playbackAttemptRef.current) {
+            return;
+          }
+
+          const activeAudioBlock = activeAudioBlockRef.current;
+          if (!activeAudioBlock || activeAudioBlock.startSequenceNumber !== audioBlock.startSequenceNumber || activeAudioBlock.voiceModel !== voiceModel) {
+            return;
+          }
+
+          activeAudioBlockRef.current = {
+            ...activeAudioBlock,
+            paragraphTimings: buildAudioBlockTimings(audioBlock.paragraphs, audioElement.duration * 1000)
+          };
+        })
+        .catch(() => undefined);
+    }
+
+    audioElement.currentTime = targetParagraphTiming.startMs / 1000;
+    setHasActivePlaybackSession(true);
+    audioElement.onplay = () => {
+      setIsAudioPlaying(true);
+    };
+    audioElement.onpause = () => {
+      setIsAudioPlaying(false);
+    };
+    audioElement.ontimeupdate = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      const activeAudioBlock = activeAudioBlockRef.current;
+      if (!activeAudioBlock || activeAudioBlock.voiceModel !== voiceModel) {
+        return;
+      }
+
+      const activeParagraphTiming = findParagraphTimingForTime(activeAudioBlock.paragraphTimings, audioElement.currentTime * 1000);
+      if (activeParagraphTiming) {
+        syncReaderLocationFromBlockParagraph(activeParagraphTiming);
+      }
+    };
+    audioElement.onended = () => {
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      setIsAudioPlaying(false);
+      setHasActivePlaybackSession(false);
+      activeAudioBlockRef.current = null;
+      if (keepAutoPlay) {
+        void continueWithNextAudioBlock(audioBlock.startSequenceNumber, audioBlock.paragraphs.length, voiceModel);
+      }
+    };
+    audioElement.onerror = () => {
+      setIsAudioPlaying(false);
+      setHasActivePlaybackSession(false);
+      activeAudioBlockRef.current = null;
+    };
+
+    syncReaderLocationFromBlockParagraph(targetParagraphTiming);
+    void persistProgress(targetParagraph, targetParagraph.pageNumber);
+    await audioElement.play();
+  }
+
+  async function playQueuedAudioBlock(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
     const playbackAttempt = playbackAttemptRef.current + 1;
     playbackAttemptRef.current = playbackAttempt;
-
     setReaderError(null);
     setIsAudioLoading(true);
 
     try {
       clearAudioResource({ invalidatePlayback: false });
+      ensureQueuedAudioBlocks(startSequenceNumber, voiceModel, paragraphCount);
+      const nextBlock = await resolveAudioBlock(startSequenceNumber, voiceModel, paragraphCount);
 
-      if (selectedTtsEngine === "device") {
-        await playParagraphWithDeviceVoice(paragraph, pageNumber, keepAutoPlay, playbackAttempt);
+      if (playbackAttempt !== playbackAttemptRef.current) {
         return;
       }
 
-      const audioBlob = await resolveParagraphAudio(paragraph, pageNumber, selectedVoiceModel);
-      if (playbackAttempt !== playbackAttemptRef.current) {
+      await activateResolvedAudioBlock(nextBlock, startSequenceNumber, voiceModel, true, playbackAttempt);
+    } finally {
+      if (playbackAttempt === playbackAttemptRef.current) {
+        setIsAudioLoading(false);
+      }
+    }
+  }
+
+  async function continueWithNextAudioBlock(currentBlockStartSequenceNumber: number, currentBlockParagraphCount: number, voiceModel: string) {
+    const nextParagraphSequence = currentBlockStartSequenceNumber + currentBlockParagraphCount;
+    const nextParagraphCount = getNextAudioBlockParagraphCount(currentBlockParagraphCount);
+
+    try {
+      await playQueuedAudioBlock(nextParagraphSequence, voiceModel, nextParagraphCount);
+    } catch (error) {
+      if (isAbortError(error)) {
         return;
+      }
+
+      setAutoPlay(false);
+      setIsAudioPlaying(false);
+      setHasActivePlaybackSession(false);
+
+      if (isMissingAudioBlockRouteError(error)) {
+        audioBlockModeAvailableRef.current = false;
+        clearQueuedAudioBlocks();
+
+        const currentParagraph = currentParagraphs.find((entry) => entry.sequenceNumber === nextParagraphSequence);
+        if (currentParagraph) {
+          void playParagraph(currentParagraph, currentPageNumberRef.current, true);
+          return;
+        }
+
+        setAutoPlay(false);
+        return;
+      }
+
+      if (error instanceof Error && !error.message.toLowerCase().includes("no se encontraron párrafos")) {
+        setReaderError(error.message);
+      }
+    }
+  }
+
+  async function playParagraphWarmStart(paragraph: ParagraphContent, pageNumber: number, keepAutoPlay: boolean) {
+    const controller = new AbortController();
+    activeAudioRequestRef.current = controller;
+
+    try {
+      const audioBlob = await requestParagraphAudio(accessToken!, bookId, paragraph.paragraphId, {
+        signal: controller.signal,
+        voiceModel: selectedVoiceModel
+      });
+
+      if (activeAudioRequestRef.current === controller) {
+        activeAudioRequestRef.current = null;
       }
 
       const audioUrl = URL.createObjectURL(audioBlob);
@@ -1710,6 +2125,82 @@ export function ReaderPage() {
 
       const audioElement = new Audio(audioUrl);
       audioRef.current = audioElement;
+      audioElement.preload = "auto";
+      audioElement.playbackRate = playbackRate;
+      setHasActivePlaybackSession(true);
+      audioElement.onplay = () => {
+        setIsAudioPlaying(true);
+      };
+      audioElement.onpause = () => {
+        setIsAudioPlaying(false);
+      };
+      audioElement.onended = () => {
+        setIsAudioPlaying(false);
+        setHasActivePlaybackSession(false);
+        if (keepAutoPlay) {
+          void playQueuedAudioBlock(paragraph.sequenceNumber + 1, selectedVoiceModel, AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT).catch((error: unknown) => {
+            if (isAbortError(error)) {
+              return;
+            }
+
+            if (isMissingAudioBlockRouteError(error)) {
+              audioBlockModeAvailableRef.current = false;
+              clearQueuedAudioBlocks();
+              void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
+              return;
+            }
+
+            if (error instanceof Error && error.message.toLowerCase().includes("no se encontraron párrafos")) {
+              setAutoPlay(false);
+              setIsAudioPlaying(false);
+              setHasActivePlaybackSession(false);
+              return;
+            }
+
+            setAutoPlay(false);
+            setReaderError(error instanceof Error ? error.message : "No se pudo continuar la reproducción.");
+          });
+        }
+      };
+      audioElement.onerror = () => {
+        setIsAudioPlaying(false);
+        setHasActivePlaybackSession(false);
+      };
+
+      setCurrentParagraphNumber(paragraph.paragraphNumber);
+      if (keepAutoPlay) {
+        ensureQueuedAudioBlocks(paragraph.sequenceNumber + 1, selectedVoiceModel, AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT);
+      }
+
+      void persistProgress(paragraph, pageNumber);
+      await audioElement.play();
+    } finally {
+      if (activeAudioRequestRef.current === controller) {
+        activeAudioRequestRef.current = null;
+      }
+    }
+  }
+
+  async function playParagraphWithLegacyDeepgram(paragraph: ParagraphContent, pageNumber: number, keepAutoPlay: boolean) {
+    const controller = new AbortController();
+    activeAudioRequestRef.current = controller;
+
+    try {
+      const audioBlob = await requestParagraphAudio(accessToken!, bookId, paragraph.paragraphId, {
+        signal: controller.signal,
+        voiceModel: selectedVoiceModel
+      });
+
+      if (activeAudioRequestRef.current === controller) {
+        activeAudioRequestRef.current = null;
+      }
+
+      const audioUrl = URL.createObjectURL(audioBlob);
+      audioUrlRef.current = audioUrl;
+
+      const audioElement = new Audio(audioUrl);
+      audioRef.current = audioElement;
+      audioElement.preload = "auto";
       audioElement.playbackRate = playbackRate;
       setHasActivePlaybackSession(true);
       audioElement.onplay = () => {
@@ -1731,14 +2222,64 @@ export function ReaderPage() {
       };
 
       setCurrentParagraphNumber(paragraph.paragraphNumber);
-      await persistProgress(paragraph, pageNumber);
+      void persistProgress(paragraph, pageNumber);
       await audioElement.play();
-
-      if (keepAutoPlay) {
-        prefetchNextParagraph(paragraph, pageNumber, selectedVoiceModel);
+    } finally {
+      if (activeAudioRequestRef.current === controller) {
+        activeAudioRequestRef.current = null;
       }
+    }
+  }
+
+  async function playParagraph(paragraph: ParagraphContent, pageNumber: number, keepAutoPlay: boolean) {
+    if (!accessToken) {
+      return;
+    }
+
+    const playbackAttempt = playbackAttemptRef.current + 1;
+    playbackAttemptRef.current = playbackAttempt;
+    const hasReusableAudioSession = Boolean(audioRef.current?.src) && audioRef.current?.ended !== true;
+    const shouldWarmStartDeepgram = keepAutoPlay
+      && paragraph.paragraphText.trim().length > 0
+      && !hasReusableAudioSession;
+
+    setReaderError(null);
+    setIsAudioLoading(true);
+
+    try {
+      clearAudioResource({ invalidatePlayback: false });
+
+      if (selectedTtsEngine === "device") {
+        await playParagraphWithDeviceVoice(paragraph, pageNumber, keepAutoPlay, playbackAttempt);
+        return;
+      }
+
+      if (!audioBlockModeAvailableRef.current) {
+        await playParagraphWithLegacyDeepgram(paragraph, pageNumber, keepAutoPlay);
+        return;
+      }
+
+      if (shouldWarmStartDeepgram) {
+        await playParagraphWarmStart(paragraph, pageNumber, keepAutoPlay);
+        return;
+      }
+
+      const audioBlock = await resolveAudioBlock(paragraph.sequenceNumber, selectedVoiceModel);
+      if (playbackAttempt !== playbackAttemptRef.current) {
+        return;
+      }
+
+      await activateResolvedAudioBlock(audioBlock, paragraph.sequenceNumber, selectedVoiceModel, keepAutoPlay, playbackAttempt);
     } catch (error) {
       if (isAbortError(error)) {
+        return;
+      }
+
+      if (isMissingAudioBlockRouteError(error)) {
+        audioBlockModeAvailableRef.current = false;
+        clearQueuedAudioBlocks();
+        setReaderError(null);
+        await playParagraphWithLegacyDeepgram(paragraph, pageNumber, keepAutoPlay);
         return;
       }
 
@@ -1750,21 +2291,6 @@ export function ReaderPage() {
       }
     }
   }
-
-  useEffect(() => {
-    if (!pendingAutoPlayNextPage) {
-      return;
-    }
-
-    const firstParagraph = pageQuery.data?.page.paragraphs[0];
-    if (!firstParagraph) {
-      return;
-    }
-
-    setPendingAutoPlayNextPage(false);
-    setCurrentParagraphNumber(firstParagraph.paragraphNumber);
-    void playParagraph(firstParagraph, currentPageNumber, true);
-  }, [currentPageNumber, pageQuery.data?.page.paragraphs, pendingAutoPlayNextPage]);
 
   async function handlePlay() {
     if (!currentParagraph) {
@@ -1877,7 +2403,7 @@ export function ReaderPage() {
   async function selectParagraph(paragraph: ParagraphContent) {
     setCurrentParagraphNumber(paragraph.paragraphNumber);
     clearAudioResource();
-    clearPrefetchedAudio();
+    clearQueuedAudioBlocks();
     await persistProgress(paragraph, currentPageNumber);
   }
 
@@ -1885,7 +2411,7 @@ export function ReaderPage() {
     await Promise.all([annotationsQuery.refetch(), navigationQuery.refetch()]);
   }
 
-  async function goToLocation(nextPageNumber: number, targetParagraphNumber = 1) {
+  async function goToLocation(nextPageNumber: number, targetParagraphNumber: number | "last" = 1, options?: { continuePlayback?: boolean }) {
     const boundedPageNumber = totalPages > 0
       ? Math.min(Math.max(nextPageNumber, 1), totalPages)
       : nextPageNumber;
@@ -1895,7 +2421,11 @@ export function ReaderPage() {
     }
 
     if (boundedPageNumber === currentPageNumber) {
-      const targetParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === targetParagraphNumber) ?? currentParagraphs[0] ?? null;
+      const targetParagraph = (targetParagraphNumber === "last"
+        ? currentParagraphs[currentParagraphs.length - 1]
+        : currentParagraphs.find((paragraph) => paragraph.paragraphNumber === targetParagraphNumber))
+        ?? currentParagraphs[0]
+        ?? null;
       if (!targetParagraph) {
         return;
       }
@@ -1906,16 +2436,20 @@ export function ReaderPage() {
     }
 
     clearAudioResource();
-    clearPrefetchedAudio();
-    setAutoPlay(false);
+    clearQueuedAudioBlocks();
+    setPendingAutoPlayNextPage(options?.continuePlayback === true);
+    setAutoPlay(options?.continuePlayback === true);
     setIsPageJumpActive(false);
     pendingParagraphTargetRef.current = targetParagraphNumber;
     preparePageTurn(boundedPageNumber);
+    currentParagraphNumberRef.current = targetParagraphNumber === "last" ? 1 : targetParagraphNumber;
+    setCurrentParagraphNumber(targetParagraphNumber === "last" ? 1 : targetParagraphNumber);
     setCurrentPageNumber(boundedPageNumber);
   }
 
   async function goToPage(nextPageNumber: number) {
-    await goToLocation(nextPageNumber, 1);
+    const shouldContinuePlayback = autoPlay || isAudioPlaying || isAudioLoading;
+    await goToLocation(nextPageNumber, 1, { continuePlayback: shouldContinuePlayback });
   }
 
   function parsePageJumpValue() {
@@ -1953,17 +2487,39 @@ export function ReaderPage() {
       return;
     }
 
+    const shouldContinuePlayback = autoPlay || isAudioPlaying || isAudioLoading;
     const paragraphIndex = currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === currentParagraph.paragraphId);
     const nextParagraph = currentParagraphs[paragraphIndex + delta];
     if (!nextParagraph) {
+      const targetPageNumber = currentPageNumber + delta;
+      const canChangePage = delta < 0 ? pageQuery.data?.hasPreviousPage : pageQuery.data?.hasNextPage;
+      if (!canChangePage) {
+        return;
+      }
+
+      await goToLocation(targetPageNumber, delta < 0 ? "last" : 1, { continuePlayback: shouldContinuePlayback });
       return;
     }
 
+    if (selectedTtsEngine === "deepgram") {
+      const reusedCurrentBlock = await jumpWithinActiveAudioBlock(nextParagraph);
+      if (reusedCurrentBlock) {
+        return;
+      }
+    }
+
     clearAudioResource();
-    clearPrefetchedAudio();
-    setAutoPlay(false);
+    clearQueuedAudioBlocks();
     setCurrentParagraphNumber(nextParagraph.paragraphNumber);
-    await persistProgress(nextParagraph, currentPageNumber);
+
+    if (!shouldContinuePlayback) {
+      setAutoPlay(false);
+      await persistProgress(nextParagraph, currentPageNumber);
+      return;
+    }
+
+    setAutoPlay(true);
+    await playParagraph(nextParagraph, currentPageNumber, true);
   }
 
   async function handleDeleteCurrentPage() {
@@ -1979,7 +2535,7 @@ export function ReaderPage() {
     setIsDeletingPage(true);
     setReaderError(null);
     clearAudioResource();
-    clearPrefetchedAudio();
+    clearQueuedAudioBlocks();
     setAutoPlay(false);
 
     try {
@@ -2556,7 +3112,7 @@ export function ReaderPage() {
         <button
           aria-label="Párrafo anterior"
           className="reader-float-button"
-          disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[0]?.paragraphNumber}
+          disabled={!canGoToPreviousParagraph}
           onClick={() => void goToParagraph(-1)}
           title="Párrafo anterior"
           type="button"
@@ -2565,13 +3121,13 @@ export function ReaderPage() {
         </button>
         <button
           aria-label={isAudioLoading ? (selectedTtsEngine === "device" ? "Preparando voz" : "Generando audio") : "Reproducir"}
-          className="reader-float-button primary"
+          className={isAudioLoading ? "reader-float-button primary is-loading" : "reader-float-button primary"}
           disabled={!currentParagraph || isAudioLoading}
           onClick={() => void handlePlay()}
           title={isAudioLoading ? (selectedTtsEngine === "device" ? "Preparando voz" : "Generando audio") : "Reproducir"}
           type="button"
         >
-          <PlayIcon />
+          {isAudioLoading ? <LoadingAudioIcon /> : <PlayIcon />}
         </button>
         <button
           aria-label="Pausar"
@@ -2586,7 +3142,7 @@ export function ReaderPage() {
         <button
           aria-label="Párrafo siguiente"
           className="reader-float-button"
-          disabled={!currentParagraph || currentParagraph.paragraphNumber === currentParagraphs[currentParagraphs.length - 1]?.paragraphNumber}
+          disabled={!canGoToNextParagraph}
           onClick={() => void goToParagraph(1)}
           title={isSavingProgress ? "Guardando progreso" : "Párrafo siguiente"}
           type="button"

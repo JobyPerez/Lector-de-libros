@@ -115,7 +115,7 @@ function extractEmbeddedImageSources(htmlContent: string | null | undefined): Ma
   const images = document.querySelectorAll("figure.reader-rich-node img, .reader-rich-node img");
   let imageIndex = 1;
 
-  for (const image of images) {
+  for (const image of Array.from(images)) {
     const source = image.getAttribute("src")?.trim();
     if (!source) {
       continue;

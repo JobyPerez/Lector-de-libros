@@ -230,6 +230,42 @@ export type ReaderHighlight = {
   updatedAt: string;
 };
 
+export type ReaderAudioBlockParagraph = {
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  sequenceNumber: number;
+  textLength: number;
+};
+
+function decodeBase64Url(value: string): string {
+  const normalizedValue = value.replace(/-/gu, "+").replace(/_/gu, "/");
+  const paddingLength = (4 - (normalizedValue.length % 4)) % 4;
+  const paddedValue = normalizedValue.padEnd(normalizedValue.length + paddingLength, "=");
+
+  if (typeof window !== "undefined" && typeof window.atob === "function") {
+    const binary = window.atob(paddedValue);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  }
+
+  return Buffer.from(paddedValue, "base64").toString("utf8");
+}
+
+function parseAudioBlockParagraphs(response: Response): ReaderAudioBlockParagraph[] {
+  const encodedParagraphs = response.headers.get("X-Reader-Tts-Paragraphs");
+  if (!encodedParagraphs) {
+    throw new Error("La respuesta del bloque de audio no incluye el mapa de párrafos.");
+  }
+
+  const payload = JSON.parse(decodeBase64Url(encodedParagraphs)) as ReaderAudioBlockParagraph[];
+  if (!Array.isArray(payload)) {
+    throw new Error("El mapa de párrafos del bloque de audio no es válido.");
+  }
+
+  return payload;
+}
+
 export type ReaderNote = {
   createdAt: string;
   highlightCharEnd: number | null;
@@ -245,6 +281,7 @@ export type ReaderNote = {
   sequenceNumber: number | null;
   updatedAt: string;
 };
+
 
 export type ReaderTocEntry = {
   chapterId?: string;
@@ -308,6 +345,7 @@ export type ReadingProgress = {
 };
 
 export type ReaderAudioOptions = {
+  paragraphCount?: number;
   signal?: AbortSignal;
   voiceModel?: string;
 };
@@ -412,7 +450,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode }) {
+export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode; progressId?: string }) {
   const searchParams = new URLSearchParams();
   if (options?.afterPage !== undefined) {
     searchParams.set("afterPage", String(options.afterPage));
@@ -615,6 +653,30 @@ export async function requestParagraphAudio(accessToken: string, bookId: string,
   }
 
   return response.blob();
+}
+
+export async function requestParagraphAudioBlock(accessToken: string, bookId: string, startSequenceNumber: number, options: ReaderAudioOptions = {}) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/tts/block`, {
+    accessToken,
+    body: JSON.stringify({
+      paragraphCount: options.paragraphCount,
+      startSequenceNumber,
+      voiceModel: options.voiceModel
+    }),
+    fallbackMessage: "No se pudo generar el bloque de audio.",
+    headers: createHeaders({ accessToken, contentType: "application/json" }),
+    method: "POST",
+    signal: options.signal
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "No se pudo generar el bloque de audio."));
+  }
+
+  return {
+    blob: await response.blob(),
+    paragraphs: parseAudioBlockParagraphs(response)
+  };
 }
 
 export function fetchUsers(accessToken: string) {
