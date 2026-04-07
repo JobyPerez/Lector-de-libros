@@ -108,6 +108,11 @@ type NoteRecord = {
   updatedAt: string;
 };
 
+type OwnedNoteRecord = {
+  highlightId: string | null;
+  noteId: string;
+};
+
 async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, ownerUserId: string): Promise<OwnedBookRecord | null> {
   const result = await connection.execute(
     `
@@ -190,6 +195,58 @@ async function findOwnedHighlight(
 
   const [highlight] = (result.rows ?? []) as HighlightRecord[];
   return highlight ?? null;
+}
+
+async function findOwnedNote(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  noteId: string,
+  userId: string
+): Promise<OwnedNoteRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        note_id AS "noteId",
+        highlight_id AS "highlightId"
+      FROM user_notes
+      WHERE book_id = :bookId
+        AND note_id = :noteId
+        AND user_id = :userId
+    `,
+    {
+      bookId,
+      noteId,
+      userId
+    }
+  );
+
+  const [note] = (result.rows ?? []) as OwnedNoteRecord[];
+  return note ?? null;
+}
+
+async function countHighlightNotes(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  highlightId: string,
+  userId: string
+): Promise<number> {
+  const result = await connection.execute(
+    `
+      SELECT COUNT(*) AS "noteCount"
+      FROM user_notes
+      WHERE book_id = :bookId
+        AND highlight_id = :highlightId
+        AND user_id = :userId
+    `,
+    {
+      bookId,
+      highlightId,
+      userId
+    }
+  );
+
+  const [row] = (result.rows ?? []) as Array<{ noteCount: number }>;
+  return row?.noteCount ?? 0;
 }
 
 async function listBookmarks(
@@ -744,23 +801,54 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const result = await connection.execute(
-        `
-          DELETE FROM user_notes
-          WHERE note_id = :noteId
-            AND book_id = :bookId
-            AND user_id = :userId
-        `,
-        {
-          bookId: params.bookId,
-          noteId: params.noteId,
-          userId: request.currentUser.userId
-        },
-        { autoCommit: true }
-      );
-
-      if ((result.rowsAffected ?? 0) === 0) {
+      const note = await findOwnedNote(connection, params.bookId, params.noteId, request.currentUser.userId);
+      if (!note) {
         return reply.status(404).send({ message: "Note not found." });
+      }
+
+      try {
+        const result = await connection.execute(
+          `
+            DELETE FROM user_notes
+            WHERE note_id = :noteId
+              AND book_id = :bookId
+              AND user_id = :userId
+          `,
+          {
+            bookId: params.bookId,
+            noteId: params.noteId,
+            userId: request.currentUser.userId
+          }
+        );
+
+        if ((result.rowsAffected ?? 0) === 0) {
+          await connection.rollback();
+          return reply.status(404).send({ message: "Note not found." });
+        }
+
+        if (note.highlightId) {
+          const remainingNotes = await countHighlightNotes(connection, params.bookId, note.highlightId, request.currentUser.userId);
+          if (remainingNotes === 0) {
+            await connection.execute(
+              `
+                DELETE FROM user_highlights
+                WHERE highlight_id = :highlightId
+                  AND book_id = :bookId
+                  AND user_id = :userId
+              `,
+              {
+                bookId: params.bookId,
+                highlightId: note.highlightId,
+                userId: request.currentUser.userId
+              }
+            );
+          }
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
       }
 
       return reply.status(204).send();
