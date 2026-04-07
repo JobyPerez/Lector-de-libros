@@ -988,7 +988,7 @@ textarea {
 
 .reader-split-expanded,
 .builder-review-grid {
-  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .builder-review-grid {

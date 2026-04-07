@@ -1154,6 +1154,18 @@ export function BookBuilderPage() {
 
               <article className="review-panel">
                 <form className="stack-form review-editor-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
+                  {reviewPreviewHtml ? (
+                    <div>
+                      <p className="page-label">Previsualización de la página guardada</p>
+                      <article className="reader-prose reader-prose-rich review-preview-panel">
+                        <div
+                          className="reader-rich-content"
+                          dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
+                        />
+                      </article>
+                    </div>
+                  ) : null}
+
                   <label className="review-editor-label">
                     <span className="page-label">Edición de la página</span>
                     <textarea
@@ -1255,18 +1267,6 @@ export function BookBuilderPage() {
                   </div>
 
                   <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva, ::left::, ::center:: o ::right:: para alinear un bloque y ![alt](url) para incrustar una imagen.</p>
-
-                  {reviewPreviewHtml ? (
-                    <div>
-                      <p className="page-label">Previsualización de la página guardada</p>
-                      <article className="reader-prose reader-prose-rich review-preview-panel">
-                        <div
-                          className="reader-rich-content"
-                          dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
-                        />
-                      </article>
-                    </div>
-                  ) : null}
 
                   {reviewError ? <p className="error-text">{reviewError}</p> : null}
                   {reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
