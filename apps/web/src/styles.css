@@ -1323,6 +1323,24 @@ textarea {
   text-indent: 0 !important;
 }
 
+.reader-rich-content .ocr-page-body p.reader-rich-node,
+.reader-rich-content .ocr-page-body li.reader-rich-node,
+.reader-rich-content .ocr-page-body blockquote.reader-rich-node {
+  text-align: justify;
+  text-justify: inter-word;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.reader-rich-content.ocr-rich-content p.reader-rich-node,
+.reader-rich-content.ocr-rich-content li.reader-rich-node,
+.reader-rich-content.ocr-rich-content blockquote.reader-rich-node {
+  text-align: justify;
+  text-justify: inter-word;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
 .reader-rich-content .reader-rich-node:hover {
   background: rgba(169, 87, 37, 0.06);
 }

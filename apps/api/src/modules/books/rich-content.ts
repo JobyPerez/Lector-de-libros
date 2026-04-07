@@ -191,7 +191,7 @@ function wrapRichPageHtml(blocks: RichBlock[]): string | null {
     return null;
   }
 
-  return `<div class="epub-page-shell"><div class="epub-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
+  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
 }
 
 function finalizeRichBlocks(blocks: RichBlock[]) {

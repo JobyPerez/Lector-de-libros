@@ -1477,7 +1477,7 @@ export function ReaderPage() {
     return (
       <article className="reader-prose reader-prose-rich">
         <div
-          className="reader-rich-content"
+          className={pageQuery.data?.book.sourceType === "IMAGES" ? "reader-rich-content ocr-rich-content" : "reader-rich-content"}
           dangerouslySetInnerHTML={{ __html: htmlContent }}
           onClick={interactive
             ? (event) => {

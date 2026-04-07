@@ -185,5 +185,5 @@ export function buildOcrPreviewHtml(editedText: string, persistedHtmlContent?: s
     return null;
   }
 
-  return `<div class="epub-page-shell"><div class="epub-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
+  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
 }

@@ -180,6 +180,8 @@ export function BookBuilderPage() {
   const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
+  const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
+  const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -356,6 +358,31 @@ export function BookBuilderPage() {
     };
   }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.hasSourceImage, reviewPageQuery.data?.page.sourceFileId]);
 
+  useEffect(() => {
+    if (!isReviewIndexVisible || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (reviewIndexPanelRef.current?.contains(target) || reviewIndexToggleRef.current?.contains(target)) {
+        return;
+      }
+
+      setIsReviewIndexVisible(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isReviewIndexVisible]);
+
   function toFileArray(fileList: FileList | null): File[] {
     return fileList ? Array.from(fileList) : [];
   }
@@ -499,7 +526,7 @@ export function BookBuilderPage() {
       await updateOcrPage(accessToken, reviewBookId, reviewPageNumber, { editedText });
       setOriginalEditedText(editedText);
       setReviewMessage("El texto OCR de la página se actualizó correctamente.");
-      await Promise.all([reviewPageQuery.refetch(), booksQuery.refetch()]);
+      await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudo guardar la edición OCR.");
     } finally {
@@ -523,7 +550,7 @@ export function BookBuilderPage() {
       setReviewOcrMode(nextMode);
       await rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode });
       setReviewMessage("El OCR de la página se volvió a reconocer correctamente.");
-      await Promise.all([reviewPageQuery.refetch(), booksQuery.refetch()]);
+      await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.");
     } finally {
@@ -932,7 +959,7 @@ export function BookBuilderPage() {
       {imageBooks.length > 0 ? (
         <>
           {isReviewIndexVisible ? (
-            <aside aria-label="Índice de páginas para OCR" className="reader-navigation-panel" role="dialog">
+            <aside aria-label="Índice de páginas para OCR" className="reader-navigation-panel" ref={reviewIndexPanelRef} role="dialog">
               <div className="reader-navigation-header">
                 <div>
                   <p className="eyebrow">Navegación</p>
@@ -1061,6 +1088,7 @@ export function BookBuilderPage() {
               aria-label="Abrir índice de páginas"
               className={isReviewIndexVisible ? "reader-float-button active" : "reader-float-button"}
               onClick={() => setIsReviewIndexVisible((current) => !current)}
+              ref={reviewIndexToggleRef}
               title="Índice de páginas"
               type="button"
             >
