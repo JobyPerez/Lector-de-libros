@@ -371,7 +371,7 @@ export function ShelfPage() {
   }
 
   return (
-    <div className="page-stack">
+    <div className="page-stack shelf-layout">
       <section className="panel wide-panel overflow-visible-panel">
         <div className="panel-header shelf-header">
           <div>

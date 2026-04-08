@@ -182,11 +182,18 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
 }
 
 function renderPdfPageFooter(document: PDFKit.PDFDocument, pageLabel: string) {
+  const footerWidth = document.page.width - document.page.margins.left - document.page.margins.right;
+  const footerY = document.page.height - document.page.margins.bottom - 12;
+
   document
     .font("Helvetica")
     .fontSize(10)
     .fillColor("#666666")
-    .text(pageLabel, 50, document.page.height - 40, { align: "center", width: document.page.width - 100 });
+    .text(pageLabel, document.page.margins.left, footerY, {
+      align: "center",
+      lineBreak: false,
+      width: footerWidth
+    });
 }
 
 function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {

@@ -1224,7 +1224,7 @@ export function BookBuilderPage() {
   }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
 
   return (
-    <div className="page-stack">
+    <div className="page-stack builder-layout">
       {!isReviewOnlyMode ? (
         <section className="panel wide-panel">
           <div className="panel-header">
