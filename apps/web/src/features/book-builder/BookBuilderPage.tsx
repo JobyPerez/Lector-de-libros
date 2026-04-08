@@ -1347,7 +1347,7 @@ export function BookBuilderPage() {
                 ) : null}
 
                 {selectedAppendBook && appendReferencePageNumber !== undefined ? (
-                  <div className="selected-book-banner">
+                  <div className="selected-book-banner append-position-banner">
                     <span>Las páginas añadidas se insertarán</span>
                     <div className="append-placement-picker" role="radiogroup" aria-label="Posición respecto a la página actual">
                       <button
@@ -1461,7 +1461,7 @@ export function BookBuilderPage() {
                   <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
                 ) : null}
 
-                <div className="selected-book-banner">
+                <div className="selected-book-banner append-ocr-banner">
                   <span>Modo OCR</span>
                   <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
                     <button
