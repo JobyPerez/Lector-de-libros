@@ -74,6 +74,16 @@ type PageTurnSnapshot = {
   paragraphs: ParagraphContent[];
 };
 
+type ReaderWakeLockSentinel = {
+  addEventListener?: (type: "release", listener: () => void) => void;
+  release: () => Promise<void>;
+  released?: boolean;
+};
+
+type ReaderWakeLockApi = {
+  request: (type: "screen") => Promise<ReaderWakeLockSentinel>;
+};
+
 function readStoredTtsEngine(): TtsEngine {
   if (typeof window === "undefined") {
     return DEFAULT_TTS_ENGINE;
@@ -127,6 +137,14 @@ function getSpeechSynthesisApi() {
   }
 
   return window.speechSynthesis;
+}
+
+function getWakeLockApi() {
+  if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
+    return null;
+  }
+
+  return (navigator as Navigator & { wakeLock?: ReaderWakeLockApi }).wakeLock ?? null;
 }
 
 function isPeninsularSpanishVoice(voice: SpeechSynthesisVoice) {
@@ -677,6 +695,8 @@ export function ReaderPage() {
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
   const pendingParagraphTargetRef = useRef<number | "last" | null>(null);
   const pendingParagraphScrollRef = useRef<number | null>(null);
+  const deviceAdvanceTimeoutRef = useRef<number | null>(null);
+  const wakeLockRef = useRef<ReaderWakeLockSentinel | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
 
@@ -855,6 +875,7 @@ export function ReaderPage() {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
+    void releaseScreenWakeLock();
 
     if (pageTurnTimeoutRef.current !== null && typeof window !== "undefined") {
       window.clearTimeout(pageTurnTimeoutRef.current);
@@ -912,6 +933,29 @@ export function ReaderPage() {
     clearAudioResource();
     setAutoPlay(false);
   }, [selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      if (selectedTtsEngine !== "device" || !isAudioPlaying) {
+        return;
+      }
+
+      void ensureScreenWakeLock();
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isAudioPlaying, selectedTtsEngine]);
 
   useEffect(() => {
     if (isPageJumpActive) {
@@ -1448,20 +1492,75 @@ export function ReaderPage() {
     activeAudioBlockRef.current = null;
   }
 
-  function clearAudioResource(options: { invalidatePlayback?: boolean } = {}) {
+  function clearPendingDeviceAdvance() {
+    if (deviceAdvanceTimeoutRef.current === null || typeof window === "undefined") {
+      return;
+    }
+
+    window.clearTimeout(deviceAdvanceTimeoutRef.current);
+    deviceAdvanceTimeoutRef.current = null;
+  }
+
+  async function releaseScreenWakeLock() {
+    const wakeLock = wakeLockRef.current;
+    wakeLockRef.current = null;
+
+    if (!wakeLock) {
+      return;
+    }
+
+    try {
+      await wakeLock.release();
+    } catch {
+      // Algunos navegadores lo liberan automáticamente al apagar la pantalla o cambiar de app.
+    }
+  }
+
+  async function ensureScreenWakeLock() {
+    if (selectedTtsEngine !== "device") {
+      return;
+    }
+
+    const wakeLockApi = getWakeLockApi();
+    if (!wakeLockApi) {
+      return;
+    }
+
+    if (wakeLockRef.current && wakeLockRef.current.released !== true) {
+      return;
+    }
+
+    try {
+      const wakeLock = await wakeLockApi.request("screen");
+      wakeLockRef.current = wakeLock;
+      wakeLock.addEventListener?.("release", () => {
+        if (wakeLockRef.current === wakeLock) {
+          wakeLockRef.current = null;
+        }
+      });
+    } catch {
+      // Si falla, mantenemos la reproducción sin mostrar un error extra al usuario.
+    }
+  }
+
+  function clearAudioResource(options: { cancelDeviceSpeech?: boolean; invalidatePlayback?: boolean } = {}) {
     if (options.invalidatePlayback ?? true) {
       playbackAttemptRef.current += 1;
     }
 
+    clearPendingDeviceAdvance();
     activeAudioRequestRef.current?.abort();
     activeAudioRequestRef.current = null;
-    getSpeechSynthesisApi()?.cancel();
+    if (options.cancelDeviceSpeech ?? true) {
+      getSpeechSynthesisApi()?.cancel();
+    }
     deviceUtteranceRef.current = null;
     audioRef.current?.pause();
     audioRef.current = null;
     activeAudioBlockRef.current = null;
     setIsAudioPlaying(false);
     setHasActivePlaybackSession(false);
+    void releaseScreenWakeLock();
 
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current);
@@ -1893,13 +1992,26 @@ export function ReaderPage() {
         return;
       }
 
+      clearPendingDeviceAdvance();
       deviceUtteranceRef.current = null;
       setIsAudioLoading(false);
       setIsAudioPlaying(false);
       setHasActivePlaybackSession(false);
 
       if (keepAutoPlay) {
-        void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
+        if (typeof window === "undefined") {
+          void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
+          return;
+        }
+
+        deviceAdvanceTimeoutRef.current = window.setTimeout(() => {
+          deviceAdvanceTimeoutRef.current = null;
+          if (playbackAttempt !== playbackAttemptRef.current) {
+            return;
+          }
+
+          void advanceToNextParagraphAfterPlayback(paragraph, pageNumber);
+        }, 90);
       }
     };
     utterance.onerror = (event) => {
@@ -1907,6 +2019,7 @@ export function ReaderPage() {
         return;
       }
 
+      clearPendingDeviceAdvance();
       deviceUtteranceRef.current = null;
       setIsAudioLoading(false);
       setIsAudioPlaying(false);
@@ -1921,9 +2034,13 @@ export function ReaderPage() {
     setCurrentParagraphNumber(paragraph.paragraphNumber);
     void persistProgress(paragraph, pageNumber);
 
-    speechSynthesisApi.cancel();
+    clearPendingDeviceAdvance();
+    if (speechSynthesisApi.speaking || speechSynthesisApi.pending || speechSynthesisApi.paused) {
+      speechSynthesisApi.cancel();
+    }
     deviceUtteranceRef.current = utterance;
     setHasActivePlaybackSession(true);
+    await ensureScreenWakeLock();
     speechSynthesisApi.speak(utterance);
     setIsAudioLoading(false);
   }
@@ -2247,7 +2364,11 @@ export function ReaderPage() {
     setIsAudioLoading(true);
 
     try {
-      clearAudioResource({ invalidatePlayback: false });
+      const speechSynthesisApi = selectedTtsEngine === "device" ? getSpeechSynthesisApi() : null;
+      const shouldCancelDeviceSpeech = Boolean(
+        speechSynthesisApi && (speechSynthesisApi.speaking || speechSynthesisApi.pending || speechSynthesisApi.paused)
+      );
+      clearAudioResource({ cancelDeviceSpeech: shouldCancelDeviceSpeech, invalidatePlayback: false });
 
       if (selectedTtsEngine === "device") {
         await playParagraphWithDeviceVoice(paragraph, pageNumber, keepAutoPlay, playbackAttempt);
@@ -2302,6 +2423,7 @@ export function ReaderPage() {
     if (selectedTtsEngine === "device") {
       const speechSynthesisApi = getSpeechSynthesisApi();
       if (speechSynthesisApi?.paused) {
+        void ensureScreenWakeLock();
         speechSynthesisApi.resume();
         setIsAudioPlaying(true);
         setHasActivePlaybackSession(true);
@@ -2327,6 +2449,7 @@ export function ReaderPage() {
         speechSynthesisApi.pause();
       }
       setIsAudioPlaying(false);
+      void releaseScreenWakeLock();
       return;
     }
 
@@ -3023,7 +3146,7 @@ export function ReaderPage() {
                 {selectedTtsEngine === "deepgram"
                   ? "La voz IA usa Deepgram y mantiene la calidad actual del lector."
                   : isDeviceTtsSupported
-                    ? "Las voces del dispositivo son gratuitas y dependen del navegador y del sistema operativo."
+                    ? "Las voces del dispositivo son gratuitas. La app intentará mantener la pantalla activa durante la reproducción, pero el soporte sigue dependiendo del navegador y del sistema operativo."
                     : "Este navegador no expone voces nativas. Mantén el modo IA para reproducir audio."}
               </p>
 
