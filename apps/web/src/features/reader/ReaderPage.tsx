@@ -3142,13 +3142,11 @@ export function ReaderPage() {
                 </label>
               )}
 
-              <p className="reader-audio-note">
-                {selectedTtsEngine === "deepgram"
-                  ? "La voz IA usa Deepgram y mantiene la calidad actual del lector."
-                  : isDeviceTtsSupported
-                    ? "Las voces del dispositivo son gratuitas. La app intentará mantener la pantalla activa durante la reproducción, pero el soporte sigue dependiendo del navegador y del sistema operativo."
-                    : "Este navegador no expone voces nativas. Mantén el modo IA para reproducir audio."}
-              </p>
+              {!isDeviceTtsSupported && selectedTtsEngine === "device" ? (
+                <p className="reader-audio-note">
+                  Este navegador no expone voces nativas. Mantén el modo IA para reproducir audio.
+                </p>
+              ) : null}
 
               {selectedTtsEngine === "device" && selectedDeviceVoice ? (
                 <p className="reader-audio-note">Voz activa: {selectedDeviceVoice.name} · {selectedDeviceVoice.lang}</p>
