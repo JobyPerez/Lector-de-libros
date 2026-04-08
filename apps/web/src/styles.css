@@ -1187,6 +1187,12 @@ textarea {
   transition: background 180ms ease, box-shadow 180ms ease, color 180ms ease;
 }
 
+.reader-rich-content p[data-paragraph-number],
+.reader-rich-content li[data-paragraph-number],
+.reader-rich-content blockquote[data-paragraph-number] {
+  text-align: justify;
+}
+
 .reader-rich-content [data-paragraph-number].active {
   background: linear-gradient(180deg, rgba(252, 241, 223, 0.72), rgba(255, 252, 247, 0.92));
   box-shadow: inset 3px 0 0 rgba(169, 87, 37, 0.28);
