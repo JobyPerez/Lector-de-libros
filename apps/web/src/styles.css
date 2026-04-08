@@ -741,6 +741,22 @@ textarea {
   margin-bottom: 1.2rem;
 }
 
+.shelf-header {
+  align-items: flex-start;
+}
+
+.shelf-header > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.shelf-header-actions {
+  margin-left: auto;
+  width: auto;
+  justify-content: flex-end;
+  flex: none;
+}
+
 .compact-header {
   margin-bottom: 0.5rem;
 }
@@ -772,6 +788,101 @@ textarea {
   gap: 1rem;
   position: relative;
   overflow: hidden;
+}
+
+.shelf-book-card {
+  padding: 0;
+}
+
+.book-card-link {
+  display: grid;
+  gap: 1rem;
+  min-height: 220px;
+  height: 100%;
+  padding: 1.25rem;
+}
+
+.book-card-copy {
+  padding-right: 5.4rem;
+}
+
+.book-card-actions {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.book-card-icon-button {
+  width: 2.5rem;
+  height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(255, 253, 247, 0.94);
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  color: var(--forest-700);
+  box-shadow: 0 10px 24px rgba(52, 32, 16, 0.12);
+  transition: transform 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.book-card-icon-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.book-card-icon-button svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.book-card-edit-button:hover:not(:disabled) {
+  background: rgba(42, 87, 66, 0.1);
+  color: var(--forest-900);
+}
+
+.book-card-download-button:hover:not(:disabled) {
+  background: rgba(217, 137, 65, 0.16);
+  color: var(--amber-700);
+}
+
+.book-card-delete-button {
+  color: var(--danger);
+}
+
+.book-card-delete-button:hover:not(:disabled) {
+  background: rgba(140, 31, 49, 0.1);
+}
+
+.book-card-download-menu {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: 0;
+  z-index: 4;
+  min-width: 200px;
+  padding: 0.45rem;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 249, 240, 0.98);
+  backdrop-filter: blur(18px);
+  box-shadow: 0 18px 48px rgba(52, 32, 16, 0.16);
+  display: grid;
+  gap: 0.2rem;
+}
+
+.book-card-download-menu-title {
+  margin: 0;
+  padding: 0.6rem 0.75rem 0.45rem;
+  color: var(--forest-900);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.book-card-download-option {
+  justify-content: flex-start;
 }
 
 .book-card::before {
@@ -1986,7 +2097,7 @@ textarea {
 
   .topbar-actions {
     width: 100%;
-    justify-content: space-between;
+    justify-content: flex-end;
   }
 
   .profile-trigger {
@@ -2006,6 +2117,28 @@ textarea {
   .session-strip {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .topbar {
+    flex-direction: row;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .brand-lockup {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topbar-actions {
+    width: auto;
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+
+  .topnav {
+    order: 3;
+    width: 100%;
   }
 
   .controls-grid,
@@ -2102,11 +2235,27 @@ textarea {
     width: 100%;
   }
 
-  .menu-panel,
-  .profile-panel {
+  .shelf-header {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .shelf-header-actions {
+    width: auto;
+    margin-left: auto;
+  }
+
+  .menu-panel {
     right: 0;
     left: 0;
     width: auto;
+  }
+
+  .profile-panel {
+    left: auto;
+    right: 0;
+    width: min(280px, calc(100vw - 2rem));
+    max-width: calc(100vw - 2rem);
   }
 
   .install-help {
