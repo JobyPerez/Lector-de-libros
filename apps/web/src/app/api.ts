@@ -238,6 +238,13 @@ export type ReaderAudioBlockParagraph = {
   textLength: number;
 };
 
+export type DeepgramBalanceSummary = {
+  success: true;
+  balance_usd: number;
+  project_id: string;
+  project_name: string;
+};
+
 function decodeBase64Url(value: string): string {
   const normalizedValue = value.replace(/-/gu, "+").replace(/_/gu, "/");
   const paddingLength = (4 - (normalizedValue.length % 4)) % 4;
@@ -678,6 +685,10 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
     blob: await response.blob(),
     paragraphs: parseAudioBlockParagraphs(response)
   };
+}
+
+export function fetchDeepgramBalance(accessToken: string) {
+  return request<DeepgramBalanceSummary>("/tts/deepgram/balance", { accessToken });
 }
 
 export function fetchUsers(accessToken: string) {

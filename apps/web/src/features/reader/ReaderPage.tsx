@@ -11,6 +11,7 @@ import {
   deleteHighlight,
   deleteNote,
   fetchBookPage,
+  fetchDeepgramBalance,
   fetchPageAnnotations,
   fetchProgress,
   fetchReaderNavigation,
@@ -35,6 +36,12 @@ const DEFAULT_TTS_ENGINE = "deepgram";
 const DEFAULT_DEVICE_VOICE_URI = "";
 const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
 const DEFAULT_PLAYBACK_RATE = 1.1;
+const USD_BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
+  currency: "USD",
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+  style: "currency"
+});
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
@@ -69,6 +76,100 @@ const TTS_VOICE_OPTIONS = [
 type PageTurnDirection = "forward" | "backward";
 
 type TtsEngine = "deepgram" | "device";
+
+type DeviceVoiceOption = {
+  description: string;
+  label: string;
+  value: string;
+};
+
+type TimedAudioBlockParagraph = ReaderAudioBlockParagraph & {
+  endMs: number;
+  startMs: number;
+};
+
+type PlainTextSegment = {
+  highlight: {
+    color: HighlightColor;
+    highlightId: string;
+    text: string;
+  } | null;
+  text: string;
+};
+
+type SelectionDraft = {
+  charEnd: number;
+  charStart: number;
+  paragraph: ParagraphContent;
+  rect: {
+    left: number;
+    top: number;
+  };
+  selectedText: string;
+};
+
+type QueuedAudioBlock = {
+  audioElement?: HTMLAudioElement;
+  audioUrl?: string;
+  blob?: Blob;
+  controller?: AbortController;
+  metadataPromise?: Promise<void>;
+  paragraphCount: number;
+  paragraphs: ReaderAudioBlockParagraph[];
+  promise?: Promise<{ blob: Blob; paragraphs: ReaderAudioBlockParagraph[] }>;
+  startSequenceNumber: number;
+  voiceModel: string;
+};
+
+type ActiveAudioBlock = {
+  paragraphCount: number;
+  paragraphTimings: TimedAudioBlockParagraph[];
+  startSequenceNumber: number;
+  voiceModel: string;
+};
+
+type NavigationListItem =
+  | {
+      isActive: boolean;
+      key: string;
+      level: number;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "toc";
+    }
+  | {
+      bookmarkId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "bookmark";
+    }
+  | {
+      color: HighlightColor;
+      excerpt: string;
+      highlightId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "highlight";
+    }
+  | {
+      color: HighlightColor | null;
+      excerpt: string;
+      isActive: boolean;
+      key: string;
+      noteId: string;
+      noteText: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "note";
+    };
+
+type PersistedParagraphProgress = Pick<ParagraphContent, "paragraphNumber" | "sequenceNumber">;
 
 type PageTurnSnapshot = {
   activeParagraphNumber: number | null;
@@ -153,6 +254,10 @@ function readStoredPlaybackRate() {
   }
 
   return Math.min(Math.max(storedPlaybackRate, MIN_PLAYBACK_RATE), MAX_PLAYBACK_RATE);
+}
+
+function formatUsdBalance(amount: number) {
+  return USD_BALANCE_FORMATTER.format(amount);
 }
 
 function getSpeechSynthesisApi() {
@@ -847,6 +952,19 @@ export function ReaderPage() {
     }
   });
 
+  const deepgramBalanceQuery = useQuery({
+    enabled: Boolean(accessToken && isAudioSettingsVisible && selectedTtsEngine === "deepgram"),
+    queryKey: ["deepgram-balance"],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchDeepgramBalance(accessToken);
+    },
+    staleTime: 60_000
+  });
+
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
   const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
   const selectedDeviceVoice = useMemo(
@@ -1099,6 +1217,9 @@ export function ReaderPage() {
   const currentBookmarks = annotationsQuery.data?.bookmarks ?? [];
   const currentHighlights = annotationsQuery.data?.highlights ?? [];
   const currentNotes = annotationsQuery.data?.notes ?? [];
+  const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
+    ? deepgramBalanceQuery.error.message
+    : "No se pudo consultar el saldo de Deepgram.";
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasRichPageContent = Boolean(currentHtmlContent);
 
@@ -3647,16 +3768,33 @@ export function ReaderPage() {
               </label>
 
               {selectedTtsEngine === "deepgram" ? (
-                <label className="reader-audio-field">
-                  <span>Voz</span>
-                  <select onChange={(event) => setSelectedVoiceModel(event.target.value)} value={selectedVoiceModel}>
-                    {TTS_VOICE_OPTIONS.map((voice) => (
-                      <option key={voice.value} value={voice.value}>
-                        {voice.label} · {voice.description}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <>
+                  {deepgramBalanceQuery.isLoading ? (
+                    <p className="reader-audio-note">Consultando saldo de Deepgram...</p>
+                  ) : null}
+
+                  {deepgramBalanceQuery.data ? (
+                    <div className="reader-audio-status reader-audio-status-inline">
+                      <span>Saldo disponible en Deepgram</span>
+                      <strong>{formatUsdBalance(deepgramBalanceQuery.data.balance_usd)}</strong>
+                    </div>
+                  ) : null}
+
+                  {deepgramBalanceQuery.isError ? (
+                    <p className="reader-audio-note">{deepgramBalanceErrorMessage}</p>
+                  ) : null}
+
+                  <label className="reader-audio-field">
+                    <span>Voz</span>
+                    <select onChange={(event) => setSelectedVoiceModel(event.target.value)} value={selectedVoiceModel}>
+                      {TTS_VOICE_OPTIONS.map((voice) => (
+                        <option key={voice.value} value={voice.value}>
+                          {voice.label} · {voice.description}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </>
               ) : (
                 <label className="reader-audio-field">
                   <span>Voz del dispositivo</span>

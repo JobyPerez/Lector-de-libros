@@ -1378,6 +1378,17 @@ textarea {
   font-size: 0.95rem;
 }
 
+.reader-audio-status-inline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.reader-audio-status-inline strong {
+  white-space: nowrap;
+}
+
 .reader-prose {
   display: grid;
   gap: 1rem;

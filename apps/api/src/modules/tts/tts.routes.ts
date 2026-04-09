@@ -19,6 +19,11 @@ type TtsParagraphRow = {
   sequenceNumber: number;
 };
 
+type DeepgramProjectInfo = {
+  projectId: string;
+  projectName: string;
+};
+
 const ttsRequestSchema = z.object({
   paragraphId: z.string().uuid(),
   voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
@@ -39,6 +44,193 @@ function computeChecksum(buffer: Buffer): string {
 
 function encodeHeaderPayload(payload: unknown) {
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseNumericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsedValue = Number(value);
+    if (Number.isFinite(parsedValue)) {
+      return parsedValue;
+    }
+  }
+
+  return null;
+}
+
+function readStringProperty(candidate: unknown, propertyNames: string[]) {
+  if (!isRecord(candidate)) {
+    return null;
+  }
+
+  for (const propertyName of propertyNames) {
+    const propertyValue = candidate[propertyName];
+    if (typeof propertyValue === "string" && propertyValue.trim()) {
+      return propertyValue.trim();
+    }
+  }
+
+  return null;
+}
+
+async function fetchDeepgramJson(path: string) {
+  if (!appEnv.deepgramApiKey) {
+    throw Object.assign(new Error("Deepgram no está configurado en el entorno."), {
+      statusCode: 503
+    });
+  }
+
+  const response = await fetch(`https://api.deepgram.com${path}`, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Token ${appEnv.deepgramApiKey}`
+    },
+    method: "GET"
+  });
+
+  const responseBody = await response.text();
+  if (!response.ok) {
+    throw Object.assign(new Error(`Deepgram API error: ${responseBody}`), {
+      statusCode: 502,
+      upstreamStatusCode: response.status
+    });
+  }
+
+  try {
+    return responseBody ? JSON.parse(responseBody) as unknown : null;
+  } catch {
+    throw Object.assign(new Error(`Deepgram devolvió una respuesta JSON inválida al consultar ${path}.`), {
+      statusCode: 502
+    });
+  }
+}
+
+function parseDeepgramProject(payload: unknown): DeepgramProjectInfo {
+  const projectCandidates: unknown[] = [];
+
+  if (Array.isArray(payload)) {
+    projectCandidates.push(...payload);
+  }
+
+  if (isRecord(payload)) {
+    if (Array.isArray(payload.projects)) {
+      projectCandidates.push(...payload.projects);
+    }
+
+    if (Array.isArray(payload.data)) {
+      projectCandidates.push(...payload.data);
+    }
+
+    if (Array.isArray(payload.result)) {
+      projectCandidates.push(...payload.result);
+    }
+
+    if (isRecord(payload.project)) {
+      projectCandidates.push(payload.project);
+    }
+  }
+
+  for (const projectCandidate of projectCandidates) {
+    const projectId = readStringProperty(projectCandidate, ["project_id", "projectId", "id"]);
+    if (!projectId) {
+      continue;
+    }
+
+    return {
+      projectId,
+      projectName: readStringProperty(projectCandidate, ["name", "project_name", "projectName"]) ?? projectId
+    };
+  }
+
+  throw Object.assign(new Error("Deepgram no devolvió ningún proyecto disponible para esta cuenta."), {
+    statusCode: 502
+  });
+}
+
+function parseDeepgramBalanceUsd(payload: unknown): number | null {
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const parsedBalance = parseDeepgramBalanceUsd(item);
+      if (parsedBalance !== null) {
+        return parsedBalance;
+      }
+    }
+
+    return null;
+  }
+
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  const directUsdBalance = parseNumericValue(payload.balance_usd ?? payload.balanceUsd);
+  if (directUsdBalance !== null) {
+    return directUsdBalance;
+  }
+
+  const normalizedCurrency = [payload.currency, payload.currencyCode, payload.unit, payload.units]
+    .find((candidate) => typeof candidate === "string");
+  const hasUsdCurrency = typeof normalizedCurrency === "string"
+    ? normalizedCurrency.trim().toUpperCase() === "USD"
+    : false;
+
+  const directAmount = parseNumericValue(payload.amount);
+  if (directAmount !== null && (hasUsdCurrency || normalizedCurrency === undefined)) {
+    return directAmount;
+  }
+
+  const directBalance = parseNumericValue(payload.balance);
+  if (directBalance !== null && (hasUsdCurrency || normalizedCurrency === undefined)) {
+    return directBalance;
+  }
+
+  for (const nestedValue of Object.values(payload)) {
+    const parsedBalance = parseDeepgramBalanceUsd(nestedValue);
+    if (parsedBalance !== null) {
+      return parsedBalance;
+    }
+  }
+
+  return null;
+}
+
+async function fetchDeepgramProject() {
+  return parseDeepgramProject(await fetchDeepgramJson("/v1/projects"));
+}
+
+async function fetchDeepgramProjectBalanceUsd(projectId: string) {
+  const balancePaths = [
+    `/v1/projects/${encodeURIComponent(projectId)}/balances`,
+    `/v1/projects/${encodeURIComponent(projectId)}/balance`
+  ];
+
+  let lastError: unknown = null;
+
+  for (const balancePath of balancePaths) {
+    try {
+      const parsedBalance = parseDeepgramBalanceUsd(await fetchDeepgramJson(balancePath));
+      if (parsedBalance !== null) {
+        return parsedBalance;
+      }
+
+      lastError = Object.assign(new Error("Deepgram no devolvió un balance en USD reconocible para el proyecto."), {
+        statusCode: 502
+      });
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? Object.assign(new Error("No se pudo consultar el balance de Deepgram."), {
+    statusCode: 502
+  });
 }
 
 async function synthesizeTextWithDeepgram(text: string, voiceModel: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
@@ -225,6 +417,22 @@ async function persistParagraphAudioBuffer(
 }
 
 export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/tts/deepgram/balance", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const project = await fetchDeepgramProject();
+    const balanceUsd = await fetchDeepgramProjectBalanceUsd(project.projectId);
+
+    return reply.send({
+      success: true,
+      balance_usd: Number(balanceUsd.toFixed(2)),
+      project_id: project.projectId,
+      project_name: project.projectName
+    });
+  });
+
   app.post("/books/:bookId/tts", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
