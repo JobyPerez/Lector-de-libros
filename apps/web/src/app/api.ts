@@ -301,6 +301,7 @@ export type ReaderPageAnnotations = {
 
 export type ReaderNavigationSummary = {
   bookmarks: ReaderBookmark[];
+  highlights: ReaderHighlight[];
   notes: ReaderNote[];
   toc: ReaderTocEntry[];
 };

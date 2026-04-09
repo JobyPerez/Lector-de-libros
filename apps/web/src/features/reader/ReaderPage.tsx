@@ -8,6 +8,7 @@ import {
   createNote,
   deleteBookmark,
   deleteBookPage,
+  deleteHighlight,
   deleteNote,
   fetchBookPage,
   fetchPageAnnotations,
@@ -15,6 +16,7 @@ import {
   fetchReaderNavigation,
   requestParagraphAudio,
   requestParagraphAudioBlock,
+  updateNote,
   updateProgress,
   type HighlightColor,
   type ParagraphContent,
@@ -41,6 +43,7 @@ const AUDIO_BLOCK_PARAGRAPH_COUNT = 5;
 const AUDIO_BLOCK_QUEUE_SIZE = 2;
 const AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT = 1;
 const AUDIO_BLOCK_FALLBACK_DURATION_MS = 18_000;
+const READER_NOTE_POPOVER_HEIGHT_ESTIMATE_PX = 340;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -82,6 +85,18 @@ type ReaderWakeLockSentinel = {
 
 type ReaderWakeLockApi = {
   request: (type: "screen") => Promise<ReaderWakeLockSentinel>;
+};
+
+type ReaderNotePopoverState = {
+  color: HighlightColor | null;
+  highlightId: string;
+  noteId: string | null;
+  rect: {
+    left: number;
+    placement: "above" | "below";
+    top: number;
+  };
+  selectedText: string;
 };
 
 function createPageTurnSnapshot(pageNumber: number, paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null): PageTurnSnapshot {
@@ -412,6 +427,32 @@ function CloseIcon() {
   );
 }
 
+function EyeIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M2.75 12C4.82 8.66 8.11 6.75 12 6.75C15.89 6.75 19.18 8.66 21.25 12C19.18 15.34 15.89 17.25 12 17.25C8.11 17.25 4.82 15.34 2.75 12Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="12" cy="12" fill="currentColor" r="2.2" />
+    </ReaderControlIcon>
+  );
+}
+
+function EditIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M4.75 19.25L8.35 18.45L17.55 9.25C18.12 8.68 18.12 7.76 17.55 7.19L16.81 6.45C16.24 5.88 15.32 5.88 14.75 6.45L5.55 15.65L4.75 19.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.9 7.3L16.7 10.1" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
+function SaveIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M5 12.5L9.25 16.75L19 7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
 function highlightClassName(color: HighlightColor) {
   return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
 }
@@ -604,6 +645,24 @@ function notePreview(note: ReaderNote) {
   return note.noteText;
 }
 
+function highlightPreview(highlight: ReaderHighlight) {
+  return highlight.highlightedText.trim();
+}
+
+function resolveReaderNotePopoverPlacement(anchorRect: DOMRect) {
+  if (anchorRect.top <= READER_NOTE_POPOVER_HEIGHT_ESTIMATE_PX) {
+    return {
+      placement: "below" as const,
+      top: anchorRect.bottom
+    };
+  }
+
+  return {
+    placement: "above" as const,
+    top: Math.max(72, anchorRect.top)
+  };
+}
+
 function tocEntryKey(entry: ReaderTocEntry) {
   return `${entry.pageNumber}:${entry.paragraphNumber}:${entry.title}`;
 }
@@ -676,12 +735,20 @@ export function ReaderPage() {
   const [pageTurnDirection, setPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnSnapshot, setPageTurnSnapshot] = useState<PageTurnSnapshot | null>(null);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteText, setEditingNavigationNoteText] = useState("");
+  const [editingNavigationHighlightId, setEditingNavigationHighlightId] = useState<string | null>(null);
+  const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
   const [selectionDraft, setSelectionDraft] = useState<SelectionDraft | null>(null);
   const [selectionColor, setSelectionColor] = useState<HighlightColor>("YELLOW");
   const [selectionNoteText, setSelectionNoteText] = useState("");
   const [isSavingSelection, setIsSavingSelection] = useState(false);
   const [quickNoteText, setQuickNoteText] = useState("");
   const [isSavingQuickNote, setIsSavingQuickNote] = useState(false);
+  const [activeReaderNote, setActiveReaderNote] = useState<ReaderNotePopoverState | null>(null);
+  const [activeReaderNoteText, setActiveReaderNoteText] = useState("");
+  const [isUpdatingNote, setIsUpdatingNote] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -702,6 +769,7 @@ export function ReaderPage() {
   const livePageRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
   const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
+  const readerNotePopoverRef = useRef<HTMLDivElement | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
   const pendingParagraphTargetRef = useRef<number | "last" | null>(null);
   const pendingParagraphScrollRef = useRef<number | null>(null);
@@ -1111,6 +1179,30 @@ export function ReaderPage() {
     return nextMap;
   }, [currentNotes]);
 
+  const notesByHighlightId = useMemo(() => {
+    const nextMap = new Map<string, ReaderNote>();
+
+    for (const note of currentNotes) {
+      if (!note.highlightId || nextMap.has(note.highlightId)) {
+        continue;
+      }
+
+      nextMap.set(note.highlightId, note);
+    }
+
+    return nextMap;
+  }, [currentNotes]);
+
+  const highlightsById = useMemo(() => {
+    const nextMap = new Map<string, ReaderHighlight>();
+
+    for (const highlight of currentHighlights) {
+      nextMap.set(highlight.highlightId, highlight);
+    }
+
+    return nextMap;
+  }, [currentHighlights]);
+
   const currentPageBookmark = useMemo(() => currentBookmarks[0] ?? null, [currentBookmarks]);
   const isCurrentPageBookmarked = currentBookmarks.length > 0;
 
@@ -1162,9 +1254,28 @@ export function ReaderPage() {
       type: "note"
     }));
 
-    const sortWeight = { bookmark: 1, note: 2, toc: 0 } as const;
+    const notedHighlightIds = new Set(
+      (navigationQuery.data?.notes ?? [])
+        .map((note) => note.highlightId)
+        .filter((highlightId): highlightId is string => Boolean(highlightId))
+    );
 
-    return [...tocItems, ...bookmarkItems, ...noteItems].sort((left, right) => {
+    const standaloneHighlightItems: NavigationListItem[] = (navigationQuery.data?.highlights ?? [])
+      .filter((highlight) => !notedHighlightIds.has(highlight.highlightId))
+      .map((highlight) => ({
+        color: highlight.color,
+        excerpt: highlightPreview(highlight),
+        highlightId: highlight.highlightId,
+        isActive: highlight.pageNumber === currentPageNumber && highlight.paragraphNumber === currentParagraphNumber,
+        key: `highlight:${highlight.highlightId}`,
+        pageNumber: highlight.pageNumber,
+        paragraphNumber: highlight.paragraphNumber,
+        type: "highlight"
+      }));
+
+    const sortWeight = { bookmark: 1, highlight: 2, note: 3, toc: 0 } as const;
+
+    return [...tocItems, ...bookmarkItems, ...standaloneHighlightItems, ...noteItems].sort((left, right) => {
       if (left.pageNumber !== right.pageNumber) {
         return left.pageNumber - right.pageNumber;
       }
@@ -1175,12 +1286,30 @@ export function ReaderPage() {
 
       return sortWeight[left.type] - sortWeight[right.type];
     });
-  }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data?.bookmarks, navigationQuery.data?.notes, navigationQuery.data?.toc]);
+  }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data?.bookmarks, navigationQuery.data?.highlights, navigationQuery.data?.notes, navigationQuery.data?.toc]);
 
   useEffect(() => {
     setSelectionDraft(null);
     setSelectionNoteText("");
+    setActiveReaderNote(null);
+    setActiveReaderNoteText("");
+    setEditingNavigationNoteId(null);
+    setEditingNavigationNoteText("");
+    setEditingNavigationHighlightId(null);
+    setEditingNavigationHighlightText("");
   }, [currentPageNumber]);
+
+  useEffect(() => {
+    if (!activeReaderNote?.noteId) {
+      return;
+    }
+
+    const nextNote = currentNotes.find((note) => note.noteId === activeReaderNote.noteId) ?? null;
+    if (!nextNote) {
+      setActiveReaderNote(null);
+      setActiveReaderNoteText("");
+    }
+  }, [activeReaderNote, currentNotes]);
 
   const isPageTurningBackward = pageTurnDirection === "backward";
   const baseParagraphs = isPageTurningBackward && pageTurnSnapshot
@@ -1236,9 +1365,19 @@ export function ReaderPage() {
       }
 
       applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
+      node.querySelectorAll<HTMLElement>("[data-highlight-id]").forEach((highlightElement) => {
+        const highlightId = highlightElement.dataset.highlightId;
+        const note = highlightId ? notesByHighlightId.get(highlightId) ?? null : null;
+        if (note) {
+          highlightElement.dataset.noteId = note.noteId;
+          return;
+        }
+
+        delete highlightElement.dataset.noteId;
+      });
       paragraphRefs.current.set(paragraphNumber, node as HTMLParagraphElement);
     });
-  }, [currentHtmlContent, currentPageNumber, currentParagraphs, effectiveCurrentParagraphNumber, hasRichPageContent, highlightsByParagraphId, noteCountsByParagraphId]);
+  }, [currentHtmlContent, currentPageNumber, currentParagraphs, effectiveCurrentParagraphNumber, hasRichPageContent, highlightsByParagraphId, noteCountsByParagraphId, notesByHighlightId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || pageTurnDirection || !currentParagraph) {
@@ -1429,13 +1568,17 @@ export function ReaderPage() {
   }, [paragraphsById]);
 
   useEffect(() => {
-    if ((!isNavigationPanelVisible && !selectionDraft) || typeof document === "undefined") {
+    if ((!isNavigationPanelVisible && !selectionDraft && !activeReaderNote) || typeof document === "undefined") {
       return;
     }
 
     function handlePointerDown(event: PointerEvent) {
       const targetNode = event.target as Node;
       if (selectionPopoverRef.current?.contains(targetNode)) {
+        return;
+      }
+
+      if (readerNotePopoverRef.current?.contains(targetNode)) {
         return;
       }
 
@@ -1446,6 +1589,8 @@ export function ReaderPage() {
       setIsNavigationPanelVisible(false);
       setSelectionDraft(null);
       setSelectionNoteText("");
+      setActiveReaderNote(null);
+      setActiveReaderNoteText("");
     }
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -1456,6 +1601,8 @@ export function ReaderPage() {
       setIsNavigationPanelVisible(false);
       setSelectionDraft(null);
       setSelectionNoteText("");
+      setActiveReaderNote(null);
+      setActiveReaderNoteText("");
       window.getSelection()?.removeAllRanges();
     }
 
@@ -1466,7 +1613,63 @@ export function ReaderPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isNavigationPanelVisible, selectionDraft]);
+  }, [activeReaderNote, isNavigationPanelVisible, selectionDraft]);
+
+  useEffect(() => {
+    if (!livePageRef.current) {
+      return;
+    }
+
+    function handleHighlightedNoteClick(event: Event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      const highlightElement = target.closest<HTMLElement>("[data-highlight-id]");
+      if (!highlightElement) {
+        return;
+      }
+
+      const highlightId = highlightElement.dataset.highlightId;
+      if (!highlightId) {
+        return;
+      }
+
+      const note = notesByHighlightId.get(highlightId) ?? null;
+      const highlight = highlightsById.get(highlightId) ?? null;
+      if (!highlight) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const rect = highlightElement.getBoundingClientRect();
+      const popoverPlacement = resolveReaderNotePopoverPlacement(rect);
+      setSelectionDraft(null);
+      setSelectionNoteText("");
+      setActiveReaderNote({
+        color: note?.highlightColor ?? highlight.color,
+        highlightId,
+        noteId: note?.noteId ?? null,
+        rect: {
+          left: rect.left + (rect.width / 2),
+          placement: popoverPlacement.placement,
+          top: popoverPlacement.top
+        },
+        selectedText: note ? notePreview(note) : highlightPreview(highlight)
+      });
+      setActiveReaderNoteText(note?.noteText ?? "");
+    }
+
+    const livePageElement = livePageRef.current;
+    livePageElement.addEventListener("click", handleHighlightedNoteClick);
+
+    return () => {
+      livePageElement.removeEventListener("click", handleHighlightedNoteClick);
+    };
+  }, [highlightsById, notesByHighlightId]);
 
   useEffect(() => {
     if (!isNavigationPanelVisible) {
@@ -2799,9 +3002,112 @@ export function ReaderPage() {
 
     try {
       await deleteNote(accessToken, bookId, noteId);
+      setExpandedNavigationNoteId((current) => current === noteId ? null : current);
+      setEditingNavigationNoteId((current) => current === noteId ? null : current);
+      setActiveReaderNote((current) => current?.noteId === noteId ? null : current);
       await refreshReaderMetadata();
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
+    }
+  }
+
+  async function handleCreateNoteForHighlight(highlightId: string, noteText: string, source: "navigation" | "reader") {
+    if (!accessToken || !noteText.trim()) {
+      return;
+    }
+
+    setIsUpdatingNote(true);
+    setReaderError(null);
+
+    try {
+      const trimmedNoteText = noteText.trim();
+      const { note } = await createNote(accessToken, bookId, {
+        highlightId,
+        noteText: trimmedNoteText
+      });
+      await refreshReaderMetadata();
+
+      if (source === "navigation") {
+        setEditingNavigationHighlightId(null);
+        setEditingNavigationHighlightText("");
+        setExpandedNavigationNoteId(note.noteId);
+      } else {
+        setActiveReaderNote((current) => current
+          ? {
+              ...current,
+              noteId: note.noteId
+            }
+          : current);
+        setActiveReaderNoteText(trimmedNoteText);
+      }
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo guardar la nota.");
+    } finally {
+      setIsUpdatingNote(false);
+    }
+  }
+
+  async function handleUpdateExistingNote(noteId: string, noteText: string, source: "navigation" | "reader") {
+    if (!accessToken || !noteText.trim()) {
+      return;
+    }
+
+    setIsUpdatingNote(true);
+    setReaderError(null);
+
+    try {
+      const trimmedNoteText = noteText.trim();
+      await updateNote(accessToken, bookId, noteId, { noteText: trimmedNoteText });
+      await refreshReaderMetadata();
+
+      setActiveReaderNote((current) => current?.noteId === noteId
+        ? {
+            ...current
+          }
+        : current);
+
+      if (source === "navigation") {
+        setEditingNavigationNoteId(null);
+        setEditingNavigationNoteText("");
+        setExpandedNavigationNoteId(noteId);
+      } else {
+        setActiveReaderNoteText(trimmedNoteText);
+      }
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo actualizar la nota.");
+    } finally {
+      setIsUpdatingNote(false);
+    }
+  }
+
+  function beginNavigationNoteEditing(note: Pick<ReaderNote, "noteId" | "noteText">) {
+    setExpandedNavigationNoteId(note.noteId);
+    setEditingNavigationHighlightId(null);
+    setEditingNavigationHighlightText("");
+    setEditingNavigationNoteId(note.noteId);
+    setEditingNavigationNoteText(note.noteText);
+  }
+
+  function beginNavigationHighlightEditing(highlightId: string) {
+    setExpandedNavigationNoteId(null);
+    setEditingNavigationNoteId(null);
+    setEditingNavigationNoteText("");
+    setEditingNavigationHighlightId(highlightId);
+    setEditingNavigationHighlightText("");
+  }
+
+  async function handleDeleteSavedHighlight(highlightId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteHighlight(accessToken, bookId, highlightId);
+      setEditingNavigationHighlightId((current) => current === highlightId ? null : current);
+      setActiveReaderNote((current) => current?.highlightId === highlightId ? null : current);
+      await refreshReaderMetadata();
+    } catch (error) {
+      setReaderError(error instanceof Error ? error.message : "No se pudo borrar el resaltado.");
     }
   }
 
@@ -2826,8 +3132,15 @@ export function ReaderPage() {
         return <span key={`${paragraph.paragraphId}-text-${index}`}>{segment.text}</span>;
       }
 
+      const linkedNote = notesByHighlightId.get(segment.highlight.highlightId) ?? null;
+
       return (
-        <span className={highlightClassName(segment.highlight.color)} data-highlight-id={segment.highlight.highlightId} key={`${paragraph.paragraphId}-highlight-${index}`}>
+        <span
+          className={highlightClassName(segment.highlight.color)}
+          data-highlight-id={segment.highlight.highlightId}
+          data-note-id={linkedNote?.noteId}
+          key={`${paragraph.paragraphId}-highlight-${index}`}
+        >
           {segment.text}
         </span>
       );
@@ -2979,21 +3292,110 @@ export function ReaderPage() {
                             <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
                           </div>
                         </button>
-                        <button
-                          aria-label="Borrar marcador"
-                          className="reader-note-delete"
-                          onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
-                          title="Borrar marcador"
-                          type="button"
-                        >
-                          <DeletePageIcon />
-                        </button>
+                        <div className="reader-note-actions">
+                          <button
+                            aria-label="Borrar marcador"
+                            className="reader-note-delete"
+                            onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
+                            title="Borrar marcador"
+                            type="button"
+                          >
+                            <DeletePageIcon />
+                          </button>
+                        </div>
                       </article>
                     );
                   }
 
+                  if (item.type === "highlight") {
+                    const isHighlightEditing = editingNavigationHighlightId === item.highlightId;
+
+                    return (
+                      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                        <button
+                          className="reader-note-jump"
+                          onClick={() => {
+                            void goToLocation(item.pageNumber, item.paragraphNumber);
+                            setIsNavigationPanelVisible(false);
+                          }}
+                          ref={item.isActive
+                            ? (element) => {
+                                activeNavigationItemRef.current = element;
+                              }
+                            : undefined}
+                          type="button"
+                        >
+                          <div className="reader-navigation-item-topline">
+                            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                            <strong>{item.excerpt}</strong>
+                            <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                          </div>
+                        </button>
+                        <div className="reader-note-actions">
+                          <button
+                            aria-label="Añadir nota al resaltado"
+                            className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                            onClick={() => beginNavigationHighlightEditing(item.highlightId)}
+                            title="Añadir nota"
+                            type="button"
+                          >
+                            <EditIcon />
+                          </button>
+                          <button
+                            aria-label="Borrar resaltado"
+                            className="reader-note-delete"
+                            onClick={() => void handleDeleteSavedHighlight(item.highlightId)}
+                            title="Borrar resaltado"
+                            type="button"
+                          >
+                            <DeletePageIcon />
+                          </button>
+                        </div>
+                        {isHighlightEditing ? (
+                          <div className="reader-note-editor">
+                            <label className="reader-note-composer compact">
+                              <textarea
+                                onChange={(event) => setEditingNavigationHighlightText(event.target.value)}
+                                rows={4}
+                                value={editingNavigationHighlightText}
+                              />
+                            </label>
+                            <div className="reader-note-editor-actions">
+                              <button
+                                aria-label="Cancelar edición del resaltado"
+                                className="reader-note-icon-button"
+                                onClick={() => {
+                                  setEditingNavigationHighlightId(null);
+                                  setEditingNavigationHighlightText("");
+                                }}
+                                title="Cancelar"
+                                type="button"
+                              >
+                                <CloseIcon />
+                              </button>
+                              <button
+                                aria-label="Guardar nota del resaltado"
+                                className="reader-note-icon-button primary"
+                                disabled={isUpdatingNote || !editingNavigationHighlightText.trim()}
+                                onClick={() => void handleCreateNoteForHighlight(item.highlightId, editingNavigationHighlightText, "navigation")}
+                                title="Guardar nota"
+                                type="button"
+                              >
+                                <SaveIcon />
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  }
+
+                  const isNoteExpanded = expandedNavigationNoteId === item.noteId;
+                  const isNoteEditing = editingNavigationNoteId === item.noteId;
+                  const hasNoteText = item.noteText.trim().length > 0;
+
                   return (
-                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note active" : "reader-note-card reader-navigation-item-note"} key={item.key}>
+                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
                       <button
                         className="reader-note-jump"
                         onClick={() => {
@@ -3013,16 +3415,73 @@ export function ReaderPage() {
                           <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
                         </div>
                       </button>
-                      <p>{item.noteText}</p>
-                      <button
-                        aria-label="Borrar nota"
-                        className="reader-note-delete"
-                        onClick={() => void handleDeleteSavedNote(item.noteId)}
-                        title="Borrar nota"
-                        type="button"
-                      >
-                        <DeletePageIcon />
-                      </button>
+                      <div className="reader-note-actions">
+                        {hasNoteText ? (
+                          <button
+                            aria-expanded={isNoteExpanded}
+                            aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
+                            className="reader-note-icon-button"
+                            onClick={() => setExpandedNavigationNoteId((current) => current === item.noteId ? null : item.noteId)}
+                            title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
+                            type="button"
+                          >
+                            <EyeIcon />
+                          </button>
+                        ) : null}
+                        <button
+                          aria-label="Editar nota"
+                          className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                          onClick={() => beginNavigationNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
+                          title="Editar nota"
+                          type="button"
+                        >
+                          <EditIcon />
+                        </button>
+                        <button
+                          aria-label="Borrar nota"
+                          className="reader-note-delete"
+                          onClick={() => void handleDeleteSavedNote(item.noteId)}
+                          title="Borrar nota"
+                          type="button"
+                        >
+                          <DeletePageIcon />
+                        </button>
+                      </div>
+                      {isNoteEditing ? (
+                        <div className="reader-note-editor">
+                          <label className="reader-note-composer compact">
+                            <textarea
+                              onChange={(event) => setEditingNavigationNoteText(event.target.value)}
+                              rows={4}
+                              value={editingNavigationNoteText}
+                            />
+                          </label>
+                          <div className="reader-note-editor-actions">
+                            <button
+                              aria-label="Cancelar edición de la nota"
+                              className="reader-note-icon-button"
+                              onClick={() => {
+                                setEditingNavigationNoteId(null);
+                                setEditingNavigationNoteText("");
+                              }}
+                              title="Cancelar"
+                              type="button"
+                            >
+                              <CloseIcon />
+                            </button>
+                            <button
+                              aria-label="Guardar cambios de la nota"
+                              className="reader-note-icon-button primary"
+                              disabled={isUpdatingNote || !editingNavigationNoteText.trim()}
+                              onClick={() => void handleUpdateExistingNote(item.noteId, editingNavigationNoteText, "navigation")}
+                              title="Guardar cambios"
+                              type="button"
+                            >
+                              <SaveIcon />
+                            </button>
+                          </div>
+                        </div>
+                      ) : isNoteExpanded ? <p>{item.noteText}</p> : null}
                     </article>
                   );
                 })}
@@ -3104,6 +3563,54 @@ export function ReaderPage() {
             </button>
             <button className="primary-button" disabled={isSavingSelection} onClick={() => void handleSaveSelection()} type="button">
               {isSavingSelection ? "Guardando..." : "Guardar resaltado"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {activeReaderNote ? (
+        <div
+          className="reader-existing-note-popover"
+          data-placement={activeReaderNote.rect.placement}
+          ref={readerNotePopoverRef}
+          style={{ left: `${activeReaderNote.rect.left}px`, top: `${activeReaderNote.rect.top}px` }}
+        >
+          <div className="reader-existing-note-header">
+            <span className={activeReaderNote.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(activeReaderNote.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+            {activeReaderNote.noteId ? <strong>Nota vinculada</strong> : null}
+          </div>
+          <p className="reader-selection-preview">{activeReaderNote.selectedText}</p>
+          <label className="reader-note-composer compact">
+            <textarea
+              onChange={(event) => setActiveReaderNoteText(event.target.value)}
+              rows={4}
+              value={activeReaderNoteText}
+            />
+          </label>
+          <div className="reader-note-editor-actions">
+            <button
+              aria-label="Cerrar nota"
+              className="reader-note-icon-button"
+              onClick={() => {
+                setActiveReaderNote(null);
+                setActiveReaderNoteText("");
+              }}
+              title="Cerrar"
+              type="button"
+            >
+              <CloseIcon />
+            </button>
+            <button
+              aria-label={activeReaderNote.noteId ? "Guardar nota editada" : "Guardar nueva nota"}
+              className="reader-note-icon-button primary"
+              disabled={isUpdatingNote || !activeReaderNoteText.trim()}
+              onClick={() => activeReaderNote.noteId
+                ? void handleUpdateExistingNote(activeReaderNote.noteId, activeReaderNoteText, "reader")
+                : void handleCreateNoteForHighlight(activeReaderNote.highlightId, activeReaderNoteText, "reader")}
+              title={activeReaderNote.noteId ? "Guardar cambios" : "Guardar nota"}
+              type="button"
+            >
+              <SaveIcon />
             </button>
           </div>
         </div>

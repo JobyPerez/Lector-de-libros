@@ -284,7 +284,7 @@ async function listHighlights(
   connection: Awaited<ReturnType<typeof getConnection>>,
   userId: string,
   bookId: string,
-  pageNumber: number
+  pageNumber?: number
 ): Promise<HighlightRecord[]> {
   const result = await connection.execute(
     `
@@ -303,12 +303,12 @@ async function listHighlights(
       FROM user_highlights
       WHERE user_id = :userId
         AND book_id = :bookId
-        AND page_number = :pageNumber
+        AND (:pageNumber IS NULL OR page_number = :pageNumber)
       ORDER BY paragraph_number ASC, char_start ASC, created_at ASC
     `,
     {
       bookId,
-      pageNumber,
+      pageNumber: pageNumber ?? null,
       userId
     }
   );
@@ -398,13 +398,14 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      const [bookmarks, notes, toc] = await Promise.all([
+      const [bookmarks, highlights, notes, toc] = await Promise.all([
         listBookmarks(connection, request.currentUser.userId, params.bookId),
+        listHighlights(connection, request.currentUser.userId, params.bookId),
         listNotes(connection, request.currentUser.userId, params.bookId),
         resolveBookOutline(connection, params.bookId)
       ]);
 
-      return reply.send({ bookmarks, notes, toc });
+      return reply.send({ bookmarks, highlights, notes, toc });
     } finally {
       await connection.close();
     }
