@@ -1305,6 +1305,15 @@ textarea {
   background: linear-gradient(180deg, #194835 0%, #2f6d52 100%);
   color: #fcf8ef;
   box-shadow: 0 14px 24px rgba(25, 52, 40, 0.18);
+  transform-origin: center top;
+}
+
+.reader-page-corner-bookmark[data-animation="adding"] {
+  animation: reader-bookmark-ribbon-add 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.reader-page-corner-bookmark[data-animation="removing"] {
+  animation: reader-bookmark-ribbon-remove 420ms cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 .reader-page-corner-bookmark::after {
@@ -1323,6 +1332,14 @@ textarea {
   z-index: 1;
   width: 1.1rem;
   height: 1.1rem;
+}
+
+.reader-float-button[data-bookmark-animation="adding"] {
+  animation: reader-bookmark-button-add 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.reader-float-button[data-bookmark-animation="removing"] {
+  animation: reader-bookmark-button-remove 420ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .reader-audio-field {
@@ -1470,14 +1487,135 @@ textarea {
   background: rgba(226, 132, 168, 0.52);
 }
 
+@keyframes reader-popover-enter-above {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-100% - 0.35rem)) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, calc(-100% - 0.9rem)) scale(1);
+  }
+}
+
+@keyframes reader-popover-enter-below {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 0.25rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0.9rem) scale(1);
+  }
+}
+
+@keyframes reader-popover-enter-mobile {
+  from {
+    opacity: 0;
+    transform: translateY(0.7rem) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes reader-navigation-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(0.85rem) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes reader-navigation-panel-exit {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(0.65rem) scale(0.985);
+  }
+}
+
+@keyframes reader-bookmark-ribbon-add {
+  0% {
+    opacity: 0;
+    transform: translateY(-1rem) scaleY(0.72);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translateY(0.18rem) scaleY(1.04);
+  }
+
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes reader-bookmark-ribbon-remove {
+  0% {
+    opacity: 1;
+    transform: none;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateY(-0.85rem) scaleY(0.76);
+  }
+}
+
+@keyframes reader-bookmark-button-add {
+  0% {
+    transform: scale(1);
+  }
+
+  45% {
+    transform: scale(1.14);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes reader-bookmark-button-remove {
+  0% {
+    transform: scale(1);
+  }
+
+  35% {
+    transform: scale(0.92);
+  }
+
+  100% {
+    transform: scale(1);
+  }
+}
+
 .reader-selection-popover {
   position: fixed;
   left: 0;
   top: 0;
   z-index: 130;
   width: min(27rem, calc(100vw - 1.5rem));
+  max-height: calc(100dvh - 1.5rem);
   display: grid;
   gap: 0.9rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1rem;
   border: 1px solid rgba(31, 43, 35, 0.1);
   border-radius: 24px;
@@ -1485,6 +1623,8 @@ textarea {
   backdrop-filter: blur(18px);
   box-shadow: 0 18px 48px rgba(52, 32, 16, 0.18);
   transform: translate(-50%, calc(-100% - 0.9rem));
+  transform-origin: center bottom;
+  animation: reader-popover-enter-above 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 .reader-selection-popover::after {
@@ -1498,6 +1638,21 @@ textarea {
   border-bottom: 1px solid rgba(31, 43, 35, 0.1);
   background: rgba(255, 249, 240, 0.98);
   transform: translateX(-50%) rotate(45deg);
+}
+
+.reader-selection-popover[data-placement="below"] {
+  transform: translate(-50%, 0.9rem);
+  transform-origin: center top;
+  animation-name: reader-popover-enter-below;
+}
+
+.reader-selection-popover[data-placement="below"]::after {
+  top: -0.5rem;
+  bottom: auto;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid rgba(31, 43, 35, 0.1);
+  border-top: 1px solid rgba(31, 43, 35, 0.1);
 }
 
 .reader-selection-swatches {
@@ -1569,8 +1724,12 @@ textarea {
   top: 0;
   z-index: 131;
   width: min(27rem, calc(100vw - 1.5rem));
+  max-height: calc(100dvh - 1.5rem);
   display: grid;
   gap: 0.9rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 1rem;
   border: 1px solid rgba(31, 43, 35, 0.1);
   border-radius: 24px;
@@ -1578,6 +1737,8 @@ textarea {
   backdrop-filter: blur(18px);
   box-shadow: 0 18px 48px rgba(52, 32, 16, 0.18);
   transform: translate(-50%, calc(-100% - 0.9rem));
+  transform-origin: center bottom;
+  animation: reader-popover-enter-above 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 .reader-existing-note-popover::after {
@@ -1595,6 +1756,8 @@ textarea {
 
 .reader-existing-note-popover[data-placement="below"] {
   transform: translate(-50%, 0.9rem);
+  transform-origin: center top;
+  animation-name: reader-popover-enter-below;
 }
 
 .reader-existing-note-popover[data-placement="below"]::after {
@@ -1615,6 +1778,19 @@ textarea {
 .reader-existing-note-header strong {
   font-size: 0.92rem;
   color: var(--forest-900);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reader-selection-popover,
+  .reader-existing-note-popover,
+  .reader-navigation-panel {
+    animation: none;
+  }
+
+  .reader-page-corner-bookmark,
+  .reader-float-button[data-bookmark-animation] {
+    animation: none;
+  }
 }
 
 .reader-floating-controls {
@@ -1821,10 +1997,16 @@ textarea {
   background: rgba(255, 249, 240, 0.98);
   backdrop-filter: blur(20px);
   box-shadow: 0 24px 64px rgba(52, 32, 16, 0.2);
+  transform-origin: right bottom;
+  animation: reader-navigation-panel-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-.reader-navigation-header,
-.reader-navigation-section-heading {
+.reader-navigation-panel[data-state="closed"] {
+  pointer-events: none;
+  animation-name: reader-navigation-panel-exit;
+}
+
+.reader-navigation-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1854,20 +2036,6 @@ textarea {
 .reader-navigation-section {
   display: grid;
   gap: 0.75rem;
-}
-
-.reader-navigation-section-heading strong {
-  font-family: "Constantia", "Georgia", serif;
-  font-size: 1rem;
-  color: var(--forest-900);
-}
-
-.reader-navigation-section-heading span {
-  padding: 0.18rem 0.55rem;
-  border-radius: 999px;
-  background: rgba(42, 87, 66, 0.08);
-  color: var(--forest-700);
-  font-size: 0.78rem;
 }
 
 .reader-navigation-list {
@@ -3147,27 +3315,47 @@ textarea {
   }
 
   .reader-selection-popover {
-    left: 50% !important;
+    left: 0.5rem !important;
+    right: 0.5rem;
     top: auto !important;
-    bottom: 5.9rem;
-    width: calc(100vw - 0.5rem);
-    transform: translateX(-50%);
+    bottom: calc(5.9rem + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-width: none;
+    max-height: calc(100dvh - 6.7rem - env(safe-area-inset-bottom, 0px)) !important;
+    transform: none;
+    animation-name: reader-popover-enter-mobile;
+    transform-origin: center bottom;
   }
 
   .reader-selection-popover::after {
     display: none;
   }
 
+  .reader-selection-popover[data-placement="below"] {
+    transform: none;
+    animation-name: reader-popover-enter-mobile;
+  }
+
   .reader-existing-note-popover {
-    left: 50% !important;
+    left: 0.5rem !important;
+    right: 0.5rem;
     top: auto !important;
-    bottom: 5.9rem;
-    width: calc(100vw - 0.5rem);
-    transform: translateX(-50%);
+    bottom: calc(5.9rem + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-width: none;
+    max-height: calc(100dvh - 6.7rem - env(safe-area-inset-bottom, 0px)) !important;
+    transform: none;
+    animation-name: reader-popover-enter-mobile;
+    transform-origin: center bottom;
   }
 
   .reader-existing-note-popover::after {
     display: none;
+  }
+
+  .reader-existing-note-popover[data-placement="below"] {
+    transform: none;
+    animation-name: reader-popover-enter-mobile;
   }
 
   .reader-selection-swatches {
