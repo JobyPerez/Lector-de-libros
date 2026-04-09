@@ -656,6 +656,10 @@ textarea {
   margin-top: 0;
 }
 
+.review-editor-form {
+  margin-top: 0;
+}
+
 .auth-form label,
 .stack-form label,
 .toolbar-field {
@@ -949,6 +953,10 @@ textarea {
 .builder-review-grid {
   display: grid;
   gap: 1rem;
+}
+
+.builder-review-grid {
+  align-items: start;
 }
 
 .reader-split {
@@ -1410,6 +1418,10 @@ textarea {
   display: grid;
   gap: 1rem;
   margin-top: 1.5rem;
+}
+
+.review-preview-panel {
+  margin-top: 0;
 }
 
 .reader-paragraph {
