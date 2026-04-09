@@ -775,7 +775,7 @@ export function BookBuilderPage() {
 
   function describeOcrMode(mode: ImageOcrMode): string {
     return mode === "VISION"
-      ? "Más preciso para fotos difíciles y páginas con ruido. Tarda más."
+      ? "Más preciso para fotos difíciles y páginas con ruido. Si la IA rechaza una imagen por tamaño, el servidor la reintenta optimizada automáticamente."
       : "Más rápido para páginas limpias. También recorta encabezado y pie antes del OCR.";
   }
 

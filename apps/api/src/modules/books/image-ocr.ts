@@ -49,8 +49,22 @@ type ChatCompletionResponse = {
     };
   }>;
   error?: {
+    code?: string;
     message?: string;
+    param?: string | null;
+    type?: string;
   };
+};
+
+type VisionImageRequestPayload = {
+  buffer: Buffer;
+  mimeType: string;
+  optimized: boolean;
+};
+
+type VisionImageOptimizationVariant = {
+  maxWidth?: number;
+  quality: number;
 };
 
 type VisionOcrPromptAttempt = {
@@ -96,7 +110,18 @@ const supportedImageMimeTypes = new Set([
 
 const contentTopCropRatio = 0.08;
 const contentBottomCropRatio = 0.06;
+const githubModelsImageByteLimit = 5 * 1024 * 1024;
 const minimumHeightForMarginCrop = 900;
+const optimizedVisionImageTargetBytes = Math.floor(githubModelsImageByteLimit * 0.9);
+const optimizedVisionRetryVariants: readonly VisionImageOptimizationVariant[] = [
+  { quality: 82 },
+  { maxWidth: 2400, quality: 78 },
+  { maxWidth: 2000, quality: 74 },
+  { maxWidth: 1800, quality: 70 },
+  { maxWidth: 1600, quality: 66 },
+  { maxWidth: 1400, quality: 62 },
+  { maxWidth: 1200, quality: 58 }
+] as const;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -228,6 +253,61 @@ function isContentFilterError(errorMessage: string): boolean {
   return /content_filter|ResponsibleAIPolicyViolation|content management policy|jailbreak/iu.test(errorMessage);
 }
 
+function isRecoverableVisionInputError(errorMessage: string): boolean {
+  return /image_too_large|unsupported image|image size exceeds|below\s+5\s*mb|under\s+5\s*mb|one\s+of\s+the\s+following\s+formats|one\s+the\s+following\s+formats|format\s+is\s+not\s+supported/iu.test(errorMessage);
+}
+
+function createVisionProviderError(
+  details: { code?: string | null; message?: string | null },
+  optimized: boolean,
+  fallbackPrefix = "Error OCR de GitHub Models"
+): Error {
+  const providerMessage = details.message?.trim() || "GitHub Models devolvió un error al procesar la imagen.";
+  const providerCode = details.code?.trim() || null;
+  const normalizedProviderError = `${providerCode ?? ""} ${providerMessage}`.trim();
+
+  if (isRecoverableVisionInputError(normalizedProviderError)) {
+    return Object.assign(new Error(
+      optimized
+        ? "La imagen sigue siendo demasiado grande o incompatible para el OCR con IA incluso tras optimizarla. Reduce la resolución o usa el modo local."
+        : `${fallbackPrefix}: ${providerMessage}`
+    ), {
+      retryWithOptimizedImage: !optimized,
+      statusCode: optimized ? 413 : 502
+    });
+  }
+
+  return Object.assign(new Error(`${fallbackPrefix}: ${providerMessage}`), {
+    statusCode: 502
+  });
+}
+
+function extractVisionProviderErrorDetails(source: string | ChatCompletionResponse["error"]): { code: string | null; message: string } {
+  if (typeof source !== "string") {
+    return {
+      code: source?.code?.trim() || null,
+      message: source?.message?.trim() || "GitHub Models devolvió un error al procesar la imagen."
+    };
+  }
+
+  try {
+    const payload = JSON.parse(source) as ChatCompletionResponse;
+    if (payload.error?.message) {
+      return {
+        code: payload.error.code?.trim() || null,
+        message: payload.error.message.trim()
+      };
+    }
+  } catch {
+    // Se mantiene el texto crudo cuando el proveedor no devuelve JSON válido.
+  }
+
+  return {
+    code: null,
+    message: source.trim() || "GitHub Models devolvió un error al procesar la imagen."
+  };
+}
+
 function inferImageMimeType(fileName: string, mimeType: string): string {
   if (supportedImageMimeTypes.has(mimeType)) {
     return mimeType;
@@ -298,7 +378,37 @@ async function cropImageBufferToContent(fileBuffer: Buffer): Promise<Buffer> {
     }
   }
 
-  return pipeline.png().toBuffer();
+  return pipeline.toBuffer();
+}
+
+async function buildOptimizedVisionImagePayload(fileBuffer: Buffer): Promise<VisionImageRequestPayload> {
+  let smallestBuffer: Buffer | null = null;
+
+  for (const variant of optimizedVisionRetryVariants) {
+    const optimizedBuffer = await sharp(fileBuffer)
+      .flatten({ background: "#ffffff" })
+      .resize(variant.maxWidth ? { width: variant.maxWidth, withoutEnlargement: true } : undefined)
+      .jpeg({ mozjpeg: true, quality: variant.quality })
+      .toBuffer();
+
+    if (!smallestBuffer || optimizedBuffer.length < smallestBuffer.length) {
+      smallestBuffer = optimizedBuffer;
+    }
+
+    if (optimizedBuffer.length <= optimizedVisionImageTargetBytes) {
+      return {
+        buffer: optimizedBuffer,
+        mimeType: "image/jpeg",
+        optimized: true
+      };
+    }
+  }
+
+  return {
+    buffer: smallestBuffer ?? await sharp(fileBuffer).flatten({ background: "#ffffff" }).jpeg({ mozjpeg: true, quality: 58 }).toBuffer(),
+    mimeType: "image/jpeg",
+    optimized: true
+  };
 }
 
 async function preprocessImageBuffer(fileBuffer: Buffer): Promise<Buffer> {
@@ -413,8 +523,10 @@ async function buildStructuredVisionPage(
   };
 }
 
-async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeType: string): Promise<OcrPageResult> {
-  const croppedBuffer = await cropImageBufferToContent(fileBuffer);
+async function executeVisionOcrAttempts(
+  croppedBuffer: Buffer,
+  requestPayload: VisionImageRequestPayload
+): Promise<OcrPageResult> {
   const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
   const promptAttempts: VisionOcrPromptAttempt[] = [
     {
@@ -455,7 +567,7 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
               {
                 type: "image_url",
                 image_url: {
-                  url: `data:${normalizedMimeType};base64,${croppedBuffer.toString("base64")}`
+                  url: `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`
                 }
               }
             ]
@@ -469,11 +581,11 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
 
     if (!response.ok) {
       const errorBody = await response.text();
-      const nextError = Object.assign(new Error(`Error OCR de GitHub Models: ${errorBody}`), {
-        statusCode: 502
-      });
+      const errorDetails = extractVisionProviderErrorDetails(errorBody);
+      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
+      const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
 
-      if (isContentFilterError(errorBody)) {
+      if (isContentFilterError(normalizedProviderError)) {
         lastError = nextError;
         continue;
       }
@@ -483,11 +595,11 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
 
     const payload = (await response.json()) as ChatCompletionResponse;
     if (payload.error?.message) {
-      const nextError = Object.assign(new Error(`Error OCR de GitHub Models: ${payload.error.message}`), {
-        statusCode: 502
-      });
+      const errorDetails = extractVisionProviderErrorDetails(payload.error);
+      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
+      const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
 
-      if (isContentFilterError(payload.error.message)) {
+      if (isContentFilterError(normalizedProviderError)) {
         lastError = nextError;
         continue;
       }
@@ -524,6 +636,24 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
   });
 }
 
+async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeType: string): Promise<OcrPageResult> {
+  const croppedBuffer = await cropImageBufferToContent(fileBuffer);
+
+  try {
+    return await executeVisionOcrAttempts(croppedBuffer, {
+      buffer: croppedBuffer,
+      mimeType: normalizedMimeType,
+      optimized: false
+    });
+  } catch (error) {
+    if (!(error instanceof Error) || !("retryWithOptimizedImage" in error) || !error.retryWithOptimizedImage) {
+      throw error;
+    }
+
+    return executeVisionOcrAttempts(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer));
+  }
+}
+
 export function isSupportedImageUpload(fileName: string, mimeType: string): boolean {
   return supportedImageMimeTypes.has(inferImageMimeType(fileName, mimeType));
 }
@@ -542,14 +672,14 @@ export async function runOcrOnImage(fileBuffer: Buffer, fileName: string, mimeTy
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithGitHubModels(fileBuffer, "image/png");
+    return runVisionOcrWithGitHubModels(fileBuffer, normalizedMimeType);
   }
 
   try {
     return await runLocalOcrWithTesseract(fileBuffer);
   } catch (localOcrError) {
     if (hasVisionOcrConfiguration()) {
-      return runVisionOcrWithGitHubModels(fileBuffer, "image/png");
+      return runVisionOcrWithGitHubModels(fileBuffer, normalizedMimeType);
     }
 
     throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${localOcrError instanceof Error ? localOcrError.message : ""}`.trim()), {

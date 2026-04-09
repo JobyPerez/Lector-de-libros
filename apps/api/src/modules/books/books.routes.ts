@@ -138,6 +138,7 @@ type ImportImagesProgressRecord = {
 
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
+const maximumUploadedImageBytes = 32 * 1024 * 1024;
 
 function pruneImportImagesProgressStore() {
   const expiresBefore = Date.now() - importImagesProgressTtlMs;
@@ -171,11 +172,25 @@ function readMultipartField(fields: MultipartFile["fields"], fieldName: string):
   return fieldValue.value?.trim() || undefined;
 }
 
-async function readUploadedFile(file: MultipartFile): Promise<Buffer> {
+async function readUploadedFile(file: MultipartFile, options?: { fileName?: string; maxBytes?: number }): Promise<Buffer> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
 
   for await (const chunk of file.file) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += bufferChunk.length;
+
+    if (options?.maxBytes && totalBytes > options.maxBytes) {
+      throw Object.assign(new Error(
+        options.fileName
+          ? `La imagen ${options.fileName} supera el maximo permitido de 32 MB.`
+          : "La imagen supera el maximo permitido de 32 MB."
+      ), {
+        statusCode: 413
+      });
+    }
+
+    chunks.push(bufferChunk);
   }
 
   return Buffer.concat(chunks);
@@ -196,7 +211,10 @@ async function collectMultipartForm(request: { parts: () => AsyncIterable<unknow
     };
 
     if (multipartPart.type === "file" && multipartPart.file && multipartPart.filename && multipartPart.mimetype) {
-      const buffer = await readUploadedFile({ file: multipartPart.file } as MultipartFile);
+      const buffer = await readUploadedFile({ file: multipartPart.file } as MultipartFile, {
+        fileName: multipartPart.filename,
+        maxBytes: maximumUploadedImageBytes
+      });
       files.push({
         buffer,
         fieldName: multipartPart.fieldname ?? "file",
@@ -238,6 +256,12 @@ function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
     if (!isSupportedImageUpload(file.fileName, file.mimeType)) {
       throw Object.assign(new Error(`Archivo no soportado para OCR: ${file.fileName}. Usa PNG, JPG o WEBP.`), {
         statusCode: 415
+      });
+    }
+
+    if (file.buffer.length > maximumUploadedImageBytes) {
+      throw Object.assign(new Error(`La imagen ${file.fileName} supera el maximo permitido de 32 MB.`), {
+        statusCode: 413
       });
     }
   }
