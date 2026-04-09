@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
@@ -36,7 +36,7 @@ const DEFAULT_PLAYBACK_RATE = 1.1;
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
-const PAGE_TURN_DURATION_MS = 760;
+const PAGE_TURN_DURATION_MS = 720;
 const AUDIO_BLOCK_PARAGRAPH_COUNT = 5;
 const AUDIO_BLOCK_QUEUE_SIZE = 2;
 const AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT = 1;
@@ -83,6 +83,15 @@ type ReaderWakeLockSentinel = {
 type ReaderWakeLockApi = {
   request: (type: "screen") => Promise<ReaderWakeLockSentinel>;
 };
+
+function createPageTurnSnapshot(pageNumber: number, paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null): PageTurnSnapshot {
+  return {
+    activeParagraphNumber,
+    htmlContent,
+    pageNumber,
+    paragraphs
+  };
+}
 
 function readStoredTtsEngine(): TtsEngine {
   if (typeof window === "undefined") {
@@ -642,6 +651,7 @@ function OriginalPageIcon() {
 export function ReaderPage() {
   const { bookId = "" } = useParams();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const accessToken = useAuthStore((state) => state.accessToken);
   const [currentPageNumber, setCurrentPageNumber] = useState(1);
@@ -706,6 +716,9 @@ export function ReaderPage() {
     lastPersistedProgressRef.current = null;
     currentPageNumberRef.current = 1;
     currentParagraphNumberRef.current = 1;
+    setPendingPageTurnDirection(null);
+    setPageTurnDirection(null);
+    setPageTurnSnapshot(null);
     setCurrentPageNumber(1);
     setCurrentParagraphNumber(1);
   }, [bookId]);
@@ -1021,6 +1034,22 @@ export function ReaderPage() {
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
   const hasRichPageContent = Boolean(currentHtmlContent);
 
+  useEffect(() => {
+    if (!accessToken || !bookId) {
+      return;
+    }
+
+    const pagesToPrefetch = [currentPageNumber - 1, currentPageNumber + 1]
+      .filter((pageNumber) => Number.isInteger(pageNumber) && pageNumber >= 1 && (totalPages === 0 || pageNumber <= totalPages));
+
+    pagesToPrefetch.forEach((pageNumber) => {
+      void queryClient.prefetchQuery({
+        queryKey: ["book-page", bookId, pageNumber],
+        queryFn: () => fetchBookPage(accessToken, bookId, pageNumber)
+      });
+    });
+  }, [accessToken, bookId, currentPageNumber, queryClient, totalPages]);
+
   function getLiveParagraphElement(paragraphNumber: number) {
     return livePageRef.current?.querySelector<HTMLElement>(`[data-paragraph-number="${paragraphNumber}"]`)
       ?? paragraphRefs.current.get(paragraphNumber)
@@ -1172,7 +1201,8 @@ export function ReaderPage() {
   const overlayActiveParagraphNumber = isPageTurningBackward
     ? (currentParagraph?.paragraphNumber ?? null)
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);
-  const effectiveCurrentParagraphNumber = currentParagraph?.paragraphNumber ?? currentParagraphNumber;
+  const currentPageActiveParagraphNumber = currentParagraph?.paragraphNumber ?? null;
+  const effectiveCurrentParagraphNumber = currentPageActiveParagraphNumber ?? currentParagraphNumber;
 
   useEffect(() => {
     if (!hasRichPageContent || !richContentRef.current || !currentHtmlContent) {
@@ -1779,12 +1809,7 @@ export function ReaderPage() {
 
     setPageTurnDirection(null);
     setPendingPageTurnDirection(nextPageNumber > currentPageNumber ? "forward" : "backward");
-    setPageTurnSnapshot({
-      activeParagraphNumber: currentParagraph?.paragraphNumber ?? null,
-      htmlContent: currentHtmlContent,
-      pageNumber: currentPageNumber,
-      paragraphs: currentParagraphs
-    });
+    setPageTurnSnapshot(createPageTurnSnapshot(currentPageNumber, currentParagraphs, currentHtmlContent, currentParagraph?.paragraphNumber ?? null));
   }
 
   function findParagraphFromNode(target: EventTarget | null) {
@@ -2855,7 +2880,7 @@ export function ReaderPage() {
         <div className="reader-canvas">
           <div className="reader-split">
             <div className={pageTurnDirection ? `reader-page-turn reader-page-turn-${pageTurnDirection}` : "reader-page-turn"}>
-              <div className={pageTurnDirection === "forward" ? "reader-page reader-page-live reader-page-live-animating" : "reader-page reader-page-live"} ref={livePageRef}>
+              <div className={pageTurnDirection ? `reader-page reader-page-live reader-page-live-animating reader-page-live-animating-${pageTurnDirection}` : "reader-page reader-page-live"} ref={livePageRef}>
                 {isCurrentPageBookmarked ? (
                   <div className="reader-page-corner-bookmark" title="Página marcada">
                     <BookmarkIcon />
