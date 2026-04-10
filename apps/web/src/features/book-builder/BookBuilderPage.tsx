@@ -12,8 +12,10 @@ import {
   fetchReaderNavigation,
   isRetryableRateLimitError,
   rerunOcrPage,
+  uploadBookPageImage,
   updateOcrPage,
   type AppendImagesImportProgress,
+  type ImageRotation,
   type ImageOcrMode,
   type ReaderBookmark,
   type ReaderNote,
@@ -74,6 +76,35 @@ function PageNextIcon() {
     <ToolbarIcon>
       <path d="M17 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M7 7L14 12L7 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
+function RotateLeftIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M6.5 8.75H3.75V6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M3.75 8.75C4.8 6.15 7.34 4.5 10.2 4.5C14.23 4.5 17.5 7.77 17.5 11.8C17.5 15.83 14.23 19.1 10.2 19.1C7.95 19.1 5.93 18.08 4.59 16.48" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10.2 8.25V11.95L12.85 13.65" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function RotateRightIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M17.5 8.75H20.25V6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M20.25 8.75C19.2 6.15 16.66 4.5 13.8 4.5C9.77 4.5 6.5 7.77 6.5 11.8C6.5 15.83 9.77 19.1 13.8 19.1C16.05 19.1 18.07 18.08 19.41 16.48" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.8 8.25V11.95L11.15 13.65" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function CropIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M7 4.75V15.5C7 16.7426 8.00736 17.75 9.25 17.75H20" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M17 19.25V8.5C17 7.25736 15.9926 6.25 14.75 6.25H4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ToolbarIcon>
   );
 }
@@ -223,9 +254,31 @@ function highlightClassName(color: HighlightColor) {
 
 type ReviewTextAlignment = "center" | "left" | "right";
 type AppendInsertionSide = "before" | "after";
+type ReviewImageCropEdge = "bottom" | "left" | "right" | "top";
+type ReviewImageCrop = Record<ReviewImageCropEdge, number>;
+type ReviewCropHandle = "move" | "nw" | "ne" | "se" | "sw";
+type ReviewCropRect = {
+  height: number;
+  width: number;
+  x: number;
+  y: number;
+};
+type ReviewCropPointerSession = {
+  boundsHeight: number;
+  boundsWidth: number;
+  handle: ReviewCropHandle;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startRect: ReviewCropRect;
+};
 
 const reviewAlignmentMarkerPattern = /^::(left|center|right)::\s*/u;
 const reviewHeadingMarkerPattern = /^(#{1,6})\s+/u;
+const reviewImageRotationSteps: readonly ImageRotation[] = [0, 90, 180, 270];
+const defaultReviewImageCrop: ReviewImageCrop = { bottom: 0, left: 0, right: 0, top: 0 };
+const maximumReviewImageCropPercent = 40;
+const minimumReviewImageRemainingPercent = 15;
 
 function parseReviewAlignmentMarker(value: string): { alignment: ReviewTextAlignment | null; content: string } {
   const match = value.match(reviewAlignmentMarkerPattern);
@@ -285,6 +338,253 @@ function stripReviewHeadingMarker(value: string) {
   return value.replace(reviewHeadingMarkerPattern, "");
 }
 
+function rotateReviewImageValue(currentRotation: ImageRotation, direction: -1 | 1): ImageRotation {
+  const currentIndex = reviewImageRotationSteps.indexOf(currentRotation);
+  const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+  const nextIndex = (safeIndex + direction + reviewImageRotationSteps.length) % reviewImageRotationSteps.length;
+  return reviewImageRotationSteps[nextIndex] ?? 0;
+}
+
+function formatReviewImageRotation(rotation: ImageRotation) {
+  return `${rotation}°`;
+}
+
+function formatReviewImageCrop(value: number) {
+  return `${value}%`;
+}
+
+function equalReviewImageCrop(left: ReviewImageCrop, right: ReviewImageCrop) {
+  return left.top === right.top
+    && left.right === right.right
+    && left.bottom === right.bottom
+    && left.left === right.left;
+}
+
+function reviewCropToRect(crop: ReviewImageCrop): ReviewCropRect {
+  return {
+    height: Math.max(minimumReviewImageRemainingPercent, 100 - crop.top - crop.bottom),
+    width: Math.max(minimumReviewImageRemainingPercent, 100 - crop.left - crop.right),
+    x: crop.left,
+    y: crop.top
+  };
+}
+
+function reviewRectToCrop(rect: ReviewCropRect): ReviewImageCrop {
+  return {
+    bottom: Math.max(0, Math.round(100 - rect.y - rect.height)),
+    left: Math.max(0, Math.round(rect.x)),
+    right: Math.max(0, Math.round(100 - rect.x - rect.width)),
+    top: Math.max(0, Math.round(rect.y))
+  };
+}
+
+function clampReviewCropRect(rect: ReviewCropRect): ReviewCropRect {
+  const width = Math.max(minimumReviewImageRemainingPercent, Math.min(rect.width, 100));
+  const height = Math.max(minimumReviewImageRemainingPercent, Math.min(rect.height, 100));
+  const x = Math.max(0, Math.min(rect.x, 100 - width));
+  const y = Math.max(0, Math.min(rect.y, 100 - height));
+
+  return {
+    height,
+    width,
+    x,
+    y
+  };
+}
+
+function resizeReviewCropRect(
+  startRect: ReviewCropRect,
+  handle: ReviewCropHandle,
+  deltaXPercent: number,
+  deltaYPercent: number
+): ReviewCropRect {
+  const minimumSize = minimumReviewImageRemainingPercent;
+  const startRight = startRect.x + startRect.width;
+  const startBottom = startRect.y + startRect.height;
+
+  if (handle === "move") {
+    return clampReviewCropRect({
+      ...startRect,
+      x: startRect.x + deltaXPercent,
+      y: startRect.y + deltaYPercent
+    });
+  }
+
+  let nextLeft = startRect.x;
+  let nextTop = startRect.y;
+  let nextRight = startRight;
+  let nextBottom = startBottom;
+
+  if (handle === "nw" || handle === "sw") {
+    nextLeft = Math.min(Math.max(startRect.x + deltaXPercent, 0), startRight - minimumSize);
+  }
+
+  if (handle === "ne" || handle === "se") {
+    nextRight = Math.max(Math.min(startRight + deltaXPercent, 100), startRect.x + minimumSize);
+  }
+
+  if (handle === "nw" || handle === "ne") {
+    nextTop = Math.min(Math.max(startRect.y + deltaYPercent, 0), startBottom - minimumSize);
+  }
+
+  if (handle === "sw" || handle === "se") {
+    nextBottom = Math.max(Math.min(startBottom + deltaYPercent, 100), startRect.y + minimumSize);
+  }
+
+  return clampReviewCropRect({
+    height: nextBottom - nextTop,
+    width: nextRight - nextLeft,
+    x: nextLeft,
+    y: nextTop
+  });
+}
+
+function updateReviewImageCropValue(currentCrop: ReviewImageCrop, edge: ReviewImageCropEdge, nextValue: number): ReviewImageCrop {
+  const normalizedValue = Math.max(0, Math.min(Math.round(nextValue), maximumReviewImageCropPercent));
+  const nextCrop = { ...currentCrop, [edge]: normalizedValue };
+
+  if (edge === "top" || edge === "bottom") {
+    const oppositeEdge = edge === "top" ? "bottom" : "top";
+    const maximumEdgeValue = Math.max(0, 100 - minimumReviewImageRemainingPercent - currentCrop[oppositeEdge]);
+    nextCrop[edge] = Math.min(normalizedValue, maximumEdgeValue);
+    return nextCrop;
+  }
+
+  const oppositeEdge = edge === "left" ? "right" : "left";
+  const maximumEdgeValue = Math.max(0, 100 - minimumReviewImageRemainingPercent - currentCrop[oppositeEdge]);
+  nextCrop[edge] = Math.min(normalizedValue, maximumEdgeValue);
+  return nextCrop;
+}
+
+function buildReviewImageFileName(pageNumber: number, mimeType: string) {
+  const extension = mimeType === "image/png"
+    ? "png"
+    : mimeType === "image/webp"
+      ? "webp"
+      : "jpg";
+
+  return `page-${pageNumber}-edited.${extension}`;
+}
+
+function resolveReviewImageOutputMimeType(inputMimeType: string) {
+  if (inputMimeType === "image/png" || inputMimeType === "image/webp" || inputMimeType === "image/jpeg") {
+    return inputMimeType;
+  }
+
+  return "image/png";
+}
+
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob);
+    const image = new Image();
+
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("No se pudo cargar la imagen para editarla."));
+    };
+
+    image.src = objectUrl;
+  });
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement, mimeType: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error("No se pudo generar la imagen editada."));
+        return;
+      }
+
+      resolve(blob);
+    }, mimeType, quality);
+  });
+}
+
+async function renderReviewImageBlob(
+  sourceBlob: Blob,
+  options: {
+    crop: ReviewImageCrop;
+    maxDimension?: number;
+    mimeType: string;
+    quality?: number;
+    rotation: ImageRotation;
+  }
+): Promise<Blob> {
+  if (typeof document === "undefined") {
+    throw new Error("La edición de imágenes requiere un entorno de navegador.");
+  }
+
+  const image = await loadImageFromBlob(sourceBlob);
+  const quarterTurn = options.rotation === 90 || options.rotation === 270;
+  const orientedWidth = quarterTurn ? image.naturalHeight : image.naturalWidth;
+  const orientedHeight = quarterTurn ? image.naturalWidth : image.naturalHeight;
+  const rotatedCanvas = document.createElement("canvas");
+  rotatedCanvas.width = Math.max(1, orientedWidth);
+  rotatedCanvas.height = Math.max(1, orientedHeight);
+  const rotatedContext = rotatedCanvas.getContext("2d");
+
+  if (!rotatedContext) {
+    throw new Error("No se pudo preparar la vista previa de la imagen.");
+  }
+
+  switch (options.rotation) {
+    case 90:
+      rotatedContext.translate(rotatedCanvas.width, 0);
+      rotatedContext.rotate(Math.PI / 2);
+      break;
+    case 180:
+      rotatedContext.translate(rotatedCanvas.width, rotatedCanvas.height);
+      rotatedContext.rotate(Math.PI);
+      break;
+    case 270:
+      rotatedContext.translate(0, rotatedCanvas.height);
+      rotatedContext.rotate(-Math.PI / 2);
+      break;
+    default:
+      break;
+  }
+
+  rotatedContext.drawImage(image, 0, 0);
+
+  const cropLeft = Math.round((rotatedCanvas.width * options.crop.left) / 100);
+  const cropRight = Math.round((rotatedCanvas.width * options.crop.right) / 100);
+  const cropTop = Math.round((rotatedCanvas.height * options.crop.top) / 100);
+  const cropBottom = Math.round((rotatedCanvas.height * options.crop.bottom) / 100);
+  const croppedWidth = Math.max(1, rotatedCanvas.width - cropLeft - cropRight);
+  const croppedHeight = Math.max(1, rotatedCanvas.height - cropTop - cropBottom);
+  const scale = options.maxDimension && Math.max(croppedWidth, croppedHeight) > options.maxDimension
+    ? options.maxDimension / Math.max(croppedWidth, croppedHeight)
+    : 1;
+  const outputCanvas = document.createElement("canvas");
+  outputCanvas.width = Math.max(1, Math.round(croppedWidth * scale));
+  outputCanvas.height = Math.max(1, Math.round(croppedHeight * scale));
+  const outputContext = outputCanvas.getContext("2d");
+
+  if (!outputContext) {
+    throw new Error("No se pudo renderizar la imagen editada.");
+  }
+
+  outputContext.drawImage(
+    rotatedCanvas,
+    cropLeft,
+    cropTop,
+    croppedWidth,
+    croppedHeight,
+    0,
+    0,
+    outputCanvas.width,
+    outputCanvas.height
+  );
+
+  return canvasToBlob(outputCanvas, options.mimeType, options.quality);
+}
+
 type OcrRetryContext = "create" | "review";
 
 type OcrRetryState = {
@@ -312,6 +612,12 @@ export function BookBuilderPage() {
   const [reviewPageNumber, setReviewPageNumber] = useState(1);
   const [editedText, setEditedText] = useState("");
   const [originalEditedText, setOriginalEditedText] = useState("");
+  const [isReviewCropMode, setIsReviewCropMode] = useState(false);
+  const [reviewImageCrop, setReviewImageCrop] = useState<ReviewImageCrop>(defaultReviewImageCrop);
+  const [reviewCropDraft, setReviewCropDraft] = useState<ReviewCropRect>(() => reviewCropToRect(defaultReviewImageCrop));
+  const [originalReviewImageCrop, setOriginalReviewImageCrop] = useState<ReviewImageCrop>(defaultReviewImageCrop);
+  const [reviewImageRotation, setReviewImageRotation] = useState<ImageRotation>(0);
+  const [originalReviewImageRotation, setOriginalReviewImageRotation] = useState<ImageRotation>(0);
   const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("VISION");
   const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("VISION");
   const [appendInsertionSide, setAppendInsertionSide] = useState<AppendInsertionSide>("after");
@@ -337,8 +643,12 @@ export function BookBuilderPage() {
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
   const [reviewSelectedAlignment, setReviewSelectedAlignment] = useState<ReviewTextAlignment | null>(null);
   const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
+  const [reviewImageSourceBlob, setReviewImageSourceBlob] = useState<Blob | null>(null);
+  const [reviewImageStageUrl, setReviewImageStageUrl] = useState<string | null>(null);
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
   const reviewEditorRef = useRef<HTMLTextAreaElement | null>(null);
+  const reviewCropPointerSessionRef = useRef<ReviewCropPointerSession | null>(null);
+  const reviewCropSurfaceRef = useRef<HTMLDivElement | null>(null);
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
@@ -557,6 +867,12 @@ export function BookBuilderPage() {
     const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n\n");
     setEditedText(nextEditedText);
     setOriginalEditedText(nextEditedText);
+    setIsReviewCropMode(false);
+    setReviewImageCrop(defaultReviewImageCrop);
+    setReviewCropDraft(reviewCropToRect(defaultReviewImageCrop));
+    setOriginalReviewImageCrop(defaultReviewImageCrop);
+    setReviewImageRotation(page.sourceImageRotation);
+    setOriginalReviewImageRotation(page.sourceImageRotation);
     setReviewSelectedAlignment(null);
     setReviewError(null);
   }, [reviewBookId, reviewPageNumber, reviewPageQuery.data?.page]);
@@ -586,23 +902,104 @@ export function BookBuilderPage() {
 
   useEffect(() => {
     let active = true;
-    let nextObjectUrl: string | null = null;
 
     if (!isReviewOnlyMode || !accessToken || !reviewBookId || !reviewPageQuery.data?.page.hasSourceImage) {
+      setReviewImageSourceBlob(null);
+      setReviewImageStageUrl(null);
       setReviewImageUrl(null);
       return () => {
         active = false;
       };
     }
 
-    void fetchBookPageImage(accessToken, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.sourceFileId)
+    void fetchBookPageImage(
+      accessToken,
+      reviewBookId,
+      reviewPageNumber,
+      `${reviewPageQuery.data?.page.sourceFileId ?? ""}:${reviewPageQuery.data?.page.updatedAt ?? ""}`
+    )
       .then((imageBlob) => {
         if (!active) {
           return;
         }
 
-        nextObjectUrl = URL.createObjectURL(imageBlob);
-        setReviewImageUrl(nextObjectUrl);
+        setReviewImageSourceBlob(imageBlob);
+      })
+      .catch(() => {
+        if (active) {
+          setReviewImageSourceBlob(null);
+          setReviewImageUrl(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.hasSourceImage, reviewPageQuery.data?.page.sourceFileId, reviewPageQuery.data?.page.updatedAt]);
+
+  useEffect(() => {
+    let active = true;
+    let stageObjectUrl: string | null = null;
+
+    if (!reviewImageSourceBlob) {
+      setReviewImageStageUrl(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    void renderReviewImageBlob(reviewImageSourceBlob, {
+      crop: defaultReviewImageCrop,
+      maxDimension: 1600,
+      mimeType: "image/png",
+      rotation: reviewImageRotation
+    })
+      .then((stageBlob) => {
+        if (!active) {
+          return;
+        }
+
+        stageObjectUrl = URL.createObjectURL(stageBlob);
+        setReviewImageStageUrl(stageObjectUrl);
+      })
+      .catch(() => {
+        if (active) {
+          setReviewImageStageUrl(null);
+        }
+      });
+
+    return () => {
+      active = false;
+      if (stageObjectUrl) {
+        URL.revokeObjectURL(stageObjectUrl);
+      }
+    };
+  }, [reviewImageRotation, reviewImageSourceBlob]);
+
+  useEffect(() => {
+    let active = true;
+    let previewObjectUrl: string | null = null;
+
+    if (!reviewImageSourceBlob) {
+      setReviewImageUrl(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    void renderReviewImageBlob(reviewImageSourceBlob, {
+      crop: reviewImageCrop,
+      maxDimension: 1600,
+      mimeType: "image/png",
+      rotation: reviewImageRotation
+    })
+      .then((previewBlob) => {
+        if (!active) {
+          return;
+        }
+
+        previewObjectUrl = URL.createObjectURL(previewBlob);
+        setReviewImageUrl(previewObjectUrl);
       })
       .catch(() => {
         if (active) {
@@ -612,11 +1009,55 @@ export function BookBuilderPage() {
 
     return () => {
       active = false;
-      if (nextObjectUrl) {
-        URL.revokeObjectURL(nextObjectUrl);
+      if (previewObjectUrl) {
+        URL.revokeObjectURL(previewObjectUrl);
       }
     };
-  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.hasSourceImage, reviewPageQuery.data?.page.sourceFileId]);
+  }, [reviewImageCrop, reviewImageRotation, reviewImageSourceBlob]);
+
+  useEffect(() => {
+    if (!isReviewCropMode) {
+      reviewCropPointerSessionRef.current = null;
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const session = reviewCropPointerSessionRef.current;
+      if (!session || event.pointerId !== session.pointerId) {
+        return;
+      }
+
+      event.preventDefault();
+
+      const deltaXPercent = session.boundsWidth > 0
+        ? ((event.clientX - session.startClientX) / session.boundsWidth) * 100
+        : 0;
+      const deltaYPercent = session.boundsHeight > 0
+        ? ((event.clientY - session.startClientY) / session.boundsHeight) * 100
+        : 0;
+
+      setReviewCropDraft(resizeReviewCropRect(session.startRect, session.handle, deltaXPercent, deltaYPercent));
+    }
+
+    function handlePointerEnd(event: PointerEvent) {
+      const session = reviewCropPointerSessionRef.current;
+      if (!session || event.pointerId !== session.pointerId) {
+        return;
+      }
+
+      reviewCropPointerSessionRef.current = null;
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+    };
+  }, [isReviewCropMode]);
 
   useEffect(() => {
     if (!isReviewIndexVisible || typeof document === "undefined") {
@@ -972,10 +1413,34 @@ export function BookBuilderPage() {
     }
   }
 
+  async function persistReviewImageEdits() {
+    if (!accessToken || !reviewBookId || !reviewImageSourceBlob) {
+      throw new Error("La imagen original no está disponible para guardar los ajustes.");
+    }
+
+    const outputMimeType = resolveReviewImageOutputMimeType(reviewImageSourceBlob.type);
+    const editedImageBlob = await renderReviewImageBlob(reviewImageSourceBlob, {
+      crop: reviewImageCrop,
+      mimeType: outputMimeType,
+      quality: outputMimeType === "image/png" ? undefined : 0.92,
+      rotation: reviewImageRotation
+    });
+    const formData = new FormData();
+    formData.append("image", editedImageBlob, buildReviewImageFileName(reviewPageNumber, outputMimeType));
+    await uploadBookPageImage(accessToken, reviewBookId, reviewPageNumber, formData);
+  }
+
   async function handleSaveOcr(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!accessToken || !reviewBookId) {
+      return;
+    }
+
+    const hasTextChanges = editedText !== originalEditedText;
+    const hasImageChanges = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
+
+    if (!hasTextChanges && !hasImageChanges) {
       return;
     }
 
@@ -984,12 +1449,28 @@ export function BookBuilderPage() {
     setIsSavingReview(true);
 
     try {
-      await updateOcrPage(accessToken, reviewBookId, reviewPageNumber, { editedText });
+      if (hasImageChanges) {
+        await persistReviewImageEdits();
+      }
+
+      if (hasTextChanges) {
+        await updateOcrPage(accessToken, reviewBookId, reviewPageNumber, { editedText });
+      }
+
       setOriginalEditedText(editedText);
-      setReviewMessage("El texto OCR de la página se actualizó correctamente.");
-      await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+      setReviewMessage(
+        hasTextChanges && hasImageChanges
+          ? "El texto OCR y la imagen ajustada se guardaron correctamente."
+          : hasTextChanges
+            ? "El texto OCR de la página se actualizó correctamente."
+            : "La imagen ajustada de la página se guardó correctamente."
+      );
+
+      if (hasTextChanges || hasImageChanges) {
+        await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+      }
     } catch (error) {
-      setReviewError(error instanceof Error ? error.message : "No se pudo guardar la edición OCR.");
+      setReviewError(error instanceof Error ? error.message : "No se pudieron guardar los cambios de la página.");
     } finally {
       setIsSavingReview(false);
     }
@@ -1001,6 +1482,7 @@ export function BookBuilderPage() {
     }
 
     const nextMode = modeOverride ?? reviewOcrMode;
+    const hasPendingImageEdits = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
 
     setReviewError(null);
     setReviewMessage(null);
@@ -1009,6 +1491,10 @@ export function BookBuilderPage() {
     setIsReviewOcrMenuVisible(false);
 
     try {
+      if (hasPendingImageEdits) {
+        await persistReviewImageEdits();
+      }
+
       setReviewOcrMode(nextMode);
       await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode }));
       setReviewMessage("El OCR de la página se volvió a reconocer correctamente.");
@@ -1027,6 +1513,64 @@ export function BookBuilderPage() {
       const nextPage = currentPage + delta;
       return Math.min(Math.max(nextPage, 1), Math.max(totalPages, 1));
     });
+    setReviewMessage(null);
+    setReviewError(null);
+  }
+
+  function rotateReviewImage(direction: -1 | 1) {
+    if (isReviewCropMode) {
+      return;
+    }
+
+    setReviewImageRotation((currentRotation) => rotateReviewImageValue(currentRotation, direction));
+    setReviewMessage(null);
+    setReviewError(null);
+  }
+
+  function beginReviewCropMode() {
+    setReviewCropDraft(reviewCropToRect(reviewImageCrop));
+    setIsReviewCropMode(true);
+    setReviewMessage(null);
+    setReviewError(null);
+  }
+
+  function cancelReviewCropMode() {
+    setReviewCropDraft(reviewCropToRect(reviewImageCrop));
+    setIsReviewCropMode(false);
+  }
+
+  function applyReviewCropDraft() {
+    setReviewImageCrop(reviewRectToCrop(reviewCropDraft));
+    setIsReviewCropMode(false);
+    setReviewMessage(null);
+    setReviewError(null);
+  }
+
+  function startReviewCropDrag(handle: ReviewCropHandle, event: React.PointerEvent<HTMLDivElement | HTMLButtonElement>) {
+    if (!reviewCropSurfaceRef.current) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const bounds = reviewCropSurfaceRef.current.getBoundingClientRect();
+    reviewCropPointerSessionRef.current = {
+      boundsHeight: bounds.height,
+      boundsWidth: bounds.width,
+      handle,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startRect: reviewCropDraft
+    };
+  }
+
+  function resetReviewImageAdjustments() {
+    setIsReviewCropMode(false);
+    setReviewImageCrop(originalReviewImageCrop);
+    setReviewCropDraft(reviewCropToRect(originalReviewImageCrop));
+    setReviewImageRotation(originalReviewImageRotation);
     setReviewMessage(null);
     setReviewError(null);
   }
@@ -1251,7 +1795,11 @@ export function BookBuilderPage() {
     updateReviewEditor(nextEditedText, blockStart, blockStart + nextSelectedText.length);
   }
 
-  const isReviewDirty = editedText !== originalEditedText;
+  const reviewImageRotationDirty = reviewImageRotation !== originalReviewImageRotation;
+  const reviewImageCropDirty = !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
+  const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
+  const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
+  const isReviewDirty = editedText !== originalEditedText || hasPendingReviewImageEdits;
   const reviewPreviewHtml = useMemo(
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
     [editedText, reviewPageQuery.data?.page.htmlContent]
@@ -1701,26 +2249,131 @@ export function BookBuilderPage() {
                 <div className="source-panel-header">
                   <div>
                     <p className="page-label">Imagen original</p>
-                  </div>
-                </div>
-
-                {reviewImageUrl ? (
-                  <div className={isRerunningOcr ? "review-image-frame is-processing" : "review-image-frame"}>
-                    <img alt={`Página ${reviewPageNumber} para revisión OCR`} className="preview-image" src={reviewImageUrl} />
-                    {isRerunningOcr ? (
-                      <div aria-live="polite" className="review-image-processing-overlay">
-                        <span className="review-processing-spinner" />
-                        <div className="review-processing-copy">
-                          <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de GitHub Models..." : "Reconociendo OCR..."}</strong>
-                          {ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
-                        </div>
-                      </div>
+                    {hasReviewImage ? (
+                      <p className={hasPendingReviewImageEdits ? "helper-text review-image-rotation-status is-pending" : "helper-text review-image-rotation-status"}>
+                        {isReviewCropMode
+                          ? "Ajusta el marco con el ratón o con el dedo y aplica el recorte."
+                          : hasPendingReviewImageEdits
+                            ? "Ajustes pendientes por guardar."
+                            : "Imagen guardada."}
+                      </p>
                     ) : null}
                   </div>
+
+                  {hasReviewImage ? (
+                    <div aria-label="Controles de imagen" className="review-image-rotation-controls" role="toolbar">
+                      <button
+                        className="review-image-rotation-button"
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => rotateReviewImage(-1)}
+                        title="Girar 90° a la izquierda"
+                        type="button"
+                      >
+                        <RotateLeftIcon />
+                      </button>
+                      <button
+                        className="review-image-rotation-button"
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => rotateReviewImage(1)}
+                        title="Girar 90° a la derecha"
+                        type="button"
+                      >
+                        <RotateRightIcon />
+                      </button>
+                      <button
+                        className={isReviewCropMode ? "review-image-mode-button active" : "review-image-mode-button"}
+                        disabled={isSavingReview || !reviewBookId}
+                        onClick={() => {
+                          if (isReviewCropMode) {
+                            cancelReviewCropMode();
+                            return;
+                          }
+
+                          beginReviewCropMode();
+                        }}
+                        type="button"
+                      >
+                        <CropIcon />
+                        <span>{isReviewCropMode ? "Cancelar recorte" : "Recortar"}</span>
+                      </button>
+                      <button
+                        className="secondary-button review-image-reset-button"
+                        disabled={isSavingReview || (!hasPendingReviewImageEdits && !isReviewCropMode)}
+                        onClick={resetReviewImageAdjustments}
+                        type="button"
+                      >
+                        Restablecer
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {isReviewCropMode ? (
+                  reviewImageStageUrl ? (
+                    <div className="review-crop-workspace">
+                      <div className="review-image-frame review-crop-frame">
+                        <div className="review-crop-surface" ref={reviewCropSurfaceRef}>
+                          <img
+                            alt={`Página ${reviewPageNumber} para recorte`}
+                            className="preview-image review-crop-stage-image"
+                            src={reviewImageStageUrl}
+                          />
+                          <div className="review-crop-mask review-crop-mask-top" style={{ height: `${reviewCropDraft.y}%` }} />
+                          <div className="review-crop-mask review-crop-mask-bottom" style={{ height: `${100 - reviewCropDraft.y - reviewCropDraft.height}%` }} />
+                          <div className="review-crop-mask review-crop-mask-left" style={{ height: `${reviewCropDraft.height}%`, top: `${reviewCropDraft.y}%`, width: `${reviewCropDraft.x}%` }} />
+                          <div className="review-crop-mask review-crop-mask-right" style={{ height: `${reviewCropDraft.height}%`, top: `${reviewCropDraft.y}%`, width: `${100 - reviewCropDraft.x - reviewCropDraft.width}%` }} />
+                          <div
+                            className="review-crop-selection"
+                            onPointerDown={(event) => startReviewCropDrag("move", event)}
+                            style={{ height: `${reviewCropDraft.height}%`, left: `${reviewCropDraft.x}%`, top: `${reviewCropDraft.y}%`, width: `${reviewCropDraft.width}%` }}
+                          >
+                            <div className="review-crop-selection-grid" />
+                            <span className="review-crop-selection-label">Marco de recorte</span>
+                            <button aria-label="Ajustar esquina superior izquierda" className="review-crop-handle review-crop-handle-nw" onPointerDown={(event) => startReviewCropDrag("nw", event)} type="button" />
+                            <button aria-label="Ajustar esquina superior derecha" className="review-crop-handle review-crop-handle-ne" onPointerDown={(event) => startReviewCropDrag("ne", event)} type="button" />
+                            <button aria-label="Ajustar esquina inferior derecha" className="review-crop-handle review-crop-handle-se" onPointerDown={(event) => startReviewCropDrag("se", event)} type="button" />
+                            <button aria-label="Ajustar esquina inferior izquierda" className="review-crop-handle review-crop-handle-sw" onPointerDown={(event) => startReviewCropDrag("sw", event)} type="button" />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="review-crop-actions">
+                        <button className="secondary-button" disabled={isSavingReview} onClick={cancelReviewCropMode} type="button">
+                          Cancelar
+                        </button>
+                        <button className="primary-button" disabled={isSavingReview} onClick={applyReviewCropDraft} type="button">
+                          Aplicar recorte
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="empty-state compact-state">
+                      <p>Preparando la imagen para recortarla...</p>
+                    </div>
+                  )
                 ) : (
-                  <div className="empty-state compact-state">
-                    <p>No hay imagen asociada a esta página.</p>
-                  </div>
+                  reviewImageUrl ? (
+                    <div className={isRerunningOcr ? "review-image-frame is-processing" : "review-image-frame"}>
+                      <img
+                        alt={`Página ${reviewPageNumber} para revisión OCR`}
+                        className="preview-image"
+                        src={reviewImageUrl}
+                      />
+                      {isRerunningOcr ? (
+                        <div aria-live="polite" className="review-image-processing-overlay">
+                          <span className="review-processing-spinner" />
+                          <div className="review-processing-copy">
+                            <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de GitHub Models..." : "Reconociendo OCR..."}</strong>
+                            {ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="empty-state compact-state">
+                      <p>No hay imagen asociada a esta página.</p>
+                    </div>
+                  )
                 )}
               </article>
 
@@ -2015,7 +2668,7 @@ export function BookBuilderPage() {
                   <p className="review-floating-ocr-title">Volver a reconocer con</p>
                   <button
                     className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
-                    disabled={isSavingReview || !reviewBookId}
+                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                     onClick={() => void handleRerunOcr("VISION")}
                     type="button"
                   >
@@ -2024,7 +2677,7 @@ export function BookBuilderPage() {
                   </button>
                   <button
                     className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
-                    disabled={isSavingReview || !reviewBookId}
+                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                     onClick={() => void handleRerunOcr("LOCAL")}
                     type="button"
                   >
@@ -2040,7 +2693,7 @@ export function BookBuilderPage() {
                 className={isRerunningOcr
                   ? "reader-float-button review-ocr-text-button review-ocr-text-button-loading"
                   : (isReviewOcrMenuVisible ? "reader-float-button review-ocr-text-button active" : "reader-float-button review-ocr-text-button")}
-                disabled={isSavingReview || !reviewBookId}
+                disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                 onClick={() => setIsReviewOcrMenuVisible((current) => !current)}
                 title={isRerunningOcr ? "Reconociendo OCR..." : "Opciones de OCR"}
                 type="button"
@@ -2050,11 +2703,11 @@ export function BookBuilderPage() {
             </div>
 
             <button
-              aria-label={isSavingReview ? "Guardando correcciones" : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar correcciones")}
+              aria-label={isSavingReview ? "Guardando cambios" : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar cambios")}
               className="reader-float-button primary"
-              disabled={isSavingReview || !reviewBookId || !isReviewDirty}
+              disabled={isSavingReview || !reviewBookId || !isReviewDirty || isReviewCropMode}
               form="ocr-review-form"
-              title={isSavingReview ? "Guardando correcciones..." : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar correcciones")}
+              title={isSavingReview ? "Guardando cambios..." : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar cambios")}
               type="submit"
             >
               <SaveOcrIcon />

@@ -11,7 +11,7 @@ import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
-import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
+import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "./rich-content.js";
 import { generateSectionSummary } from "./section-summary.js";
 
@@ -70,11 +70,20 @@ const pageParamsSchema = z.object({
 });
 
 const updateOcrPageSchema = z.object({
-  editedText: z.string().trim().min(1).max(50000)
+  editedText: z.string().trim().min(1).max(50000),
+  sourceImageRotation: z.coerce.number().int().refine((value): value is ImageRotation => supportedImageRotations.includes(value as ImageRotation), {
+    message: "La rotación debe ser 0, 90, 180 o 270 grados."
+  }).optional()
 });
 
 const rerunOcrPageSchema = z.object({
   ocrMode: z.enum(supportedImageOcrModes).default("VISION")
+});
+
+const updateImageRotationSchema = z.object({
+  rotation: z.coerce.number().int().refine((value): value is ImageRotation => supportedImageRotations.includes(value as ImageRotation), {
+    message: "La rotación debe ser 0, 90, 180 o 270 grados."
+  })
 });
 
 const updateOutlineSchema = z.object({
@@ -121,7 +130,9 @@ type BookPageRecord = {
   pageType: string;
   pageNumber: number;
   rawText: string | null;
+  sourceImageRotation: ImageRotation;
   sourceFileId: string | null;
+  updatedAt: string;
 };
 
 type BookBinaryFileRecord = {
@@ -599,9 +610,11 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         raw_text AS "rawText",
         html_content AS "htmlContent",
         edited_text AS "editedText",
+        source_image_rotation AS "sourceImageRotation",
         page_label AS "pageLabel",
         page_type AS "pageType",
         ocr_status AS "ocrStatus",
+        updated_at AS "updatedAt",
         CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
       FROM book_pages
       WHERE book_id = :bookId
@@ -950,6 +963,7 @@ async function replaceBookPageParagraphs(
     pageNumber: number;
     paragraphs: string[];
     rawText: string;
+    sourceImageRotation?: ImageRotation;
   }
 ): Promise<void> {
   const countResult = await connection.execute(
@@ -1030,22 +1044,33 @@ async function replaceBookPageParagraphs(
     );
   }
 
+  const pageUpdateAssignments = [
+    "raw_text = :rawText",
+    "html_content = :htmlContent",
+    "edited_text = :editedText",
+    "ocr_status = :ocrStatus"
+  ];
+
+  const pageUpdateBinds: Record<string, string | null | ImageRotation> = {
+    editedText: options.editedText,
+    htmlContent: options.htmlContent,
+    ocrStatus: options.ocrStatus,
+    pageId: options.page.pageId,
+    rawText: options.rawText
+  };
+
+  if (options.sourceImageRotation !== undefined) {
+    pageUpdateAssignments.push("source_image_rotation = :sourceImageRotation");
+    pageUpdateBinds.sourceImageRotation = options.sourceImageRotation;
+  }
+
   await connection.execute(
     `
       UPDATE book_pages
-      SET raw_text = :rawText,
-          html_content = :htmlContent,
-          edited_text = :editedText,
-          ocr_status = :ocrStatus
+      SET ${pageUpdateAssignments.join(",\n          ")}
       WHERE page_id = :pageId
     `,
-    {
-      editedText: options.editedText,
-      htmlContent: options.htmlContent,
-      ocrStatus: options.ocrStatus,
-      pageId: options.page.pageId,
-      rawText: options.rawText
-    }
+    pageUpdateBinds
   );
 
   await connection.execute(
@@ -1122,6 +1147,7 @@ async function insertProcessedImagePages(
           raw_text,
           html_content,
           edited_text,
+          source_image_rotation,
           ocr_status
         ) VALUES (
           :pageId,
@@ -1131,6 +1157,7 @@ async function insertProcessedImagePages(
           :rawText,
           :htmlContent,
           :editedText,
+          0,
           'READY'
         )
       `,
@@ -2202,10 +2229,63 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           pageType: pageRecord.pageType,
           pageNumber: params.pageNumber,
           sourceFileId: pageRecord.sourceFileId,
+          sourceImageRotation: pageRecord.sourceImageRotation,
+          updatedAt: pageRecord.updatedAt,
           rawText: pageRecord.rawText,
           paragraphs
         }
       });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/:bookId/pages/:pageNumber/image-rotation", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = pageParamsSchema.parse(request.params);
+    const payload = updateImageRotationSchema.parse(request.body);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (book.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "La orientación manual solo está disponible para libros creados desde imágenes." });
+      }
+
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      if (!page.sourceFileId) {
+        return reply.status(409).send({ message: "Esta página no tiene imagen original para guardar su orientación." });
+      }
+
+      await connection.execute(
+        `
+          UPDATE book_pages
+          SET source_image_rotation = :rotation
+          WHERE page_id = :pageId
+        `,
+        {
+          pageId: page.pageId,
+          rotation: payload.rotation
+        }
+      );
+
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -2260,6 +2340,93 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.put("/:bookId/pages/:pageNumber/image", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = pageParamsSchema.parse(request.params);
+    const uploadedFile = await request.file();
+    if (!uploadedFile) {
+      return reply.status(400).send({ message: "Debes adjuntar una imagen editada para la página." });
+    }
+
+    const [imageFile] = ensureImageFiles([{
+      buffer: await readUploadedFile(uploadedFile, { fileName: uploadedFile.filename, maxBytes: maximumUploadedImageBytes }),
+      fieldName: uploadedFile.fieldname ?? "image",
+      fileName: uploadedFile.filename,
+      mimeType: uploadedFile.mimetype
+    }]);
+
+    if (!imageFile) {
+      return reply.status(400).send({ message: "Debes adjuntar una imagen válida para la página." });
+    }
+
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (book.sourceType !== "IMAGES") {
+        return reply.status(409).send({ message: "La edición de imagen solo está disponible para libros creados desde imágenes." });
+      }
+
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) {
+        return reply.status(404).send({ message: "Page not found." });
+      }
+
+      if (!page.sourceFileId) {
+        return reply.status(409).send({ message: "Esta página no tiene imagen original para guardar una versión recortada." });
+      }
+
+      await connection.execute(
+        `
+          UPDATE book_files
+          SET file_name = :fileName,
+              mime_type = :mimeType,
+              byte_size = :byteSize,
+              checksum_sha256 = :checksumSha256,
+              content_blob = :contentBlob
+          WHERE book_id = :bookId
+            AND file_id = :fileId
+        `,
+        {
+          bookId: params.bookId,
+          byteSize: imageFile.buffer.length,
+          checksumSha256: computeChecksum(imageFile.buffer),
+          contentBlob: imageFile.buffer,
+          fileId: page.sourceFileId,
+          fileName: imageFile.fileName,
+          mimeType: imageFile.mimeType
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE book_pages
+          SET source_image_rotation = 0
+          WHERE page_id = :pageId
+        `,
+        {
+          pageId: page.pageId
+        }
+      );
+
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.put("/:bookId/pages/:pageNumber/ocr", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -2301,7 +2468,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         page,
         pageNumber: params.pageNumber,
         paragraphs,
-        rawText: richPage.rawText || (page.rawText ?? payload.editedText)
+        rawText: richPage.rawText || (page.rawText ?? payload.editedText),
+        ...(payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
       });
 
       await connection.commit();
@@ -2373,7 +2541,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         sourceFile.contentBlob,
         sourceFile.fileName ?? `page-${params.pageNumber}.png`,
         sourceFile.mimeType,
-        payload.ocrMode
+        payload.ocrMode,
+        page.sourceImageRotation
       );
 
       await replaceBookPageParagraphs(connection, {

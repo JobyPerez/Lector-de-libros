@@ -239,6 +239,7 @@ export type BookSummary = {
 };
 
 export type ImageOcrMode = "LOCAL" | "VISION";
+export type ImageRotation = 0 | 90 | 180 | 270;
 
 export type ParagraphContent = {
   paragraphId: string;
@@ -395,7 +396,9 @@ export type BookPageResponse = {
     pageType?: string;
     paragraphs: ParagraphContent[];
     rawText: string | null;
+    sourceImageRotation: ImageRotation;
     sourceFileId: string | null;
+    updatedAt: string;
   };
 };
 
@@ -696,6 +699,20 @@ export function fetchBookPageImage(accessToken: string, bookId: string, pageNumb
   return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
 }
 
+export async function uploadBookPageImage(accessToken: string, bookId: string, pageNumber: number, payload: FormData) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/pages/${pageNumber}/image`, {
+    accessToken,
+    body: payload,
+    fallbackMessage: "No se pudo guardar la imagen editada de la página.",
+    headers: createHeaders({ accessToken }),
+    method: "PUT"
+  });
+
+  if (!response.ok) {
+    throw await createApiRequestError(response, "No se pudo guardar la imagen editada de la página.");
+  }
+}
+
 export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf") {
   return requestBlobDownload(`/books/${bookId}/export/${format}`, accessToken);
 }
@@ -704,8 +721,16 @@ export function downloadOriginalBook(accessToken: string, bookId: string) {
   return requestBlobDownload(`/books/${bookId}/download-original`, accessToken);
 }
 
-export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string }) {
+export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; sourceImageRotation?: ImageRotation }) {
   return request<void>(`/books/${bookId}/pages/${pageNumber}/ocr`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function updateBookPageImageRotation(accessToken: string, bookId: string, pageNumber: number, payload: { rotation: ImageRotation }) {
+  return request<void>(`/books/${bookId}/pages/${pageNumber}/image-rotation`, {
     accessToken,
     body: payload,
     method: "PUT"

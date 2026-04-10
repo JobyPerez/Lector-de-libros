@@ -47,6 +47,9 @@ type VisionStructuredBlock =
 export const supportedImageOcrModes = ["AUTO", "LOCAL", "VISION"] as const;
 
 export type ImageOcrMode = (typeof supportedImageOcrModes)[number];
+export const supportedImageRotations = [0, 90, 180, 270] as const;
+
+export type ImageRotation = (typeof supportedImageRotations)[number];
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -412,6 +415,14 @@ function inferImageMimeType(fileName: string, mimeType: string): string {
   return mimeType;
 }
 
+export async function applyImageRotation(fileBuffer: Buffer, rotation: ImageRotation = 0): Promise<Buffer> {
+  if (rotation === 0) {
+    return fileBuffer;
+  }
+
+  return sharp(fileBuffer).rotate(rotation).toBuffer();
+}
+
 function buildParagraphsFromRawText(rawText: string): string[] {
   const normalizedText = cleanOcrText(rawText.replace(/\r/g, "")).trim();
   if (!normalizedText) {
@@ -757,7 +768,13 @@ export function isSupportedImageUpload(fileName: string, mimeType: string): bool
   return supportedImageMimeTypes.has(inferImageMimeType(fileName, mimeType));
 }
 
-export async function runOcrOnImage(fileBuffer: Buffer, fileName: string, mimeType: string, ocrMode: ImageOcrMode = "AUTO"): Promise<OcrPageResult> {
+export async function runOcrOnImage(
+  fileBuffer: Buffer,
+  fileName: string,
+  mimeType: string,
+  ocrMode: ImageOcrMode = "AUTO",
+  rotation: ImageRotation = 0
+): Promise<OcrPageResult> {
   const normalizedMimeType = inferImageMimeType(fileName, mimeType);
   if (!supportedImageMimeTypes.has(normalizedMimeType)) {
     throw Object.assign(new Error(`Formato de imagen no soportado para OCR: ${mimeType || fileName}. Usa PNG, JPG o WEBP.`), {
@@ -765,20 +782,22 @@ export async function runOcrOnImage(fileBuffer: Buffer, fileName: string, mimeTy
     });
   }
 
+  const rotatedBuffer = await applyImageRotation(fileBuffer, rotation);
+
   if (ocrMode === "LOCAL") {
-    return runLocalOcrWithTesseract(fileBuffer);
+    return runLocalOcrWithTesseract(rotatedBuffer);
   }
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithGitHubModels(fileBuffer, normalizedMimeType);
+    return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType);
   }
 
   try {
-    return await runLocalOcrWithTesseract(fileBuffer);
+    return await runLocalOcrWithTesseract(rotatedBuffer);
   } catch (localOcrError) {
     if (hasVisionOcrConfiguration()) {
-      return runVisionOcrWithGitHubModels(fileBuffer, normalizedMimeType);
+      return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType);
     }
 
     throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${localOcrError instanceof Error ? localOcrError.message : ""}`.trim()), {
