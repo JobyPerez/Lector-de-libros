@@ -27,7 +27,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPopover, ReaderNavigationTocCard } from "./ReaderFloatingPanels";
+import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover } from "./ReaderFloatingPanels";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
@@ -3503,258 +3503,52 @@ export function ReaderPage() {
           panelRef={navigationPanelRef}
           title="Índice y notas"
         >
-          <section className="reader-navigation-section">
-            {orderedNavigationItems.length ? (
-              <div className="reader-navigation-list">
-                {orderedNavigationItems.map((item) => {
-                  if (item.type === "toc") {
-                    return (
-                      <ReaderNavigationTocCard
-                        buttonRef={item.isActive
-                          ? (element) => {
-                              activeNavigationItemRef.current = element;
-                            }
-                          : undefined}
-                        isActive={item.isActive}
-                        key={item.key}
-                        level={item.level}
-                        onSelect={() => {
-                          void goToLocation(item.pageNumber, item.paragraphNumber);
-                          closeNavigationPanel();
-                        }}
-                        onSummaryClick={closeNavigationPanel}
-                        pageNumber={item.pageNumber}
-                        summaryHref={item.chapterId ? sectionSummaryHref(bookId, item.chapterId) : undefined}
-                        summaryLabel={`Abrir resumen de ${item.title}`}
-                        title={item.title}
-                      />
-                    );
-                  }
-
-                  if (item.type === "bookmark") {
-                    return (
-                      <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
-                        <button
-                          className="reader-navigation-item reader-navigation-item-bookmark"
-                          onClick={() => {
-                            void goToLocation(item.pageNumber, item.paragraphNumber);
-                            closeNavigationPanel();
-                          }}
-                          ref={item.isActive
-                            ? (element) => {
-                                activeNavigationItemRef.current = element;
-                              }
-                            : undefined}
-                          type="button"
-                        >
-                          <div className="reader-navigation-item-topline">
-                            <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
-                            <strong>{item.title}</strong>
-                            <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
-                          </div>
-                        </button>
-                        <div className="reader-note-actions">
-                          <button
-                            aria-label="Borrar marcador"
-                            className="reader-note-delete"
-                            onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
-                            title="Borrar marcador"
-                            type="button"
-                          >
-                            <DeletePageIcon />
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  }
-
-                  if (item.type === "highlight") {
-                    const isHighlightEditing = editingNavigationHighlightId === item.highlightId;
-
-                    return (
-                      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-                        <button
-                          className="reader-note-jump"
-                          onClick={() => {
-                            void goToLocation(item.pageNumber, item.paragraphNumber);
-                            closeNavigationPanel();
-                          }}
-                          ref={item.isActive
-                            ? (element) => {
-                                activeNavigationItemRef.current = element;
-                              }
-                            : undefined}
-                          type="button"
-                        >
-                          <div className="reader-navigation-item-topline">
-                            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                            <strong>{item.excerpt}</strong>
-                            <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
-                          </div>
-                        </button>
-                        <div className="reader-note-actions">
-                          <button
-                            aria-label="Añadir nota al resaltado"
-                            className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-                            onClick={() => beginNavigationHighlightEditing(item.highlightId)}
-                            title="Añadir nota"
-                            type="button"
-                          >
-                            <EditIcon />
-                          </button>
-                          <button
-                            aria-label="Borrar resaltado"
-                            className="reader-note-delete"
-                            onClick={() => void handleDeleteSavedHighlight(item.highlightId)}
-                            title="Borrar resaltado"
-                            type="button"
-                          >
-                            <DeletePageIcon />
-                          </button>
-                        </div>
-
-                        {isHighlightEditing ? (
-                          <div className="reader-note-editor">
-                            <label className="reader-note-composer compact">
-                              <textarea
-                                onChange={(event) => setEditingNavigationHighlightText(event.target.value)}
-                                rows={4}
-                                value={editingNavigationHighlightText}
-                              />
-                            </label>
-                            <div className="reader-note-editor-actions">
-                              <button
-                                aria-label="Cancelar edición del resaltado"
-                                className="reader-note-icon-button"
-                                onClick={() => {
-                                  setEditingNavigationHighlightId(null);
-                                  setEditingNavigationHighlightText("");
-                                }}
-                                title="Cancelar"
-                                type="button"
-                              >
-                                <CloseIcon />
-                              </button>
-                              <button
-                                aria-label="Guardar nota del resaltado"
-                                className="reader-note-icon-button primary"
-                                disabled={isUpdatingNote || !editingNavigationHighlightText.trim()}
-                                onClick={() => void handleCreateNoteForHighlight(item.highlightId, editingNavigationHighlightText, "navigation")}
-                                title="Guardar nota"
-                                type="button"
-                              >
-                                <SaveIcon />
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  }
-
-                  const isNoteExpanded = expandedNavigationNoteId === item.noteId;
-                  const isNoteEditing = editingNavigationNoteId === item.noteId;
-                  const hasNoteText = item.noteText.trim().length > 0;
-
-                  return (
-                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-                      <button
-                        className="reader-note-jump"
-                        onClick={() => {
-                          void goToLocation(item.pageNumber, item.paragraphNumber);
-                          closeNavigationPanel();
-                        }}
-                        ref={item.isActive
-                          ? (element) => {
-                              activeNavigationItemRef.current = element;
-                            }
-                          : undefined}
-                        type="button"
-                      >
-                        <div className="reader-navigation-item-topline">
-                          <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                          <strong>{item.excerpt}</strong>
-                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
-                        </div>
-                      </button>
-                      <div className="reader-note-actions">
-                        {hasNoteText ? (
-                          <button
-                            aria-expanded={isNoteExpanded}
-                            aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
-                            className="reader-note-icon-button"
-                            onClick={() => setExpandedNavigationNoteId((current) => current === item.noteId ? null : item.noteId)}
-                            title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
-                            type="button"
-                          >
-                            <EyeIcon />
-                          </button>
-                        ) : null}
-                        <button
-                          aria-label="Editar nota"
-                          className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-                          onClick={() => beginNavigationNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
-                          title="Editar nota"
-                          type="button"
-                        >
-                          <EditIcon />
-                        </button>
-                        <button
-                          aria-label="Borrar nota"
-                          className="reader-note-delete"
-                          onClick={() => void handleDeleteSavedNote(item.noteId)}
-                          title="Borrar nota"
-                          type="button"
-                        >
-                          <DeletePageIcon />
-                        </button>
-                      </div>
-
-                      {isNoteEditing ? (
-                        <div className="reader-note-editor">
-                          <label className="reader-note-composer compact">
-                            <textarea
-                              onChange={(event) => setEditingNavigationNoteText(event.target.value)}
-                              rows={4}
-                              value={editingNavigationNoteText}
-                            />
-                          </label>
-                          <div className="reader-note-editor-actions">
-                            <button
-                              aria-label="Cancelar edición de la nota"
-                              className="reader-note-icon-button"
-                              onClick={() => {
-                                setEditingNavigationNoteId(null);
-                                setEditingNavigationNoteText("");
-                              }}
-                              title="Cancelar"
-                              type="button"
-                            >
-                              <CloseIcon />
-                            </button>
-                            <button
-                              aria-label="Guardar cambios de la nota"
-                              className="reader-note-icon-button primary"
-                              disabled={isUpdatingNote || !editingNavigationNoteText.trim()}
-                              onClick={() => void handleUpdateExistingNote(item.noteId, editingNavigationNoteText, "navigation")}
-                              title="Guardar cambios"
-                              type="button"
-                            >
-                              <SaveIcon />
-                            </button>
-                          </div>
-                        </div>
-                      ) : isNoteExpanded ? (
-                        <p>{item.noteText}</p>
-                      ) : null}
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
-            )}
-          </section>
+          <ReaderNavigationPanelContent
+            activeItemRef={activeNavigationItemRef}
+            editingHighlightId={editingNavigationHighlightId}
+            editingHighlightText={editingNavigationHighlightText}
+            editingNoteId={editingNavigationNoteId}
+            editingNoteText={editingNavigationNoteText}
+            expandedNoteId={expandedNavigationNoteId}
+            isUpdatingNote={isUpdatingNote}
+            items={orderedNavigationItems}
+            onBeginHighlightEditing={beginNavigationHighlightEditing}
+            onBeginNoteEditing={beginNavigationNoteEditing}
+            onCancelHighlightEditing={() => {
+              setEditingNavigationHighlightId(null);
+              setEditingNavigationHighlightText("");
+            }}
+            onCancelNoteEditing={() => {
+              setEditingNavigationNoteId(null);
+              setEditingNavigationNoteText("");
+            }}
+            onDeleteBookmark={(bookmarkId) => void handleDeleteSavedBookmark(bookmarkId)}
+            onDeleteHighlight={(highlightId) => void handleDeleteSavedHighlight(highlightId)}
+            onDeleteNote={(noteId) => void handleDeleteSavedNote(noteId)}
+            onEditingHighlightTextChange={setEditingNavigationHighlightText}
+            onEditingNoteTextChange={setEditingNavigationNoteText}
+            onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText, "navigation")}
+            onSaveNote={(noteId, noteText) => void handleUpdateExistingNote(noteId, noteText, "navigation")}
+            onSelectBookmark={(item) => {
+              void goToLocation(item.pageNumber, item.paragraphNumber);
+              closeNavigationPanel();
+            }}
+            onSelectHighlight={(item) => {
+              void goToLocation(item.pageNumber, item.paragraphNumber);
+              closeNavigationPanel();
+            }}
+            onSelectNote={(item) => {
+              void goToLocation(item.pageNumber, item.paragraphNumber);
+              closeNavigationPanel();
+            }}
+            onSelectToc={(item) => {
+              void goToLocation(item.pageNumber, item.paragraphNumber);
+              closeNavigationPanel();
+            }}
+            onSummaryClick={closeNavigationPanel}
+            onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+            summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
+          />
         </ReaderNavigationPopover>
         <button
           aria-label="Página anterior"

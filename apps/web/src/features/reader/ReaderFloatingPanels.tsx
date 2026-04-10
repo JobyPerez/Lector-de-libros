@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { type CSSProperties, type ReactNode, type RefObject } from "react";
+import { type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
 
 type AudioEngineOption = {
   description: string;
@@ -74,6 +74,77 @@ type NavigationTocCardProps = {
   title: string;
 };
 
+export type ReaderNavigationListItem =
+  | {
+      chapterId: string | null;
+      isActive: boolean;
+      key: string;
+      level: number;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "toc";
+    }
+  | {
+      bookmarkId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      title: string;
+      type: "bookmark";
+    }
+  | {
+      color: "YELLOW" | "GREEN" | "BLUE" | "PINK";
+      excerpt: string;
+      highlightId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "highlight";
+    }
+  | {
+      color: "YELLOW" | "GREEN" | "BLUE" | "PINK" | null;
+      excerpt: string;
+      isActive: boolean;
+      key: string;
+      noteId: string;
+      noteText: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "note";
+    };
+
+type NavigationPanelContentProps = {
+  activeItemRef?: MutableRefObject<HTMLButtonElement | null>;
+  editingHighlightId: string | null;
+  editingHighlightText: string;
+  editingNoteId: string | null;
+  editingNoteText: string;
+  expandedNoteId: string | null;
+  isUpdatingNote: boolean;
+  items: ReaderNavigationListItem[];
+  onBeginHighlightEditing: (highlightId: string) => void;
+  onBeginNoteEditing: (note: { noteId: string; noteText: string }) => void;
+  onCancelHighlightEditing: () => void;
+  onCancelNoteEditing: () => void;
+  onDeleteBookmark: (bookmarkId: string) => void;
+  onDeleteHighlight: (highlightId: string) => void;
+  onDeleteNote: (noteId: string) => void;
+  onEditingHighlightTextChange: (value: string) => void;
+  onEditingNoteTextChange: (value: string) => void;
+  onSaveHighlightNote: (highlightId: string, noteText: string) => void;
+  onSaveNote: (noteId: string, noteText: string) => void;
+  onSelectBookmark: (item: Extract<ReaderNavigationListItem, { type: "bookmark" }>) => void;
+  onSelectHighlight: (item: Extract<ReaderNavigationListItem, { type: "highlight" }>) => void;
+  onSelectNote: (item: Extract<ReaderNavigationListItem, { type: "note" }>) => void;
+  onSelectToc: (item: Extract<ReaderNavigationListItem, { type: "toc" }>) => void;
+  onSummaryClick?: () => void;
+  onToggleNoteExpansion: (noteId: string) => void;
+  summaryHrefBuilder?: (chapterId: string) => string;
+};
+
 function ReaderControlIcon({ children }: { children: ReactNode }) {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -124,6 +195,56 @@ function SummarySectionIcon() {
       <path d="M16.25 14L17 15.5L18.5 16.25L17 17L16.25 18.5L15.5 17L14 16.25L15.5 15.5L16.25 14Z" fill="currentColor" />
     </ReaderControlIcon>
   );
+}
+
+function BookmarkIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" fill="currentColor" />
+    </ReaderControlIcon>
+  );
+}
+
+function DeletePageIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M8 7.25H16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 7.25V5.75C9 5.34 9.34 5 9.75 5H14.25C14.66 5 15 5.34 15 5.75V7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M7.25 7.25L8 18.25C8.03 18.67 8.38 19 8.8 19H15.2C15.62 19 15.97 18.67 16 18.25L16.75 7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10.25 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.75 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M2.75 12C4.82 8.66 8.11 6.75 12 6.75C15.89 6.75 19.18 8.66 21.25 12C19.18 15.34 15.89 17.25 12 17.25C8.11 17.25 4.82 15.34 2.75 12Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="12" cy="12" fill="currentColor" r="2.2" />
+    </ReaderControlIcon>
+  );
+}
+
+function EditIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M4.75 19.25L8.35 18.45L17.55 9.25C18.12 8.68 18.12 7.76 17.55 7.19L16.81 6.45C16.24 5.88 15.32 5.88 14.75 6.45L5.55 15.65L4.75 19.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.9 7.3L16.7 10.1" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
+function SaveIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M5 12.5L9.25 16.75L19 7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function highlightClassName(color: "YELLOW" | "GREEN" | "BLUE" | "PINK") {
+  return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
 }
 
 export function ReaderFloatingAudioPopover({ buttonLabel, buttonTitle, children, isOpen, menuRef, onToggle, panelId }: AudioPopoverProps) {
@@ -327,5 +448,271 @@ export function ReaderNavigationTocCard({ buttonRef, isActive, level, onSelect, 
         </Link>
       ) : null}
     </article>
+  );
+}
+
+export function ReaderNavigationPanelContent({
+  activeItemRef,
+  editingHighlightId,
+  editingHighlightText,
+  editingNoteId,
+  editingNoteText,
+  expandedNoteId,
+  isUpdatingNote,
+  items,
+  onBeginHighlightEditing,
+  onBeginNoteEditing,
+  onCancelHighlightEditing,
+  onCancelNoteEditing,
+  onDeleteBookmark,
+  onDeleteHighlight,
+  onDeleteNote,
+  onEditingHighlightTextChange,
+  onEditingNoteTextChange,
+  onSaveHighlightNote,
+  onSaveNote,
+  onSelectBookmark,
+  onSelectHighlight,
+  onSelectNote,
+  onSelectToc,
+  onSummaryClick,
+  onToggleNoteExpansion,
+  summaryHrefBuilder
+}: NavigationPanelContentProps) {
+  return (
+    <section className="reader-navigation-section">
+      {items.length ? (
+        <div className="reader-navigation-list">
+          {items.map((item) => {
+            if (item.type === "toc") {
+              return (
+                <ReaderNavigationTocCard
+                  buttonRef={item.isActive && activeItemRef
+                    ? (element) => {
+                        activeItemRef.current = element;
+                      }
+                    : undefined}
+                  isActive={item.isActive}
+                  key={item.key}
+                  level={item.level}
+                  onSelect={() => onSelectToc(item)}
+                  onSummaryClick={onSummaryClick}
+                  pageNumber={item.pageNumber}
+                  summaryHref={item.chapterId && summaryHrefBuilder ? summaryHrefBuilder(item.chapterId) : undefined}
+                  summaryLabel={`Abrir resumen de ${item.title}`}
+                  title={item.title}
+                />
+              );
+            }
+
+            if (item.type === "bookmark") {
+              return (
+                <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
+                  <button
+                    className="reader-navigation-item reader-navigation-item-bookmark"
+                    onClick={() => onSelectBookmark(item)}
+                    ref={item.isActive && activeItemRef
+                      ? (element) => {
+                          activeItemRef.current = element;
+                        }
+                      : undefined}
+                    type="button"
+                  >
+                    <div className="reader-navigation-item-topline">
+                      <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
+                      <strong>{item.title}</strong>
+                      <span className="reader-navigation-inline-meta">Pág. {item.pageNumber}</span>
+                    </div>
+                  </button>
+                  <div className="reader-note-actions">
+                    <button
+                      aria-label="Borrar marcador"
+                      className="reader-note-delete"
+                      onClick={() => onDeleteBookmark(item.bookmarkId)}
+                      title="Borrar marcador"
+                      type="button"
+                    >
+                      <DeletePageIcon />
+                    </button>
+                  </div>
+                </article>
+              );
+            }
+
+            if (item.type === "highlight") {
+              const isHighlightEditing = editingHighlightId === item.highlightId;
+
+              return (
+                <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                  <button
+                    className="reader-note-jump"
+                    onClick={() => onSelectHighlight(item)}
+                    ref={item.isActive && activeItemRef
+                      ? (element) => {
+                          activeItemRef.current = element;
+                        }
+                      : undefined}
+                    type="button"
+                  >
+                    <div className="reader-navigation-item-topline">
+                      <span className={`reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}`} />
+                      <strong>{item.excerpt}</strong>
+                      <span className="reader-navigation-inline-meta">Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
+                    </div>
+                  </button>
+                  <div className="reader-note-actions">
+                    <button
+                      aria-label="Añadir nota al resaltado"
+                      className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                      onClick={() => onBeginHighlightEditing(item.highlightId)}
+                      title="Añadir nota"
+                      type="button"
+                    >
+                      <EditIcon />
+                    </button>
+                    <button
+                      aria-label="Borrar resaltado"
+                      className="reader-note-delete"
+                      onClick={() => onDeleteHighlight(item.highlightId)}
+                      title="Borrar resaltado"
+                      type="button"
+                    >
+                      <DeletePageIcon />
+                    </button>
+                  </div>
+
+                  {isHighlightEditing ? (
+                    <div className="reader-note-editor">
+                      <label className="reader-note-composer compact">
+                        <textarea
+                          onChange={(event) => onEditingHighlightTextChange(event.target.value)}
+                          rows={4}
+                          value={editingHighlightText}
+                        />
+                      </label>
+                      <div className="reader-note-editor-actions">
+                        <button
+                          aria-label="Cancelar edición del resaltado"
+                          className="reader-note-icon-button"
+                          onClick={onCancelHighlightEditing}
+                          title="Cancelar"
+                          type="button"
+                        >
+                          <CloseIcon />
+                        </button>
+                        <button
+                          aria-label="Guardar nota del resaltado"
+                          className="reader-note-icon-button primary"
+                          disabled={isUpdatingNote || !editingHighlightText.trim()}
+                          onClick={() => onSaveHighlightNote(item.highlightId, editingHighlightText)}
+                          title="Guardar nota"
+                          type="button"
+                        >
+                          <SaveIcon />
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              );
+            }
+
+            const isNoteExpanded = expandedNoteId === item.noteId;
+            const isNoteEditing = editingNoteId === item.noteId;
+            const hasNoteText = item.noteText.trim().length > 0;
+
+            return (
+              <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                <button
+                  className="reader-note-jump"
+                  onClick={() => onSelectNote(item)}
+                  ref={item.isActive && activeItemRef
+                    ? (element) => {
+                        activeItemRef.current = element;
+                      }
+                    : undefined}
+                  type="button"
+                >
+                  <div className="reader-navigation-item-topline">
+                    <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                    <strong>{item.excerpt}</strong>
+                    <span className="reader-navigation-inline-meta">Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
+                  </div>
+                </button>
+                <div className="reader-note-actions">
+                  {hasNoteText ? (
+                    <button
+                      aria-expanded={isNoteExpanded}
+                      aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
+                      className="reader-note-icon-button"
+                      onClick={() => onToggleNoteExpansion(item.noteId)}
+                      title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
+                      type="button"
+                    >
+                      <EyeIcon />
+                    </button>
+                  ) : null}
+                  <button
+                    aria-label="Editar nota"
+                    className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                    onClick={() => onBeginNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
+                    title="Editar nota"
+                    type="button"
+                  >
+                    <EditIcon />
+                  </button>
+                  <button
+                    aria-label="Borrar nota"
+                    className="reader-note-delete"
+                    onClick={() => onDeleteNote(item.noteId)}
+                    title="Borrar nota"
+                    type="button"
+                  >
+                    <DeletePageIcon />
+                  </button>
+                </div>
+
+                {isNoteEditing ? (
+                  <div className="reader-note-editor">
+                    <label className="reader-note-composer compact">
+                      <textarea
+                        onChange={(event) => onEditingNoteTextChange(event.target.value)}
+                        rows={4}
+                        value={editingNoteText}
+                      />
+                    </label>
+                    <div className="reader-note-editor-actions">
+                      <button
+                        aria-label="Cancelar edición de la nota"
+                        className="reader-note-icon-button"
+                        onClick={onCancelNoteEditing}
+                        title="Cancelar"
+                        type="button"
+                      >
+                        <CloseIcon />
+                      </button>
+                      <button
+                        aria-label="Guardar cambios de la nota"
+                        className="reader-note-icon-button primary"
+                        disabled={isUpdatingNote || !editingNoteText.trim()}
+                        onClick={() => onSaveNote(item.noteId, editingNoteText)}
+                        title="Guardar cambios"
+                        type="button"
+                      >
+                        <SaveIcon />
+                      </button>
+                    </div>
+                  </div>
+                ) : isNoteExpanded ? (
+                  <p>{item.noteText}</p>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+      )}
+    </section>
   );
 }

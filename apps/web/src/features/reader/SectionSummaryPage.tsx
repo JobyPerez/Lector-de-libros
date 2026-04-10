@@ -3,14 +3,24 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
+  createNote,
+  deleteBookmark,
+  deleteHighlight,
+  deleteNote,
+  fetchBook,
   fetchDeepgramBalance,
   fetchReaderNavigation,
   fetchSectionSummary,
   generateSectionSummary,
-  requestSectionSummaryAudio
+  requestSectionSummaryAudio,
+  updateNote,
+  type HighlightColor,
+  type ReaderHighlight,
+  type ReaderNote,
+  type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPopover, ReaderNavigationTocCard } from "./ReaderFloatingPanels";
+import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
@@ -52,6 +62,27 @@ type DeviceVoiceOption = {
   label: string;
   value: string;
 };
+
+function excerptPreview(value: string | null | undefined, fallback: string) {
+  const normalizedValue = value?.replace(/\s+/gu, " ").trim();
+  if (!normalizedValue) {
+    return fallback;
+  }
+
+  return normalizedValue.length > 120 ? `${normalizedValue.slice(0, 117).trimEnd()}...` : normalizedValue;
+}
+
+function tocEntryKey(entry: ReaderTocEntry) {
+  return entry.chapterId ?? `${entry.pageNumber}:${entry.paragraphNumber}:${entry.sequenceNumber ?? "na"}:${entry.title}`;
+}
+
+function notePreview(note: Pick<ReaderNote, "highlightedText" | "noteText">) {
+  return excerptPreview(note.highlightedText ?? note.noteText, "Nota sin extracto");
+}
+
+function highlightPreview(highlight: Pick<ReaderHighlight, "highlightedText">) {
+  return excerptPreview(highlight.highlightedText, "Resaltado sin texto");
+}
 
 function readStoredTtsEngine(): TtsEngine {
   if (typeof window === "undefined") {
@@ -252,6 +283,13 @@ export function SectionSummaryPage() {
   const [isAudioSettingsVisible, setIsAudioSettingsVisible] = useState(false);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteText, setEditingNavigationNoteText] = useState("");
+  const [editingNavigationHighlightId, setEditingNavigationHighlightId] = useState<string | null>(null);
+  const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
+  const [isUpdatingNote, setIsUpdatingNote] = useState(false);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
   const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
   const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
   const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
@@ -265,6 +303,7 @@ export function SectionSummaryPage() {
   const audioSettingsRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
+  const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
 
   const summaryQuery = useQuery({
     enabled: Boolean(accessToken && bookId && chapterId),
@@ -303,6 +342,18 @@ export function SectionSummaryPage() {
     }
   });
 
+  const bookQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["book", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchBook(accessToken, bookId);
+    }
+  });
+
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
   const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
   const selectedDeviceVoice = useMemo(
@@ -311,6 +362,75 @@ export function SectionSummaryPage() {
   );
   const summaryText = summaryQuery.data?.summary?.summaryText?.trim() ?? "";
   const summaryParagraphs = useMemo(() => paragraphizeSummary(summaryText), [summaryText]);
+  const bookTitle = bookQuery.data?.book.title ?? "Cargando libro...";
+
+  const orderedNavigationItems = useMemo<ReaderNavigationListItem[]>(() => {
+    const tocItems: ReaderNavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
+      chapterId: entry.chapterId ?? null,
+      isActive: entry.chapterId === chapterId,
+      key: `toc:${tocEntryKey(entry)}`,
+      level: entry.level,
+      pageNumber: entry.pageNumber,
+      paragraphNumber: entry.paragraphNumber,
+      title: entry.title,
+      type: "toc"
+    }));
+
+    const bookmarkItems: ReaderNavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      bookmarkId: bookmark.bookmarkId,
+      isActive: false,
+      key: `bookmark:${bookmark.bookmarkId}`,
+      pageNumber: bookmark.pageNumber,
+      paragraphNumber: bookmark.paragraphNumber,
+      title: "Marcador guardado",
+      type: "bookmark"
+    }));
+
+    const noteItems: ReaderNavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
+      color: note.highlightColor,
+      excerpt: notePreview(note),
+      isActive: false,
+      key: `note:${note.noteId}`,
+      noteId: note.noteId,
+      noteText: note.noteText,
+      pageNumber: note.pageNumber,
+      paragraphNumber: note.paragraphNumber ?? 1,
+      type: "note"
+    }));
+
+    const notedHighlightIds = new Set(
+      (navigationQuery.data?.notes ?? [])
+        .map((note) => note.highlightId)
+        .filter((highlightId): highlightId is string => Boolean(highlightId))
+    );
+
+    const standaloneHighlightItems: ReaderNavigationListItem[] = (navigationQuery.data?.highlights ?? [])
+      .filter((highlight) => !notedHighlightIds.has(highlight.highlightId))
+      .map((highlight) => ({
+        color: highlight.color,
+        excerpt: highlightPreview(highlight),
+        highlightId: highlight.highlightId,
+        isActive: false,
+        key: `highlight:${highlight.highlightId}`,
+        pageNumber: highlight.pageNumber,
+        paragraphNumber: highlight.paragraphNumber,
+        type: "highlight"
+      }));
+
+    const sortWeight = { bookmark: 1, highlight: 2, note: 3, toc: 0 } as const;
+
+    return [...tocItems, ...bookmarkItems, ...standaloneHighlightItems, ...noteItems].sort((left, right) => {
+      if (left.pageNumber !== right.pageNumber) {
+        return left.pageNumber - right.pageNumber;
+      }
+
+      if (left.paragraphNumber !== right.paragraphNumber) {
+        return left.paragraphNumber - right.paragraphNumber;
+      }
+
+      return sortWeight[left.type] - sortWeight[right.type];
+    });
+  }, [chapterId, navigationQuery.data?.bookmarks, navigationQuery.data?.highlights, navigationQuery.data?.notes, navigationQuery.data?.toc]);
 
   useEffect(() => {
     const audioElement = new Audio();
@@ -493,6 +613,12 @@ export function SectionSummaryPage() {
 
     setIsNavigationPanelRendered(false);
     setIsNavigationPanelVisible(false);
+    setExpandedNavigationNoteId(null);
+    setEditingNavigationNoteId(null);
+    setEditingNavigationNoteText("");
+    setEditingNavigationHighlightId(null);
+    setEditingNavigationHighlightText("");
+    setNavigationError(null);
   }, [chapterId]);
 
   useEffect(() => {
@@ -570,9 +696,123 @@ export function SectionSummaryPage() {
     openNavigationPanel();
   }
 
+  async function refreshNavigationMetadata() {
+    await navigationQuery.refetch();
+  }
+
+  function goToReaderLocation(pageNumber: number) {
+    closeNavigationPanel();
+    navigate(`/books/${bookId}?page=${encodeURIComponent(String(pageNumber))}`);
+  }
+
   function goToSection(targetChapterId: string) {
     closeNavigationPanel();
     navigate(sectionSummaryHref(bookId, targetChapterId));
+  }
+
+  function beginNavigationNoteEditing(note: Pick<ReaderNote, "noteId" | "noteText">) {
+    setExpandedNavigationNoteId(note.noteId);
+    setEditingNavigationHighlightId(null);
+    setEditingNavigationHighlightText("");
+    setEditingNavigationNoteId(note.noteId);
+    setEditingNavigationNoteText(note.noteText);
+  }
+
+  function beginNavigationHighlightEditing(highlightId: string) {
+    setExpandedNavigationNoteId(null);
+    setEditingNavigationNoteId(null);
+    setEditingNavigationNoteText("");
+    setEditingNavigationHighlightId(highlightId);
+    setEditingNavigationHighlightText("");
+  }
+
+  async function handleDeleteSavedBookmark(bookmarkId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteBookmark(accessToken, bookId, bookmarkId);
+      await refreshNavigationMetadata();
+    } catch (error) {
+      setNavigationError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
+    }
+  }
+
+  async function handleDeleteSavedHighlight(highlightId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteHighlight(accessToken, bookId, highlightId);
+      setEditingNavigationHighlightId((current) => current === highlightId ? null : current);
+      await refreshNavigationMetadata();
+    } catch (error) {
+      setNavigationError(error instanceof Error ? error.message : "No se pudo borrar el resaltado.");
+    }
+  }
+
+  async function handleDeleteSavedNote(noteId: string) {
+    if (!accessToken) {
+      return;
+    }
+
+    try {
+      await deleteNote(accessToken, bookId, noteId);
+      setExpandedNavigationNoteId((current) => current === noteId ? null : current);
+      setEditingNavigationNoteId((current) => current === noteId ? null : current);
+      await refreshNavigationMetadata();
+    } catch (error) {
+      setNavigationError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
+    }
+  }
+
+  async function handleCreateNoteForHighlight(highlightId: string, noteText: string) {
+    if (!accessToken || !noteText.trim()) {
+      return;
+    }
+
+    setIsUpdatingNote(true);
+    setNavigationError(null);
+
+    try {
+      const trimmedNoteText = noteText.trim();
+      const { note } = await createNote(accessToken, bookId, {
+        highlightId,
+        noteText: trimmedNoteText
+      });
+      await refreshNavigationMetadata();
+      setEditingNavigationHighlightId(null);
+      setEditingNavigationHighlightText("");
+      setExpandedNavigationNoteId(note.noteId);
+    } catch (error) {
+      setNavigationError(error instanceof Error ? error.message : "No se pudo guardar la nota.");
+    } finally {
+      setIsUpdatingNote(false);
+    }
+  }
+
+  async function handleUpdateExistingNote(noteId: string, noteText: string) {
+    if (!accessToken || !noteText.trim()) {
+      return;
+    }
+
+    setIsUpdatingNote(true);
+    setNavigationError(null);
+
+    try {
+      const trimmedNoteText = noteText.trim();
+      await updateNote(accessToken, bookId, noteId, { noteText: trimmedNoteText });
+      await refreshNavigationMetadata();
+      setEditingNavigationNoteId(null);
+      setEditingNavigationNoteText("");
+      setExpandedNavigationNoteId(noteId);
+    } catch (error) {
+      setNavigationError(error instanceof Error ? error.message : "No se pudo actualizar la nota.");
+    } finally {
+      setIsUpdatingNote(false);
+    }
   }
 
   async function handleGenerateSummary() {
@@ -811,57 +1051,14 @@ export function SectionSummaryPage() {
         </section>
       ) : null}
 
+      {navigationError ? (
+        <section className="panel reader-section-summary-panel">
+          <p className="error-text">{navigationError}</p>
+        </section>
+      ) : null}
+
       {section ? (
         <div className="reader-floating-controls reader-section-summary-floating-controls">
-          <div className="reader-floating-status">
-            <strong>Resumen</strong>
-            <span>Págs. {section?.startPageNumber} a {section?.endPageNumber}</span>
-          </div>
-
-          <ReaderNavigationPopover
-            buttonLabel="Abrir panel de índice, marcadores y notas"
-            closeLabel="Cerrar panel de navegación"
-            eyebrow="Navegación"
-            isOpen={isNavigationPanelVisible}
-            isRendered={isNavigationPanelRendered}
-            onClose={closeNavigationPanel}
-            onToggle={toggleNavigationPanel}
-            panelAriaLabel="Índice, marcadores y notas"
-            panelRef={navigationPanelRef}
-            title="Índice y notas"
-          >
-            <section className="reader-navigation-section">
-              <div className="reader-navigation-section-heading">
-                <strong>Secciones</strong>
-                <span>{sectionEntries.length}</span>
-              </div>
-
-              {sectionEntries.length ? (
-                <div className="reader-navigation-list">
-                  {sectionEntries.map((entry) => (
-                    <ReaderNavigationTocCard
-                      isActive={entry.chapterId === chapterId}
-                      key={entry.chapterId}
-                      level={entry.level}
-                      onSelect={() => {
-                        if (entry.chapterId) {
-                          goToSection(entry.chapterId);
-                        }
-                      }}
-                      onSummaryClick={closeNavigationPanel}
-                      pageNumber={entry.pageNumber}
-                      summaryHref={sectionSummaryHref(bookId, entry.chapterId)}
-                      summaryLabel={`Abrir resumen de ${entry.title}`}
-                      title={entry.title}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="reader-navigation-empty">Este libro no trae índice estructurado.</p>
-              )}
-            </section>
-          </ReaderNavigationPopover>
-
           <ReaderFloatingAudioPopover
             buttonLabel="Ajustes de audio"
             isOpen={isAudioSettingsVisible}
@@ -892,6 +1089,59 @@ export function SectionSummaryPage() {
               voiceOptions={TTS_VOICE_OPTIONS}
             />
           </ReaderFloatingAudioPopover>
+
+          <div className="reader-floating-status">
+            <strong>Resumen</strong>
+            <span>Págs. {section?.startPageNumber} a {section?.endPageNumber}</span>
+          </div>
+
+          <ReaderNavigationPopover
+            buttonLabel="Abrir panel de índice, marcadores y notas"
+            closeLabel="Cerrar panel de navegación"
+            eyebrow={bookTitle}
+            isOpen={isNavigationPanelVisible}
+            isRendered={isNavigationPanelRendered}
+            onClose={closeNavigationPanel}
+            onToggle={toggleNavigationPanel}
+            panelAriaLabel="Índice, marcadores y notas"
+            panelRef={navigationPanelRef}
+            title="Índice y notas"
+          >
+            <ReaderNavigationPanelContent
+              activeItemRef={activeNavigationItemRef}
+              editingHighlightId={editingNavigationHighlightId}
+              editingHighlightText={editingNavigationHighlightText}
+              editingNoteId={editingNavigationNoteId}
+              editingNoteText={editingNavigationNoteText}
+              expandedNoteId={expandedNavigationNoteId}
+              isUpdatingNote={isUpdatingNote}
+              items={orderedNavigationItems}
+              onBeginHighlightEditing={beginNavigationHighlightEditing}
+              onBeginNoteEditing={beginNavigationNoteEditing}
+              onCancelHighlightEditing={() => {
+                setEditingNavigationHighlightId(null);
+                setEditingNavigationHighlightText("");
+              }}
+              onCancelNoteEditing={() => {
+                setEditingNavigationNoteId(null);
+                setEditingNavigationNoteText("");
+              }}
+              onDeleteBookmark={(bookmarkId) => void handleDeleteSavedBookmark(bookmarkId)}
+              onDeleteHighlight={(highlightId) => void handleDeleteSavedHighlight(highlightId)}
+              onDeleteNote={(noteId) => void handleDeleteSavedNote(noteId)}
+              onEditingHighlightTextChange={setEditingNavigationHighlightText}
+              onEditingNoteTextChange={setEditingNavigationNoteText}
+              onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText)}
+              onSaveNote={(noteId, noteText) => void handleUpdateExistingNote(noteId, noteText)}
+              onSelectBookmark={(item) => goToReaderLocation(item.pageNumber)}
+              onSelectHighlight={(item) => goToReaderLocation(item.pageNumber)}
+              onSelectNote={(item) => goToReaderLocation(item.pageNumber)}
+              onSelectToc={(item) => goToReaderLocation(item.pageNumber)}
+              onSummaryClick={closeNavigationPanel}
+              onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+              summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
+            />
+          </ReaderNavigationPopover>
 
           <button
             aria-label="Sección anterior"
