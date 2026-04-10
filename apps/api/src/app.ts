@@ -57,7 +57,14 @@ export function buildApp(): FastifyInstance {
     const message = error instanceof Error ? error.message : "Unexpected application error.";
 
     reply.status(statusCode).send({
-      message
+      code: typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : undefined,
+      message,
+      retryAfterSeconds: typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number"
+        ? (error as { retryAfterSeconds: number }).retryAfterSeconds
+        : undefined,
+      retryable: (error as { retryable?: unknown }).retryable === true
+        ? true
+        : undefined
     });
   });
 

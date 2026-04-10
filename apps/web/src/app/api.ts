@@ -13,6 +13,20 @@ type ApiOptions = {
 
 type RequestHeaders = Record<string, string>;
 
+type ApiErrorPayload = {
+  code?: string;
+  message?: string;
+  retryAfterSeconds?: number;
+  retryable?: boolean;
+};
+
+export type ApiRequestError = Error & {
+  code?: string;
+  retryAfterSeconds?: number;
+  retryable?: boolean;
+  statusCode: number;
+};
+
 export type BlobDownload = {
   blob: Blob;
   fileName: string | null;
@@ -26,8 +40,36 @@ function createHeaders(options: { accessToken?: string | null | undefined; conte
 }
 
 async function parseErrorMessage(response: Response, fallbackMessage: string): Promise<string> {
-  const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+  const payload = (await response.json().catch(() => null)) as ApiErrorPayload | null;
   return payload?.message ?? fallbackMessage;
+}
+
+async function createApiRequestError(response: Response, fallbackMessage: string): Promise<ApiRequestError> {
+  const payload = (await response.json().catch(() => null)) as ApiErrorPayload | null;
+  const error = new Error(payload?.message ?? fallbackMessage) as ApiRequestError;
+
+  error.statusCode = response.status;
+
+  if (typeof payload?.code === "string") {
+    error.code = payload.code;
+  }
+
+  if (typeof payload?.retryAfterSeconds === "number") {
+    error.retryAfterSeconds = payload.retryAfterSeconds;
+  }
+
+  if (payload?.retryable === true) {
+    error.retryable = true;
+  }
+
+  return error;
+}
+
+export function isRetryableRateLimitError(error: unknown): error is ApiRequestError {
+  return error instanceof Error
+    && (error as Partial<ApiRequestError>).retryable === true
+    && typeof (error as Partial<ApiRequestError>).retryAfterSeconds === "number"
+    && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT");
 }
 
 async function refreshAccessToken(): Promise<string> {
@@ -125,7 +167,7 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "La solicitud no se pudo completar."));
+    throw await createApiRequestError(response, "La solicitud no se pudo completar.");
   }
 
   if (response.status === 204) {
@@ -168,7 +210,7 @@ async function requestBlobDownload(path: string, accessToken: string): Promise<B
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "La solicitud no se pudo completar."));
+    throw await createApiRequestError(response, "La solicitud no se pudo completar.");
   }
 
   return {
@@ -433,7 +475,7 @@ export async function importBook(accessToken: string, payload: FormData) {
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudo importar el libro."));
+    throw await createApiRequestError(response, "No se pudo importar el libro.");
   }
 
   return response.json() as Promise<{ book: BookSummary }>;
@@ -478,7 +520,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudo crear el libro desde imágenes."));
+    throw await createApiRequestError(response, "No se pudo crear el libro desde imágenes.");
   }
 
   return response.json() as Promise<{ book: BookSummary }>;
@@ -507,7 +549,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudieron añadir imágenes al libro."));
+    throw await createApiRequestError(response, "No se pudieron añadir imágenes al libro.");
   }
 
   return response.json() as Promise<{
@@ -524,8 +566,10 @@ export type AppendImagesImportProgress = {
   currentFileIndex: number | null;
   currentFileName: string | null;
   errorMessage: string | null;
-  stage: "ocr" | "saving" | "completed" | "failed";
+  stage: "ocr" | "waiting" | "saving" | "completed" | "failed";
   totalFiles: number;
+  waitMessage: string | null;
+  waitSecondsRemaining: number | null;
 };
 
 export function fetchAppendImagesImportProgress(accessToken: string, progressId: string) {
@@ -695,7 +739,7 @@ export async function requestParagraphAudio(accessToken: string, bookId: string,
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudo generar el audio del párrafo."));
+    throw await createApiRequestError(response, "No se pudo generar el audio del párrafo.");
   }
 
   return response.blob();
@@ -716,7 +760,7 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudo generar el bloque de audio."));
+    throw await createApiRequestError(response, "No se pudo generar el bloque de audio.");
   }
 
   return {
@@ -736,7 +780,7 @@ export async function requestSectionSummaryAudio(accessToken: string, bookId: st
   });
 
   if (!response.ok) {
-    throw new Error(await parseErrorMessage(response, "No se pudo generar el audio del resumen."));
+    throw await createApiRequestError(response, "No se pudo generar el audio del resumen.");
   }
 
   return response.blob();

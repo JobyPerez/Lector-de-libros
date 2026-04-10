@@ -11,7 +11,7 @@ import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
-import { isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
+import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "./rich-content.js";
 import { generateSectionSummary } from "./section-summary.js";
 
@@ -136,8 +136,10 @@ type ImportImagesProgressRecord = {
   currentFileIndex: number | null;
   currentFileName: string | null;
   errorMessage: string | null;
-  stage: "ocr" | "saving" | "completed" | "failed";
+  stage: "ocr" | "waiting" | "saving" | "completed" | "failed";
   totalFiles: number;
+  waitMessage: string | null;
+  waitUntil: number | null;
   updatedAt: number;
   userId: string;
 };
@@ -178,6 +180,13 @@ type StoredSectionSummaryRecord = {
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
 const maximumUploadedImageBytes = 32 * 1024 * 1024;
+const maximumOcrRateLimitRetriesPerFile = 3;
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
 
 function pruneImportImagesProgressStore() {
   const expiresBefore = Date.now() - importImagesProgressTtlMs;
@@ -316,6 +325,14 @@ async function ocrImageFiles(
     currentFileIndex: number;
     currentFileName: string;
     totalFiles: number;
+  }) => void,
+  onWaiting?: (progress: {
+    completedFiles: number;
+    currentFileIndex: number;
+    currentFileName: string;
+    retryAfterSeconds: number;
+    totalFiles: number;
+    waitMessage: string;
   }) => void
 ): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
@@ -328,7 +345,39 @@ async function ocrImageFiles(
       totalFiles: files.length
     });
 
-    const ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
+    let rateLimitRetries = 0;
+    let ocrResult;
+
+    while (true) {
+      try {
+        ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
+        break;
+      } catch (error) {
+        if (!isRateLimitOcrError(error) || rateLimitRetries >= maximumOcrRateLimitRetriesPerFile) {
+          throw error;
+        }
+
+        onWaiting?.({
+          completedFiles: index,
+          currentFileIndex: index,
+          currentFileName: file.fileName,
+          retryAfterSeconds: error.retryAfterSeconds,
+          totalFiles: files.length,
+          waitMessage: error.message
+        });
+
+        await delay(error.retryAfterSeconds * 1000);
+        rateLimitRetries += 1;
+
+        onProgress?.({
+          completedFiles: index,
+          currentFileIndex: index,
+          currentFileName: file.fileName,
+          totalFiles: files.length
+        });
+      }
+    }
+
     pages.push({
       ...file,
       editedText: ocrResult.editedText,
@@ -1213,7 +1262,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         currentFileName: progress.currentFileName,
         errorMessage: progress.errorMessage,
         stage: progress.stage,
-        totalFiles: progress.totalFiles
+        totalFiles: progress.totalFiles,
+        waitMessage: progress.waitMessage,
+        waitSecondsRemaining: progress.waitUntil ? Math.max(Math.ceil((progress.waitUntil - Date.now()) / 1000), 0) : null
       }
     });
   });
@@ -1712,28 +1763,55 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           errorMessage: null,
           stage: "ocr",
           totalFiles: imageFiles.length,
+          waitMessage: null,
+          waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
         });
       }
 
-      const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, (progress) => {
-        if (!progressId) {
-          return;
-        }
+      const processedPages = await ocrImageFiles(
+        imageFiles,
+        payload.ocrMode,
+        (progress) => {
+          if (!progressId) {
+            return;
+          }
 
-        setImportImagesProgress(progressId, {
-          bookId: existingBook.bookId,
-          completedFiles: progress.completedFiles,
-          currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileIndex,
-          currentFileName: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileName,
-          errorMessage: null,
-          stage: "ocr",
-          totalFiles: progress.totalFiles,
-          updatedAt: Date.now(),
-          userId: currentUser.userId
-        });
-      });
+          setImportImagesProgress(progressId, {
+            bookId: existingBook.bookId,
+            completedFiles: progress.completedFiles,
+            currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileIndex,
+            currentFileName: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileName,
+            errorMessage: null,
+            stage: "ocr",
+            totalFiles: progress.totalFiles,
+            waitMessage: null,
+            waitUntil: null,
+            updatedAt: Date.now(),
+            userId: currentUser.userId
+          });
+        },
+        (progress) => {
+          if (!progressId) {
+            return;
+          }
+
+          setImportImagesProgress(progressId, {
+            bookId: existingBook.bookId,
+            completedFiles: progress.completedFiles,
+            currentFileIndex: progress.currentFileIndex,
+            currentFileName: progress.currentFileName,
+            errorMessage: null,
+            stage: "waiting",
+            totalFiles: progress.totalFiles,
+            waitMessage: progress.waitMessage,
+            waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
+            updatedAt: Date.now(),
+            userId: currentUser.userId
+          });
+        }
+      );
 
       const insertionAfterPage = query.afterPage ?? Number(existingBook.totalPages);
       if (insertionAfterPage > Number(existingBook.totalPages)) {
@@ -1753,6 +1831,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           errorMessage: null,
           stage: "saving",
           totalFiles: imageFiles.length,
+          waitMessage: null,
+          waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
         });
@@ -1832,6 +1912,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           errorMessage: null,
           stage: "completed",
           totalFiles: imageFiles.length,
+          waitMessage: null,
+          waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
         });
@@ -1853,6 +1935,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           errorMessage: error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.",
           stage: "failed",
           totalFiles: imageFiles.length,
+          waitMessage: null,
+          waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
         });

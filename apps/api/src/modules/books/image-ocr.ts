@@ -15,6 +15,13 @@ export type OcrPageResult = {
   rawText: string;
 };
 
+export type OcrRateLimitError = Error & {
+  code: "OCR_RATE_LIMIT";
+  retryAfterSeconds: number;
+  retryable: true;
+  statusCode: 429;
+};
+
 type VisionTextAlignment = "center" | "left" | "right";
 
 type VisionBoundingBox = {
@@ -255,6 +262,82 @@ function isContentFilterError(errorMessage: string): boolean {
 
 function isRecoverableVisionInputError(errorMessage: string): boolean {
   return /image_too_large|unsupported image|image size exceeds|below\s+5\s*mb|under\s+5\s*mb|one\s+of\s+the\s+following\s+formats|one\s+the\s+following\s+formats|format\s+is\s+not\s+supported/iu.test(errorMessage);
+}
+
+function isVisionRateLimitError(errorMessage: string): boolean {
+  return /rate\s*limit|too\s+many\s+requests|retry\s+after|please\s+wait\s+\d+\s+seconds?/iu.test(errorMessage);
+}
+
+function parseRetryAfterHeader(retryAfterValue: string | null): number | null {
+  if (!retryAfterValue) {
+    return null;
+  }
+
+  const trimmedValue = retryAfterValue.trim();
+  const numericValue = Number.parseInt(trimmedValue, 10);
+  if (Number.isFinite(numericValue) && numericValue > 0) {
+    return numericValue;
+  }
+
+  const retryDate = Date.parse(trimmedValue);
+  if (Number.isNaN(retryDate)) {
+    return null;
+  }
+
+  return Math.max(1, Math.ceil((retryDate - Date.now()) / 1000));
+}
+
+function extractRetryAfterSecondsFromMessage(errorMessage: string): number | null {
+  const explicitSecondsMatch = errorMessage.match(/please\s+wait\s+(\d+)\s+seconds?/iu);
+  if (explicitSecondsMatch?.[1]) {
+    const seconds = Number.parseInt(explicitSecondsMatch[1], 10);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
+  const retryAfterMatch = errorMessage.match(/retry\s+after\s+(\d+)\s+seconds?/iu);
+  if (retryAfterMatch?.[1]) {
+    const seconds = Number.parseInt(retryAfterMatch[1], 10);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
+  return null;
+}
+
+function normalizeRetryAfterSeconds(retryAfterSeconds: number | null | undefined): number {
+  if (!retryAfterSeconds || !Number.isFinite(retryAfterSeconds)) {
+    return 15;
+  }
+
+  return Math.min(Math.max(Math.ceil(retryAfterSeconds), 1), 300);
+}
+
+function createVisionRateLimitError(providerMessage: string, retryAfterSeconds?: number | null): OcrRateLimitError {
+  const normalizedRetryAfterSeconds = normalizeRetryAfterSeconds(retryAfterSeconds);
+
+  return Object.assign(new Error(
+    `GitHub Models limitó temporalmente el OCR. Reintentando en ${normalizedRetryAfterSeconds} segundos. ${providerMessage}`.trim()
+  ), {
+    code: "OCR_RATE_LIMIT" as const,
+    retryAfterSeconds: normalizedRetryAfterSeconds,
+    retryable: true as const,
+    statusCode: 429 as const
+  });
+}
+
+function extractRetryAfterSeconds(response: Response | null, errorMessage: string): number | null {
+  const headerRetryAfter = parseRetryAfterHeader(response?.headers.get("retry-after") ?? null);
+  if (headerRetryAfter) {
+    return headerRetryAfter;
+  }
+
+  return extractRetryAfterSecondsFromMessage(errorMessage);
+}
+
+export function isRateLimitOcrError(error: unknown): error is OcrRateLimitError {
+  return error instanceof Error
+    && (error as Partial<OcrRateLimitError>).code === "OCR_RATE_LIMIT"
+    && (error as Partial<OcrRateLimitError>).retryable === true
+    && typeof (error as Partial<OcrRateLimitError>).retryAfterSeconds === "number";
 }
 
 function createVisionProviderError(
@@ -582,8 +665,16 @@ async function executeVisionOcrAttempts(
     if (!response.ok) {
       const errorBody = await response.text();
       const errorDetails = extractVisionProviderErrorDetails(errorBody);
-      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
       const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
+
+      if (response.status === 429 || isVisionRateLimitError(normalizedProviderError)) {
+        throw createVisionRateLimitError(
+          errorDetails.message,
+          extractRetryAfterSeconds(response, normalizedProviderError)
+        );
+      }
+
+      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
 
       if (isContentFilterError(normalizedProviderError)) {
         lastError = nextError;
@@ -596,8 +687,16 @@ async function executeVisionOcrAttempts(
     const payload = (await response.json()) as ChatCompletionResponse;
     if (payload.error?.message) {
       const errorDetails = extractVisionProviderErrorDetails(payload.error);
-      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
       const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
+
+      if (isVisionRateLimitError(normalizedProviderError)) {
+        throw createVisionRateLimitError(
+          errorDetails.message,
+          extractRetryAfterSeconds(null, normalizedProviderError)
+        );
+      }
+
+      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
 
       if (isContentFilterError(normalizedProviderError)) {
         lastError = nextError;

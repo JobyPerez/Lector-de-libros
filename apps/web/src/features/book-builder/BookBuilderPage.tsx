@@ -10,6 +10,7 @@ import {
   fetchBookPageImage,
   fetchBooks,
   fetchReaderNavigation,
+  isRetryableRateLimitError,
   rerunOcrPage,
   updateOcrPage,
   type AppendImagesImportProgress,
@@ -284,6 +285,20 @@ function stripReviewHeadingMarker(value: string) {
   return value.replace(reviewHeadingMarkerPattern, "");
 }
 
+type OcrRetryContext = "create" | "review";
+
+type OcrRetryState = {
+  context: OcrRetryContext;
+  secondsRemaining: number;
+};
+
+const maximumClientOcrRateLimitRetries = 3;
+
+function buildOcrRetryCountdownLabel(secondsRemaining: number) {
+  const normalizedSeconds = Math.max(Math.ceil(secondsRemaining), 1);
+  return `GitHub Models limitó temporalmente el OCR. Reintentando automáticamente en ${normalizedSeconds} s.`;
+}
+
 export function BookBuilderPage() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -316,6 +331,7 @@ export function BookBuilderPage() {
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
   const [isRerunningOcr, setIsRerunningOcr] = useState(false);
+  const [ocrRetryState, setOcrRetryState] = useState<OcrRetryState | null>(null);
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
@@ -329,6 +345,8 @@ export function BookBuilderPage() {
   const appendCameraInputRef = useRef<HTMLInputElement | null>(null);
   const appendCameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const appendCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isMountedRef = useRef(true);
+  const ocrRetryIntervalRef = useRef<number | null>(null);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -372,6 +390,18 @@ export function BookBuilderPage() {
     : appendInsertionSide === "before"
       ? Math.max(appendReferencePageNumber - 1, 0)
       : appendReferencePageNumber;
+
+  useEffect(() => {
+    isMountedRef.current = true;
+
+    return () => {
+      isMountedRef.current = false;
+      if (ocrRetryIntervalRef.current !== null) {
+        window.clearInterval(ocrRetryIntervalRef.current);
+        ocrRetryIntervalRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     setAppendInsertionSide("after");
@@ -779,6 +809,67 @@ export function BookBuilderPage() {
       : "Más rápido para páginas limpias. También recorta encabezado y pie antes del OCR.";
   }
 
+  async function waitForOcrRetry(context: OcrRetryContext, retryAfterSeconds: number) {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    let remainingSeconds = Math.max(Math.ceil(retryAfterSeconds), 1);
+    setOcrRetryState({ context, secondsRemaining: remainingSeconds });
+
+    await new Promise<void>((resolve) => {
+      if (ocrRetryIntervalRef.current !== null) {
+        window.clearInterval(ocrRetryIntervalRef.current);
+      }
+
+      ocrRetryIntervalRef.current = window.setInterval(() => {
+        remainingSeconds -= 1;
+
+        if (remainingSeconds <= 0) {
+          if (ocrRetryIntervalRef.current !== null) {
+            window.clearInterval(ocrRetryIntervalRef.current);
+            ocrRetryIntervalRef.current = null;
+          }
+
+          resolve();
+          return;
+        }
+
+        if (isMountedRef.current) {
+          setOcrRetryState({ context, secondsRemaining: remainingSeconds });
+        }
+      }, 1000);
+    });
+
+    if (isMountedRef.current) {
+      setOcrRetryState((currentState) => currentState?.context === context ? null : currentState);
+    }
+  }
+
+  async function runOcrRequestWithRetry<T>(context: OcrRetryContext, action: () => Promise<T>): Promise<T> {
+    let retryCount = 0;
+
+    while (true) {
+      try {
+        const result = await action();
+        if (isMountedRef.current) {
+          setOcrRetryState((currentState) => currentState?.context === context ? null : currentState);
+        }
+        return result;
+      } catch (error) {
+        if (!isRetryableRateLimitError(error) || retryCount >= maximumClientOcrRateLimitRetries) {
+          if (isMountedRef.current) {
+            setOcrRetryState((currentState) => currentState?.context === context ? null : currentState);
+          }
+          throw error;
+        }
+
+        retryCount += 1;
+        await waitForOcrRetry(context, error.retryAfterSeconds ?? 15);
+      }
+    }
+  }
+
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -810,7 +901,7 @@ export function BookBuilderPage() {
         formData.append("images", file);
       }
 
-      const response = await createImageBook(accessToken, formData, { ocrMode: createOcrMode });
+      const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, { ocrMode: createOcrMode }));
       await booksQuery.refetch();
       setReviewBookId(response.book.bookId);
       setReviewPageNumber(1);
@@ -850,7 +941,9 @@ export function BookBuilderPage() {
       currentFileName: selectedAppendFiles[0]?.name ?? null,
       errorMessage: null,
       stage: "ocr",
-      totalFiles: selectedAppendFiles.length
+      totalFiles: selectedAppendFiles.length,
+      waitMessage: null,
+      waitSecondsRemaining: null
     });
 
     try {
@@ -917,7 +1010,7 @@ export function BookBuilderPage() {
 
     try {
       setReviewOcrMode(nextMode);
-      await rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode });
+      await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode }));
       setReviewMessage("El OCR de la página se volvió a reconocer correctamente.");
       await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
@@ -1317,6 +1410,9 @@ export function BookBuilderPage() {
                   ) : null}
 
                   {createError ? <p className="error-text">{createError}</p> : null}
+                  {isCreating && ocrRetryState?.context === "create" ? (
+                    <p aria-live="polite" className="helper-text ocr-waiting-text">{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</p>
+                  ) : null}
 
                   <button className="primary-button" disabled={isCreating} type="submit">
                     {isCreating ? "Procesando OCR..." : "Crear libro desde imágenes"}
@@ -1432,6 +1528,7 @@ export function BookBuilderPage() {
                           "file-pill-removable",
                           isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? "file-pill-completed" : "",
                           isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? "file-pill-processing" : "",
+                          isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? "file-pill-waiting" : "",
                           isAppending && (appendImportProgress?.completedFiles ?? 0) <= index && appendImportProgress?.currentFileIndex !== index ? "file-pill-pending" : ""
                         ].filter(Boolean).join(" ")}
                         key={`${file.name}-${index}`}
@@ -1442,6 +1539,9 @@ export function BookBuilderPage() {
                         ) : null}
                         {isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? (
                           <span className="file-pill-status">OCR...</span>
+                        ) : null}
+                        {isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? (
+                          <span className="file-pill-status">Espera {appendImportProgress.waitSecondsRemaining ?? 0} s</span>
                         ) : null}
                         <button
                           aria-label={`Eliminar ${file.name}`}
@@ -1459,6 +1559,11 @@ export function BookBuilderPage() {
 
                 {isAppending && appendImportProgress?.stage === "saving" ? (
                   <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
+                ) : null}
+                {isAppending && appendImportProgress?.stage === "waiting" ? (
+                  <p aria-live="polite" className="helper-text ocr-waiting-text">
+                    {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)}
+                  </p>
                 ) : null}
 
                 <div className="selected-book-banner append-ocr-banner">
@@ -1486,6 +1591,9 @@ export function BookBuilderPage() {
                 </div>
 
                 {appendError ? <p className="error-text">{appendError}</p> : null}
+                {!appendError && appendImportProgress?.stage === "failed" && appendImportProgress.errorMessage ? (
+                  <p className="error-text">{appendImportProgress.errorMessage}</p>
+                ) : null}
 
                 <button className="secondary-button" disabled={isAppending} type="submit">
                   {isAppending ? "Procesando OCR..." : "Añadir páginas"}
@@ -1602,7 +1710,10 @@ export function BookBuilderPage() {
                     {isRerunningOcr ? (
                       <div aria-live="polite" className="review-image-processing-overlay">
                         <span className="review-processing-spinner" />
-                        <strong>Reconociendo OCR...</strong>
+                        <div className="review-processing-copy">
+                          <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de GitHub Models..." : "Reconociendo OCR..."}</strong>
+                          {ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
+                        </div>
                       </div>
                     ) : null}
                   </div>

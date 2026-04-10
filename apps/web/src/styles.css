@@ -2860,6 +2860,12 @@ textarea {
   z-index: 1;
 }
 
+.file-pill-waiting {
+  background: linear-gradient(135deg, rgba(252, 239, 214, 0.95), rgba(255, 247, 232, 0.98));
+  border-color: rgba(169, 87, 37, 0.18);
+  color: #8b4c23;
+}
+
 .file-pill-completed {
   background: rgba(29, 111, 77, 0.12);
   color: var(--success);
@@ -2873,6 +2879,10 @@ textarea {
 
 .file-pill-processing .file-pill-status {
   animation: file-pill-pulse 1.15s ease-in-out infinite;
+}
+
+.file-pill-waiting .file-pill-status {
+  color: #8b4c23;
 }
 
 .file-pill-status-completed {
@@ -3065,7 +3075,7 @@ textarea {
   inset: auto 1rem 1rem 1rem;
   z-index: 1;
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   gap: 0.7rem;
   padding: 0.85rem 1rem;
@@ -3084,6 +3094,17 @@ textarea {
   border-top-color: var(--forest-700);
   border-radius: 999px;
   animation: review-ocr-spinner 0.8s linear infinite;
+}
+
+.review-processing-copy {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.review-processing-copy span {
+  color: #5d665d;
+  font-size: 0.88rem;
+  line-height: 1.4;
 }
 
 @keyframes review-ocr-image-sheen {
@@ -3182,6 +3203,10 @@ textarea {
 
 .helper-text {
   margin: 0;
+}
+
+.ocr-waiting-text {
+  color: #8b4c23;
 }
 
 .empty-state {
