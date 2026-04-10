@@ -13,6 +13,7 @@ import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizePa
 import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
 import { isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, type ImageOcrMode } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "./rich-content.js";
+import { generateSectionSummary } from "./section-summary.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -50,6 +51,11 @@ const importImagesQuerySchema = z.object({
 
 const bookParamsSchema = z.object({
   bookId: z.string().uuid()
+});
+
+const sectionParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  chapterId: z.string().trim().min(1).max(200)
 });
 
 const updateBookSchema = z.object({
@@ -134,6 +140,39 @@ type ImportImagesProgressRecord = {
   totalFiles: number;
   updatedAt: number;
   userId: string;
+};
+
+type SectionParagraphBoundary = {
+  pageNumber: number;
+  paragraphNumber: number;
+  sequenceNumber: number;
+};
+
+type BookSectionContext = {
+  chapterId: string;
+  endPageNumber: number;
+  endParagraphNumber: number;
+  endSequenceNumber: number;
+  isGenerated: boolean;
+  level: number;
+  startPageNumber: number;
+  startParagraphNumber: number;
+  startSequenceNumber: number;
+  title: string;
+};
+
+type StoredSectionSummaryRecord = {
+  createdAt: string;
+  endPageNumber: number;
+  endParagraphNumber: number;
+  endSequenceNumber: number;
+  sectionTitle: string;
+  startPageNumber: number;
+  startParagraphNumber: number;
+  startSequenceNumber: number;
+  summaryId: string;
+  summaryText: string;
+  updatedAt: string;
 };
 
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
@@ -333,6 +372,172 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
 
   const [book] = (result.rows ?? []) as OwnedBookRecord[];
   return book ?? null;
+}
+
+async function findParagraphBoundary(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number,
+  paragraphNumber: number
+): Promise<SectionParagraphBoundary | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        page_number AS "pageNumber",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+        AND paragraph_number = :paragraphNumber
+    `,
+    {
+      bookId,
+      pageNumber,
+      paragraphNumber
+    }
+  );
+
+  const [boundary] = (result.rows ?? []) as SectionParagraphBoundary[];
+  return boundary ?? null;
+}
+
+async function findLastParagraphBoundary(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  startSequenceNumber?: number,
+  endSequenceNumber?: number
+): Promise<SectionParagraphBoundary | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        page_number AS "pageNumber",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND (:startSequenceNumber IS NULL OR sequence_number >= :startSequenceNumber)
+        AND (:endSequenceNumber IS NULL OR sequence_number <= :endSequenceNumber)
+      ORDER BY sequence_number DESC
+      FETCH FIRST 1 ROWS ONLY
+    `,
+    {
+      bookId,
+      endSequenceNumber: endSequenceNumber ?? null,
+      startSequenceNumber: startSequenceNumber ?? null
+    }
+  );
+
+  const [boundary] = (result.rows ?? []) as SectionParagraphBoundary[];
+  return boundary ?? null;
+}
+
+async function resolveBookSectionContext(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  chapterId: string
+): Promise<BookSectionContext | null> {
+  const outline = await resolveBookOutline(connection, bookId);
+  const sectionIndex = outline.findIndex((entry) => entry.chapterId === chapterId);
+  if (sectionIndex === -1) {
+    return null;
+  }
+
+  const currentSection = outline[sectionIndex];
+  if (!currentSection) {
+    return null;
+  }
+
+  const nextSection = outline[sectionIndex + 1] ?? null;
+  const startBoundary = await findParagraphBoundary(
+    connection,
+    bookId,
+    currentSection.pageNumber,
+    currentSection.paragraphNumber
+  );
+
+  if (!startBoundary) {
+    throw Object.assign(new Error("La entrada del índice no apunta a un párrafo válido del libro."), {
+      statusCode: 409
+    });
+  }
+
+  const nextBoundary = nextSection
+    ? await findParagraphBoundary(connection, bookId, nextSection.pageNumber, nextSection.paragraphNumber)
+    : null;
+
+  if (nextSection && !nextBoundary) {
+    throw Object.assign(new Error("La siguiente entrada del índice no apunta a un párrafo válido del libro."), {
+      statusCode: 409
+    });
+  }
+
+  const fallbackEndBoundary = await findLastParagraphBoundary(connection, bookId, startBoundary.sequenceNumber);
+  if (!fallbackEndBoundary) {
+    throw Object.assign(new Error("El libro no contiene párrafos para resolver el rango de la sección."), {
+      statusCode: 409
+    });
+  }
+
+  const endSequenceNumber = nextBoundary
+    ? Math.max(startBoundary.sequenceNumber, nextBoundary.sequenceNumber - 1)
+    : fallbackEndBoundary.sequenceNumber;
+  const endBoundary = await findLastParagraphBoundary(connection, bookId, startBoundary.sequenceNumber, endSequenceNumber);
+
+  if (!endBoundary) {
+    throw Object.assign(new Error("No se pudo determinar el final de la sección."), {
+      statusCode: 409
+    });
+  }
+
+  return {
+    chapterId: currentSection.chapterId,
+    endPageNumber: endBoundary.pageNumber,
+    endParagraphNumber: endBoundary.paragraphNumber,
+    endSequenceNumber: endBoundary.sequenceNumber,
+    isGenerated: currentSection.isGenerated,
+    level: currentSection.level,
+    startPageNumber: startBoundary.pageNumber,
+    startParagraphNumber: startBoundary.paragraphNumber,
+    startSequenceNumber: startBoundary.sequenceNumber,
+    title: currentSection.title
+  };
+}
+
+async function findStoredSectionSummary(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  chapterId: string,
+  userId: string
+): Promise<StoredSectionSummaryRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        summary_id AS "summaryId",
+        section_title AS "sectionTitle",
+        start_page_number AS "startPageNumber",
+        end_page_number AS "endPageNumber",
+        start_paragraph_number AS "startParagraphNumber",
+        end_paragraph_number AS "endParagraphNumber",
+        start_sequence_number AS "startSequenceNumber",
+        end_sequence_number AS "endSequenceNumber",
+        summary_text AS "summaryText",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM user_book_section_summaries
+      WHERE book_id = :bookId
+        AND chapter_id = :chapterId
+        AND user_id = :userId
+    `,
+    {
+      bookId,
+      chapterId,
+      userId
+    }
+  );
+
+  const [summary] = (result.rows ?? []) as StoredSectionSummaryRecord[];
+  return summary ?? null;
 }
 
 async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, pageNumber: number): Promise<BookPageRecord | null> {
@@ -2101,6 +2306,191 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       await connection.commit();
 
       return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const storedSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+      const isStale = Boolean(storedSummary) && (
+        storedSummary?.startSequenceNumber !== section.startSequenceNumber
+        || storedSummary?.endSequenceNumber !== section.endSequenceNumber
+        || storedSummary?.sectionTitle !== section.title
+      );
+
+      return reply.send({
+        section,
+        summary: storedSummary
+          ? {
+              createdAt: storedSummary.createdAt,
+              isStale,
+              summaryId: storedSummary.summaryId,
+              summaryText: storedSummary.summaryText,
+              updatedAt: storedSummary.updatedAt
+            }
+          : null
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const paragraphsResult = await connection.execute(
+        `
+          SELECT
+            paragraph_text AS "paragraphText"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
+          ORDER BY sequence_number ASC
+        `,
+        {
+          bookId: params.bookId,
+          endSequenceNumber: section.endSequenceNumber,
+          startSequenceNumber: section.startSequenceNumber
+        }
+      );
+
+      const paragraphs = ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+      if (paragraphs.length === 0) {
+        return reply.status(422).send({ message: "La sección no tiene texto suficiente para resumirse." });
+      }
+
+      const summaryText = await generateSectionSummary(section.title, paragraphs);
+      const existingSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+
+      if (existingSummary) {
+        await connection.execute(
+          `
+            UPDATE user_book_section_summaries
+            SET
+              section_title = :sectionTitle,
+              start_page_number = :startPageNumber,
+              end_page_number = :endPageNumber,
+              start_paragraph_number = :startParagraphNumber,
+              end_paragraph_number = :endParagraphNumber,
+              start_sequence_number = :startSequenceNumber,
+              end_sequence_number = :endSequenceNumber,
+              summary_text = :summaryText
+            WHERE summary_id = :summaryId
+          `,
+          {
+            endPageNumber: section.endPageNumber,
+            endParagraphNumber: section.endParagraphNumber,
+            endSequenceNumber: section.endSequenceNumber,
+            sectionTitle: section.title,
+            startPageNumber: section.startPageNumber,
+            startParagraphNumber: section.startParagraphNumber,
+            startSequenceNumber: section.startSequenceNumber,
+            summaryId: existingSummary.summaryId,
+            summaryText
+          }
+        );
+      } else {
+        await connection.execute(
+          `
+            INSERT INTO user_book_section_summaries (
+              summary_id,
+              user_id,
+              book_id,
+              chapter_id,
+              section_title,
+              start_page_number,
+              end_page_number,
+              start_paragraph_number,
+              end_paragraph_number,
+              start_sequence_number,
+              end_sequence_number,
+              summary_text
+            ) VALUES (
+              :summaryId,
+              :userId,
+              :bookId,
+              :chapterId,
+              :sectionTitle,
+              :startPageNumber,
+              :endPageNumber,
+              :startParagraphNumber,
+              :endParagraphNumber,
+              :startSequenceNumber,
+              :endSequenceNumber,
+              :summaryText
+            )
+          `,
+          {
+            bookId: params.bookId,
+            chapterId: params.chapterId,
+            endPageNumber: section.endPageNumber,
+            endParagraphNumber: section.endParagraphNumber,
+            endSequenceNumber: section.endSequenceNumber,
+            sectionTitle: section.title,
+            startPageNumber: section.startPageNumber,
+            startParagraphNumber: section.startParagraphNumber,
+            startSequenceNumber: section.startSequenceNumber,
+            summaryId: randomUUID(),
+            summaryText,
+            userId: request.currentUser.userId
+          }
+        );
+      }
+
+      await connection.commit();
+
+      const storedSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+
+      return reply.send({
+        section,
+        summary: storedSummary
+          ? {
+              createdAt: storedSummary.createdAt,
+              isStale: false,
+              summaryId: storedSummary.summaryId,
+              summaryText: storedSummary.summaryText,
+              updatedAt: storedSummary.updatedAt
+            }
+          : null
+      });
     } catch (error) {
       await connection.rollback();
       throw error;

@@ -8,6 +8,7 @@ import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
+import { SectionSummaryPage } from "../features/reader/SectionSummaryPage";
 import { ResetPasswordPage } from "../features/auth/ResetPasswordPage";
 import { ShelfPage } from "../features/shelf/ShelfPage";
 import { UsersAdminPage } from "../features/users/UsersAdminPage";
@@ -203,6 +204,7 @@ export function AppRouter() {
           <Route element={<ProtectedShell />}>
             <Route path="/" element={<ShelfPage />} />
             <Route path="/books/:bookId" element={<ReaderPage />} />
+            <Route path="/books/:bookId/sections/:chapterId/summary" element={<SectionSummaryPage />} />
             <Route path="/builder" element={<BookBuilderPage />} />
             <Route element={<AdminOnlyRoute />}>
               <Route path="/users" element={<UsersAdminPage />} />

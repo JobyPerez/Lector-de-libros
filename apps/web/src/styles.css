@@ -2158,6 +2158,42 @@ textarea {
   background: transparent;
 }
 
+.reader-navigation-item-toc-card {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  gap: 0.5rem;
+}
+
+.reader-navigation-item-toc-card.active {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.reader-navigation-item-toc-card .reader-navigation-item {
+  padding: 0.8rem 0.95rem;
+  padding-left: calc(0.95rem + (var(--toc-level, 0) * 0.75rem));
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  background: rgba(255, 253, 247, 0.88);
+}
+
+.reader-navigation-item-toc-card .reader-navigation-item.active {
+  border-color: rgba(169, 87, 37, 0.2);
+  background: linear-gradient(180deg, rgba(252, 241, 223, 0.7), rgba(255, 252, 247, 0.94));
+  box-shadow: inset 3px 0 0 rgba(169, 87, 37, 0.26);
+}
+
+.reader-navigation-summary-link {
+  text-decoration: none;
+}
+
+.reader-navigation-summary-link svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
 .reader-navigation-item strong,
 .reader-note-jump strong {
   font-size: 0.96rem;
@@ -2238,6 +2274,138 @@ textarea {
 .reader-note-icon-button svg {
   width: 0.95rem;
   height: 0.95rem;
+}
+
+.reader-section-summary-page {
+  width: min(64rem, 100%);
+  display: grid;
+  gap: 1.3rem;
+  margin: 0 auto;
+  padding: 1rem 0 8rem;
+}
+
+.reader-section-summary-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1.1rem;
+  padding: clamp(1.2rem, 2vw, 1.6rem);
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top left, rgba(217, 164, 92, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(255, 249, 240, 0.98), rgba(255, 252, 247, 0.94));
+  box-shadow: 0 18px 42px rgba(52, 32, 16, 0.1);
+}
+
+.reader-section-summary-hero-main {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.reader-section-summary-hero-main h2 {
+  margin: 0;
+}
+
+.reader-section-summary-intro {
+  margin: 0;
+  max-width: 52rem;
+  color: #4d564f;
+  line-height: 1.6;
+}
+
+.reader-section-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.reader-section-summary-meta span,
+.reader-section-summary-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(42, 87, 66, 0.08);
+  color: var(--forest-800);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.reader-section-summary-badge.warning {
+  background: rgba(186, 102, 45, 0.14);
+  color: #8b4c23;
+}
+
+.reader-section-summary-actions {
+  display: grid;
+  align-content: start;
+  gap: 0.7rem;
+}
+
+.reader-section-summary-link,
+.reader-section-summary-generate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 3rem;
+}
+
+.reader-section-summary-link svg,
+.reader-section-summary-generate svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.reader-section-summary-panel {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.reader-section-summary-empty {
+  min-height: 14rem;
+  align-content: center;
+}
+
+.reader-section-summary-empty h3,
+.reader-section-summary-card h3 {
+  margin: 0;
+}
+
+.reader-section-summary-card {
+  padding: 1.3rem;
+}
+
+.reader-section-summary-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.reader-section-summary-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+}
+
+.reader-section-summary-copy {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.reader-section-summary-copy p {
+  margin: 0;
+  color: #2c241b;
+  font-size: 1rem;
+  line-height: 1.8;
+}
+
+.reader-section-summary-floating-controls {
+  width: min(42rem, calc(100vw - 2rem));
 }
 
 .reader-note-editor {
@@ -3305,6 +3473,37 @@ textarea {
     gap: 0.85rem;
   }
 
+  .reader-section-summary-page {
+    padding-bottom: 8.5rem;
+  }
+
+  .reader-section-summary-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reader-section-summary-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reader-section-summary-link,
+  .reader-section-summary-generate {
+    width: 100%;
+  }
+
+  .reader-section-summary-floating-controls {
+    width: calc(100vw - 1rem);
+  }
+
+
+@media (min-width: 601px) and (max-width: 900px) {
+  .reader-section-summary-hero {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reader-section-summary-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
   .reader-layout .reader-paragraph {
     padding-inline: 0.18rem;
   }

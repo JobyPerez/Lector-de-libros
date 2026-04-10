@@ -38,6 +38,11 @@ const ttsBlockRequestSchema = z.object({
   voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
 });
 
+const sectionSummaryTtsParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  chapterId: z.string().trim().min(1).max(200)
+});
+
 function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
@@ -617,6 +622,55 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     } catch (error) {
       await connection.rollback();
       throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/books/:bookId/sections/:chapterId/summary/tts", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionSummaryTtsParamsSchema.parse(request.params);
+    const payload = z.object({
+      voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
+    }).parse(request.body);
+    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            uss.summary_text AS "summaryText"
+          FROM user_book_section_summaries uss
+          JOIN books b
+            ON b.book_id = uss.book_id
+          WHERE uss.book_id = :bookId
+            AND uss.chapter_id = :chapterId
+            AND uss.user_id = :userId
+            AND b.owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          chapterId: params.chapterId,
+          ownerUserId: request.currentUser.userId,
+          userId: request.currentUser.userId
+        }
+      );
+
+      const [summary] = (result.rows ?? []) as Array<{ summaryText: string }>;
+      if (!summary?.summaryText?.trim()) {
+        return reply.status(404).send({ message: "Summary not found." });
+      }
+
+      const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel);
+
+      return reply
+        .header("Content-Type", synthesizedAudio.contentType)
+        .header("Cache-Control", "private, max-age=3600")
+        .send(synthesizedAudio.audioBuffer);
     } finally {
       await connection.close();
     }

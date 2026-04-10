@@ -313,6 +313,32 @@ export type ReaderNavigationSummary = {
   toc: ReaderTocEntry[];
 };
 
+export type SectionSummarySection = {
+  chapterId: string;
+  endPageNumber: number;
+  endParagraphNumber: number;
+  endSequenceNumber: number;
+  isGenerated: boolean;
+  level: number;
+  startPageNumber: number;
+  startParagraphNumber: number;
+  startSequenceNumber: number;
+  title: string;
+};
+
+export type SectionSummaryRecord = {
+  createdAt: string;
+  isStale: boolean;
+  summaryId: string;
+  summaryText: string;
+  updatedAt: string;
+};
+
+export type SectionSummaryResponse = {
+  section: SectionSummarySection;
+  summary: SectionSummaryRecord | null;
+};
+
 export type BookPageResponse = {
   book: BookSummary & { synopsis?: string | null };
   hasNextPage: boolean;
@@ -540,6 +566,18 @@ export function fetchBookOutline(accessToken: string, bookId: string) {
   return request<{ outline: BookOutlineEntry[] }>(`/books/${bookId}/outline`, { accessToken });
 }
 
+export function fetchSectionSummary(accessToken: string, bookId: string, chapterId: string) {
+  return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, { accessToken });
+}
+
+export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string) {
+  return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, {
+    accessToken,
+    body: {},
+    method: "POST"
+  });
+}
+
 export function updateBookOutline(accessToken: string, bookId: string, payload: { entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">> }) {
   return request<void>(`/books/${bookId}/outline`, {
     accessToken,
@@ -685,6 +723,23 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
     blob: await response.blob(),
     paragraphs: parseAudioBlockParagraphs(response)
   };
+}
+
+export async function requestSectionSummaryAudio(accessToken: string, bookId: string, chapterId: string, options: ReaderAudioOptions = {}) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary/tts`, {
+    accessToken,
+    body: JSON.stringify({ voiceModel: options.voiceModel }),
+    fallbackMessage: "No se pudo generar el audio del resumen.",
+    headers: createHeaders({ accessToken, contentType: "application/json" }),
+    method: "POST",
+    signal: options.signal
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorMessage(response, "No se pudo generar el audio del resumen."));
+  }
+
+  return response.blob();
 }
 
 export function fetchDeepgramBalance(accessToken: string) {

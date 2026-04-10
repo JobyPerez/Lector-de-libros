@@ -27,6 +27,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPopover, ReaderNavigationTocCard } from "./ReaderFloatingPanels";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
@@ -137,6 +138,7 @@ type ActiveAudioBlock = {
 
 type NavigationListItem =
   | {
+  chapterId: string | null;
       isActive: boolean;
       key: string;
       level: number;
@@ -175,6 +177,39 @@ type NavigationListItem =
       paragraphNumber: number;
       type: "note";
     };
+
+function excerptPreview(value: string | null | undefined, fallback: string) {
+  const normalizedValue = value?.replace(/\s+/gu, " ").trim();
+  if (!normalizedValue) {
+    return fallback;
+  }
+
+  return normalizedValue.length > 120 ? `${normalizedValue.slice(0, 117).trimEnd()}...` : normalizedValue;
+}
+
+function tocEntryKey(entry: ReaderTocEntry) {
+  return entry.chapterId ?? `${entry.pageNumber}:${entry.paragraphNumber}:${entry.sequenceNumber ?? "na"}:${entry.title}`;
+}
+
+function notePreview(note: Pick<ReaderNote, "highlightedText" | "noteText">) {
+  return excerptPreview(note.highlightedText ?? note.noteText, "Nota sin extracto");
+}
+
+function highlightPreview(highlight: Pick<ReaderHighlight, "highlightedText">) {
+  return excerptPreview(highlight.highlightedText, "Resaltado sin texto");
+}
+
+function formatPageAnchor(pageNumber: number) {
+  return `Pág. ${pageNumber}`;
+}
+
+function formatRelativeAnchor(pageNumber: number, paragraphNumber: number) {
+  return `Pág. ${pageNumber} · párr. ${paragraphNumber}`;
+}
+
+function sectionSummaryHref(bookId: string, targetChapterId: string) {
+  return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/summary`;
+}
 
 type PersistedParagraphProgress = Pick<ParagraphContent, "paragraphNumber" | "sequenceNumber">;
 
@@ -466,6 +501,45 @@ function ParagraphNextIcon() {
   );
 }
 
+function ShelfIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M18.5 12H7.75" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M11.75 7.5L7.25 12L11.75 16.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function AddPagesIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M12 6.75V17.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M6.75 12H17.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function OriginalPageIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M4.75 19.25L8.35 18.45L17.55 9.25C18.12 8.68 18.12 7.76 17.55 7.19L16.81 6.45C16.24 5.88 15.32 5.88 14.75 6.45L5.55 15.65L4.75 19.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.9 7.3L16.7 10.1" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
+function DeletePageIcon() {
+  return (
+    <ReaderControlIcon>
+      <path d="M8 7.25H16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 7.25V5.75C9 5.34 9.34 5 9.75 5H14.25C14.66 5 15 5.34 15 5.75V7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M7.25 7.25L8 18.25C8.03 18.67 8.38 19 8.8 19H15.2C15.62 19 15.97 18.67 16 18.25L16.75 7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10.25 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.75 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
 function PlayIcon() {
   return (
     <ReaderControlIcon>
@@ -493,19 +567,6 @@ function PauseIcon() {
   );
 }
 
-function AudioSettingsIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M5 8.5H11" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M5 15.5H8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M13 15.5H19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M16 8.5H19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <circle cx="13" cy="8.5" fill="currentColor" r="1.6" />
-      <circle cx="10" cy="15.5" fill="currentColor" r="1.6" />
-    </ReaderControlIcon>
-  );
-}
-
 function BookmarkIcon() {
   return (
     <ReaderControlIcon>
@@ -518,17 +579,6 @@ function BookmarkOutlineIcon() {
   return (
     <ReaderControlIcon>
       <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-    </ReaderControlIcon>
-  );
-}
-
-function NavigationIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M5.5 7.25H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M5.5 12H18.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M5.5 16.75H14.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <circle cx="17.5" cy="16.75" fill="currentColor" r="1.2" />
     </ReaderControlIcon>
   );
 }
@@ -616,241 +666,75 @@ function buildTextSegments(
   return segments;
 }
 
-function applyHighlightsToRichParagraph(paragraphElement: HTMLElement, highlights: ReaderHighlight[]) {
+function applyHighlightsToRichParagraph(
+  paragraphNode: HTMLElement,
+  highlights: Array<Pick<ReaderHighlight, "charEnd" | "charStart" | "color" | "highlightId">>
+) {
   if (highlights.length === 0) {
     return;
   }
 
-  const ownerDocument = paragraphElement.ownerDocument;
+  const orderedHighlights = [...highlights].sort((left, right) => left.charStart - right.charStart || left.charEnd - right.charEnd);
   const textNodes: Text[] = [];
-  const walker = ownerDocument.createTreeWalker(paragraphElement, NodeFilter.SHOW_TEXT);
-  let nextNode = walker.nextNode();
+  const walker = paragraphNode.ownerDocument.createTreeWalker(paragraphNode, NodeFilter.SHOW_TEXT);
 
-  while (nextNode) {
-    if (nextNode.textContent) {
-      textNodes.push(nextNode as Text);
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode instanceof Text && currentNode.data.length > 0) {
+      textNodes.push(currentNode);
     }
-
-    nextNode = walker.nextNode();
+    currentNode = walker.nextNode();
   }
 
-  let cursor = 0;
+  let paragraphOffset = 0;
 
   for (const textNode of textNodes) {
-    const textValue = textNode.data;
-    const nodeStart = cursor;
-    const nodeEnd = cursor + textValue.length;
-    const localHighlights = highlights
-      .filter((highlight) => highlight.charStart < nodeEnd && highlight.charEnd > nodeStart)
-      .map((highlight) => ({
-        charEnd: Math.min(textValue.length, highlight.charEnd - nodeStart),
-        charStart: Math.max(0, highlight.charStart - nodeStart),
-        color: highlight.color,
-        highlightId: highlight.highlightId
-      }));
+    const textContent = textNode.data;
+    const nodeStart = paragraphOffset;
+    const nodeEnd = nodeStart + textContent.length;
+    paragraphOffset = nodeEnd;
 
-    if (localHighlights.length > 0) {
-      const fragment = ownerDocument.createDocumentFragment();
-      const segments = buildTextSegments(textValue, localHighlights);
-
-      for (const segment of segments) {
-        if (!segment.highlight) {
-          fragment.append(ownerDocument.createTextNode(segment.text));
-          continue;
-        }
-
-        const span = ownerDocument.createElement("span");
-        span.className = highlightClassName(segment.highlight.color);
-        span.dataset.highlightId = segment.highlight.highlightId;
-        span.textContent = segment.text;
-        fragment.append(span);
-      }
-
-      textNode.parentNode?.replaceChild(fragment, textNode);
+    const overlappingHighlights = orderedHighlights.filter((highlight) => highlight.charStart < nodeEnd && highlight.charEnd > nodeStart);
+    if (overlappingHighlights.length === 0) {
+      continue;
     }
 
-    cursor = nodeEnd;
+    const boundaries = new Set<number>([0, textContent.length]);
+    for (const highlight of overlappingHighlights) {
+      boundaries.add(Math.max(0, highlight.charStart - nodeStart));
+      boundaries.add(Math.min(textContent.length, highlight.charEnd - nodeStart));
+    }
+
+    const orderedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
+    const fragment = paragraphNode.ownerDocument.createDocumentFragment();
+
+    for (let index = 0; index < orderedBoundaries.length - 1; index += 1) {
+      const segmentStart = orderedBoundaries[index] ?? 0;
+      const segmentEnd = orderedBoundaries[index + 1] ?? 0;
+      if (segmentEnd <= segmentStart) {
+        continue;
+      }
+
+      const segmentText = textContent.slice(segmentStart, segmentEnd);
+      const matchingHighlight = [...overlappingHighlights]
+        .reverse()
+        .find((highlight) => highlight.charStart < nodeStart + segmentEnd && highlight.charEnd > nodeStart + segmentStart)
+        ?? null;
+
+      if (!matchingHighlight) {
+        fragment.append(segmentText);
+        continue;
+      }
+
+      const highlightElement = paragraphNode.ownerDocument.createElement("span");
+      highlightElement.className = highlightClassName(matchingHighlight.color);
+      highlightElement.dataset.highlightId = matchingHighlight.highlightId;
+      highlightElement.textContent = segmentText;
+      fragment.append(highlightElement);
+    }
+
+    textNode.replaceWith(fragment);
   }
-}
-
-function findParagraphElement(target: Node | null): HTMLElement | null {
-  if (!target) {
-    return null;
-  }
-
-  if (target instanceof HTMLElement) {
-    return target.closest<HTMLElement>("[data-paragraph-id]");
-  }
-
-  return target.parentElement?.closest<HTMLElement>("[data-paragraph-id]") ?? null;
-}
-
-function buildSelectionDraft(
-  selection: Selection,
-  paragraphsById: Map<string, ParagraphContent>,
-  container: HTMLElement
-): SelectionDraft | null {
-  if (selection.rangeCount === 0 || selection.isCollapsed) {
-    return null;
-  }
-
-  const range = selection.getRangeAt(0);
-  if (!container.contains(range.commonAncestorContainer)) {
-    return null;
-  }
-
-  const startParagraphElement = findParagraphElement(range.startContainer);
-  const endParagraphElement = findParagraphElement(range.endContainer);
-  if (!startParagraphElement || !endParagraphElement || startParagraphElement !== endParagraphElement) {
-    return null;
-  }
-
-  const paragraphId = startParagraphElement.dataset.paragraphId;
-  if (!paragraphId) {
-    return null;
-  }
-
-  const paragraph = paragraphsById.get(paragraphId);
-  if (!paragraph) {
-    return null;
-  }
-
-  const startRange = document.createRange();
-  startRange.selectNodeContents(startParagraphElement);
-  startRange.setEnd(range.startContainer, range.startOffset);
-
-  const endRange = document.createRange();
-  endRange.selectNodeContents(startParagraphElement);
-  endRange.setEnd(range.endContainer, range.endOffset);
-
-  const charStart = startRange.toString().length;
-  const charEnd = endRange.toString().length;
-  const selectedText = selection.toString().trim();
-  const rect = range.getBoundingClientRect();
-
-  if (charEnd <= charStart || !selectedText || rect.width === 0) {
-    return null;
-  }
-
-  const popoverLayout = resolveReaderPopoverLayout(rect);
-
-  return {
-    charEnd,
-    charStart,
-    paragraph,
-    rect: {
-      left: popoverLayout.left,
-      maxHeight: popoverLayout.maxHeight,
-      placement: popoverLayout.placement,
-      top: popoverLayout.top
-    },
-    selectedText
-  };
-}
-
-function formatRelativeAnchor(pageNumber: number, paragraphNumber: number | null | undefined) {
-  return paragraphNumber ? `Pág. ${pageNumber} · párr. ${paragraphNumber}` : `Pág. ${pageNumber}`;
-}
-
-function formatPageAnchor(pageNumber: number) {
-  return `Pág. ${pageNumber}`;
-}
-
-function notePreview(note: ReaderNote) {
-  const sourceExcerpt = note.highlightedText?.trim();
-  if (sourceExcerpt) {
-    return sourceExcerpt;
-  }
-
-  return note.noteText;
-}
-
-function highlightPreview(highlight: ReaderHighlight) {
-  return highlight.highlightedText.trim();
-}
-
-function clamp(value: number, minimum: number, maximum: number) {
-  return Math.min(Math.max(value, minimum), maximum);
-}
-
-function resolveReaderPopoverLayout(anchorRect: DOMRect) {
-  const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
-  const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
-  const anchorCenter = anchorRect.left + (anchorRect.width / 2);
-  const minLeft = (READER_POPOVER_WIDTH_ESTIMATE_PX / 2) + READER_POPOVER_VIEWPORT_MARGIN_PX;
-  const maxLeft = viewportWidth > 0
-    ? Math.max(minLeft, viewportWidth - minLeft)
-    : anchorCenter;
-  const left = viewportWidth > 0
-    ? clamp(anchorCenter, minLeft, maxLeft)
-    : anchorCenter;
-
-  if (viewportHeight <= 0) {
-    return {
-      left,
-      maxHeight: READER_POPOVER_HEIGHT_ESTIMATE_PX,
-      placement: "below" as const,
-      top: anchorRect.bottom
-    };
-  }
-
-  const spaceAbove = Math.max(0, anchorRect.top - READER_POPOVER_VIEWPORT_MARGIN_PX - READER_POPOVER_GAP_PX);
-  const spaceBelow = Math.max(0, viewportHeight - anchorRect.bottom - READER_POPOVER_VIEWPORT_MARGIN_PX - READER_POPOVER_GAP_PX);
-  const placement = spaceBelow > spaceAbove ? "below" as const : "above" as const;
-  const maxHeight = placement === "below" ? spaceBelow : spaceAbove;
-
-  return {
-    left,
-    maxHeight,
-    placement,
-    top: placement === "below"
-      ? anchorRect.bottom
-      : Math.max(READER_POPOVER_VIEWPORT_MARGIN_PX + READER_POPOVER_GAP_PX, anchorRect.top)
-  };
-}
-
-function tocEntryKey(entry: ReaderTocEntry) {
-  return `${entry.pageNumber}:${entry.paragraphNumber}:${entry.title}`;
-}
-
-function AddPagesIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M12 7V17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M7 12H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-    </ReaderControlIcon>
-  );
-}
-
-function DeletePageIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M6.5 8H17.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M9.5 4.75H14.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M8 8V17C8 18.1046 8.89543 19 10 19H14C15.1046 19 16 18.1046 16 17V8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M10.5 10.5V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
-      <path d="M13.5 10.5V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.7" />
-    </ReaderControlIcon>
-  );
-}
-
-function ShelfIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-    </ReaderControlIcon>
-  );
-}
-
-function OriginalPageIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M5.75 18.25L9.25 17.5L17.9 8.85C18.4858 8.26421 18.4858 7.31446 17.9 6.72868L17.2713 6.1C16.6855 5.51421 15.7358 5.51421 15.15 6.1L6.5 14.75L5.75 18.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M14.5 6.75L17.25 9.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M9 17.5L6.5 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-    </ReaderControlIcon>
-  );
 }
 
 export function ReaderPage() {
@@ -1445,6 +1329,7 @@ export function ReaderPage() {
 
   const orderedNavigationItems = useMemo<NavigationListItem[]>(() => {
     const tocItems: NavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
+      chapterId: entry.chapterId ?? null,
       isActive: activeTocEntryKey === tocEntryKey(entry),
       key: `toc:${tocEntryKey(entry)}`,
       level: entry.level,
@@ -3361,13 +3246,15 @@ export function ReaderPage() {
     });
   }
 
+  const bookTitle = pageQuery.data?.book.title ?? "Cargando libro...";
+
   return (
     <div className="page-grid reader-layout reader-floating-layout">
       <section className="panel wide-panel">
         <div className="panel-header">
           <div>
             <p className="eyebrow">Lectura</p>
-            <h2>{pageQuery.data?.book.title ?? "Cargando libro..."}</h2>
+            <h2>{bookTitle}</h2>
           </div>
           <div className="reader-header-actions">
             <Link aria-label="Volver a la estantería" className="secondary-button link-button reader-header-icon-button" title="Volver a la estantería" to="/">
@@ -3433,275 +3320,6 @@ export function ReaderPage() {
           </div>
         </div>
       </section>
-
-      {isNavigationPanelRendered ? (
-        <aside aria-label="Índice, marcadores y notas" className="reader-navigation-panel" data-state={isNavigationPanelVisible ? "open" : "closed"} ref={navigationPanelRef}>
-          <div className="reader-navigation-header">
-            <div>
-              <h3>Índice y notas</h3>
-            </div>
-            <button
-              aria-label="Cerrar panel de navegación"
-              className="reader-icon-ghost"
-              onClick={closeNavigationPanel}
-              type="button"
-            >
-              <CloseIcon />
-            </button>
-          </div>
-
-          <section className="reader-navigation-section">
-            {orderedNavigationItems.length ? (
-              <div className="reader-navigation-list">
-                {orderedNavigationItems.map((item) => {
-                  if (item.type === "toc") {
-                    return (
-                      <button
-                        className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
-                        key={item.key}
-                        onClick={() => {
-                          void goToLocation(item.pageNumber, item.paragraphNumber);
-                          closeNavigationPanel();
-                        }}
-                        ref={item.isActive
-                          ? (element) => {
-                              activeNavigationItemRef.current = element;
-                            }
-                          : undefined}
-                        style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as CSSProperties}
-                        type="button"
-                      >
-                        <div className="reader-navigation-item-topline">
-                          <strong>{item.title}</strong>
-                          <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
-                        </div>
-                      </button>
-                    );
-                  }
-
-                  if (item.type === "bookmark") {
-                    return (
-                      <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
-                        <button
-                          className="reader-navigation-item reader-navigation-item-bookmark"
-                          onClick={() => {
-                            void goToLocation(item.pageNumber, item.paragraphNumber);
-                            closeNavigationPanel();
-                          }}
-                          ref={item.isActive
-                            ? (element) => {
-                                activeNavigationItemRef.current = element;
-                              }
-                            : undefined}
-                          type="button"
-                        >
-                          <div className="reader-navigation-item-topline">
-                            <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
-                            <strong>{item.title}</strong>
-                            <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
-                          </div>
-                        </button>
-                        <div className="reader-note-actions">
-                          <button
-                            aria-label="Borrar marcador"
-                            className="reader-note-delete"
-                            onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
-                            title="Borrar marcador"
-                            type="button"
-                          >
-                            <DeletePageIcon />
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  }
-
-                  if (item.type === "highlight") {
-                    const isHighlightEditing = editingNavigationHighlightId === item.highlightId;
-
-                    return (
-                      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-                        <button
-                          className="reader-note-jump"
-                          onClick={() => {
-                            void goToLocation(item.pageNumber, item.paragraphNumber);
-                            closeNavigationPanel();
-                          }}
-                          ref={item.isActive
-                            ? (element) => {
-                                activeNavigationItemRef.current = element;
-                              }
-                            : undefined}
-                          type="button"
-                        >
-                          <div className="reader-navigation-item-topline">
-                            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                            <strong>{item.excerpt}</strong>
-                            <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
-                          </div>
-                        </button>
-                        <div className="reader-note-actions">
-                          <button
-                            aria-label="Añadir nota al resaltado"
-                            className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-                            onClick={() => beginNavigationHighlightEditing(item.highlightId)}
-                            title="Añadir nota"
-                            type="button"
-                          >
-                            <EditIcon />
-                          </button>
-                          <button
-                            aria-label="Borrar resaltado"
-                            className="reader-note-delete"
-                            onClick={() => void handleDeleteSavedHighlight(item.highlightId)}
-                            title="Borrar resaltado"
-                            type="button"
-                          >
-                            <DeletePageIcon />
-                          </button>
-                        </div>
-                        {isHighlightEditing ? (
-                          <div className="reader-note-editor">
-                            <label className="reader-note-composer compact">
-                              <textarea
-                                onChange={(event) => setEditingNavigationHighlightText(event.target.value)}
-                                rows={4}
-                                value={editingNavigationHighlightText}
-                              />
-                            </label>
-                            <div className="reader-note-editor-actions">
-                              <button
-                                aria-label="Cancelar edición del resaltado"
-                                className="reader-note-icon-button"
-                                onClick={() => {
-                                  setEditingNavigationHighlightId(null);
-                                  setEditingNavigationHighlightText("");
-                                }}
-                                title="Cancelar"
-                                type="button"
-                              >
-                                <CloseIcon />
-                              </button>
-                              <button
-                                aria-label="Guardar nota del resaltado"
-                                className="reader-note-icon-button primary"
-                                disabled={isUpdatingNote || !editingNavigationHighlightText.trim()}
-                                onClick={() => void handleCreateNoteForHighlight(item.highlightId, editingNavigationHighlightText, "navigation")}
-                                title="Guardar nota"
-                                type="button"
-                              >
-                                <SaveIcon />
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  }
-
-                  const isNoteExpanded = expandedNavigationNoteId === item.noteId;
-                  const isNoteEditing = editingNavigationNoteId === item.noteId;
-                  const hasNoteText = item.noteText.trim().length > 0;
-
-                  return (
-                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-                      <button
-                        className="reader-note-jump"
-                        onClick={() => {
-                          void goToLocation(item.pageNumber, item.paragraphNumber);
-                          closeNavigationPanel();
-                        }}
-                        ref={item.isActive
-                          ? (element) => {
-                              activeNavigationItemRef.current = element;
-                            }
-                          : undefined}
-                        type="button"
-                      >
-                        <div className="reader-navigation-item-topline">
-                          <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                          <strong>{item.excerpt}</strong>
-                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
-                        </div>
-                      </button>
-                      <div className="reader-note-actions">
-                        {hasNoteText ? (
-                          <button
-                            aria-expanded={isNoteExpanded}
-                            aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
-                            className="reader-note-icon-button"
-                            onClick={() => setExpandedNavigationNoteId((current) => current === item.noteId ? null : item.noteId)}
-                            title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
-                            type="button"
-                          >
-                            <EyeIcon />
-                          </button>
-                        ) : null}
-                        <button
-                          aria-label="Editar nota"
-                          className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-                          onClick={() => beginNavigationNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
-                          title="Editar nota"
-                          type="button"
-                        >
-                          <EditIcon />
-                        </button>
-                        <button
-                          aria-label="Borrar nota"
-                          className="reader-note-delete"
-                          onClick={() => void handleDeleteSavedNote(item.noteId)}
-                          title="Borrar nota"
-                          type="button"
-                        >
-                          <DeletePageIcon />
-                        </button>
-                      </div>
-                      {isNoteEditing ? (
-                        <div className="reader-note-editor">
-                          <label className="reader-note-composer compact">
-                            <textarea
-                              onChange={(event) => setEditingNavigationNoteText(event.target.value)}
-                              rows={4}
-                              value={editingNavigationNoteText}
-                            />
-                          </label>
-                          <div className="reader-note-editor-actions">
-                            <button
-                              aria-label="Cancelar edición de la nota"
-                              className="reader-note-icon-button"
-                              onClick={() => {
-                                setEditingNavigationNoteId(null);
-                                setEditingNavigationNoteText("");
-                              }}
-                              title="Cancelar"
-                              type="button"
-                            >
-                              <CloseIcon />
-                            </button>
-                            <button
-                              aria-label="Guardar cambios de la nota"
-                              className="reader-note-icon-button primary"
-                              disabled={isUpdatingNote || !editingNavigationNoteText.trim()}
-                              onClick={() => void handleUpdateExistingNote(item.noteId, editingNavigationNoteText, "navigation")}
-                              title="Guardar cambios"
-                              type="button"
-                            >
-                              <SaveIcon />
-                            </button>
-                          </div>
-                        </div>
-                      ) : isNoteExpanded ? <p>{item.noteText}</p> : null}
-                    </article>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
-            )}
-          </section>
-
-        </aside>
-      ) : null}
 
       {selectionDraft ? (
         <div
@@ -3803,107 +3421,35 @@ export function ReaderPage() {
       ) : null}
 
       <div aria-label="Controles flotantes del lector" className="reader-floating-controls" role="toolbar">
-        <div className="reader-floating-audio-menu" ref={audioSettingsRef}>
-          <button
-            aria-controls="reader-audio-settings-panel"
-            aria-expanded={isAudioSettingsVisible}
-            aria-label="Opciones de audio"
-            className={isAudioSettingsVisible ? "reader-float-button active" : "reader-float-button"}
-            onClick={() => setIsAudioSettingsVisible((current) => !current)}
-            title="Opciones de audio"
-            type="button"
-          >
-            <AudioSettingsIcon />
-          </button>
-
-          {isAudioSettingsVisible ? (
-            <section aria-label="Opciones de audio" className="reader-floating-audio-panel" id="reader-audio-settings-panel">
-              <label className="reader-audio-field">
-                <span>Motor</span>
-                <select
-                  onChange={(event) => setSelectedTtsEngine(event.target.value as TtsEngine)}
-                  value={selectedTtsEngine}
-                >
-                  {TTS_ENGINE_OPTIONS.map((engine) => (
-                    <option disabled={engine.value === "device" && !isDeviceTtsSupported} key={engine.value} value={engine.value}>
-                      {engine.label} · {engine.description}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {selectedTtsEngine === "deepgram" ? (
-                <>
-                  {deepgramBalanceQuery.isLoading ? (
-                    <p className="reader-audio-note">Consultando saldo de Deepgram...</p>
-                  ) : null}
-
-                  {deepgramBalanceQuery.data ? (
-                    <div className="reader-audio-status reader-audio-status-inline">
-                      <span>Saldo disponible en Deepgram</span>
-                      <strong>{formatUsdBalance(deepgramBalanceQuery.data.balance_usd)}</strong>
-                    </div>
-                  ) : null}
-
-                  {deepgramBalanceQuery.isError ? (
-                    <p className="reader-audio-note">{deepgramBalanceErrorMessage}</p>
-                  ) : null}
-
-                  <label className="reader-audio-field">
-                    <span>Voz</span>
-                    <select onChange={(event) => setSelectedVoiceModel(event.target.value)} value={selectedVoiceModel}>
-                      {TTS_VOICE_OPTIONS.map((voice) => (
-                        <option key={voice.value} value={voice.value}>
-                          {voice.label} · {voice.description}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </>
-              ) : (
-                <label className="reader-audio-field">
-                  <span>Voz del dispositivo</span>
-                  <select
-                    disabled={!isDeviceTtsSupported}
-                    onChange={(event) => setSelectedDeviceVoiceUri(event.target.value)}
-                    value={selectedDeviceVoiceUri}
-                  >
-                    {deviceVoiceOptions.map((voice) => (
-                      <option key={voice.value || "device-default"} value={voice.value}>
-                        {voice.label} · {voice.description}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              {!isDeviceTtsSupported && selectedTtsEngine === "device" ? (
-                <p className="reader-audio-note">
-                  Este navegador no expone voces nativas. Mantén el modo IA para reproducir audio.
-                </p>
-              ) : null}
-
-              {selectedTtsEngine === "device" && selectedDeviceVoice ? (
-                <p className="reader-audio-note">Voz activa: {selectedDeviceVoice.name} · {selectedDeviceVoice.lang}</p>
-              ) : null}
-
-              <label className="reader-audio-field reader-audio-field-range">
-                <span>
-                  Velocidad
-                  <strong className="reader-audio-inline-value">{playbackRate.toFixed(2)}x</strong>
-                </span>
-                <input
-                  max={MAX_PLAYBACK_RATE}
-                  min={MIN_PLAYBACK_RATE}
-                  onChange={(event) => setPlaybackRate(Number(event.target.value))}
-                  step={PLAYBACK_RATE_STEP}
-                  type="range"
-                  value={playbackRate}
-                />
-              </label>
-            </section>
-          ) : null}
-        </div>
+        <ReaderFloatingAudioPopover
+          buttonLabel="Opciones de audio"
+          isOpen={isAudioSettingsVisible}
+          menuRef={audioSettingsRef}
+          onToggle={() => setIsAudioSettingsVisible((current) => !current)}
+          panelId="reader-audio-settings-panel"
+        >
+          <ReaderAudioSettingsContent
+            deepgramBalanceErrorMessage={deepgramBalanceQuery.isError ? deepgramBalanceErrorMessage : null}
+            deepgramBalanceLoading={deepgramBalanceQuery.isLoading}
+            deepgramBalanceValue={deepgramBalanceQuery.data ? formatUsdBalance(deepgramBalanceQuery.data.balance_usd) : null}
+            deviceVoiceNote={selectedTtsEngine === "device" && selectedDeviceVoice ? `Voz activa: ${selectedDeviceVoice.name} · ${selectedDeviceVoice.lang}` : null}
+            deviceVoiceOptions={deviceVoiceOptions}
+            engineOptions={TTS_ENGINE_OPTIONS}
+            isDeviceTtsSupported={isDeviceTtsSupported}
+            maxPlaybackRate={MAX_PLAYBACK_RATE}
+            minPlaybackRate={MIN_PLAYBACK_RATE}
+            onDeviceVoiceChange={setSelectedDeviceVoiceUri}
+            onPlaybackRateChange={setPlaybackRate}
+            onTtsEngineChange={(value) => setSelectedTtsEngine(value as TtsEngine)}
+            onVoiceModelChange={setSelectedVoiceModel}
+            playbackRate={playbackRate}
+            playbackRateStep={PLAYBACK_RATE_STEP}
+            selectedDeviceVoiceUri={selectedDeviceVoiceUri}
+            selectedTtsEngine={selectedTtsEngine}
+            selectedVoiceModel={selectedVoiceModel}
+            voiceOptions={TTS_VOICE_OPTIONS}
+          />
+        </ReaderFloatingAudioPopover>
         <div aria-live="polite" className="reader-floating-status">
           <form className="reader-page-jump-form" onSubmit={(event) => void handlePageJumpSubmit(event)}>
             <label className="reader-page-jump-label">
@@ -3946,16 +3492,270 @@ export function ReaderPage() {
         >
           {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
         </button>
-        <button
-          aria-expanded={isNavigationPanelVisible}
-          aria-label="Abrir panel de índice, marcadores y notas"
-          className={isNavigationPanelVisible ? "reader-float-button active" : "reader-float-button"}
-          onClick={toggleNavigationPanel}
-          title="Índice, marcadores y notas"
-          type="button"
+        <ReaderNavigationPopover
+          buttonLabel="Abrir panel de índice, marcadores y notas"
+          eyebrow={bookTitle}
+          isOpen={isNavigationPanelVisible}
+          isRendered={isNavigationPanelRendered}
+          onClose={closeNavigationPanel}
+          onToggle={toggleNavigationPanel}
+          panelAriaLabel="Índice, marcadores y notas"
+          panelRef={navigationPanelRef}
+          title="Índice y notas"
         >
-          <NavigationIcon />
-        </button>
+          <section className="reader-navigation-section">
+            {orderedNavigationItems.length ? (
+              <div className="reader-navigation-list">
+                {orderedNavigationItems.map((item) => {
+                  if (item.type === "toc") {
+                    return (
+                      <ReaderNavigationTocCard
+                        buttonRef={item.isActive
+                          ? (element) => {
+                              activeNavigationItemRef.current = element;
+                            }
+                          : undefined}
+                        isActive={item.isActive}
+                        key={item.key}
+                        level={item.level}
+                        onSelect={() => {
+                          void goToLocation(item.pageNumber, item.paragraphNumber);
+                          closeNavigationPanel();
+                        }}
+                        onSummaryClick={closeNavigationPanel}
+                        pageNumber={item.pageNumber}
+                        summaryHref={item.chapterId ? sectionSummaryHref(bookId, item.chapterId) : undefined}
+                        summaryLabel={`Abrir resumen de ${item.title}`}
+                        title={item.title}
+                      />
+                    );
+                  }
+
+                  if (item.type === "bookmark") {
+                    return (
+                      <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
+                        <button
+                          className="reader-navigation-item reader-navigation-item-bookmark"
+                          onClick={() => {
+                            void goToLocation(item.pageNumber, item.paragraphNumber);
+                            closeNavigationPanel();
+                          }}
+                          ref={item.isActive
+                            ? (element) => {
+                                activeNavigationItemRef.current = element;
+                              }
+                            : undefined}
+                          type="button"
+                        >
+                          <div className="reader-navigation-item-topline">
+                            <span className="reader-navigation-chip reader-navigation-chip-bookmark"><BookmarkIcon /></span>
+                            <strong>{item.title}</strong>
+                            <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                          </div>
+                        </button>
+                        <div className="reader-note-actions">
+                          <button
+                            aria-label="Borrar marcador"
+                            className="reader-note-delete"
+                            onClick={() => void handleDeleteSavedBookmark(item.bookmarkId)}
+                            title="Borrar marcador"
+                            type="button"
+                          >
+                            <DeletePageIcon />
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  }
+
+                  if (item.type === "highlight") {
+                    const isHighlightEditing = editingNavigationHighlightId === item.highlightId;
+
+                    return (
+                      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                        <button
+                          className="reader-note-jump"
+                          onClick={() => {
+                            void goToLocation(item.pageNumber, item.paragraphNumber);
+                            closeNavigationPanel();
+                          }}
+                          ref={item.isActive
+                            ? (element) => {
+                                activeNavigationItemRef.current = element;
+                              }
+                            : undefined}
+                          type="button"
+                        >
+                          <div className="reader-navigation-item-topline">
+                            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                            <strong>{item.excerpt}</strong>
+                            <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                          </div>
+                        </button>
+                        <div className="reader-note-actions">
+                          <button
+                            aria-label="Añadir nota al resaltado"
+                            className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                            onClick={() => beginNavigationHighlightEditing(item.highlightId)}
+                            title="Añadir nota"
+                            type="button"
+                          >
+                            <EditIcon />
+                          </button>
+                          <button
+                            aria-label="Borrar resaltado"
+                            className="reader-note-delete"
+                            onClick={() => void handleDeleteSavedHighlight(item.highlightId)}
+                            title="Borrar resaltado"
+                            type="button"
+                          >
+                            <DeletePageIcon />
+                          </button>
+                        </div>
+
+                        {isHighlightEditing ? (
+                          <div className="reader-note-editor">
+                            <label className="reader-note-composer compact">
+                              <textarea
+                                onChange={(event) => setEditingNavigationHighlightText(event.target.value)}
+                                rows={4}
+                                value={editingNavigationHighlightText}
+                              />
+                            </label>
+                            <div className="reader-note-editor-actions">
+                              <button
+                                aria-label="Cancelar edición del resaltado"
+                                className="reader-note-icon-button"
+                                onClick={() => {
+                                  setEditingNavigationHighlightId(null);
+                                  setEditingNavigationHighlightText("");
+                                }}
+                                title="Cancelar"
+                                type="button"
+                              >
+                                <CloseIcon />
+                              </button>
+                              <button
+                                aria-label="Guardar nota del resaltado"
+                                className="reader-note-icon-button primary"
+                                disabled={isUpdatingNote || !editingNavigationHighlightText.trim()}
+                                onClick={() => void handleCreateNoteForHighlight(item.highlightId, editingNavigationHighlightText, "navigation")}
+                                title="Guardar nota"
+                                type="button"
+                              >
+                                <SaveIcon />
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  }
+
+                  const isNoteExpanded = expandedNavigationNoteId === item.noteId;
+                  const isNoteEditing = editingNavigationNoteId === item.noteId;
+                  const hasNoteText = item.noteText.trim().length > 0;
+
+                  return (
+                    <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                      <button
+                        className="reader-note-jump"
+                        onClick={() => {
+                          void goToLocation(item.pageNumber, item.paragraphNumber);
+                          closeNavigationPanel();
+                        }}
+                        ref={item.isActive
+                          ? (element) => {
+                              activeNavigationItemRef.current = element;
+                            }
+                          : undefined}
+                        type="button"
+                      >
+                        <div className="reader-navigation-item-topline">
+                          <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                          <strong>{item.excerpt}</strong>
+                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                        </div>
+                      </button>
+                      <div className="reader-note-actions">
+                        {hasNoteText ? (
+                          <button
+                            aria-expanded={isNoteExpanded}
+                            aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
+                            className="reader-note-icon-button"
+                            onClick={() => setExpandedNavigationNoteId((current) => current === item.noteId ? null : item.noteId)}
+                            title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
+                            type="button"
+                          >
+                            <EyeIcon />
+                          </button>
+                        ) : null}
+                        <button
+                          aria-label="Editar nota"
+                          className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                          onClick={() => beginNavigationNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
+                          title="Editar nota"
+                          type="button"
+                        >
+                          <EditIcon />
+                        </button>
+                        <button
+                          aria-label="Borrar nota"
+                          className="reader-note-delete"
+                          onClick={() => void handleDeleteSavedNote(item.noteId)}
+                          title="Borrar nota"
+                          type="button"
+                        >
+                          <DeletePageIcon />
+                        </button>
+                      </div>
+
+                      {isNoteEditing ? (
+                        <div className="reader-note-editor">
+                          <label className="reader-note-composer compact">
+                            <textarea
+                              onChange={(event) => setEditingNavigationNoteText(event.target.value)}
+                              rows={4}
+                              value={editingNavigationNoteText}
+                            />
+                          </label>
+                          <div className="reader-note-editor-actions">
+                            <button
+                              aria-label="Cancelar edición de la nota"
+                              className="reader-note-icon-button"
+                              onClick={() => {
+                                setEditingNavigationNoteId(null);
+                                setEditingNavigationNoteText("");
+                              }}
+                              title="Cancelar"
+                              type="button"
+                            >
+                              <CloseIcon />
+                            </button>
+                            <button
+                              aria-label="Guardar cambios de la nota"
+                              className="reader-note-icon-button primary"
+                              disabled={isUpdatingNote || !editingNavigationNoteText.trim()}
+                              onClick={() => void handleUpdateExistingNote(item.noteId, editingNavigationNoteText, "navigation")}
+                              title="Guardar cambios"
+                              type="button"
+                            >
+                              <SaveIcon />
+                            </button>
+                          </div>
+                        </div>
+                      ) : isNoteExpanded ? (
+                        <p>{item.noteText}</p>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+            )}
+          </section>
+        </ReaderNavigationPopover>
         <button
           aria-label="Página anterior"
           className="reader-float-button"
