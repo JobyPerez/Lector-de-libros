@@ -737,6 +737,121 @@ function applyHighlightsToRichParagraph(
   }
 }
 
+function findParagraphElement(target: Node | null): HTMLElement | null {
+  if (!target) {
+    return null;
+  }
+
+  if (target instanceof HTMLElement) {
+    return target.closest<HTMLElement>("[data-paragraph-id]");
+  }
+
+  return target.parentElement?.closest<HTMLElement>("[data-paragraph-id]") ?? null;
+}
+
+function buildSelectionDraft(
+  selection: Selection,
+  paragraphsById: Map<string, ParagraphContent>,
+  container: HTMLElement
+): SelectionDraft | null {
+  if (selection.rangeCount === 0 || selection.isCollapsed) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  if (!container.contains(range.commonAncestorContainer)) {
+    return null;
+  }
+
+  const startParagraphElement = findParagraphElement(range.startContainer);
+  const endParagraphElement = findParagraphElement(range.endContainer);
+  if (!startParagraphElement || !endParagraphElement || startParagraphElement !== endParagraphElement) {
+    return null;
+  }
+
+  const paragraphId = startParagraphElement.dataset.paragraphId;
+  if (!paragraphId) {
+    return null;
+  }
+
+  const paragraph = paragraphsById.get(paragraphId);
+  if (!paragraph) {
+    return null;
+  }
+
+  const startRange = document.createRange();
+  startRange.selectNodeContents(startParagraphElement);
+  startRange.setEnd(range.startContainer, range.startOffset);
+
+  const endRange = document.createRange();
+  endRange.selectNodeContents(startParagraphElement);
+  endRange.setEnd(range.endContainer, range.endOffset);
+
+  const charStart = startRange.toString().length;
+  const charEnd = endRange.toString().length;
+  const selectedText = selection.toString().trim();
+  const rect = range.getBoundingClientRect();
+
+  if (charEnd <= charStart || !selectedText || rect.width === 0) {
+    return null;
+  }
+
+  const popoverLayout = resolveReaderPopoverLayout(rect);
+
+  return {
+    charEnd,
+    charStart,
+    paragraph,
+    rect: {
+      left: popoverLayout.left,
+      maxHeight: popoverLayout.maxHeight,
+      placement: popoverLayout.placement,
+      top: popoverLayout.top
+    },
+    selectedText
+  };
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function resolveReaderPopoverLayout(anchorRect: DOMRect) {
+  const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
+  const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
+  const anchorCenter = anchorRect.left + (anchorRect.width / 2);
+  const minLeft = (READER_POPOVER_WIDTH_ESTIMATE_PX / 2) + READER_POPOVER_VIEWPORT_MARGIN_PX;
+  const maxLeft = viewportWidth > 0
+    ? Math.max(minLeft, viewportWidth - minLeft)
+    : anchorCenter;
+  const left = viewportWidth > 0
+    ? clamp(anchorCenter, minLeft, maxLeft)
+    : anchorCenter;
+
+  if (viewportHeight <= 0) {
+    return {
+      left,
+      maxHeight: READER_POPOVER_HEIGHT_ESTIMATE_PX,
+      placement: "below" as const,
+      top: anchorRect.bottom
+    };
+  }
+
+  const spaceAbove = Math.max(0, anchorRect.top - READER_POPOVER_VIEWPORT_MARGIN_PX - READER_POPOVER_GAP_PX);
+  const spaceBelow = Math.max(0, viewportHeight - anchorRect.bottom - READER_POPOVER_VIEWPORT_MARGIN_PX - READER_POPOVER_GAP_PX);
+  const placement = spaceBelow > spaceAbove ? "below" as const : "above" as const;
+  const maxHeight = placement === "below" ? spaceBelow : spaceAbove;
+
+  return {
+    left,
+    maxHeight,
+    placement,
+    top: placement === "below"
+      ? anchorRect.bottom
+      : Math.max(READER_POPOVER_VIEWPORT_MARGIN_PX + READER_POPOVER_GAP_PX, anchorRect.top)
+  };
+}
+
 export function ReaderPage() {
   const { bookId = "" } = useParams();
   const navigate = useNavigate();
