@@ -679,7 +679,7 @@ export function createNote(
   });
 }
 
-export function updateNote(accessToken: string, bookId: string, noteId: string, payload: { noteText: string }) {
+export function updateNote(accessToken: string, bookId: string, noteId: string, payload: { highlightColor?: HighlightColor; noteText: string }) {
   return request<void>(`/books/${bookId}/notes/${noteId}`, {
     accessToken,
     body: payload,

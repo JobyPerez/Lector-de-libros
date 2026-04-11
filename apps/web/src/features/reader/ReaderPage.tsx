@@ -884,6 +884,7 @@ export function ReaderPage() {
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteColor, setEditingNavigationNoteColor] = useState<HighlightColor | null>(null);
   const [editingNavigationNoteText, setEditingNavigationNoteText] = useState("");
   const [editingNavigationHighlightId, setEditingNavigationHighlightId] = useState<string | null>(null);
   const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
@@ -1516,6 +1517,7 @@ export function ReaderPage() {
     setActiveReaderNote(null);
     setActiveReaderNoteText("");
     setEditingNavigationNoteId(null);
+    setEditingNavigationNoteColor(null);
     setEditingNavigationNoteText("");
     setEditingNavigationHighlightId(null);
     setEditingNavigationHighlightText("");
@@ -3218,6 +3220,9 @@ export function ReaderPage() {
       await deleteNote(accessToken, bookId, noteId);
       setExpandedNavigationNoteId((current) => current === noteId ? null : current);
       setEditingNavigationNoteId((current) => current === noteId ? null : current);
+      if (editingNavigationNoteId === noteId) {
+        setEditingNavigationNoteColor(null);
+      }
       setActiveReaderNote((current) => current?.noteId === noteId ? null : current);
       await refreshReaderMetadata();
     } catch (error) {
@@ -3244,15 +3249,10 @@ export function ReaderPage() {
       if (source === "navigation") {
         setEditingNavigationHighlightId(null);
         setEditingNavigationHighlightText("");
-        setExpandedNavigationNoteId(note.noteId);
+        setExpandedNavigationNoteId(null);
       } else {
-        setActiveReaderNote((current) => current
-          ? {
-              ...current,
-              noteId: note.noteId
-            }
-          : current);
-        setActiveReaderNoteText(trimmedNoteText);
+        setActiveReaderNote(null);
+        setActiveReaderNoteText("");
       }
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo guardar la nota.");
@@ -3261,7 +3261,7 @@ export function ReaderPage() {
     }
   }
 
-  async function handleUpdateExistingNote(noteId: string, noteText: string, source: "navigation" | "reader") {
+  async function handleUpdateExistingNote(noteId: string, noteText: string, source: "navigation" | "reader", highlightColor?: HighlightColor) {
     if (!accessToken || !noteText.trim()) {
       return;
     }
@@ -3271,21 +3271,27 @@ export function ReaderPage() {
 
     try {
       const trimmedNoteText = noteText.trim();
-      await updateNote(accessToken, bookId, noteId, { noteText: trimmedNoteText });
+      await updateNote(accessToken, bookId, noteId, {
+        ...(highlightColor ? { highlightColor } : {}),
+        noteText: trimmedNoteText
+      });
       await refreshReaderMetadata();
 
       setActiveReaderNote((current) => current?.noteId === noteId
         ? {
-            ...current
+            ...current,
+            color: highlightColor ?? current.color
           }
         : current);
 
       if (source === "navigation") {
         setEditingNavigationNoteId(null);
+        setEditingNavigationNoteColor(null);
         setEditingNavigationNoteText("");
-        setExpandedNavigationNoteId(noteId);
+        setExpandedNavigationNoteId(null);
       } else {
-        setActiveReaderNoteText(trimmedNoteText);
+        setActiveReaderNote(null);
+        setActiveReaderNoteText("");
       }
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo actualizar la nota.");
@@ -3294,17 +3300,19 @@ export function ReaderPage() {
     }
   }
 
-  function beginNavigationNoteEditing(note: Pick<ReaderNote, "noteId" | "noteText">) {
+  function beginNavigationNoteEditing(note: { color: HighlightColor | null; noteId: string; noteText: string }) {
     setExpandedNavigationNoteId(note.noteId);
     setEditingNavigationHighlightId(null);
     setEditingNavigationHighlightText("");
     setEditingNavigationNoteId(note.noteId);
+    setEditingNavigationNoteColor(note.color);
     setEditingNavigationNoteText(note.noteText);
   }
 
   function beginNavigationHighlightEditing(highlightId: string) {
     setExpandedNavigationNoteId(null);
     setEditingNavigationNoteId(null);
+    setEditingNavigationNoteColor(null);
     setEditingNavigationNoteText("");
     setEditingNavigationHighlightId(highlightId);
     setEditingNavigationHighlightText("");
@@ -3497,6 +3505,30 @@ export function ReaderPage() {
             <span className={activeReaderNote.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(activeReaderNote.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
             {activeReaderNote.noteId ? <strong>Nota vinculada</strong> : null}
           </div>
+          {activeReaderNote.noteId && activeReaderNote.color ? (
+            <div aria-label="Color del resaltado" className="reader-selection-swatches" role="radiogroup">
+              {HIGHLIGHT_OPTIONS.map((option) => (
+                <button
+                  aria-checked={activeReaderNote.color === option.color}
+                  className={activeReaderNote.color === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
+                  disabled={isUpdatingNote}
+                  key={option.color}
+                  onClick={() => {
+                    setActiveReaderNote((current) => current
+                      ? {
+                          ...current,
+                          color: option.color
+                        }
+                      : current);
+                  }}
+                  role="radio"
+                  type="button"
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <p className="reader-selection-preview">{activeReaderNote.selectedText}</p>
           <label className="reader-note-composer compact">
             <textarea
@@ -3524,7 +3556,7 @@ export function ReaderPage() {
               className="reader-note-icon-button primary"
               disabled={isUpdatingNote || !activeReaderNoteText.trim()}
               onClick={() => activeReaderNote.noteId
-                ? void handleUpdateExistingNote(activeReaderNote.noteId, activeReaderNoteText, "reader")
+                ? void handleUpdateExistingNote(activeReaderNote.noteId, activeReaderNoteText, "reader", activeReaderNote.color ?? undefined)
                 : void handleCreateNoteForHighlight(activeReaderNote.highlightId, activeReaderNoteText, "reader")}
               title={activeReaderNote.noteId ? "Guardar cambios" : "Guardar nota"}
               type="button"
@@ -3623,6 +3655,7 @@ export function ReaderPage() {
             editingHighlightId={editingNavigationHighlightId}
             editingHighlightText={editingNavigationHighlightText}
             editingNoteId={editingNavigationNoteId}
+            editingNoteColor={editingNavigationNoteColor}
             editingNoteText={editingNavigationNoteText}
             expandedNoteId={expandedNavigationNoteId}
             isUpdatingNote={isUpdatingNote}
@@ -3635,15 +3668,17 @@ export function ReaderPage() {
             }}
             onCancelNoteEditing={() => {
               setEditingNavigationNoteId(null);
+              setEditingNavigationNoteColor(null);
               setEditingNavigationNoteText("");
             }}
             onDeleteBookmark={(bookmarkId) => void handleDeleteSavedBookmark(bookmarkId)}
             onDeleteHighlight={(highlightId) => void handleDeleteSavedHighlight(highlightId)}
             onDeleteNote={(noteId) => void handleDeleteSavedNote(noteId)}
             onEditingHighlightTextChange={setEditingNavigationHighlightText}
+            onEditingNoteColorChange={setEditingNavigationNoteColor}
             onEditingNoteTextChange={setEditingNavigationNoteText}
             onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText, "navigation")}
-            onSaveNote={(noteId, noteText) => void handleUpdateExistingNote(noteId, noteText, "navigation")}
+            onSaveNote={(noteId, noteText, color) => void handleUpdateExistingNote(noteId, noteText, "navigation", color ?? undefined)}
             onSelectBookmark={(item) => {
               void goToLocation(item.pageNumber, item.paragraphNumber);
               closeNavigationPanel();

@@ -285,6 +285,7 @@ export function SectionSummaryPage() {
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
+  const [editingNavigationNoteColor, setEditingNavigationNoteColor] = useState<HighlightColor | null>(null);
   const [editingNavigationNoteText, setEditingNavigationNoteText] = useState("");
   const [editingNavigationHighlightId, setEditingNavigationHighlightId] = useState<string | null>(null);
   const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
@@ -615,6 +616,7 @@ export function SectionSummaryPage() {
     setIsNavigationPanelVisible(false);
     setExpandedNavigationNoteId(null);
     setEditingNavigationNoteId(null);
+    setEditingNavigationNoteColor(null);
     setEditingNavigationNoteText("");
     setEditingNavigationHighlightId(null);
     setEditingNavigationHighlightText("");
@@ -710,17 +712,19 @@ export function SectionSummaryPage() {
     navigate(sectionSummaryHref(bookId, targetChapterId));
   }
 
-  function beginNavigationNoteEditing(note: Pick<ReaderNote, "noteId" | "noteText">) {
+  function beginNavigationNoteEditing(note: { color: HighlightColor | null; noteId: string; noteText: string }) {
     setExpandedNavigationNoteId(note.noteId);
     setEditingNavigationHighlightId(null);
     setEditingNavigationHighlightText("");
     setEditingNavigationNoteId(note.noteId);
+    setEditingNavigationNoteColor(note.color);
     setEditingNavigationNoteText(note.noteText);
   }
 
   function beginNavigationHighlightEditing(highlightId: string) {
     setExpandedNavigationNoteId(null);
     setEditingNavigationNoteId(null);
+    setEditingNavigationNoteColor(null);
     setEditingNavigationNoteText("");
     setEditingNavigationHighlightId(highlightId);
     setEditingNavigationHighlightText("");
@@ -762,6 +766,9 @@ export function SectionSummaryPage() {
       await deleteNote(accessToken, bookId, noteId);
       setExpandedNavigationNoteId((current) => current === noteId ? null : current);
       setEditingNavigationNoteId((current) => current === noteId ? null : current);
+      if (editingNavigationNoteId === noteId) {
+        setEditingNavigationNoteColor(null);
+      }
       await refreshNavigationMetadata();
     } catch (error) {
       setNavigationError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
@@ -785,7 +792,7 @@ export function SectionSummaryPage() {
       await refreshNavigationMetadata();
       setEditingNavigationHighlightId(null);
       setEditingNavigationHighlightText("");
-      setExpandedNavigationNoteId(note.noteId);
+      setExpandedNavigationNoteId(null);
     } catch (error) {
       setNavigationError(error instanceof Error ? error.message : "No se pudo guardar la nota.");
     } finally {
@@ -793,7 +800,7 @@ export function SectionSummaryPage() {
     }
   }
 
-  async function handleUpdateExistingNote(noteId: string, noteText: string) {
+  async function handleUpdateExistingNote(noteId: string, noteText: string, highlightColor?: HighlightColor) {
     if (!accessToken || !noteText.trim()) {
       return;
     }
@@ -803,11 +810,15 @@ export function SectionSummaryPage() {
 
     try {
       const trimmedNoteText = noteText.trim();
-      await updateNote(accessToken, bookId, noteId, { noteText: trimmedNoteText });
+      await updateNote(accessToken, bookId, noteId, {
+        ...(highlightColor ? { highlightColor } : {}),
+        noteText: trimmedNoteText
+      });
       await refreshNavigationMetadata();
       setEditingNavigationNoteId(null);
+      setEditingNavigationNoteColor(null);
       setEditingNavigationNoteText("");
-      setExpandedNavigationNoteId(noteId);
+      setExpandedNavigationNoteId(null);
     } catch (error) {
       setNavigationError(error instanceof Error ? error.message : "No se pudo actualizar la nota.");
     } finally {
@@ -1112,6 +1123,7 @@ export function SectionSummaryPage() {
               editingHighlightId={editingNavigationHighlightId}
               editingHighlightText={editingNavigationHighlightText}
               editingNoteId={editingNavigationNoteId}
+              editingNoteColor={editingNavigationNoteColor}
               editingNoteText={editingNavigationNoteText}
               expandedNoteId={expandedNavigationNoteId}
               isUpdatingNote={isUpdatingNote}
@@ -1124,15 +1136,17 @@ export function SectionSummaryPage() {
               }}
               onCancelNoteEditing={() => {
                 setEditingNavigationNoteId(null);
+                setEditingNavigationNoteColor(null);
                 setEditingNavigationNoteText("");
               }}
               onDeleteBookmark={(bookmarkId) => void handleDeleteSavedBookmark(bookmarkId)}
               onDeleteHighlight={(highlightId) => void handleDeleteSavedHighlight(highlightId)}
               onDeleteNote={(noteId) => void handleDeleteSavedNote(noteId)}
               onEditingHighlightTextChange={setEditingNavigationHighlightText}
+              onEditingNoteColorChange={setEditingNavigationNoteColor}
               onEditingNoteTextChange={setEditingNavigationNoteText}
               onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText)}
-              onSaveNote={(noteId, noteText) => void handleUpdateExistingNote(noteId, noteText)}
+              onSaveNote={(noteId, noteText, color) => void handleUpdateExistingNote(noteId, noteText, color ?? undefined)}
               onSelectBookmark={(item) => goToReaderLocation(item.pageNumber)}
               onSelectHighlight={(item) => goToReaderLocation(item.pageNumber)}
               onSelectNote={(item) => goToReaderLocation(item.pageNumber)}

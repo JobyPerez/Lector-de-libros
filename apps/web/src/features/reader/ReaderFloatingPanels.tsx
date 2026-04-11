@@ -13,6 +13,15 @@ type AudioVoiceOption = {
   value: string;
 };
 
+type ReaderHighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
+
+const HIGHLIGHT_OPTIONS: Array<{ color: ReaderHighlightColor; label: string }> = [
+  { color: "YELLOW", label: "Amarillo" },
+  { color: "GREEN", label: "Verde" },
+  { color: "BLUE", label: "Azul" },
+  { color: "PINK", label: "Rosa" }
+];
+
 type AudioPopoverProps = {
   buttonLabel: string;
   buttonTitle?: string;
@@ -95,7 +104,7 @@ export type ReaderNavigationListItem =
       type: "bookmark";
     }
   | {
-      color: "YELLOW" | "GREEN" | "BLUE" | "PINK";
+      color: ReaderHighlightColor;
       excerpt: string;
       highlightId: string;
       isActive: boolean;
@@ -105,7 +114,7 @@ export type ReaderNavigationListItem =
       type: "highlight";
     }
   | {
-      color: "YELLOW" | "GREEN" | "BLUE" | "PINK" | null;
+      color: ReaderHighlightColor | null;
       excerpt: string;
       isActive: boolean;
       key: string;
@@ -121,21 +130,23 @@ type NavigationPanelContentProps = {
   editingHighlightId: string | null;
   editingHighlightText: string;
   editingNoteId: string | null;
+  editingNoteColor: ReaderHighlightColor | null;
   editingNoteText: string;
   expandedNoteId: string | null;
   isUpdatingNote: boolean;
   items: ReaderNavigationListItem[];
   onBeginHighlightEditing: (highlightId: string) => void;
-  onBeginNoteEditing: (note: { noteId: string; noteText: string }) => void;
+  onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;
   onCancelNoteEditing: () => void;
   onDeleteBookmark: (bookmarkId: string) => void;
   onDeleteHighlight: (highlightId: string) => void;
   onDeleteNote: (noteId: string) => void;
+  onEditingNoteColorChange: (value: ReaderHighlightColor) => void;
   onEditingHighlightTextChange: (value: string) => void;
   onEditingNoteTextChange: (value: string) => void;
   onSaveHighlightNote: (highlightId: string, noteText: string) => void;
-  onSaveNote: (noteId: string, noteText: string) => void;
+  onSaveNote: (noteId: string, noteText: string, color: ReaderHighlightColor | null) => void;
   onSelectBookmark: (item: Extract<ReaderNavigationListItem, { type: "bookmark" }>) => void;
   onSelectHighlight: (item: Extract<ReaderNavigationListItem, { type: "highlight" }>) => void;
   onSelectNote: (item: Extract<ReaderNavigationListItem, { type: "note" }>) => void;
@@ -243,7 +254,7 @@ function SaveIcon() {
   );
 }
 
-function highlightClassName(color: "YELLOW" | "GREEN" | "BLUE" | "PINK") {
+function highlightClassName(color: ReaderHighlightColor) {
   return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
 }
 
@@ -456,6 +467,7 @@ export function ReaderNavigationPanelContent({
   editingHighlightId,
   editingHighlightText,
   editingNoteId,
+  editingNoteColor,
   editingNoteText,
   expandedNoteId,
   isUpdatingNote,
@@ -467,6 +479,7 @@ export function ReaderNavigationPanelContent({
   onDeleteBookmark,
   onDeleteHighlight,
   onDeleteNote,
+  onEditingNoteColorChange,
   onEditingHighlightTextChange,
   onEditingNoteTextChange,
   onSaveHighlightNote,
@@ -655,7 +668,7 @@ export function ReaderNavigationPanelContent({
                   <button
                     aria-label="Editar nota"
                     className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-                    onClick={() => onBeginNoteEditing({ noteId: item.noteId, noteText: item.noteText })}
+                    onClick={() => onBeginNoteEditing({ color: item.color, noteId: item.noteId, noteText: item.noteText })}
                     title="Editar nota"
                     type="button"
                   >
@@ -674,6 +687,26 @@ export function ReaderNavigationPanelContent({
 
                 {isNoteEditing ? (
                   <div className="reader-note-editor">
+                    {editingNoteColor ? (
+                      <div className="reader-note-composer">
+                        <span>Color del resaltado</span>
+                        <div aria-label="Color del resaltado" className="reader-selection-swatches" role="radiogroup">
+                          {HIGHLIGHT_OPTIONS.map((option) => (
+                            <button
+                              aria-checked={editingNoteColor === option.color}
+                              className={editingNoteColor === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
+                              disabled={isUpdatingNote}
+                              key={option.color}
+                              onClick={() => onEditingNoteColorChange(option.color)}
+                              role="radio"
+                              type="button"
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <label className="reader-note-composer compact">
                       <textarea
                         onChange={(event) => onEditingNoteTextChange(event.target.value)}
@@ -695,7 +728,7 @@ export function ReaderNavigationPanelContent({
                         aria-label="Guardar cambios de la nota"
                         className="reader-note-icon-button primary"
                         disabled={isUpdatingNote || !editingNoteText.trim()}
-                        onClick={() => onSaveNote(item.noteId, editingNoteText)}
+                        onClick={() => onSaveNote(item.noteId, editingNoteText, editingNoteColor)}
                         title="Guardar cambios"
                         type="button"
                       >

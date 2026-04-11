@@ -52,6 +52,7 @@ const createNoteSchema = z.object({
 });
 
 const updateNoteSchema = z.object({
+  highlightColor: z.enum(highlightColors).optional(),
   noteText: z.string().trim().min(1).max(4000)
 });
 
@@ -765,26 +766,66 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const result = await connection.execute(
-        `
-          UPDATE user_notes
-          SET note_text = :noteText,
-              updated_at = SYSTIMESTAMP
-          WHERE note_id = :noteId
-            AND book_id = :bookId
-            AND user_id = :userId
-        `,
-        {
-          bookId: params.bookId,
-          noteId: params.noteId,
-          noteText: payload.noteText,
-          userId: request.currentUser.userId
-        },
-        { autoCommit: true }
-      );
-
-      if ((result.rowsAffected ?? 0) === 0) {
+      const note = await findOwnedNote(connection, params.bookId, params.noteId, request.currentUser.userId);
+      if (!note) {
         return reply.status(404).send({ message: "Note not found." });
+      }
+
+      if (payload.highlightColor && !note.highlightId) {
+        return reply.status(422).send({ message: "La nota no tiene un resaltado asociado para cambiar de color." });
+      }
+
+      try {
+        const result = await connection.execute(
+          `
+            UPDATE user_notes
+            SET note_text = :noteText,
+                updated_at = SYSTIMESTAMP
+            WHERE note_id = :noteId
+              AND book_id = :bookId
+              AND user_id = :userId
+          `,
+          {
+            bookId: params.bookId,
+            noteId: params.noteId,
+            noteText: payload.noteText,
+            userId: request.currentUser.userId
+          }
+        );
+
+        if ((result.rowsAffected ?? 0) === 0) {
+          await connection.rollback();
+          return reply.status(404).send({ message: "Note not found." });
+        }
+
+        if (payload.highlightColor && note.highlightId) {
+          const highlightResult = await connection.execute(
+            `
+              UPDATE user_highlights
+              SET color = :color,
+                  updated_at = SYSTIMESTAMP
+              WHERE highlight_id = :highlightId
+                AND book_id = :bookId
+                AND user_id = :userId
+            `,
+            {
+              bookId: params.bookId,
+              color: payload.highlightColor,
+              highlightId: note.highlightId,
+              userId: request.currentUser.userId
+            }
+          );
+
+          if ((highlightResult.rowsAffected ?? 0) === 0) {
+            await connection.rollback();
+            return reply.status(404).send({ message: "Highlight not found." });
+          }
+        }
+
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
       }
 
       return reply.status(204).send();
