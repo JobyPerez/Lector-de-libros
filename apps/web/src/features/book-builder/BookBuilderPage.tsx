@@ -9,6 +9,7 @@ import {
   fetchBookPage,
   fetchBookPageImage,
   fetchBooks,
+  fetchPageAnnotations,
   fetchReaderNavigation,
   isRetryableRateLimitError,
   rerunOcrPage,
@@ -797,6 +798,18 @@ export function BookBuilderPage() {
     }
   });
 
+  const reviewAnnotationsQuery = useQuery({
+    enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
+    queryKey: ["builder-page-annotations", reviewBookId, reviewPageNumber],
+    queryFn: async () => {
+      if (!accessToken || !reviewBookId) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchPageAnnotations(accessToken, reviewBookId, reviewPageNumber);
+    }
+  });
+
   const reviewNavigationQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
     queryKey: ["builder-navigation", reviewBookId],
@@ -1430,6 +1443,22 @@ export function BookBuilderPage() {
     await uploadBookPageImage(accessToken, reviewBookId, reviewPageNumber, formData);
   }
 
+  function confirmReviewTextReplacement(actionLabel: string) {
+    if (reviewPageAnnotationCount === 0) {
+      return true;
+    }
+
+    const summaryParts = [
+      reviewPageBookmarkCount > 0 ? `${reviewPageBookmarkCount} ${reviewPageBookmarkCount === 1 ? "marcador" : "marcadores"}` : null,
+      reviewPageHighlightCount > 0 ? `${reviewPageHighlightCount} ${reviewPageHighlightCount === 1 ? "resaltado" : "resaltados"}` : null,
+      reviewPageNoteCount > 0 ? `${reviewPageNoteCount} ${reviewPageNoteCount === 1 ? "nota" : "notas"}` : null
+    ].filter(Boolean).join(", ");
+
+    return window.confirm(
+      `Esta página tiene ${summaryParts}. Al ${actionLabel}, el sistema intentará recolocar esas anotaciones automáticamente en los nuevos párrafos. Revisa la página después por si alguna necesitara ajuste manual. ¿Continuar?`
+    );
+  }
+
   async function handleSaveOcr(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1441,6 +1470,10 @@ export function BookBuilderPage() {
     const hasImageChanges = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
 
     if (!hasTextChanges && !hasImageChanges) {
+      return;
+    }
+
+    if (hasTextChanges && !confirmReviewTextReplacement("guardar el OCR")) {
       return;
     }
 
@@ -1460,14 +1493,14 @@ export function BookBuilderPage() {
       setOriginalEditedText(editedText);
       setReviewMessage(
         hasTextChanges && hasImageChanges
-          ? "El texto OCR y la imagen ajustada se guardaron correctamente."
+          ? (reviewPageAnnotationCount > 0 ? "El texto OCR, la imagen ajustada y el remapeo de anotaciones se guardaron correctamente." : "El texto OCR y la imagen ajustada se guardaron correctamente.")
           : hasTextChanges
-            ? "El texto OCR de la página se actualizó correctamente."
+            ? (reviewPageAnnotationCount > 0 ? "El texto OCR de la página se actualizó y se intentó conservar las anotaciones existentes." : "El texto OCR de la página se actualizó correctamente.")
             : "La imagen ajustada de la página se guardó correctamente."
       );
 
       if (hasTextChanges || hasImageChanges) {
-        await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+        await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
       }
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudieron guardar los cambios de la página.");
@@ -1484,6 +1517,10 @@ export function BookBuilderPage() {
     const nextMode = modeOverride ?? reviewOcrMode;
     const hasPendingImageEdits = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
 
+    if (!confirmReviewTextReplacement("volver a ejecutar el OCR")) {
+      return;
+    }
+
     setReviewError(null);
     setReviewMessage(null);
     setIsSavingReview(true);
@@ -1497,8 +1534,10 @@ export function BookBuilderPage() {
 
       setReviewOcrMode(nextMode);
       await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode }));
-      setReviewMessage("El OCR de la página se volvió a reconocer correctamente.");
-      await Promise.all([reviewPageQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+      setReviewMessage(reviewPageAnnotationCount > 0
+        ? "El OCR de la página se volvió a reconocer y se intentó conservar las anotaciones existentes."
+        : "El OCR de la página se volvió a reconocer correctamente.");
+      await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.");
     } finally {
@@ -1800,6 +1839,10 @@ export function BookBuilderPage() {
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
   const isReviewDirty = editedText !== originalEditedText || hasPendingReviewImageEdits;
+  const reviewPageBookmarkCount = reviewAnnotationsQuery.data?.bookmarks.length ?? 0;
+  const reviewPageHighlightCount = reviewAnnotationsQuery.data?.highlights.length ?? 0;
+  const reviewPageNoteCount = reviewAnnotationsQuery.data?.notes.length ?? 0;
+  const reviewPageAnnotationCount = reviewPageBookmarkCount + reviewPageHighlightCount + reviewPageNoteCount;
   const reviewPreviewHtml = useMemo(
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
     [editedText, reviewPageQuery.data?.page.htmlContent]

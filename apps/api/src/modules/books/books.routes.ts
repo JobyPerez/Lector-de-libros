@@ -12,7 +12,7 @@ import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
-import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "./rich-content.js";
+import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
 import { generateSectionSummary } from "./section-summary.js";
 
 const createBookSchema = z.object({
@@ -188,6 +188,71 @@ type StoredSectionSummaryRecord = {
   updatedAt: string;
 };
 
+type PageParagraphRecord = {
+  paragraphId: string;
+  paragraphNumber: number;
+  paragraphText: string;
+  sequenceNumber: number;
+};
+
+type StoredPageNoteRecord = {
+  highlightId: string | null;
+  noteId: string;
+  noteText: string;
+  pageNumber: number;
+  paragraphId: string | null;
+  paragraphNumber: number | null;
+  sequenceNumber: number | null;
+  userId: string;
+};
+
+type StoredPageBookmarkRecord = {
+  bookmarkId: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  sequenceNumber: number;
+  userId: string;
+};
+
+type StoredPageHighlightRecord = {
+  charEnd: number;
+  charStart: number;
+  color: "YELLOW" | "GREEN" | "BLUE" | "PINK";
+  highlightId: string;
+  highlightedText: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  paragraphText: string;
+  sequenceNumber: number;
+  userId: string;
+};
+
+type ReplacementParagraphRecord = {
+  paragraphId: string;
+  paragraphNumber: number;
+  paragraphText: string;
+  sequenceNumber: number;
+};
+
+type ResolvedReplacementParagraphSource = {
+  paragraphId: string | null;
+  paragraphNumber: number | null;
+};
+
+type HighlightTextRange = {
+  charEnd: number;
+  charStart: number;
+};
+
+type RestoredHighlightRecord = HighlightTextRange & {
+  highlightId: string;
+  paragraphId: string;
+  paragraphNumber: number;
+  sequenceNumber: number;
+};
+
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
 const maximumUploadedImageBytes = 32 * 1024 * 1024;
@@ -302,6 +367,580 @@ function buildDownloadFileName(baseName: string, extension: string): string {
 
 function paragraphsFromEditedText(editedText: string): string[] {
   return sanitizeParagraphs(buildRichPageFromEditableText(editedText).paragraphs);
+}
+
+async function listPageParagraphs(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number
+): Promise<PageParagraphRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        paragraph_id AS "paragraphId",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber",
+        paragraph_text AS "paragraphText"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+      ORDER BY paragraph_number ASC
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  return (result.rows ?? []) as PageParagraphRecord[];
+}
+
+async function listPageNotes(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number
+): Promise<StoredPageNoteRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        note_id AS "noteId",
+        user_id AS "userId",
+        page_number AS "pageNumber",
+        paragraph_id AS "paragraphId",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber",
+        highlight_id AS "highlightId",
+        note_text AS "noteText"
+      FROM user_notes
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+      ORDER BY created_at ASC
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  return (result.rows ?? []) as StoredPageNoteRecord[];
+}
+
+async function listPageBookmarks(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number
+): Promise<StoredPageBookmarkRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        bookmark_id AS "bookmarkId",
+        user_id AS "userId",
+        page_number AS "pageNumber",
+        paragraph_id AS "paragraphId",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber"
+      FROM user_bookmarks
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+      ORDER BY created_at ASC
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  return (result.rows ?? []) as StoredPageBookmarkRecord[];
+}
+
+async function listPageHighlights(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number
+): Promise<StoredPageHighlightRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        h.highlight_id AS "highlightId",
+        h.user_id AS "userId",
+        h.page_number AS "pageNumber",
+        h.paragraph_id AS "paragraphId",
+        h.paragraph_number AS "paragraphNumber",
+        h.sequence_number AS "sequenceNumber",
+        h.color AS "color",
+        h.char_start AS "charStart",
+        h.char_end AS "charEnd",
+        h.highlighted_text AS "highlightedText",
+        bp.paragraph_text AS "paragraphText"
+      FROM user_highlights h
+      JOIN book_paragraphs bp
+        ON bp.paragraph_id = h.paragraph_id
+      WHERE h.book_id = :bookId
+        AND h.page_number = :pageNumber
+      ORDER BY h.paragraph_number ASC, h.char_start ASC, h.created_at ASC
+    `,
+    {
+      bookId,
+      pageNumber
+    }
+  );
+
+  return (result.rows ?? []) as StoredPageHighlightRecord[];
+}
+
+function normalizeParagraphForMatch(value: string): string {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function computeParagraphSimilarity(left: PageParagraphRecord, right: ReplacementParagraphRecord): number {
+  const leftText = normalizeParagraphForMatch(left.paragraphText);
+  const rightText = normalizeParagraphForMatch(right.paragraphText);
+
+  if (!leftText || !rightText) {
+    return 0;
+  }
+
+  if (leftText === rightText) {
+    return 6;
+  }
+
+  const leftWords = new Set(leftText.split(/\s+/u).filter(Boolean));
+  const rightWords = new Set(rightText.split(/\s+/u).filter(Boolean));
+  let overlappingWordCount = 0;
+
+  for (const word of leftWords) {
+    if (rightWords.has(word)) {
+      overlappingWordCount += 1;
+    }
+  }
+
+  const wordOverlap = overlappingWordCount / Math.max(leftWords.size, rightWords.size, 1);
+  const lengthRatio = Math.min(leftText.length, rightText.length) / Math.max(leftText.length, rightText.length, 1);
+  const containsRatio = leftText.includes(rightText) || rightText.includes(leftText)
+    ? Math.min(leftText.length, rightText.length) / Math.max(leftText.length, rightText.length, 1)
+    : 0;
+  const paragraphDistance = Math.abs(left.paragraphNumber - right.paragraphNumber);
+  const positionBonus = Math.max(0, 1 - paragraphDistance / 3) * 0.35;
+
+  return wordOverlap * 2.4 + containsRatio * 1.4 + lengthRatio * 0.35 + positionBonus;
+}
+
+function matchReplacementParagraphs(
+  existingParagraphs: PageParagraphRecord[],
+  replacementParagraphs: ReplacementParagraphRecord[]
+): Map<string, ReplacementParagraphRecord> {
+  const matchThreshold = 2.35;
+  const fallbackThreshold = 1.45;
+  const scoreMatrix = Array.from({ length: existingParagraphs.length + 1 }, () => Array<number>(replacementParagraphs.length + 1).fill(0));
+  const actionMatrix = Array.from({ length: existingParagraphs.length + 1 }, () => Array<"match" | "skip-existing" | "skip-replacement">(replacementParagraphs.length + 1).fill("skip-existing"));
+
+  for (let existingIndex = 1; existingIndex <= existingParagraphs.length; existingIndex += 1) {
+    for (let replacementIndex = 1; replacementIndex <= replacementParagraphs.length; replacementIndex += 1) {
+      const previousScoreRow = scoreMatrix[existingIndex - 1];
+      const currentScoreRow = scoreMatrix[existingIndex];
+      const currentActionRow = actionMatrix[existingIndex];
+      const existingParagraph = existingParagraphs[existingIndex - 1];
+      const replacementParagraph = replacementParagraphs[replacementIndex - 1];
+
+      if (!previousScoreRow || !currentScoreRow || !currentActionRow || !existingParagraph || !replacementParagraph) {
+        continue;
+      }
+
+      const skipExistingScore = previousScoreRow[replacementIndex] ?? 0;
+      const skipReplacementScore = currentScoreRow[replacementIndex - 1] ?? 0;
+      const similarityScore = computeParagraphSimilarity(
+        existingParagraph,
+        replacementParagraph
+      );
+      const matchScore = similarityScore >= matchThreshold
+        ? (previousScoreRow[replacementIndex - 1] ?? 0) + similarityScore
+        : Number.NEGATIVE_INFINITY;
+
+      if (matchScore >= skipExistingScore && matchScore >= skipReplacementScore) {
+        currentScoreRow[replacementIndex] = matchScore;
+        currentActionRow[replacementIndex] = "match";
+      } else if (skipReplacementScore > skipExistingScore) {
+        currentScoreRow[replacementIndex] = skipReplacementScore;
+        currentActionRow[replacementIndex] = "skip-replacement";
+      } else {
+        currentScoreRow[replacementIndex] = skipExistingScore;
+        currentActionRow[replacementIndex] = "skip-existing";
+      }
+    }
+  }
+
+  const matches = new Map<string, ReplacementParagraphRecord>();
+  const usedReplacementIds = new Set<string>();
+  let existingIndex = existingParagraphs.length;
+  let replacementIndex = replacementParagraphs.length;
+
+  while (existingIndex > 0 && replacementIndex > 0) {
+    const action = actionMatrix[existingIndex]?.[replacementIndex] ?? "skip-existing";
+    const existingParagraph = existingParagraphs[existingIndex - 1];
+    const replacementParagraph = replacementParagraphs[replacementIndex - 1];
+
+    if (action === "match" && existingParagraph && replacementParagraph) {
+      matches.set(existingParagraph.paragraphId, replacementParagraph);
+      usedReplacementIds.add(replacementParagraph.paragraphId);
+      existingIndex -= 1;
+      replacementIndex -= 1;
+      continue;
+    }
+
+    if (action === "skip-replacement") {
+      replacementIndex -= 1;
+      continue;
+    }
+
+    existingIndex -= 1;
+  }
+
+  for (const existingParagraph of existingParagraphs) {
+    if (matches.has(existingParagraph.paragraphId)) {
+      continue;
+    }
+
+    const fallbackParagraph = replacementParagraphs[existingParagraph.paragraphNumber - 1];
+    if (!fallbackParagraph || usedReplacementIds.has(fallbackParagraph.paragraphId)) {
+      continue;
+    }
+
+    if (computeParagraphSimilarity(existingParagraph, fallbackParagraph) < fallbackThreshold) {
+      continue;
+    }
+
+    matches.set(existingParagraph.paragraphId, fallbackParagraph);
+    usedReplacementIds.add(fallbackParagraph.paragraphId);
+  }
+
+  return matches;
+}
+
+function resolveReplacementParagraph(
+  record: ResolvedReplacementParagraphSource,
+  paragraphMatches: Map<string, ReplacementParagraphRecord>,
+  replacementParagraphs: ReplacementParagraphRecord[]
+): ReplacementParagraphRecord | null {
+  if (record.paragraphId) {
+    const matchedParagraph = paragraphMatches.get(record.paragraphId);
+    if (matchedParagraph) {
+      return matchedParagraph;
+    }
+  }
+
+  if (record.paragraphNumber && record.paragraphNumber >= 1 && record.paragraphNumber <= replacementParagraphs.length) {
+    return replacementParagraphs[record.paragraphNumber - 1] ?? null;
+  }
+
+  return null;
+}
+
+async function shiftSubsequentAnnotationSequenceNumbers(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber: number,
+  delta: number
+): Promise<void> {
+  if (delta === 0) {
+    return;
+  }
+
+  await connection.execute(
+    `
+      UPDATE user_bookmarks
+      SET sequence_number = sequence_number + :delta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      delta,
+      pageNumber
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE user_highlights
+      SET sequence_number = sequence_number + :delta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+    `,
+    {
+      bookId,
+      delta,
+      pageNumber
+    }
+  );
+
+  await connection.execute(
+    `
+      UPDATE user_notes
+      SET sequence_number = sequence_number + :delta
+      WHERE book_id = :bookId
+        AND page_number > :pageNumber
+        AND sequence_number IS NOT NULL
+    `,
+    {
+      bookId,
+      delta,
+      pageNumber
+    }
+  );
+}
+
+function findAllHighlightRanges(paragraphText: string, highlightedText: string, caseInsensitive = false): HighlightTextRange[] {
+  const haystack = caseInsensitive ? paragraphText.toLocaleLowerCase("es") : paragraphText;
+  const needle = caseInsensitive ? highlightedText.toLocaleLowerCase("es") : highlightedText;
+  const ranges: HighlightTextRange[] = [];
+
+  if (!needle) {
+    return ranges;
+  }
+
+  let searchStart = 0;
+  while (searchStart <= haystack.length - needle.length) {
+    const matchIndex = haystack.indexOf(needle, searchStart);
+    if (matchIndex === -1) {
+      break;
+    }
+
+    ranges.push({
+      charEnd: matchIndex + highlightedText.length,
+      charStart: matchIndex
+    });
+    searchStart = matchIndex + Math.max(highlightedText.length, 1);
+  }
+
+  return ranges;
+}
+
+function rangesOverlap(left: HighlightTextRange, right: HighlightTextRange): boolean {
+  return left.charStart < right.charEnd && right.charStart < left.charEnd;
+}
+
+function findReplacementHighlightRange(
+  highlight: StoredPageHighlightRecord,
+  replacementParagraph: ReplacementParagraphRecord,
+  usedRanges: HighlightTextRange[]
+): HighlightTextRange | null {
+  const highlightedText = highlight.highlightedText.trim();
+  if (!highlightedText) {
+    return null;
+  }
+
+  const expectedStart = Math.round(
+    (highlight.charStart / Math.max(highlight.paragraphText.length, 1)) * Math.max(replacementParagraph.paragraphText.length, 1)
+  );
+  const candidateRanges = [
+    ...findAllHighlightRanges(replacementParagraph.paragraphText, highlightedText, false),
+    ...findAllHighlightRanges(replacementParagraph.paragraphText, highlightedText, true)
+  ].filter((candidate, index, allCandidates) => {
+    return allCandidates.findIndex((otherCandidate) => otherCandidate.charStart === candidate.charStart && otherCandidate.charEnd === candidate.charEnd) === index;
+  }).filter((candidate) => usedRanges.every((usedRange) => !rangesOverlap(candidate, usedRange)));
+
+  if (candidateRanges.length === 0) {
+    return null;
+  }
+
+  return candidateRanges.sort((left, right) => {
+    const leftDistance = Math.abs(left.charStart - expectedStart);
+    const rightDistance = Math.abs(right.charStart - expectedStart);
+    return leftDistance - rightDistance || left.charStart - right.charStart;
+  })[0] ?? null;
+}
+
+async function restorePageBookmarks(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  bookmarks: StoredPageBookmarkRecord[],
+  paragraphMatches: Map<string, ReplacementParagraphRecord>,
+  replacementParagraphs: ReplacementParagraphRecord[]
+): Promise<void> {
+  for (const bookmark of bookmarks) {
+    const replacementParagraph = resolveReplacementParagraph(bookmark, paragraphMatches, replacementParagraphs);
+    if (!replacementParagraph) {
+      continue;
+    }
+
+    await connection.execute(
+      `
+        INSERT INTO user_bookmarks (
+          bookmark_id,
+          user_id,
+          book_id,
+          paragraph_id,
+          page_number,
+          paragraph_number,
+          sequence_number,
+          created_at
+        ) VALUES (
+          :bookmarkId,
+          :userId,
+          :bookId,
+          :paragraphId,
+          :pageNumber,
+          :paragraphNumber,
+          :sequenceNumber,
+          SYSTIMESTAMP
+        )
+      `,
+      {
+        bookId,
+        bookmarkId: bookmark.bookmarkId,
+        pageNumber: bookmark.pageNumber,
+        paragraphId: replacementParagraph.paragraphId,
+        paragraphNumber: replacementParagraph.paragraphNumber,
+        sequenceNumber: replacementParagraph.sequenceNumber,
+        userId: bookmark.userId
+      }
+    );
+  }
+}
+
+async function restorePageHighlights(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  highlights: StoredPageHighlightRecord[],
+  paragraphMatches: Map<string, ReplacementParagraphRecord>,
+  replacementParagraphs: ReplacementParagraphRecord[]
+): Promise<Map<string, RestoredHighlightRecord>> {
+  const restoredHighlights = new Map<string, RestoredHighlightRecord>();
+  const usedRangesByParagraphId = new Map<string, HighlightTextRange[]>();
+
+  for (const highlight of highlights) {
+    const replacementParagraph = resolveReplacementParagraph(highlight, paragraphMatches, replacementParagraphs);
+    if (!replacementParagraph) {
+      continue;
+    }
+
+    const usedRanges = usedRangesByParagraphId.get(replacementParagraph.paragraphId) ?? [];
+    const replacementRange = findReplacementHighlightRange(highlight, replacementParagraph, usedRanges);
+    if (!replacementRange) {
+      continue;
+    }
+
+    await connection.execute(
+      `
+        INSERT INTO user_highlights (
+          highlight_id,
+          user_id,
+          book_id,
+          paragraph_id,
+          page_number,
+          paragraph_number,
+          sequence_number,
+          color,
+          char_start,
+          char_end,
+          highlighted_text,
+          created_at,
+          updated_at
+        ) VALUES (
+          :highlightId,
+          :userId,
+          :bookId,
+          :paragraphId,
+          :pageNumber,
+          :paragraphNumber,
+          :sequenceNumber,
+          :color,
+          :charStart,
+          :charEnd,
+          :highlightedText,
+          SYSTIMESTAMP,
+          SYSTIMESTAMP
+        )
+      `,
+      {
+        bookId,
+        charEnd: replacementRange.charEnd,
+        charStart: replacementRange.charStart,
+        color: highlight.color,
+        highlightId: highlight.highlightId,
+        highlightedText: highlight.highlightedText,
+        pageNumber: highlight.pageNumber,
+        paragraphId: replacementParagraph.paragraphId,
+        paragraphNumber: replacementParagraph.paragraphNumber,
+        sequenceNumber: replacementParagraph.sequenceNumber,
+        userId: highlight.userId
+      }
+    );
+
+    usedRanges.push(replacementRange);
+    usedRangesByParagraphId.set(replacementParagraph.paragraphId, usedRanges);
+    restoredHighlights.set(highlight.highlightId, {
+      ...replacementRange,
+      highlightId: highlight.highlightId,
+      paragraphId: replacementParagraph.paragraphId,
+      paragraphNumber: replacementParagraph.paragraphNumber,
+      sequenceNumber: replacementParagraph.sequenceNumber
+    });
+  }
+
+  return restoredHighlights;
+}
+
+async function restorePageNotes(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  notes: StoredPageNoteRecord[],
+  paragraphMatches: Map<string, ReplacementParagraphRecord>,
+  replacementParagraphs: ReplacementParagraphRecord[],
+  restoredHighlights: Map<string, RestoredHighlightRecord>
+): Promise<void> {
+  for (const note of notes) {
+    const restoredHighlight = note.highlightId ? restoredHighlights.get(note.highlightId) ?? null : null;
+    const replacementParagraph = restoredHighlight
+      ? {
+          paragraphId: restoredHighlight.paragraphId,
+          paragraphNumber: restoredHighlight.paragraphNumber,
+          paragraphText: "",
+          sequenceNumber: restoredHighlight.sequenceNumber
+        }
+      : resolveReplacementParagraph(note, paragraphMatches, replacementParagraphs);
+
+    await connection.execute(
+      `
+        INSERT INTO user_notes (
+          note_id,
+          user_id,
+          book_id,
+          page_number,
+          paragraph_id,
+          paragraph_number,
+          sequence_number,
+          highlight_id,
+          note_text,
+          created_at,
+          updated_at
+        ) VALUES (
+          :noteId,
+          :userId,
+          :bookId,
+          :pageNumber,
+          :paragraphId,
+          :paragraphNumber,
+          :sequenceNumber,
+          :highlightId,
+          :noteText,
+          SYSTIMESTAMP,
+          SYSTIMESTAMP
+        )
+      `,
+      {
+        bookId,
+        highlightId: restoredHighlight?.highlightId ?? null,
+        noteId: note.noteId,
+        noteText: note.noteText,
+        pageNumber: note.pageNumber,
+        paragraphId: replacementParagraph?.paragraphId ?? null,
+        paragraphNumber: replacementParagraph?.paragraphNumber ?? null,
+        sequenceNumber: replacementParagraph?.sequenceNumber ?? null,
+        userId: note.userId
+      }
+    );
+  }
 }
 
 function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
@@ -966,18 +1605,10 @@ async function replaceBookPageParagraphs(
     sourceImageRotation?: ImageRotation;
   }
 ): Promise<void> {
-  const countResult = await connection.execute(
-    `
-      SELECT COUNT(*) AS "paragraphCount"
-      FROM book_paragraphs
-      WHERE book_id = :bookId
-        AND page_number = :pageNumber
-    `,
-    {
-      bookId: options.bookId,
-      pageNumber: options.pageNumber
-    }
-  );
+  const existingParagraphs = await listPageParagraphs(connection, options.bookId, options.pageNumber);
+  const pageBookmarks = await listPageBookmarks(connection, options.bookId, options.pageNumber);
+  const pageHighlights = await listPageHighlights(connection, options.bookId, options.pageNumber);
+  const pageNotes = await listPageNotes(connection, options.bookId, options.pageNumber);
   const previousCountResult = await connection.execute(
     `
       SELECT COUNT(*) AS "paragraphCount"
@@ -991,11 +1622,30 @@ async function replaceBookPageParagraphs(
     }
   );
 
-  const currentParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
+  const currentParagraphCount = existingParagraphs.length;
   const previousParagraphCount = Number(((previousCountResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
-  const delta = options.paragraphs.length - currentParagraphCount;
+  const replacementParagraphs = options.paragraphs.map((paragraphText, paragraphIndex) => ({
+    paragraphId: randomUUID(),
+    paragraphNumber: paragraphIndex + 1,
+    paragraphText,
+    sequenceNumber: previousParagraphCount + paragraphIndex + 1
+  })) satisfies ReplacementParagraphRecord[];
+  const paragraphMatches = matchReplacementParagraphs(existingParagraphs, replacementParagraphs);
+  const delta = replacementParagraphs.length - currentParagraphCount;
 
   await invalidateBookAudioCache(connection, options.bookId);
+
+  await connection.execute(
+    `
+      DELETE FROM user_notes
+      WHERE book_id = :bookId
+        AND page_number = :pageNumber
+    `,
+    {
+      bookId: options.bookId,
+      pageNumber: options.pageNumber
+    }
+  );
 
   await connection.execute(
     `
@@ -1010,8 +1660,9 @@ async function replaceBookPageParagraphs(
   );
 
   await shiftSubsequentSequenceNumbers(connection, options.bookId, options.pageNumber, delta);
+  await shiftSubsequentAnnotationSequenceNumbers(connection, options.bookId, options.pageNumber, delta);
 
-  for (const [paragraphIndex, paragraphText] of options.paragraphs.entries()) {
+  for (const replacementParagraph of replacementParagraphs) {
     await connection.execute(
       `
         INSERT INTO book_paragraphs (
@@ -1036,12 +1687,24 @@ async function replaceBookPageParagraphs(
         bookId: options.bookId,
         pageId: options.page.pageId,
         pageNumber: options.pageNumber,
-        paragraphId: randomUUID(),
-        paragraphNumber: paragraphIndex + 1,
-        paragraphText,
-        sequenceNumber: previousParagraphCount + paragraphIndex + 1
+        paragraphId: replacementParagraph.paragraphId,
+        paragraphNumber: replacementParagraph.paragraphNumber,
+        paragraphText: replacementParagraph.paragraphText,
+        sequenceNumber: replacementParagraph.sequenceNumber
       }
     );
+  }
+
+  if (pageBookmarks.length > 0) {
+    await restorePageBookmarks(connection, options.bookId, pageBookmarks, paragraphMatches, replacementParagraphs);
+  }
+
+  const restoredHighlights = pageHighlights.length > 0
+    ? await restorePageHighlights(connection, options.bookId, pageHighlights, paragraphMatches, replacementParagraphs)
+    : new Map<string, RestoredHighlightRecord>();
+
+  if (pageNotes.length > 0) {
+    await restorePageNotes(connection, options.bookId, pageNotes, paragraphMatches, replacementParagraphs, restoredHighlights);
   }
 
   const pageUpdateAssignments = [
