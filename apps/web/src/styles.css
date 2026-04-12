@@ -150,8 +150,13 @@ textarea {
 }
 
 .brand-mark,
-.hero-rabbit {
+.hero-rabbit,
+.login-rabbit {
   flex: none;
+  display: block;
+  object-fit: cover;
+  border-radius: 24%;
+  box-shadow: 0 18px 42px rgba(26, 48, 38, 0.18);
 }
 
 .brand-mark {

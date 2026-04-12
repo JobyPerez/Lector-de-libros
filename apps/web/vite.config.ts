@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
-        includeAssets: ["apple-touch-icon.png", "favicon.svg", "pwa-192x192.png", "pwa-512x512.png"],
+        includeAssets: ["apple-touch-icon.png", "conejo-lector-mark.jpg", "favicon.png", "pwa-192x192.png", "pwa-512x512.png"],
         manifest: {
           background_color: "#f2e7d1",
           description: "Biblioteca personal para leer y escuchar libros.",
@@ -29,7 +29,13 @@ export default defineConfig(({ mode }) => {
               type: "image/png"
             },
             {
-              purpose: "any maskable",
+              purpose: "any",
+              sizes: "512x512",
+              src: "pwa-512x512.png",
+              type: "image/png"
+            },
+            {
+              purpose: "maskable",
               sizes: "512x512",
               src: "pwa-512x512.png",
               type: "image/png"
