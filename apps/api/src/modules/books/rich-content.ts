@@ -100,6 +100,16 @@ function renderInlineMarkdown(value: string): string {
     .replace(/_(.+?)_/gu, "<em>$1</em>");
 }
 
+function countUppercaseRatio(value: string): number {
+  const uppercaseLetters = value.replace(/[^A-ZÁÉÍÓÚÑ]/gu, "");
+  const letterCount = value.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/gu, "").length;
+  return letterCount > 0 ? uppercaseLetters.length / letterCount : 0;
+}
+
+function countTitleCaseWords(words: string[]): number {
+  return words.filter((word) => /^[A-ZÁÉÍÓÚÑ][\p{Ll}\d'’-]*$/u.test(word)).length;
+}
+
 function looksLikeHeading(text: string, index: number): number | null {
   const normalized = normalizeWhitespace(text);
   if (!normalized) {
@@ -110,28 +120,27 @@ function looksLikeHeading(text: string, index: number): number | null {
     return null;
   }
 
+  const words = normalized.split(/\s+/u);
+
   if (headingKeywordPattern.test(normalized)) {
-    return index === 0 ? 1 : 2;
+    return words.length <= 12 && normalized.length <= 90 ? (index === 0 ? 1 : 2) : null;
   }
 
   if (/[.!?:;]$/u.test(normalized)) {
     return null;
   }
 
-  const words = normalized.split(/\s+/u);
-  if (words.length > 14 || normalized.length > 110) {
+  if (words.length > 12 || normalized.length > 80) {
     return null;
   }
 
-  const uppercaseLetters = normalized.replace(/[^A-ZÁÉÍÓÚÑ]/gu, "");
-  const letterCount = normalized.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/gu, "").length;
-  const uppercaseRatio = letterCount > 0 ? uppercaseLetters.length / letterCount : 0;
-  if (uppercaseRatio >= 0.6) {
+  if (countUppercaseRatio(normalized) >= 0.75 && words.length <= 8) {
     return index === 0 ? 1 : 2;
   }
 
-  const titleCaseWordCount = words.filter((word) => /^[A-ZÁÉÍÓÚÑ][\p{Ll}\d'’-]*$/u.test(word)).length;
-  if (titleCaseWordCount >= Math.max(2, words.length - 1) && words.length <= 9) {
+  const titleCaseWordCount = countTitleCaseWords(words);
+  const hasDisallowedPunctuation = /[,()[\]{}"“”/\\]/u.test(normalized);
+  if (!hasDisallowedPunctuation && words.length <= 6 && normalized.length <= 60 && titleCaseWordCount >= Math.max(2, words.length - 1)) {
     return index === 0 ? 1 : 2;
   }
 
