@@ -2770,10 +2770,12 @@ textarea {
 }
 
 .reader-section-summary-hero {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1.1rem;
   padding: clamp(1.2rem, 2vw, 1.6rem);
+  padding-right: clamp(4.8rem, 9vw, 5.8rem);
   border: 1px solid rgba(31, 43, 35, 0.08);
   border-radius: 28px;
   background:
@@ -2825,10 +2827,12 @@ textarea {
 .reader-section-summary-actions {
   display: grid;
   align-content: start;
+  justify-items: end;
   gap: 0.7rem;
+  padding-top: 3.3rem;
 }
 
-.reader-section-summary-link,
+.reader-section-summary-back-button,
 .reader-section-summary-generate {
   display: inline-flex;
   align-items: center;
@@ -2837,10 +2841,21 @@ textarea {
   min-height: 3rem;
 }
 
-.reader-section-summary-link svg,
+.reader-section-summary-back-button {
+  position: absolute;
+  top: clamp(1rem, 2vw, 1.25rem);
+  right: clamp(1rem, 2vw, 1.25rem);
+  z-index: 1;
+}
+
+.reader-section-summary-back-button svg,
 .reader-section-summary-generate svg {
   width: 1.15rem;
   height: 1.15rem;
+}
+
+.reader-section-summary-generate {
+  justify-self: end;
 }
 
 .reader-section-summary-panel {
@@ -4209,9 +4224,9 @@ textarea {
 
   .reader-section-summary-actions {
     grid-template-columns: minmax(0, 1fr);
+    padding-top: 0.4rem;
   }
 
-  .reader-section-summary-link,
   .reader-section-summary-generate {
     width: 100%;
   }
@@ -4228,6 +4243,12 @@ textarea {
 
   .reader-section-summary-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-top: 0.4rem;
+  }
+
+  .reader-section-summary-back-button {
+    top: 1rem;
+    right: 1rem;
   }
 }
   .reader-layout .reader-paragraph {

@@ -666,6 +666,9 @@ export function SectionSummaryPage() {
     () => sectionEntries.findIndex((entry) => entry.chapterId === chapterId),
     [chapterId, sectionEntries]
   );
+  const currentSectionCounter = currentSectionIndex >= 0 && sectionEntries.length > 0
+    ? `${currentSectionIndex + 1}/${sectionEntries.length}`
+    : null;
   const previousSection = currentSectionIndex > 0 ? sectionEntries[currentSectionIndex - 1] ?? null : null;
   const nextSection = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex + 1] ?? null : null;
 
@@ -981,26 +984,27 @@ export function SectionSummaryPage() {
   return (
     <section className="reader-section-summary-page">
       <header className="reader-section-summary-hero">
+        <Link
+          aria-label="Volver al lector"
+          className="secondary-button link-button reader-header-icon-button reader-section-summary-back-button"
+          title="Volver al lector"
+          to={backToReaderPath}
+        >
+          <BackIcon />
+        </Link>
+
         <div className="reader-section-summary-hero-main">
-          <p className="eyebrow">Resumen por sección</p>
+          <p className="eyebrow">Resumen de la sección del índice</p>
           <h2>{section?.title ?? "Cargando sección..."}</h2>
-          <p className="reader-section-summary-intro">
-            Genera un resumen desde el comienzo de esta entrada del índice hasta la siguiente y reprodúcelo desde la barra flotante.
-          </p>
           {section ? (
             <div className="reader-section-summary-meta">
               <span>Inicio: pág. {section.startPageNumber}</span>
               <span>Fin: pág. {section.endPageNumber}</span>
-              <span>{section.isGenerated ? "Índice derivado" : "Índice del libro"}</span>
             </div>
           ) : null}
         </div>
 
         <div className="reader-section-summary-actions">
-          <Link className="ghost-button reader-section-summary-link" to={backToReaderPath}>
-            <BackIcon />
-            <span>Volver al lector</span>
-          </Link>
           <button
             className="primary-button reader-section-summary-generate"
             disabled={isGenerating || summaryQuery.isLoading || !section}
@@ -1034,22 +1038,18 @@ export function SectionSummaryPage() {
       {!summaryQuery.isLoading && !summaryQuery.isError && !summaryQuery.data?.summary ? (
         <section className="panel reader-section-summary-panel reader-section-summary-empty">
           <h3>No hay resumen generado todavía</h3>
-          <p className="subdued">Cuando lo generes, aquí aparecerá una síntesis de esta parte del libro y podrás escucharla desde la barra flotante.</p>
         </section>
       ) : null}
 
       {summaryQuery.data?.summary ? (
         <article className="panel reader-section-summary-panel reader-section-summary-card">
-          <div className="reader-section-summary-card-header">
-            <div>
-              <p className="eyebrow">Resumen de la sección</p>
-              <h3>{section?.title}</h3>
+          {summaryQuery.data.summary.isStale ? (
+            <div className="reader-section-summary-card-header">
+              <div className="reader-section-summary-card-badges">
+                <span className="reader-section-summary-badge warning">Necesita regenerarse</span>
+              </div>
             </div>
-            <div className="reader-section-summary-card-badges">
-              {summaryQuery.data.summary.isStale ? <span className="reader-section-summary-badge warning">Necesita regenerarse</span> : null}
-              <span className="reader-section-summary-badge">Actualizado</span>
-            </div>
-          </div>
+          ) : null}
 
           <div className="reader-section-summary-copy">
             {summaryParagraphs.map((paragraph) => (
@@ -1104,9 +1104,11 @@ export function SectionSummaryPage() {
             />
           </ReaderFloatingAudioPopover>
 
-          <div className="reader-floating-status">
-            <strong>Resumen</strong>
-            <span>Págs. {section?.startPageNumber} a {section?.endPageNumber}</span>
+          <div
+            aria-label={currentSectionCounter ? `Sección ${currentSectionIndex + 1} de ${sectionEntries.length}` : "Contador de secciones"}
+            className="reader-floating-status"
+          >
+            <strong>{currentSectionCounter ?? "-/-"}</strong>
           </div>
 
           <ReaderNavigationPopover
