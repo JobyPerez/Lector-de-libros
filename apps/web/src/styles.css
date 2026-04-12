@@ -518,6 +518,58 @@ textarea {
   gap: 1.5rem;
 }
 
+.route-transition-shell {
+  position: relative;
+  display: grid;
+}
+
+.route-transition-screen {
+  grid-area: 1 / 1;
+  min-width: 0;
+  transform-origin: center top;
+}
+
+.route-transition-screen[data-phase="exit"] {
+  pointer-events: none;
+}
+
+.route-scene,
+.screen-scene {
+  transform-origin: center top;
+}
+
+.route-transition-screen[data-phase="enter"][data-direction="forward"],
+.route-scene[data-direction="forward"] {
+  will-change: opacity, transform, filter;
+  animation: app-screen-enter-forward 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.route-transition-screen[data-phase="enter"][data-direction="back"],
+.route-scene[data-direction="back"] {
+  will-change: opacity, transform, filter;
+  animation: app-screen-enter-back 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.route-transition-screen[data-phase="exit"][data-direction="forward"] {
+  will-change: opacity, transform, filter;
+  animation: app-screen-exit-forward 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.route-transition-screen[data-phase="exit"][data-direction="back"] {
+  will-change: opacity, transform, filter;
+  animation: app-screen-exit-back 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.screen-scene[data-direction="forward"] {
+  will-change: opacity, transform, filter;
+  animation: app-panel-enter-forward 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.screen-scene[data-direction="back"] {
+  will-change: opacity, transform, filter;
+  animation: app-panel-enter-back 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
 .hero-card,
 .auth-card,
 .panel {
@@ -1850,6 +1902,90 @@ textarea {
   }
 }
 
+@keyframes app-screen-enter-forward {
+  0% {
+    opacity: 0;
+    transform: translate3d(2.25rem, 0.65rem, 0) scale(0.988);
+    filter: blur(5px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes app-screen-enter-back {
+  0% {
+    opacity: 0;
+    transform: translate3d(-2.25rem, 0.65rem, 0) scale(0.988);
+    filter: blur(5px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes app-screen-exit-forward {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(-1.6rem, -0.2rem, 0) scale(0.992);
+    filter: blur(4px);
+  }
+}
+
+@keyframes app-screen-exit-back {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(1.6rem, -0.2rem, 0) scale(0.992);
+    filter: blur(4px);
+  }
+}
+
+@keyframes app-panel-enter-forward {
+  0% {
+    opacity: 0;
+    transform: translate3d(1.4rem, 0.45rem, 0) scale(0.992);
+    filter: blur(4px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes app-panel-enter-back {
+  0% {
+    opacity: 0;
+    transform: translate3d(-1.4rem, 0.45rem, 0) scale(0.992);
+    filter: blur(4px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
 @keyframes shelf-book-card-exit {
   0% {
     opacity: 1;
@@ -1897,9 +2033,14 @@ textarea {
   .shelf-book-card,
   .book-card-link,
   .book-card-removing-badge,
-  .book-card-removing-dot {
+  .book-card-removing-dot,
+  .route-transition-screen,
+  .route-scene,
+  .screen-scene {
     animation: none !important;
     transition: none;
+    transform: none !important;
+    filter: none !important;
   }
 }
 

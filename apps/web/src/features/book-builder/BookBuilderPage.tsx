@@ -1927,8 +1927,13 @@ export function BookBuilderPage() {
                 <BackIcon />
               </button>
             ) : (
-              <Link className="secondary-button link-button" to="/">
-                Volver
+              <Link
+                aria-label="Volver a la estantería"
+                className="secondary-button link-button reader-header-icon-button"
+                title="Volver a la estantería"
+                to="/"
+              >
+                <BackIcon />
               </Link>
             )}
           </div>

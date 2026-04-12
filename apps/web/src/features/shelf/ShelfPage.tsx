@@ -11,6 +11,9 @@ type BookEditFormState = {
   title: string;
 };
 
+type ShelfView = "edit" | "import" | "shelf";
+type ShelfViewTransitionDirection = "back" | "forward";
+
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
   synopsis: "",
@@ -46,6 +49,15 @@ function DownloadIcon() {
       <path d="M12 3v10.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="m7.5 10.5 4.5 4.5 4.5-4.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M4.5 16.5v1.2c0 1 .8 1.8 1.8 1.8h11.4c1 0 1.8-.8 1.8-1.8v-1.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
     </svg>
   );
 }
@@ -170,6 +182,8 @@ export function ShelfPage() {
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
+  const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
+  const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
 
   const booksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -241,6 +255,7 @@ export function ShelfPage() {
 
       setImportForm({ authorName: "", sourceType: "PDF", title: "" });
       setSelectedFile(null);
+      setViewTransitionDirection("back");
       setIsImportPanelVisible(false);
       await booksQuery.refetch();
     } catch (error) {
@@ -250,17 +265,27 @@ export function ShelfPage() {
     }
   }
 
-  function toggleImportPanel() {
-    setIsImportPanelVisible((current) => !current);
+  function openImportPanel() {
+    setViewTransitionDirection("forward");
+    setIsImportPanelVisible(true);
     setIsCreateMenuOpen(false);
     setCreateError(null);
     setEditingBook(null);
     setBookActionError(null);
     setBookActionSuccess(null);
+    setOutlineError(null);
+    setOutlineSuccess(null);
     setDownloadMenuBookId(null);
   }
 
+  function closeImportPanel() {
+    setViewTransitionDirection("back");
+    setIsImportPanelVisible(false);
+    setCreateError(null);
+  }
+
   function startEditingBook(book: BookSummary) {
+    setViewTransitionDirection("forward");
     setEditingBook(book);
     setBookForm({
       authorName: book.authorName ?? "",
@@ -277,9 +302,11 @@ export function ShelfPage() {
   }
 
   function resetBookForm() {
+    setViewTransitionDirection("back");
     setEditingBook(null);
     setBookForm(emptyBookEditForm);
     setBookActionError(null);
+    setBookActionSuccess(null);
     setOutlineError(null);
     setOutlineSuccess(null);
     setDownloadMenuBookId(null);
@@ -413,6 +440,7 @@ export function ShelfPage() {
 
       await booksQuery.refetch();
       setBookActionSuccess(`Se actualizó el libro ${bookForm.title.trim()}.`);
+      setViewTransitionDirection("back");
       setEditingBook(null);
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : "No se pudo actualizar el libro.");
@@ -439,6 +467,7 @@ export function ShelfPage() {
       await deleteBook(accessToken, book.bookId);
 
       if (editingBook?.bookId === book.bookId) {
+        setViewTransitionDirection("back");
         setEditingBook(null);
       }
 
@@ -458,7 +487,8 @@ export function ShelfPage() {
 
   return (
     <div className="page-stack shelf-layout">
-      <section className="panel wide-panel overflow-visible-panel">
+      {activeView === "shelf" ? (
+      <section className="panel wide-panel overflow-visible-panel screen-scene" data-direction={viewTransitionDirection}>
         <div className="panel-header shelf-header">
           <div>
             <h2>Estantería</h2>
@@ -476,7 +506,7 @@ export function ShelfPage() {
 
             {isCreateMenuOpen ? (
               <div className="menu-panel" role="menu">
-                <button className="menu-item" onClick={toggleImportPanel} type="button">
+                <button className="menu-item" onClick={openImportPanel} type="button">
                   Importación
                 </button>
                 <Link className="menu-item" onClick={() => setIsCreateMenuOpen(false)} to="/builder">
@@ -616,16 +646,23 @@ export function ShelfPage() {
           })}
         </div>
       </section>
+      ) : null}
 
-      {editingBook ? (
-        <aside className="panel form-panel import-panel-inline">
+      {activeView === "edit" && editingBook ? (
+        <section className="panel form-panel wide-panel import-panel-inline screen-scene" data-direction={viewTransitionDirection}>
           <div className="panel-header compact-header">
             <div>
               <p className="eyebrow">Edición</p>
               <h2>{editingBook.title}</h2>
             </div>
-            <button className="secondary-button" onClick={resetBookForm} type="button">
-              Cerrar
+            <button
+              aria-label="Volver a la estantería"
+              className="secondary-button reader-header-icon-button"
+              onClick={resetBookForm}
+              title="Volver a la estantería"
+              type="button"
+            >
+              <BackIcon />
             </button>
           </div>
 
@@ -730,18 +767,24 @@ export function ShelfPage() {
               </button>
             </div>
           </section>
-        </aside>
+        </section>
       ) : null}
 
-      {isImportPanelVisible ? (
-        <aside className="panel form-panel import-panel-inline">
+      {activeView === "import" ? (
+        <section className="panel form-panel wide-panel import-panel-inline screen-scene" data-direction={viewTransitionDirection}>
           <div className="panel-header compact-header">
             <div>
               <p className="eyebrow">Importación</p>
               <h2>PDF o EPUB</h2>
             </div>
-            <button className="secondary-button" onClick={() => setIsImportPanelVisible(false)} type="button">
-              Cerrar
+            <button
+              aria-label="Volver a la estantería"
+              className="secondary-button reader-header-icon-button"
+              onClick={closeImportPanel}
+              title="Volver a la estantería"
+              type="button"
+            >
+              <BackIcon />
             </button>
           </div>
 
@@ -787,12 +830,12 @@ export function ShelfPage() {
               <button className="primary-button" disabled={submitting} type="submit">
                 {submitting ? "Importando..." : "Importar libro"}
               </button>
-              <button className="secondary-button" onClick={() => setIsImportPanelVisible(false)} type="button">
+              <button className="secondary-button" onClick={closeImportPanel} type="button">
                 Cancelar
               </button>
             </div>
           </form>
-        </aside>
+        </section>
       ) : null}
     </div>
   );

@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { BrowserRouter, NavLink, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import { BrowserRouter, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigationType, useOutlet } from "react-router-dom";
 
 import { fetchCurrentUser } from "./api";
 import { useAuthStore, type SessionUser } from "./auth-store";
@@ -15,6 +15,101 @@ import { UsersAdminPage } from "../features/users/UsersAdminPage";
 
 const queryClient = new QueryClient();
 const routerBaseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+const routeTransitionDurationMs = 320;
+
+type RouteTransitionDirection = "back" | "forward";
+type AnimatedOutletScreen = {
+  direction: RouteTransitionDirection;
+  key: string;
+  node: React.ReactNode;
+  phase: "enter" | "exit" | "idle";
+};
+
+function buildRouteTransitionKey(location: ReturnType<typeof useLocation>) {
+  return location.key || `${location.pathname}${location.search}${location.hash}`;
+}
+
+function RouteScene({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const direction: RouteTransitionDirection = navigationType === "POP" ? "back" : "forward";
+
+  return (
+    <div className="route-scene" data-direction={direction} key={buildRouteTransitionKey(location)}>
+      {children}
+    </div>
+  );
+}
+
+function AnimatedRouteOutlet() {
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const outlet = useOutlet();
+  const [screens, setScreens] = useState<Array<AnimatedOutletScreen>>(() => [{
+    direction: "forward",
+    key: buildRouteTransitionKey(location),
+    node: outlet,
+    phase: "idle"
+  }]);
+
+  useEffect(() => {
+    const nextKey = buildRouteTransitionKey(location);
+    const direction: RouteTransitionDirection = navigationType === "POP" ? "back" : "forward";
+
+    setScreens((current) => {
+      const activeScreen = current[current.length - 1];
+
+      if (!activeScreen || activeScreen.key === nextKey) {
+        return [{
+          direction,
+          key: nextKey,
+          node: outlet,
+          phase: activeScreen?.phase === "enter" ? "enter" : "idle"
+        }];
+      }
+
+      return [
+        {
+          ...activeScreen,
+          direction,
+          phase: "exit"
+        },
+        {
+          direction,
+          key: nextKey,
+          node: outlet,
+          phase: "enter"
+        }
+      ];
+    });
+
+    const timeoutId = window.setTimeout(() => {
+      setScreens((current) => {
+        const activeScreen = current[current.length - 1];
+
+        if (!activeScreen || activeScreen.key !== nextKey) {
+          return current;
+        }
+
+        return [{ ...activeScreen, phase: "idle" }];
+      });
+    }, routeTransitionDurationMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [location.hash, location.key, location.pathname, location.search, navigationType, outlet]);
+
+  return (
+    <div className="route-transition-shell">
+      {screens.map((screen) => (
+        <div className="route-transition-screen" data-direction={screen.direction} data-phase={screen.phase} key={screen.key}>
+          {screen.node}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
   const accessToken = useAuthStore((state) => state.accessToken);
@@ -28,7 +123,7 @@ function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
     return <Navigate to="/" replace />;
   }
 
-  return <>{children}</>;
+  return <RouteScene>{children}</RouteScene>;
 }
 
 function AdminOnlyRoute() {
@@ -145,7 +240,7 @@ function ProtectedShell() {
           <RabbitMark className="brand-mark" title="El conejo lector" />
           <div className="brand-copy">
             <p className="eyebrow">El conejo lector</p>
-            <h1>Biblioteca hablada</h1>
+            <h1>Biblioteca contada</h1>
           </div>
         </div>
         <nav className="topnav">
@@ -163,7 +258,7 @@ function ProtectedShell() {
         </div>
       </header>
       <main>
-        <Outlet />
+        <AnimatedRouteOutlet />
       </main>
     </div>
   );
