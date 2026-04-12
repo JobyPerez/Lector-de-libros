@@ -17,6 +17,8 @@ const emptyBookEditForm: BookEditFormState = {
   title: ""
 };
 
+const removalExitAnimationMs = 280;
+
 function EditIcon() {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
@@ -87,6 +89,7 @@ export function ShelfPage() {
   const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
+  const [removingBookId, setRemovingBookId] = useState<string | null>(null);
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
 
@@ -361,11 +364,16 @@ export function ShelfPage() {
         setEditingBook(null);
       }
 
+      setRemovingBookId(book.bookId);
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, removalExitAnimationMs);
+      });
       await booksQuery.refetch();
       setBookActionSuccess(`Se eliminó el libro ${book.title}.`);
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : "No se pudo eliminar el libro.");
     } finally {
+      setRemovingBookId(null);
       setDeletingBookId(null);
     }
   }
@@ -407,8 +415,17 @@ export function ShelfPage() {
         {bookActionSuccess ? <p className="success-text">{bookActionSuccess}</p> : null}
 
         <div className="shelf-grid">
-          {booksQuery.data?.map((book) => (
-            <article className="book-card shelf-book-card" key={book.bookId}>
+          {booksQuery.data?.map((book) => {
+            const isDeletingBook = deletingBookId === book.bookId;
+            const removalState = removingBookId === book.bookId
+              ? "exiting"
+              : isDeletingBook
+                ? "pending"
+                : undefined;
+            const isBookRemoving = removalState !== undefined;
+
+            return (
+            <article aria-busy={isBookRemoving} className="book-card shelf-book-card" data-removing={removalState} key={book.bookId}>
               <div
                 className="book-card-actions"
                 onBlur={(event) => {
@@ -422,7 +439,7 @@ export function ShelfPage() {
                   aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
                   aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
                   className="book-card-icon-button book-card-download-button"
-                  disabled={downloadingBookId === book.bookId}
+                  disabled={isBookRemoving || downloadingBookId === book.bookId}
                   onClick={(event) => handleDownloadAction(book, event)}
                   title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
                   type="button"
@@ -432,6 +449,7 @@ export function ShelfPage() {
                 <button
                   aria-label={`Editar ${book.title}`}
                   className="book-card-icon-button book-card-edit-button"
+                  disabled={isBookRemoving}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -445,7 +463,7 @@ export function ShelfPage() {
                 <button
                   aria-label={`Eliminar ${book.title}`}
                   className="book-card-icon-button book-card-delete-button"
-                  disabled={deletingBookId === book.bookId}
+                  disabled={isBookRemoving}
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
@@ -490,7 +508,7 @@ export function ShelfPage() {
                 ) : null}
               </div>
 
-              <Link className="book-card-link" to={`/books/${book.bookId}`}>
+              <Link aria-disabled={isBookRemoving} className="book-card-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
                 <span className="book-spine">{book.sourceType}</span>
                 <div className="book-card-copy">
                   <h3>{book.title}</h3>
@@ -507,8 +525,13 @@ export function ShelfPage() {
                   </div>
                 </dl>
               </Link>
+              <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
+                <span className="book-card-removing-dot" />
+                {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
+              </div>
             </article>
-          ))}
+            );
+          })}
         </div>
       </section>
 

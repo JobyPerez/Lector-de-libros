@@ -45,10 +45,26 @@ function normalizeZipEntryName(entryName: string): string {
   return entryName.replace(/\\/g, "/");
 }
 
-function findArchiveEntry(archive: AdmZip, entryPath: string) {
-  const normalizedEntryPath = normalizeZipEntryName(entryPath);
+function decodeZipPathSegment(pathSegment: string): string {
+  try {
+    return decodeURIComponent(pathSegment);
+  } catch {
+    return pathSegment;
+  }
+}
 
-  return archive.getEntries().find((entry) => normalizeZipEntryName(entry.entryName) === normalizedEntryPath);
+function normalizeArchiveLookupPath(entryPath: string): string {
+  return normalizeZipEntryName(entryPath)
+    .split("/")
+    .filter(Boolean)
+    .map(decodeZipPathSegment)
+    .join("/");
+}
+
+function findArchiveEntry(archive: AdmZip, entryPath: string) {
+  const normalizedEntryPath = normalizeArchiveLookupPath(entryPath);
+
+  return archive.getEntries().find((entry) => normalizeArchiveLookupPath(entry.entryName) === normalizedEntryPath);
 }
 
 function dirnamePath(filePath: string): string {
@@ -248,7 +264,7 @@ function inlineBinaryAssets(document: ReturnType<typeof load>, documentDirectory
     }
   });
 
-  document("image[href], image[xlink\\:href]").each((_, node) => {
+  document("image").each((_, node) => {
     const element = document(node);
     const source = element.attr("href") ?? element.attr("xlink:href");
     if (!source) {

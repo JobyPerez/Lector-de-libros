@@ -792,10 +792,15 @@ textarea {
   gap: 1rem;
   position: relative;
   overflow: hidden;
+  transition: transform 220ms ease, opacity 220ms ease, filter 220ms ease, box-shadow 220ms ease;
 }
 
 .shelf-book-card {
   padding: 0;
+}
+
+.shelf-book-card[data-removing] {
+  pointer-events: none;
 }
 
 .book-card-link {
@@ -804,6 +809,7 @@ textarea {
   min-height: 220px;
   height: 100%;
   padding: 1.25rem;
+  transition: transform 240ms ease, opacity 240ms ease, filter 240ms ease;
 }
 
 .book-card-copy {
@@ -895,6 +901,76 @@ textarea {
   inset: 0 auto 0 0;
   width: 12px;
   background: linear-gradient(180deg, #8a4b1f, #613116);
+}
+
+.book-card-removing-badge {
+  position: absolute;
+  left: 1rem;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: fit-content;
+  padding: 0.55rem 0.85rem;
+  border: 1px solid rgba(140, 31, 49, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 249, 240, 0.94);
+  color: var(--danger);
+  font-size: 0.88rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  box-shadow: 0 14px 30px rgba(52, 32, 16, 0.12);
+  opacity: 0;
+  transform: translateY(0.65rem);
+  transition: opacity 180ms ease, transform 220ms ease;
+}
+
+.book-card-removing-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: currentColor;
+  animation: shelf-book-removing-pulse 1s ease-in-out infinite;
+}
+
+.shelf-book-card[data-removing] .book-card-link,
+.shelf-book-card[data-removing] .book-card-actions {
+  opacity: 0.28;
+  filter: saturate(0.72);
+}
+
+.shelf-book-card[data-removing] .book-card-link {
+  transform: scale(0.985);
+}
+
+.shelf-book-card[data-removing] .book-card-removing-badge {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.shelf-book-card[data-removing="pending"] {
+  animation: shelf-book-card-removing 1.15s cubic-bezier(0.3, 0.1, 0.2, 1) infinite alternate;
+}
+
+.shelf-book-card[data-removing="exiting"] {
+  animation: shelf-book-card-exit 280ms cubic-bezier(0.36, 0, 0.2, 1) both;
+}
+
+.shelf-book-card[data-removing="exiting"] .book-card-link,
+.shelf-book-card[data-removing="exiting"] .book-card-actions {
+  opacity: 0.08;
+  filter: blur(1.2px) saturate(0.55);
+}
+
+.shelf-book-card[data-removing="exiting"] .book-card-link {
+  transform: scale(0.94);
+}
+
+.shelf-book-card[data-removing="exiting"] .book-card-removing-badge {
+  opacity: 0.98;
+  transform: translateY(-0.1rem) scale(0.98);
 }
 
 .book-spine {
@@ -1616,6 +1692,59 @@ textarea {
 
   100% {
     transform: scale(1);
+  }
+}
+
+@keyframes shelf-book-card-removing {
+  0% {
+    transform: translateY(0);
+    box-shadow: 0 22px 48px rgba(52, 32, 16, 0.12);
+  }
+
+  100% {
+    transform: translateY(-3px);
+    box-shadow: 0 28px 58px rgba(140, 31, 49, 0.16);
+  }
+}
+
+@keyframes shelf-book-card-exit {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: none;
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(0.9) translateY(-0.9rem);
+    filter: blur(2px);
+  }
+}
+
+@keyframes shelf-book-removing-pulse {
+  0% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  100% {
+    opacity: 0.55;
+    transform: scale(0.88);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shelf-book-card,
+  .book-card-link,
+  .book-card-removing-badge,
+  .book-card-removing-dot {
+    animation: none !important;
+    transition: none;
   }
 }
 
