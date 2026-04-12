@@ -2497,6 +2497,44 @@ textarea {
   gap: 0.75rem;
 }
 
+.reader-navigation-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.reader-navigation-section-heading-copy {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.reader-navigation-source-hint,
+.outline-source-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.reader-navigation-source-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.16rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  background: rgba(42, 87, 66, 0.08);
+  color: #355443;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .reader-navigation-list {
   display: grid;
   gap: 0.55rem;

@@ -14,11 +14,34 @@ export type BookOutlineEntry = {
   title: string;
 };
 
+export type BookOutlineSource = "EPUB_TOC" | "GENERATED_HEADINGS" | "MANUAL" | "NONE";
+
+type StoredBookOutlineSource = Extract<BookOutlineSource, "EPUB_TOC" | "MANUAL">;
+
+export type ResolvedBookOutline = {
+  outline: BookOutlineEntry[];
+  source: BookOutlineSource;
+};
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
+
+async function getStoredBookOutlineSource(connection: DatabaseConnection, bookId: string): Promise<StoredBookOutlineSource | null> {
+  const result = await connection.execute(
+    `
+      SELECT outline_source AS "outlineSource"
+      FROM books
+      WHERE book_id = :bookId
+    `,
+    { bookId }
+  );
+
+  const [row] = (result.rows ?? []) as Array<{ outlineSource?: StoredBookOutlineSource | null }>;
+  return row?.outlineSource ?? null;
+}
 
 export async function listStoredBookOutline(connection: DatabaseConnection, bookId: string): Promise<BookOutlineEntry[]> {
   const result = await connection.execute(
@@ -117,18 +140,31 @@ export async function buildDerivedBookOutline(connection: DatabaseConnection, bo
 }
 
 export async function resolveBookOutline(connection: DatabaseConnection, bookId: string): Promise<BookOutlineEntry[]> {
+  const resolvedOutline = await resolveBookOutlineWithSource(connection, bookId);
+  return resolvedOutline.outline;
+}
+
+export async function resolveBookOutlineWithSource(connection: DatabaseConnection, bookId: string): Promise<ResolvedBookOutline> {
   const storedOutline = await listStoredBookOutline(connection, bookId);
   if (storedOutline.length > 0) {
-    return storedOutline;
+    return {
+      outline: storedOutline,
+      source: await getStoredBookOutlineSource(connection, bookId) ?? "MANUAL"
+    };
   }
 
-  return buildDerivedBookOutline(connection, bookId);
+  const derivedOutline = await buildDerivedBookOutline(connection, bookId);
+  return {
+    outline: derivedOutline,
+    source: derivedOutline.length > 0 ? "GENERATED_HEADINGS" : "NONE"
+  };
 }
 
 export async function replaceBookOutline(
   connection: DatabaseConnection,
   bookId: string,
-  entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>
+  entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>,
+  source: StoredBookOutlineSource = "MANUAL"
 ): Promise<void> {
   await connection.execute(
     `
@@ -153,7 +189,7 @@ export async function replaceBookOutline(
           :chapterId,
           :bookId,
           :title,
-          :level,
+          :headingLevel,
           :pageNumber,
           :paragraphNumber,
           :sequenceNumber
@@ -162,7 +198,7 @@ export async function replaceBookOutline(
       {
         bookId,
         chapterId: randomUUID(),
-        level: entry.level,
+        headingLevel: entry.level,
         pageNumber: entry.pageNumber,
         paragraphNumber: entry.paragraphNumber,
         sequenceNumber: index + 1,
@@ -170,4 +206,16 @@ export async function replaceBookOutline(
       }
     );
   }
+
+  await connection.execute(
+    `
+      UPDATE books
+      SET outline_source = :outlineSource
+      WHERE book_id = :bookId
+    `,
+    {
+      bookId,
+      outlineSource: entries.length > 0 ? source : null
+    }
+  );
 }

@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
-import { resolveBookOutline } from "../books/book-outline.js";
+import { resolveBookOutlineWithSource } from "../books/book-outline.js";
 
 const highlightColors = ["YELLOW", "GREEN", "BLUE", "PINK"] as const;
 
@@ -399,14 +399,20 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      const [bookmarks, highlights, notes, toc] = await Promise.all([
+      const [bookmarks, highlights, notes, resolvedOutline] = await Promise.all([
         listBookmarks(connection, request.currentUser.userId, params.bookId),
         listHighlights(connection, request.currentUser.userId, params.bookId),
         listNotes(connection, request.currentUser.userId, params.bookId),
-        resolveBookOutline(connection, params.bookId)
+        resolveBookOutlineWithSource(connection, params.bookId)
       ]);
 
-      return reply.send({ bookmarks, highlights, notes, toc });
+      return reply.send({
+        bookmarks,
+        highlights,
+        notes,
+        toc: resolvedOutline.outline,
+        tocSource: resolvedOutline.source
+      });
     } finally {
       await connection.close();
     }

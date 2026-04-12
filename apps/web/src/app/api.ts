@@ -343,6 +343,8 @@ export type ReaderTocEntry = {
   title: string;
 };
 
+export type BookOutlineSource = "EPUB_TOC" | "GENERATED_HEADINGS" | "MANUAL" | "NONE";
+
 export type ReaderPageAnnotations = {
   bookmarks: ReaderBookmark[];
   highlights: ReaderHighlight[];
@@ -354,6 +356,7 @@ export type ReaderNavigationSummary = {
   highlights: ReaderHighlight[];
   notes: ReaderNote[];
   toc: ReaderTocEntry[];
+  tocSource: BookOutlineSource;
 };
 
 export type SectionSummarySection = {
@@ -610,7 +613,7 @@ export function fetchReaderNavigation(accessToken: string, bookId: string) {
 }
 
 export function fetchBookOutline(accessToken: string, bookId: string) {
-  return request<{ outline: BookOutlineEntry[] }>(`/books/${bookId}/outline`, { accessToken });
+  return request<{ outline: BookOutlineEntry[]; outlineSource: BookOutlineSource }>(`/books/${bookId}/outline`, { accessToken });
 }
 
 export function fetchSectionSummary(accessToken: string, bookId: string, chapterId: string) {

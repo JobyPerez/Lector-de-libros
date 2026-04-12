@@ -11,7 +11,7 @@ import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
-import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
+import { replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
@@ -2560,6 +2560,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      if (importedDocument.outlineEntries && importedDocument.outlineEntries.length > 0) {
+        await replaceBookOutline(connection, bookId, importedDocument.outlineEntries, "EPUB_TOC");
+      }
+
       await connection.commit();
     } catch (error) {
       await connection.rollback();
@@ -3684,8 +3688,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      const outline = await resolveBookOutline(connection, params.bookId);
-      return reply.send({ outline });
+      const resolvedOutline = await resolveBookOutlineWithSource(connection, params.bookId);
+      return reply.send({ outline: resolvedOutline.outline, outlineSource: resolvedOutline.source });
     } finally {
       await connection.close();
     }

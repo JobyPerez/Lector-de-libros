@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import { load } from "cheerio";
 
-import type { ImportedBinaryAsset, ImportedDocument, ImportedPage } from "./book-import.js";
+import type { ImportedBinaryAsset, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 
 type ManifestItem = {
   href: string;
@@ -15,6 +15,23 @@ type ParsedEpubArchive = {
   opfDirectory: string;
   opfDocument: ReturnType<typeof load>;
   spineItemIds: string[];
+};
+
+type TocReferenceEntry = {
+  entryPath: string;
+  fragment: string | null;
+  level: number;
+  title: string;
+};
+
+type PageAnchorTarget = {
+  pageNumber: number;
+  paragraphNumber: number;
+};
+
+type PageAnchorLookup = {
+  entryTargets: Map<string, PageAnchorTarget>;
+  fragmentTargets: Map<string, PageAnchorTarget>;
 };
 
 const paragraphSelector = "p, h1, h2, h3, h4, h5, h6, li, blockquote";
@@ -119,6 +136,48 @@ function resolveZipPath(baseDirectory: string, relativePath: string): string {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parsePositiveInteger(value: string | undefined): number | null {
+  const parsedValue = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
+}
+
+function normalizeFragmentIdentifier(value: string): string {
+  return decodeZipPathSegment(value).trim();
+}
+
+function buildFragmentLookupKeys(entryPath: string, fragment: string): string[] {
+  const normalizedEntryPath = normalizeArchiveLookupPath(entryPath);
+  const normalizedFragment = normalizeFragmentIdentifier(fragment);
+  if (!normalizedFragment) {
+    return [];
+  }
+
+  const exactKey = `${normalizedEntryPath}#${normalizedFragment}`;
+  const lowerCaseKey = `${normalizedEntryPath}#${normalizedFragment.toLowerCase()}`;
+
+  return exactKey === lowerCaseKey ? [exactKey] : [exactKey, lowerCaseKey];
+}
+
+function resolveInternalReference(baseEntryPath: string, reference: string): { entryPath: string; fragment: string | null } | null {
+  const normalizedReference = reference.trim();
+  if (!normalizedReference || isRemoteAssetReference(normalizedReference) || /^data:/iu.test(normalizedReference) || /^javascript:/iu.test(normalizedReference)) {
+    return null;
+  }
+
+  const fragmentIndex = normalizedReference.indexOf("#");
+  const rawPath = fragmentIndex >= 0 ? normalizedReference.slice(0, fragmentIndex) : normalizedReference;
+  const rawFragment = fragmentIndex >= 0 ? normalizedReference.slice(fragmentIndex + 1) : "";
+  const entryPath = rawPath
+    ? resolveZipPath(dirnamePath(baseEntryPath), rawPath)
+    : baseEntryPath;
+  const normalizedFragment = rawFragment ? normalizeFragmentIdentifier(rawFragment) : null;
+
+  return {
+    entryPath: normalizeArchiveLookupPath(entryPath),
+    fragment: normalizedFragment || null
+  };
 }
 
 function escapeHtmlAttribute(value: string): string {
@@ -562,6 +621,275 @@ function fallbackParagraphsFromText(text: string): string[] {
     .filter(Boolean);
 }
 
+function findNavigationTocRoot(document: ReturnType<typeof load>): Parameters<ReturnType<typeof load>>[0] | null {
+  let tocRoot: Parameters<ReturnType<typeof load>>[0] | null = null;
+
+  document("nav").each((_, node) => {
+    const element = document(node);
+    const epubType = element.attr("epub:type") ?? element.attr("type") ?? "";
+    const role = element.attr("role") ?? "";
+    const epubTypeTokens = epubType.split(/\s+/u).filter(Boolean);
+    const roleTokens = role.split(/\s+/u).filter(Boolean);
+
+    if (epubTypeTokens.includes("toc") || roleTokens.includes("doc-toc")) {
+      tocRoot = element;
+      return false;
+    }
+
+    return undefined;
+  });
+
+  return tocRoot;
+}
+
+function extractNavigationEntriesFromList(
+  document: ReturnType<typeof load>,
+  listElement: Parameters<ReturnType<typeof load>>[0],
+  baseEntryPath: string,
+  level: number,
+  entries: TocReferenceEntry[]
+): void {
+  document(listElement).children("li").each((_, itemNode) => {
+    const listItem = document(itemNode);
+    const labelContainer = listItem.children().not("ol, ul");
+    const anchor = labelContainer.find("a[href]").first();
+    const title = normalizeWhitespace(anchor.length > 0 ? anchor.text() : labelContainer.first().text());
+
+    if (anchor.length > 0 && title) {
+      const href = anchor.attr("href");
+      const resolvedTarget = href ? resolveInternalReference(baseEntryPath, href) : null;
+      if (resolvedTarget) {
+        entries.push({
+          ...resolvedTarget,
+          level: Math.min(6, Math.max(1, level)),
+          title
+        });
+      }
+    }
+
+    listItem.children("ol, ul").each((_, childList) => {
+      extractNavigationEntriesFromList(document, childList, baseEntryPath, level + 1, entries);
+    });
+  });
+}
+
+function extractNavTocEntries(parsedArchive: ParsedEpubArchive): TocReferenceEntry[] {
+  for (const manifestItem of parsedArchive.manifest.values()) {
+    if (!manifestItem.properties.has("nav") || !/html|xhtml/u.test(manifestItem.mediaType)) {
+      continue;
+    }
+
+    const entryPath = resolveZipPath(parsedArchive.opfDirectory, manifestItem.href);
+    const navigationEntry = findArchiveEntry(parsedArchive.archive, entryPath);
+    if (!navigationEntry) {
+      continue;
+    }
+
+    const document = load(navigationEntry.getData().toString("utf-8"), {
+      xmlMode: false
+    });
+    const tocRoot = findNavigationTocRoot(document);
+    if (!tocRoot) {
+      continue;
+    }
+
+    const listRoot = document(tocRoot).children("ol, ul").first();
+    if (listRoot.length === 0) {
+      continue;
+    }
+
+    const entries: TocReferenceEntry[] = [];
+    extractNavigationEntriesFromList(document, listRoot.get(0), entryPath, 1, entries);
+    if (entries.length > 0) {
+      return entries;
+    }
+  }
+
+  return [];
+}
+
+function extractNcxNavPoints(
+  document: ReturnType<typeof load>,
+  navPoint: Parameters<ReturnType<typeof load>>[0],
+  baseEntryPath: string,
+  level: number,
+  entries: TocReferenceEntry[]
+): void {
+  const point = document(navPoint);
+  const title = normalizeWhitespace(point.children("navLabel").first().text());
+  const source = point.children("content").attr("src");
+  const resolvedTarget = source ? resolveInternalReference(baseEntryPath, source) : null;
+
+  if (resolvedTarget && title) {
+    entries.push({
+      ...resolvedTarget,
+      level: Math.min(6, Math.max(1, level)),
+      title
+    });
+  }
+
+  point.children("navPoint").each((_, childPoint) => {
+    extractNcxNavPoints(document, childPoint, baseEntryPath, level + 1, entries);
+  });
+}
+
+function extractNcxTocEntries(parsedArchive: ParsedEpubArchive): TocReferenceEntry[] {
+  const manifestItemIds: string[] = [];
+  const spineTocId = parsedArchive.opfDocument("spine").attr("toc");
+
+  if (spineTocId) {
+    manifestItemIds.push(spineTocId);
+  }
+
+  for (const [itemId, manifestItem] of parsedArchive.manifest.entries()) {
+    if (manifestItem.mediaType === "application/x-dtbncx+xml" && !manifestItemIds.includes(itemId)) {
+      manifestItemIds.push(itemId);
+    }
+  }
+
+  for (const itemId of manifestItemIds) {
+    const manifestItem = parsedArchive.manifest.get(itemId);
+    if (!manifestItem) {
+      continue;
+    }
+
+    const entryPath = resolveZipPath(parsedArchive.opfDirectory, manifestItem.href);
+    const tocEntry = findArchiveEntry(parsedArchive.archive, entryPath);
+    if (!tocEntry) {
+      continue;
+    }
+
+    const document = load(tocEntry.getData().toString("utf-8"), {
+      xmlMode: true
+    });
+    const entries: TocReferenceEntry[] = [];
+
+    document("navMap > navPoint").each((_, navPoint) => {
+      extractNcxNavPoints(document, navPoint, entryPath, 1, entries);
+    });
+
+    if (entries.length > 0) {
+      return entries;
+    }
+  }
+
+  return [];
+}
+
+function extractTocEntries(parsedArchive: ParsedEpubArchive): TocReferenceEntry[] {
+  const navigationEntries = extractNavTocEntries(parsedArchive);
+  if (navigationEntries.length > 0) {
+    return navigationEntries;
+  }
+
+  return extractNcxTocEntries(parsedArchive);
+}
+
+function resolveParagraphNumberForNode(document: ReturnType<typeof load>, node: Parameters<ReturnType<typeof load>>[0]): number | null {
+  const element = document(node);
+  const ownParagraphNumber = parsePositiveInteger(element.attr("data-paragraph-number"));
+  if (ownParagraphNumber) {
+    return ownParagraphNumber;
+  }
+
+  for (const ancestor of element.parents().toArray()) {
+    const ancestorParagraphNumber = parsePositiveInteger(document(ancestor).attr("data-paragraph-number"));
+    if (ancestorParagraphNumber) {
+      return ancestorParagraphNumber;
+    }
+  }
+
+  const descendantParagraphNumber = parsePositiveInteger(element.find("[data-paragraph-number]").first().attr("data-paragraph-number"));
+  if (descendantParagraphNumber) {
+    return descendantParagraphNumber;
+  }
+
+  return null;
+}
+
+function registerPageAnchorTargets(
+  lookup: PageAnchorLookup,
+  entryPath: string,
+  pageNumber: number,
+  htmlContent: string | null | undefined
+): void {
+  const normalizedEntryPath = normalizeArchiveLookupPath(entryPath);
+  const fallbackTarget = {
+    pageNumber,
+    paragraphNumber: 1
+  } satisfies PageAnchorTarget;
+
+  if (htmlContent) {
+    const document = load(htmlContent, {
+      xmlMode: false
+    });
+    fallbackTarget.paragraphNumber = parsePositiveInteger(document("[data-paragraph-number]").first().attr("data-paragraph-number")) ?? 1;
+
+    document("[id], [xml\\:id], a[name]").each((_, node) => {
+      const element = document(node);
+      const fragment = element.attr("id") ?? element.attr("xml:id") ?? element.attr("name");
+      if (!fragment) {
+        return;
+      }
+
+      const target = {
+        pageNumber,
+        paragraphNumber: resolveParagraphNumberForNode(document, node) ?? fallbackTarget.paragraphNumber
+      } satisfies PageAnchorTarget;
+
+      for (const key of buildFragmentLookupKeys(normalizedEntryPath, fragment)) {
+        if (!lookup.fragmentTargets.has(key)) {
+          lookup.fragmentTargets.set(key, target);
+        }
+      }
+    });
+  }
+
+  if (!lookup.entryTargets.has(normalizedEntryPath)) {
+    lookup.entryTargets.set(normalizedEntryPath, fallbackTarget);
+  }
+}
+
+function resolveTocTarget(lookup: PageAnchorLookup, entry: TocReferenceEntry): PageAnchorTarget | null {
+  if (entry.fragment) {
+    for (const key of buildFragmentLookupKeys(entry.entryPath, entry.fragment)) {
+      const fragmentTarget = lookup.fragmentTargets.get(key);
+      if (fragmentTarget) {
+        return fragmentTarget;
+      }
+    }
+  }
+
+  return lookup.entryTargets.get(entry.entryPath) ?? null;
+}
+
+function buildOutlineFromTocEntries(tocEntries: TocReferenceEntry[], lookup: PageAnchorLookup): ImportedOutlineEntry[] {
+  const outline: ImportedOutlineEntry[] = [];
+  const seenEntries = new Set<string>();
+
+  for (const entry of tocEntries) {
+    const target = resolveTocTarget(lookup, entry);
+    if (!target) {
+      continue;
+    }
+
+    const entryKey = `${target.pageNumber}:${target.paragraphNumber}:${entry.title}`;
+    if (seenEntries.has(entryKey)) {
+      continue;
+    }
+
+    seenEntries.add(entryKey);
+    outline.push({
+      level: entry.level,
+      pageNumber: target.pageNumber,
+      paragraphNumber: target.paragraphNumber,
+      title: entry.title
+    });
+  }
+
+  return outline;
+}
+
 function openEpubArchive(fileBuffer: Buffer): ParsedEpubArchive {
   const archive = new AdmZip(fileBuffer);
   const containerEntry = findArchiveEntry(archive, "META-INF/container.xml");
@@ -743,8 +1071,13 @@ export function extractEpubCover(fileBuffer: Buffer): ImportedBinaryAsset | null
 export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
   const parsedArchive = openEpubArchive(fileBuffer);
   const coverImage = extractCoverFromParsedArchive(parsedArchive);
+  const tocEntries = extractTocEntries(parsedArchive);
 
   const pages: ImportedPage[] = [];
+  const pageAnchorLookup: PageAnchorLookup = {
+    entryTargets: new Map(),
+    fragmentTargets: new Map()
+  };
 
   for (const idReference of parsedArchive.spineItemIds) {
     const manifestItem = parsedArchive.manifest.get(idReference);
@@ -772,17 +1105,25 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
     const chunkedPages = createPagesFromDocument(document, inlineStyles);
 
     for (const chunkedPage of chunkedPages) {
+      const pageNumber = pages.length + 1;
+      registerPageAnchorTargets(pageAnchorLookup, entryPath, pageNumber, chunkedPage.htmlContent ?? null);
+
       pages.push({
         htmlContent: chunkedPage.htmlContent ?? null,
-        pageNumber: pages.length + 1,
+        pageNumber,
         paragraphs: chunkedPage.paragraphs,
         rawText: chunkedPage.rawText
       });
     }
   }
 
+  const outlineEntries = tocEntries.length > 0
+    ? buildOutlineFromTocEntries(tocEntries, pageAnchorLookup)
+    : [];
+
   return {
     coverImage,
+    ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
     pages,
     totalPages: pages.length,
     totalParagraphs: pages.reduce((count, page) => count + page.paragraphs.length, 0)

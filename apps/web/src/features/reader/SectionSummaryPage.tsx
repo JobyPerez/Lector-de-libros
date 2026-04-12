@@ -364,6 +364,9 @@ export function SectionSummaryPage() {
   const summaryText = summaryQuery.data?.summary?.summaryText?.trim() ?? "";
   const summaryParagraphs = useMemo(() => paragraphizeSummary(summaryText), [summaryText]);
   const bookTitle = bookQuery.data?.book.title ?? "Cargando libro...";
+  const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
+    ? deepgramBalanceQuery.error.message
+    : "No se pudo consultar el saldo de Deepgram.";
 
   const orderedNavigationItems = useMemo<ReaderNavigationListItem[]>(() => {
     const tocItems: ReaderNavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
@@ -1128,6 +1131,7 @@ export function SectionSummaryPage() {
               expandedNoteId={expandedNavigationNoteId}
               isUpdatingNote={isUpdatingNote}
               items={orderedNavigationItems}
+              outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
               onBeginHighlightEditing={beginNavigationHighlightEditing}
               onBeginNoteEditing={beginNavigationNoteEditing}
               onCancelHighlightEditing={() => {

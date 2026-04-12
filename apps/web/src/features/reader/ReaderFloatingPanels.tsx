@@ -1,5 +1,8 @@
 import { Link } from "react-router-dom";
-import { type CSSProperties, type MutableRefObject, type ReactNode, type RefObject } from "react";
+import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref } from "react";
+
+import type { BookOutlineSource } from "../../app/api";
+import { getOutlineSourceMeta } from "../../app/outline-source";
 
 type AudioEngineOption = {
   description: string;
@@ -27,7 +30,7 @@ type AudioPopoverProps = {
   buttonTitle?: string;
   children: ReactNode;
   isOpen: boolean;
-  menuRef?: RefObject<HTMLDivElement | null>;
+  menuRef?: Ref<HTMLDivElement>;
   onToggle: () => void;
   panelId: string;
 };
@@ -39,8 +42,8 @@ type AudioSettingsContentProps = {
   deepgramBalanceValue?: string | null;
   deviceUnsupportedMessage?: string;
   deviceVoiceNote?: string | null;
-  deviceVoiceOptions: AudioVoiceOption[];
-  engineOptions: AudioEngineOption[];
+  deviceVoiceOptions: ReadonlyArray<AudioVoiceOption>;
+  engineOptions: ReadonlyArray<AudioEngineOption>;
   isDeviceTtsSupported: boolean;
   maxPlaybackRate: number;
   minPlaybackRate: number;
@@ -53,7 +56,7 @@ type AudioSettingsContentProps = {
   selectedDeviceVoiceUri: string;
   selectedTtsEngine: "deepgram" | "device";
   selectedVoiceModel: string;
-  voiceOptions: AudioVoiceOption[];
+  voiceOptions: ReadonlyArray<AudioVoiceOption>;
 };
 
 type NavigationPopoverProps = {
@@ -67,19 +70,19 @@ type NavigationPopoverProps = {
   onClose: () => void;
   onToggle: () => void;
   panelAriaLabel: string;
-  panelRef?: RefObject<HTMLDivElement | null>;
+  panelRef?: Ref<HTMLElement>;
   title: string;
 };
 
 type NavigationTocCardProps = {
-  buttonRef?: (element: HTMLButtonElement | null) => void;
+  buttonRef?: ((element: HTMLButtonElement | null) => void) | undefined;
   isActive: boolean;
   level: number;
   onSelect: () => void;
   pageNumber: number;
-  summaryHref?: string;
-  summaryLabel?: string;
-  onSummaryClick?: () => void;
+  summaryHref?: string | undefined;
+  summaryLabel?: string | undefined;
+  onSummaryClick?: (() => void) | undefined;
   title: string;
 };
 
@@ -135,6 +138,7 @@ type NavigationPanelContentProps = {
   expandedNoteId: string | null;
   isUpdatingNote: boolean;
   items: ReaderNavigationListItem[];
+  outlineSource?: BookOutlineSource;
   onBeginHighlightEditing: (highlightId: string) => void;
   onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;
@@ -490,10 +494,20 @@ export function ReaderNavigationPanelContent({
   onSelectToc,
   onSummaryClick,
   onToggleNoteExpansion,
+  outlineSource,
   summaryHrefBuilder
 }: NavigationPanelContentProps) {
+  const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
+
   return (
     <section className="reader-navigation-section">
+      {outlineSourceMeta ? (
+        <p className="reader-navigation-source-hint" title={outlineSourceMeta.description}>
+          <span>Origen del índice</span>
+          <span className="reader-navigation-source-badge">{outlineSourceMeta.badgeLabel}</span>
+        </p>
+      ) : null}
+
       {items.length ? (
         <div className="reader-navigation-list">
           {items.map((item) => {

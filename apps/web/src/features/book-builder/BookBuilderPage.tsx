@@ -24,6 +24,7 @@ import {
   type HighlightColor
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { getOutlineSourceMeta } from "../../app/outline-source";
 import { buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
@@ -1435,8 +1436,8 @@ export function BookBuilderPage() {
     const editedImageBlob = await renderReviewImageBlob(reviewImageSourceBlob, {
       crop: reviewImageCrop,
       mimeType: outputMimeType,
-      quality: outputMimeType === "image/png" ? undefined : 0.92,
-      rotation: reviewImageRotation
+      rotation: reviewImageRotation,
+      ...(outputMimeType === "image/png" ? {} : { quality: 0.92 })
     });
     const formData = new FormData();
     formData.append("image", editedImageBlob, buildReviewImageFileName(reviewPageNumber, outputMimeType));
@@ -1906,6 +1907,7 @@ export function BookBuilderPage() {
       return sortWeight[left.type] - sortWeight[right.type];
     });
   }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  const reviewOutlineSourceMeta = getOutlineSourceMeta(reviewNavigationQuery.data?.tocSource ?? "NONE");
 
   return (
     <div className="page-stack builder-layout">
@@ -2570,7 +2572,10 @@ export function BookBuilderPage() {
 
               <section className="reader-navigation-section">
                 <div className="reader-navigation-section-heading">
-                  <strong>Índice del libro</strong>
+                  <div className="reader-navigation-section-heading-copy">
+                    <strong>Índice del libro</strong>
+                    {reviewOutlineSourceMeta ? <span className="reader-navigation-source-badge" title={reviewOutlineSourceMeta.description}>{reviewOutlineSourceMeta.badgeLabel}</span> : null}
+                  </div>
                   <span>{orderedNavigationItems.length}</span>
                 </div>
                 {orderedNavigationItems.length ? (

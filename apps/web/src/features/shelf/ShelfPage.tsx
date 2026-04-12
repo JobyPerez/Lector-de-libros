@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary } from "../../app/api";
+import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary, type BookOutlineSource } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { getOutlineSourceMeta } from "../../app/outline-source";
 
 type BookEditFormState = {
   authorName: string;
@@ -203,13 +204,17 @@ export function ShelfPage() {
     queryKey: ["book-outline", editingBook?.bookId],
     queryFn: async () => {
       if (!accessToken || !editingBook) {
-        return [] as BookOutlineEntry[];
+        return {
+          outline: [] as BookOutlineEntry[],
+          outlineSource: "NONE" as BookOutlineSource
+        };
       }
 
-      const response = await fetchBookOutline(accessToken, editingBook.bookId);
-      return response.outline;
+      return fetchBookOutline(accessToken, editingBook.bookId);
     }
   });
+
+  const outlineSourceMeta = getOutlineSourceMeta(outlineQuery.data?.outlineSource ?? "NONE");
 
   useEffect(() => {
     if (!editingBook) {
@@ -218,7 +223,7 @@ export function ShelfPage() {
     }
 
     setOutlineEntries(
-      (outlineQuery.data ?? []).map((entry) => ({
+      (outlineQuery.data?.outline ?? []).map((entry) => ({
         level: entry.level,
         pageNumber: entry.pageNumber,
         paragraphNumber: entry.paragraphNumber,
@@ -723,7 +728,13 @@ export function ShelfPage() {
             </div>
 
             {outlineQuery.isLoading ? <p>Cargando índice…</p> : null}
-            {outlineQuery.data?.some((entry) => entry.isGenerated) ? <p className="subdued">Se ha precargado una versión derivada del contenido. Puedes corregirla y guardarla para fijarla.</p> : null}
+            {outlineSourceMeta ? (
+              <p className="subdued outline-source-note" title={outlineSourceMeta.description}>
+                <span>Origen actual</span>
+                <span className="reader-navigation-source-badge">{outlineSourceMeta.badgeLabel}</span>
+              </p>
+            ) : null}
+            {outlineQuery.data?.outline.some((entry) => entry.isGenerated) ? <p className="subdued">Se ha precargado una versión derivada del contenido. Puedes corregirla y guardarla para fijarla.</p> : null}
             {outlineError ? <p className="error-text">{outlineError}</p> : null}
             {outlineSuccess ? <p className="success-text">{outlineSuccess}</p> : null}
 

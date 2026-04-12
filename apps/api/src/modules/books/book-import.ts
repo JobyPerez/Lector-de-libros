@@ -20,8 +20,16 @@ export type ImportedBinaryAsset = {
   mimeType: string;
 };
 
+export type ImportedOutlineEntry = {
+  level: number;
+  pageNumber: number;
+  paragraphNumber: number;
+  title: string;
+};
+
 export type ImportedDocument = {
   coverImage?: ImportedBinaryAsset | null;
+  outlineEntries?: ImportedOutlineEntry[];
   pages: ImportedPage[];
   totalPages: number;
   totalParagraphs: number;
@@ -126,8 +134,11 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
     ? await parsePdfBuffer(fileBuffer)
     : await parseEpubBuffer(fileBuffer);
 
+  const pageNumberMap = new Map<number, number>();
+
   const normalizedPages = importedDocument.pages
     .map((page) => ({
+      originalPageNumber: page.pageNumber,
       htmlContent: page.htmlContent?.trim() || null,
       paragraphs: sanitizeParagraphs(page.paragraphs),
       rawText: page.rawText.trim()
@@ -135,10 +146,38 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
     .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
     .map((page, index) => ({
       htmlContent: page.htmlContent,
-      pageNumber: index + 1,
+      pageNumber: (() => {
+        const normalizedPageNumber = index + 1;
+        pageNumberMap.set(page.originalPageNumber, normalizedPageNumber);
+        return normalizedPageNumber;
+      })(),
       paragraphs: page.paragraphs,
       rawText: page.rawText
     }));
+
+  const outlineEntries = (importedDocument.outlineEntries ?? []).reduce<ImportedOutlineEntry[]>((entries, entry) => {
+    const mappedPageNumber = pageNumberMap.get(entry.pageNumber);
+    const normalizedTitle = normalizeWhitespace(entry.title);
+
+    if (!mappedPageNumber || !normalizedTitle) {
+      return entries;
+    }
+
+    const normalizedEntry = {
+      level: Math.min(6, Math.max(1, Math.trunc(entry.level) || 1)),
+      pageNumber: mappedPageNumber,
+      paragraphNumber: Math.max(1, Math.trunc(entry.paragraphNumber) || 1),
+      title: normalizedTitle
+    } satisfies ImportedOutlineEntry;
+
+    const entryKey = `${normalizedEntry.pageNumber}:${normalizedEntry.paragraphNumber}:${normalizedEntry.title}`;
+    if (entries.some((currentEntry) => `${currentEntry.pageNumber}:${currentEntry.paragraphNumber}:${currentEntry.title}` === entryKey)) {
+      return entries;
+    }
+
+    entries.push(normalizedEntry);
+    return entries;
+  }, []);
 
   const totalParagraphs = normalizedPages.reduce((paragraphCount, page) => paragraphCount + page.paragraphs.length, 0);
   const hasRenderableContent = normalizedPages.some((page) => Boolean(page.htmlContent) || page.rawText.length > 0);
@@ -151,6 +190,7 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
 
   return {
     coverImage: importedDocument.coverImage ?? null,
+    ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
     pages: normalizedPages,
     totalPages: normalizedPages.length,
     totalParagraphs

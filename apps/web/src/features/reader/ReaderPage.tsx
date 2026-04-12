@@ -3660,6 +3660,7 @@ export function ReaderPage() {
             expandedNoteId={expandedNavigationNoteId}
             isUpdatingNote={isUpdatingNote}
             items={orderedNavigationItems}
+            outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
             onBeginHighlightEditing={beginNavigationHighlightEditing}
             onBeginNoteEditing={beginNavigationNoteEditing}
             onCancelHighlightEditing={() => {
