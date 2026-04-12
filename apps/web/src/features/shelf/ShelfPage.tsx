@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary } from "../../app/api";
+import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 type BookEditFormState = {
@@ -64,6 +64,84 @@ function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+function buildBookMonogram(title: string): string {
+  const titleWords = title
+    .trim()
+    .split(/\s+/u)
+    .filter(Boolean);
+
+  if (titleWords.length === 0) {
+    return "LB";
+  }
+
+  return titleWords
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("") || "LB";
+}
+
+function describeSourceType(sourceType: BookSummary["sourceType"]): string {
+  if (sourceType === "EPUB") {
+    return "Edicion digital";
+  }
+
+  if (sourceType === "IMAGES") {
+    return "Captura visual";
+  }
+
+  return "Edicion PDF";
+}
+
+function ShelfBookCover({ accessToken, book }: { accessToken: string | null; book: BookSummary }) {
+  const cacheKey = book.updatedAt ?? book.createdAt ?? `${book.totalPages}-${book.totalParagraphs}`;
+  const coverQuery = useQuery({
+    enabled: Boolean(accessToken),
+    queryKey: ["book-cover", book.bookId, cacheKey],
+    queryFn: async () => {
+      if (!accessToken) {
+        return null;
+      }
+
+      return fetchBookCover(accessToken, book.bookId, cacheKey);
+    },
+    staleTime: 60_000
+  });
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!coverQuery.data) {
+      setCoverUrl(null);
+      return;
+    }
+
+    const nextObjectUrl = URL.createObjectURL(coverQuery.data);
+    setCoverUrl(nextObjectUrl);
+
+    return () => {
+      URL.revokeObjectURL(nextObjectUrl);
+    };
+  }, [coverQuery.data]);
+
+  return (
+    <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
+      <span className="book-spine shelf-book-source-badge">{book.sourceType}</span>
+
+      {coverUrl ? (
+        <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
+      ) : (
+        <div className="shelf-book-cover-placeholder">
+          <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
+          <div className="shelf-book-cover-fallback-copy">
+            <span className="shelf-book-cover-kicker">{describeSourceType(book.sourceType)}</span>
+            <strong>{book.title}</strong>
+            <span>{book.authorName ?? "Autor pendiente"}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function ShelfPage() {
@@ -508,13 +586,17 @@ export function ShelfPage() {
                 ) : null}
               </div>
 
-              <Link aria-disabled={isBookRemoving} className="book-card-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
-                <span className="book-spine">{book.sourceType}</span>
-                <div className="book-card-copy">
+              <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
+                <div className="shelf-book-cover-shell">
+                  <ShelfBookCover accessToken={accessToken} book={book} />
+                </div>
+
+                <div className="book-card-copy shelf-book-copy">
                   <h3>{book.title}</h3>
                   <p>{book.authorName ?? "Autor pendiente"}</p>
                 </div>
-                <dl>
+
+                <dl className="shelf-book-stats">
                   <div>
                     <dt>Páginas</dt>
                     <dd>{book.totalPages}</dd>

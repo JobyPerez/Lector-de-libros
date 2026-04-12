@@ -1,11 +1,20 @@
 import AdmZip from "adm-zip";
 import { load } from "cheerio";
 
-import type { ImportedDocument, ImportedPage } from "./book-import.js";
+import type { ImportedBinaryAsset, ImportedDocument, ImportedPage } from "./book-import.js";
 
 type ManifestItem = {
   href: string;
   mediaType: string;
+  properties: Set<string>;
+};
+
+type ParsedEpubArchive = {
+  archive: AdmZip;
+  manifest: Map<string, ManifestItem>;
+  opfDirectory: string;
+  opfDocument: ReturnType<typeof load>;
+  spineItemIds: string[];
 };
 
 const paragraphSelector = "p, h1, h2, h3, h4, h5, h6, li, blockquote";
@@ -74,6 +83,15 @@ function dirnamePath(filePath: string): string {
   }
 
   return filePath.slice(0, lastSeparatorIndex);
+}
+
+function basenamePath(filePath: string): string {
+  const lastSeparatorIndex = filePath.lastIndexOf("/");
+  if (lastSeparatorIndex === -1) {
+    return filePath;
+  }
+
+  return filePath.slice(lastSeparatorIndex + 1);
 }
 
 function resolveZipPath(baseDirectory: string, relativePath: string): string {
@@ -544,7 +562,7 @@ function fallbackParagraphsFromText(text: string): string[] {
     .filter(Boolean);
 }
 
-export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
+function openEpubArchive(fileBuffer: Buffer): ParsedEpubArchive {
   const archive = new AdmZip(fileBuffer);
   const containerEntry = findArchiveEntry(archive, "META-INF/container.xml");
 
@@ -585,28 +603,159 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
     const mediaType = item.attr("media-type");
 
     if (id && href && mediaType) {
-      manifest.set(id, { href, mediaType });
+      manifest.set(id, {
+        href,
+        mediaType,
+        properties: new Set((item.attr("properties") ?? "").split(/\s+/u).map((value) => value.trim()).filter(Boolean))
+      });
     }
   });
 
+  const spineItemIds: string[] = [];
+  opfDocument("spine > itemref").each((_, element) => {
+    const idReference = opfDocument(element).attr("idref");
+    if (idReference) {
+      spineItemIds.push(idReference);
+    }
+  });
+
+  return {
+    archive,
+    manifest,
+    opfDirectory,
+    opfDocument,
+    spineItemIds
+  };
+}
+
+function resolveManifestItemAsset(parsedArchive: ParsedEpubArchive, manifestItem: ManifestItem): ImportedBinaryAsset | null {
+  const entryPath = resolveZipPath(parsedArchive.opfDirectory, manifestItem.href);
+  const assetEntry = findArchiveEntry(parsedArchive.archive, entryPath);
+  if (!assetEntry) {
+    return null;
+  }
+
+  if (manifestItem.mediaType.startsWith("image/")) {
+    return {
+      buffer: assetEntry.getData(),
+      fileName: basenamePath(entryPath) || "cover-image",
+      mimeType: manifestItem.mediaType
+    };
+  }
+
+  if (/html|xhtml/u.test(manifestItem.mediaType)) {
+    return extractFirstImageAssetFromDocument(parsedArchive.archive, entryPath);
+  }
+
+  return null;
+}
+
+function extractFirstImageAssetFromDocument(archive: AdmZip, entryPath: string): ImportedBinaryAsset | null {
+  const contentEntry = findArchiveEntry(archive, entryPath);
+  if (!contentEntry) {
+    return null;
+  }
+
+  const document = load(contentEntry.getData().toString("utf-8"), {
+    xmlMode: false
+  });
+  const documentDirectory = dirnamePath(entryPath);
+  let resolvedAsset: ImportedBinaryAsset | null = null;
+
+  const resolveSource = (source: string | undefined) => {
+    if (resolvedAsset || !source || isEmbeddedDataReference(source) || isRemoteAssetReference(source) || isUnsafeAssetReference(source)) {
+      return;
+    }
+
+    const resolvedEntryPath = resolveZipPath(documentDirectory, source);
+    const assetEntry = findArchiveEntry(archive, resolvedEntryPath);
+    if (!assetEntry) {
+      return;
+    }
+
+    resolvedAsset = {
+      buffer: assetEntry.getData(),
+      fileName: basenamePath(resolvedEntryPath) || "cover-image",
+      mimeType: inferMimeTypeFromPath(resolvedEntryPath)
+    };
+  };
+
+  document("img[src]").each((_, node) => {
+    resolveSource(document(node).attr("src"));
+  });
+
+  if (resolvedAsset) {
+    return resolvedAsset;
+  }
+
+  document("image").each((_, node) => {
+    resolveSource(document(node).attr("href") ?? document(node).attr("xlink:href"));
+  });
+
+  return resolvedAsset;
+}
+
+function extractCoverFromParsedArchive(parsedArchive: ParsedEpubArchive): ImportedBinaryAsset | null {
+  const coverId = parsedArchive.opfDocument("metadata > meta[name='cover']").attr("content")
+    ?? parsedArchive.opfDocument("package > metadata > meta[name='cover']").attr("content");
+
+  if (coverId) {
+    const manifestItem = parsedArchive.manifest.get(coverId);
+    if (manifestItem) {
+      const asset = resolveManifestItemAsset(parsedArchive, manifestItem);
+      if (asset) {
+        return asset;
+      }
+    }
+  }
+
+  for (const manifestItem of parsedArchive.manifest.values()) {
+    if (!manifestItem.properties.has("cover-image")) {
+      continue;
+    }
+
+    const asset = resolveManifestItemAsset(parsedArchive, manifestItem);
+    if (asset) {
+      return asset;
+    }
+  }
+
+  for (const itemId of parsedArchive.spineItemIds) {
+    const manifestItem = parsedArchive.manifest.get(itemId);
+    if (!manifestItem || !/html|xhtml/u.test(manifestItem.mediaType)) {
+      continue;
+    }
+
+    const entryPath = resolveZipPath(parsedArchive.opfDirectory, manifestItem.href);
+    const asset = extractFirstImageAssetFromDocument(parsedArchive.archive, entryPath);
+    if (asset) {
+      return asset;
+    }
+  }
+
+  return null;
+}
+
+export function extractEpubCover(fileBuffer: Buffer): ImportedBinaryAsset | null {
+  return extractCoverFromParsedArchive(openEpubArchive(fileBuffer));
+}
+
+export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
+  const parsedArchive = openEpubArchive(fileBuffer);
+  const coverImage = extractCoverFromParsedArchive(parsedArchive);
+
   const pages: ImportedPage[] = [];
 
-  opfDocument("spine > itemref").each((_, element) => {
-    const itemReference = opfDocument(element);
-    const idReference = itemReference.attr("idref");
-    if (!idReference) {
-      return;
-    }
-
-    const manifestItem = manifest.get(idReference);
+  for (const idReference of parsedArchive.spineItemIds) {
+    const manifestItem = parsedArchive.manifest.get(idReference);
     if (!manifestItem || !/html|xhtml/u.test(manifestItem.mediaType)) {
-      return;
+      continue;
     }
 
-    const entryPath = resolveZipPath(opfDirectory, manifestItem.href);
-    const contentEntry = findArchiveEntry(archive, entryPath);
+    const entryPath = resolveZipPath(parsedArchive.opfDirectory, manifestItem.href);
+    const contentEntry = findArchiveEntry(parsedArchive.archive, entryPath);
     if (!contentEntry) {
-      return;
+      continue;
     }
 
     const document = load(contentEntry.getData().toString("utf-8"), {
@@ -616,8 +765,8 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
 
     document("br").replaceWith("\n");
 
-    const inlineStyles = inlineLinkedStyles(document, documentDirectory, archive);
-    inlineBinaryAssets(document, documentDirectory, archive);
+    const inlineStyles = inlineLinkedStyles(document, documentDirectory, parsedArchive.archive);
+    inlineBinaryAssets(document, documentDirectory, parsedArchive.archive);
     sanitizeDocumentMarkup(document);
 
     const chunkedPages = createPagesFromDocument(document, inlineStyles);
@@ -630,9 +779,10 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
         rawText: chunkedPage.rawText
       });
     }
-  });
+  }
 
   return {
+    coverImage,
     pages,
     totalPages: pages.length,
     totalParagraphs: pages.reduce((count, page) => count + page.paragraphs.length, 0)

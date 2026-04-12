@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { extname } from "node:path";
 
 import type { MultipartFile } from "@fastify/multipart";
+import { load } from "cheerio";
 import type { FastifyPluginAsync } from "fastify";
 import oracledb from "oracledb";
 import { z } from "zod";
@@ -11,6 +12,7 @@ import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { replaceBookOutline, resolveBookOutline, type BookOutlineEntry } from "./book-outline.js";
+import { extractEpubCover } from "./epub-import.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
 import { generateSectionSummary } from "./section-summary.js";
@@ -363,6 +365,174 @@ function computeChecksum(buffer: Buffer): string {
 function buildDownloadFileName(baseName: string, extension: string): string {
   const normalizedBaseName = deriveTitleFromFileName(baseName).replace(/\s+/gu, "-").toLowerCase() || "libro";
   return `${normalizedBaseName}.${extension}`;
+}
+
+function parseDataUriImage(dataUri: string): { buffer: Buffer; mimeType: string } | null {
+  const normalizedDataUri = dataUri.trim();
+  const match = normalizedDataUri.match(/^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\s]+)$/iu);
+  if (!match?.[1] || !match[2]) {
+    return null;
+  }
+
+  try {
+    return {
+      buffer: Buffer.from(match[2].replace(/\s+/gu, ""), "base64"),
+      mimeType: match[1].toLowerCase()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstEmbeddedImageFromHtml(htmlContent: string | null | undefined): BookBinaryFileRecord | null {
+  if (!htmlContent) {
+    return null;
+  }
+
+  const document = load(htmlContent);
+  let resolvedImage: BookBinaryFileRecord | null = null;
+
+  const resolveSource = (source: string | undefined) => {
+    if (resolvedImage || !source) {
+      return;
+    }
+
+    const parsedImage = parseDataUriImage(source);
+    if (!parsedImage) {
+      return;
+    }
+
+    resolvedImage = {
+      contentBlob: parsedImage.buffer,
+      fileName: null,
+      mimeType: parsedImage.mimeType
+    };
+  };
+
+  document("img[src]").each((_, node) => {
+    resolveSource(document(node).attr("src"));
+  });
+
+  if (resolvedImage) {
+    return resolvedImage;
+  }
+
+  document("image").each((_, node) => {
+    resolveSource(document(node).attr("href") ?? document(node).attr("xlink:href"));
+  });
+
+  return resolvedImage;
+}
+
+async function findStoredCoverAsset(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string
+): Promise<BookBinaryFileRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        file_name AS "fileName",
+        mime_type AS "mimeType",
+        content_blob AS "contentBlob"
+      FROM book_files
+      WHERE book_id = :bookId
+        AND file_kind IN ('COVER_IMAGE', 'PAGE_IMAGE')
+      ORDER BY CASE WHEN file_kind = 'COVER_IMAGE' THEN 0 ELSE 1 END, NVL(page_number, 0) ASC, created_at ASC
+      FETCH FIRST 1 ROWS ONLY
+    `,
+    {
+      bookId
+    },
+    {
+      fetchInfo: {
+        contentBlob: { type: oracledb.BUFFER }
+      }
+    }
+  );
+
+  const [coverAsset] = (result.rows ?? []) as BookBinaryFileRecord[];
+  return coverAsset?.contentBlob && coverAsset.mimeType ? coverAsset : null;
+}
+
+async function findBookFileByKind(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  fileKind: string
+): Promise<BookBinaryFileRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        file_name AS "fileName",
+        mime_type AS "mimeType",
+        content_blob AS "contentBlob"
+      FROM book_files
+      WHERE book_id = :bookId
+        AND file_kind = :fileKind
+      ORDER BY created_at ASC
+      FETCH FIRST 1 ROWS ONLY
+    `,
+    {
+      bookId,
+      fileKind
+    },
+    {
+      fetchInfo: {
+        contentBlob: { type: oracledb.BUFFER }
+      }
+    }
+  );
+
+  const [bookFile] = (result.rows ?? []) as BookBinaryFileRecord[];
+  return bookFile?.contentBlob ? bookFile : null;
+}
+
+async function resolveBookCoverAsset(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  book: OwnedBookRecord
+): Promise<BookBinaryFileRecord | null> {
+  const storedCover = await findStoredCoverAsset(connection, book.bookId);
+  if (storedCover) {
+    return storedCover;
+  }
+
+  if (book.sourceType === "EPUB") {
+    const originalEpub = await findBookFileByKind(connection, book.bookId, "ORIGINAL_EPUB");
+    if (originalEpub?.contentBlob) {
+      const derivedCover = extractEpubCover(originalEpub.contentBlob);
+      if (derivedCover) {
+        return {
+          contentBlob: derivedCover.buffer,
+          fileName: derivedCover.fileName,
+          mimeType: derivedCover.mimeType
+        };
+      }
+    }
+  }
+
+  const pageResult = await connection.execute(
+    `
+      SELECT
+        html_content AS "htmlContent"
+      FROM book_pages
+      WHERE book_id = :bookId
+        AND html_content IS NOT NULL
+      ORDER BY page_number ASC
+      FETCH FIRST 8 ROWS ONLY
+    `,
+    {
+      bookId: book.bookId
+    }
+  );
+
+  const pageRows = (pageResult.rows ?? []) as Array<{ htmlContent?: string | null }>;
+  for (const pageRow of pageRows) {
+    const embeddedImage = extractFirstEmbeddedImageFromHtml(pageRow.htmlContent ?? null);
+    if (embeddedImage?.contentBlob && embeddedImage.mimeType) {
+      return embeddedImage;
+    }
+  }
+
+  return null;
 }
 
 function paragraphsFromEditedText(editedText: string): string[] {
@@ -1757,6 +1927,56 @@ async function insertProcessedImagePages(
   startingPageNumber: number,
   startingSequenceNumber: number
 ): Promise<{ addedPages: number; addedParagraphs: number }> {
+  const coverCountResult = await connection.execute(
+    `
+      SELECT COUNT(*) AS "coverCount"
+      FROM book_files
+      WHERE book_id = :bookId
+        AND file_kind = 'COVER_IMAGE'
+    `,
+    {
+      bookId
+    }
+  );
+  const coverCount = Number(((coverCountResult.rows ?? [])[0] as { coverCount?: number } | undefined)?.coverCount ?? 0);
+
+  if (coverCount === 0 && processedPages[0]) {
+    const coverPage = processedPages[0];
+
+    await connection.execute(
+      `
+        INSERT INTO book_files (
+          file_id,
+          book_id,
+          file_kind,
+          file_name,
+          mime_type,
+          byte_size,
+          checksum_sha256,
+          content_blob
+        ) VALUES (
+          :fileId,
+          :bookId,
+          'COVER_IMAGE',
+          :fileName,
+          :mimeType,
+          :byteSize,
+          :checksumSha256,
+          :contentBlob
+        )
+      `,
+      {
+        bookId,
+        byteSize: coverPage.buffer.length,
+        checksumSha256: computeChecksum(coverPage.buffer),
+        contentBlob: coverPage.buffer,
+        fileId: randomUUID(),
+        fileName: coverPage.fileName,
+        mimeType: coverPage.mimeType
+      }
+    );
+  }
+
   let pageNumber = startingPageNumber;
   let sequenceNumber = startingSequenceNumber;
 
@@ -2234,6 +2454,41 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           mimeType: uploadedFile.mimetype
         }
       );
+
+      if (importedDocument.coverImage) {
+        await connection.execute(
+          `
+            INSERT INTO book_files (
+              file_id,
+              book_id,
+              file_kind,
+              file_name,
+              mime_type,
+              byte_size,
+              checksum_sha256,
+              content_blob
+            ) VALUES (
+              :fileId,
+              :bookId,
+              'COVER_IMAGE',
+              :fileName,
+              :mimeType,
+              :byteSize,
+              :checksumSha256,
+              :contentBlob
+            )
+          `,
+          {
+            bookId,
+            byteSize: importedDocument.coverImage.buffer.length,
+            checksumSha256: computeChecksum(importedDocument.coverImage.buffer),
+            contentBlob: importedDocument.coverImage.buffer,
+            fileId: randomUUID(),
+            fileName: importedDocument.coverImage.fileName,
+            mimeType: importedDocument.coverImage.mimeType
+          }
+        );
+      }
 
       let sequenceNumber = 1;
 
@@ -3571,6 +3826,34 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/:bookId/cover", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const coverAsset = await resolveBookCoverAsset(connection, book);
+      if (!coverAsset?.contentBlob || !coverAsset.mimeType) {
+        return reply.status(404).send({ message: "Cover image not found." });
+      }
+
+      return reply
+        .header("Content-Type", coverAsset.mimeType)
+        .header("Cache-Control", "private, no-cache")
+        .send(coverAsset.contentBlob);
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.get("/:bookId/download-original", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -3590,30 +3873,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const originalFileKind = book.sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB";
-      const originalResult = await connection.execute(
-        `
-          SELECT
-            file_name AS "fileName",
-            mime_type AS "mimeType",
-            content_blob AS "contentBlob"
-          FROM book_files
-          WHERE book_id = :bookId
-            AND file_kind = :fileKind
-          ORDER BY created_at ASC
-          FETCH FIRST 1 ROWS ONLY
-        `,
-        {
-          bookId: params.bookId,
-          fileKind: originalFileKind
-        },
-        {
-          fetchInfo: {
-            contentBlob: { type: oracledb.BUFFER }
-          }
-        }
-      );
-
-      const [originalFile] = (originalResult.rows ?? []) as BookBinaryFileRecord[];
+      const originalFile = await findBookFileByKind(connection, params.bookId, originalFileKind);
       if (!originalFile?.contentBlob) {
         return reply.status(404).send({ message: "No se encontró el archivo original de este libro." });
       }

@@ -699,6 +699,20 @@ export function fetchBookPageImage(accessToken: string, bookId: string, pageNumb
   return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
 }
 
+export async function fetchBookCover(accessToken: string, bookId: string, cacheKey?: string | null): Promise<Blob | null> {
+  const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+
+  try {
+    return await requestBlob(`/books/${bookId}/cover${query}`, accessToken);
+  } catch (error) {
+    if (error instanceof Error && typeof (error as Partial<ApiRequestError>).statusCode === "number" && (error as Partial<ApiRequestError>).statusCode === 404) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
 export async function uploadBookPageImage(accessToken: string, bookId: string, pageNumber: number, payload: FormData) {
   const response = await fetchWithAutoRefresh(`/books/${bookId}/pages/${pageNumber}/image`, {
     accessToken,

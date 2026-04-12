@@ -14,7 +14,14 @@ export type ImportedPage = {
   rawText: string;
 };
 
+export type ImportedBinaryAsset = {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+};
+
 export type ImportedDocument = {
+  coverImage?: ImportedBinaryAsset | null;
   pages: ImportedPage[];
   totalPages: number;
   totalParagraphs: number;
@@ -143,6 +150,7 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
   }
 
   return {
+    coverImage: importedDocument.coverImage ?? null,
     pages: normalizedPages,
     totalPages: normalizedPages.length,
     totalParagraphs
