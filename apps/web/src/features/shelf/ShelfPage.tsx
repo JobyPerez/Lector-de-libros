@@ -15,6 +15,11 @@ type BookEditFormState = {
 type ShelfView = "edit" | "import" | "shelf";
 type ShelfViewTransitionDirection = "back" | "forward";
 
+type OutlineEditorEntry = Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title"> & {
+  editorId: string;
+  isNew: boolean;
+};
+
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
   synopsis: "",
@@ -22,6 +27,17 @@ const emptyBookEditForm: BookEditFormState = {
 };
 
 const removalExitAnimationMs = 280;
+let outlineEditorEntryId = 0;
+
+function createOutlineEditorEntry(entry: Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">, isNew: boolean): OutlineEditorEntry {
+  outlineEditorEntryId += 1;
+
+  return {
+    ...entry,
+    editorId: `outline-entry-${outlineEditorEntryId}`,
+    isNew
+  };
+}
 
 function EditIcon() {
   return (
@@ -173,7 +189,7 @@ export function ShelfPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [bookActionError, setBookActionError] = useState<string | null>(null);
   const [bookActionSuccess, setBookActionSuccess] = useState<string | null>(null);
-  const [outlineEntries, setOutlineEntries] = useState<Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>>([]);
+  const [outlineEntries, setOutlineEntries] = useState<OutlineEditorEntry[]>([]);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const [outlineSuccess, setOutlineSuccess] = useState<string | null>(null);
   const [isSavingOutline, setIsSavingOutline] = useState(false);
@@ -228,7 +244,7 @@ export function ShelfPage() {
         pageNumber: entry.pageNumber,
         paragraphNumber: entry.paragraphNumber,
         title: entry.title
-      }))
+      })).map((entry) => createOutlineEditorEntry(entry, false))
     );
   }, [editingBook, outlineQuery.data]);
 
@@ -322,7 +338,7 @@ export function ShelfPage() {
   }
 
   function addOutlineEntry() {
-    setOutlineEntries((current) => [...current, { level: 1, pageNumber: 1, paragraphNumber: 1, title: "Nuevo capítulo" }]);
+    setOutlineEntries((current) => [...current, createOutlineEditorEntry({ level: 1, pageNumber: 1, paragraphNumber: 1, title: "Nuevo capítulo" }, true)]);
   }
 
   function removeOutlineEntry(index: number) {
@@ -339,7 +355,14 @@ export function ShelfPage() {
     setIsSavingOutline(true);
 
     try {
-      await updateBookOutline(accessToken, editingBook.bookId, { entries: outlineEntries });
+      await updateBookOutline(accessToken, editingBook.bookId, {
+        entries: outlineEntries.map((entry) => ({
+          level: entry.level,
+          pageNumber: entry.pageNumber,
+          paragraphNumber: entry.paragraphNumber,
+          title: entry.title
+        }))
+      });
       await outlineQuery.refetch();
       setOutlineSuccess("El índice editable se guardó correctamente.");
     } catch (error) {
@@ -741,30 +764,40 @@ export function ShelfPage() {
             <div className="outline-editor-list">
               {outlineEntries.length === 0 ? <p className="subdued">Todavía no hay entradas en el índice.</p> : null}
               {outlineEntries.map((entry, index) => (
-                <div className="outline-editor-row" key={`${index}-${entry.title}`}>
+                <div className="outline-editor-row" key={entry.editorId}>
                   <input
                     onChange={(event) => updateOutlineEntry(index, { title: event.target.value })}
                     placeholder="Título del capítulo"
                     value={entry.title}
                   />
-                  <input
-                    min={1}
-                    onChange={(event) => updateOutlineEntry(index, { level: Number(event.target.value) || 1 })}
-                    type="number"
-                    value={entry.level}
-                  />
-                  <input
-                    min={1}
-                    onChange={(event) => updateOutlineEntry(index, { pageNumber: Number(event.target.value) || 1 })}
-                    type="number"
-                    value={entry.pageNumber}
-                  />
-                  <input
-                    min={1}
-                    onChange={(event) => updateOutlineEntry(index, { paragraphNumber: Number(event.target.value) || 1 })}
-                    type="number"
-                    value={entry.paragraphNumber}
-                  />
+                  {entry.isNew ? (
+                    <>
+                      <input
+                        aria-label="Nivel del capítulo"
+                        min={1}
+                        onChange={(event) => updateOutlineEntry(index, { level: Number(event.target.value) || 1 })}
+                        placeholder="Nivel"
+                        type="number"
+                        value={entry.level}
+                      />
+                      <input
+                        aria-label="Página inicial del capítulo"
+                        min={1}
+                        onChange={(event) => updateOutlineEntry(index, { pageNumber: Number(event.target.value) || 1 })}
+                        placeholder="Página"
+                        type="number"
+                        value={entry.pageNumber}
+                      />
+                      <input
+                        aria-label="Párrafo inicial del capítulo"
+                        min={1}
+                        onChange={(event) => updateOutlineEntry(index, { paragraphNumber: Number(event.target.value) || 1 })}
+                        placeholder="Párrafo"
+                        type="number"
+                        value={entry.paragraphNumber}
+                      />
+                    </>
+                  ) : null}
                   <button className="secondary-button outline-delete-button" onClick={() => removeOutlineEntry(index)} type="button">
                     Quitar
                   </button>
