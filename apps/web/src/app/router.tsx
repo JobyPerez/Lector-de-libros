@@ -7,6 +7,7 @@ import { useAuthStore, type SessionUser } from "./auth-store";
 import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
+import { OutlineEditorPage } from "../features/reader/OutlineEditorPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { SectionSummaryPage } from "../features/reader/SectionSummaryPage";
 import { ResetPasswordPage } from "../features/auth/ResetPasswordPage";
@@ -299,6 +300,7 @@ export function AppRouter() {
           <Route element={<ProtectedShell />}>
             <Route path="/" element={<ShelfPage />} />
             <Route path="/books/:bookId" element={<ReaderPage />} />
+            <Route path="/books/:bookId/outline/edit" element={<OutlineEditorPage />} />
             <Route path="/books/:bookId/sections/:chapterId/summary" element={<SectionSummaryPage />} />
             <Route path="/builder" element={<BookBuilderPage />} />
             <Route element={<AdminOnlyRoute />}>

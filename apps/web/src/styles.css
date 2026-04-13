@@ -2504,6 +2504,14 @@ textarea {
   gap: 0.75rem;
 }
 
+.reader-navigation-section-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+}
+
 .reader-navigation-section-heading-copy {
   display: flex;
   align-items: center;
@@ -2674,6 +2682,10 @@ textarea {
   text-decoration: none;
 }
 
+.reader-navigation-edit-link {
+  text-decoration: none;
+}
+
 .reader-navigation-summary-link svg {
   width: 1.15rem;
   height: 1.15rem;
@@ -2759,6 +2771,42 @@ textarea {
 .reader-note-icon-button svg {
   width: 0.95rem;
   height: 0.95rem;
+}
+
+.outline-editor-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.outline-editor-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.outline-editor-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.outline-editor-row[data-new="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(5rem, 0.22fr) minmax(5rem, 0.22fr) minmax(5rem, 0.22fr) auto;
+}
+
+.outline-delete-button {
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .outline-editor-row,
+  .outline-editor-row[data-new="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .outline-delete-button {
+    justify-self: flex-start;
+  }
 }
 
 .reader-section-summary-page {

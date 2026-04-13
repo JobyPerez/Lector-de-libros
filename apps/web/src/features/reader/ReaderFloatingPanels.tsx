@@ -138,7 +138,9 @@ type NavigationPanelContentProps = {
   expandedNoteId: string | null;
   isUpdatingNote: boolean;
   items: ReaderNavigationListItem[];
+  onOutlineEditClick?: () => void;
   outlineSource?: BookOutlineSource;
+  outlineEditHref?: string;
   onBeginHighlightEditing: (highlightId: string) => void;
   onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;
@@ -476,6 +478,7 @@ export function ReaderNavigationPanelContent({
   expandedNoteId,
   isUpdatingNote,
   items,
+  onOutlineEditClick,
   onBeginHighlightEditing,
   onBeginNoteEditing,
   onCancelHighlightEditing,
@@ -494,19 +497,35 @@ export function ReaderNavigationPanelContent({
   onSelectToc,
   onSummaryClick,
   onToggleNoteExpansion,
+  outlineEditHref,
   outlineSource,
   summaryHrefBuilder
 }: NavigationPanelContentProps) {
   const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
+  const tocItemCount = items.filter((item) => item.type === "toc").length;
 
   return (
     <section className="reader-navigation-section">
-      {outlineSourceMeta ? (
-        <p className="reader-navigation-source-hint" title={outlineSourceMeta.description}>
-          <span>Origen del índice</span>
-          <span className="reader-navigation-source-badge">{outlineSourceMeta.badgeLabel}</span>
-        </p>
-      ) : null}
+      <div className="reader-navigation-section-heading">
+        <div className="reader-navigation-section-heading-copy">
+          <strong>Índice del libro</strong>
+          {outlineSourceMeta ? <span className="reader-navigation-source-badge" title={outlineSourceMeta.description}>{outlineSourceMeta.badgeLabel}</span> : null}
+        </div>
+        <div className="reader-navigation-section-actions">
+          <span>{tocItemCount}</span>
+          {outlineEditHref ? (
+            <Link
+              aria-label="Editar índice"
+              className="reader-note-icon-button reader-navigation-edit-link"
+              onClick={onOutlineEditClick}
+              title="Editar índice"
+              to={outlineEditHref}
+            >
+              <EditIcon />
+            </Link>
+          ) : null}
+        </div>
+      </div>
 
       {items.length ? (
         <div className="reader-navigation-list">

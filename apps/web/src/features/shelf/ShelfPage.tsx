@@ -2,9 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBookOutline, fetchBooks, importBook, updateBook, updateBookOutline, type BlobDownload, type BookOutlineEntry, type BookSummary, type BookOutlineSource } from "../../app/api";
+import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBooks, importBook, updateBook, type BlobDownload, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { getOutlineSourceMeta } from "../../app/outline-source";
 
 type BookEditFormState = {
   authorName: string;
@@ -15,11 +14,6 @@ type BookEditFormState = {
 type ShelfView = "edit" | "import" | "shelf";
 type ShelfViewTransitionDirection = "back" | "forward";
 
-type OutlineEditorEntry = Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title"> & {
-  editorId: string;
-  isNew: boolean;
-};
-
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
   synopsis: "",
@@ -27,17 +21,6 @@ const emptyBookEditForm: BookEditFormState = {
 };
 
 const removalExitAnimationMs = 280;
-let outlineEditorEntryId = 0;
-
-function createOutlineEditorEntry(entry: Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">, isNew: boolean): OutlineEditorEntry {
-  outlineEditorEntryId += 1;
-
-  return {
-    ...entry,
-    editorId: `outline-entry-${outlineEditorEntryId}`,
-    isNew
-  };
-}
 
 function EditIcon() {
   return (
@@ -189,10 +172,6 @@ export function ShelfPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [bookActionError, setBookActionError] = useState<string | null>(null);
   const [bookActionSuccess, setBookActionSuccess] = useState<string | null>(null);
-  const [outlineEntries, setOutlineEntries] = useState<OutlineEditorEntry[]>([]);
-  const [outlineError, setOutlineError] = useState<string | null>(null);
-  const [outlineSuccess, setOutlineSuccess] = useState<string | null>(null);
-  const [isSavingOutline, setIsSavingOutline] = useState(false);
   const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
@@ -214,39 +193,6 @@ export function ShelfPage() {
       return response.books;
     }
   });
-
-  const outlineQuery = useQuery({
-    enabled: Boolean(accessToken && editingBook?.bookId),
-    queryKey: ["book-outline", editingBook?.bookId],
-    queryFn: async () => {
-      if (!accessToken || !editingBook) {
-        return {
-          outline: [] as BookOutlineEntry[],
-          outlineSource: "NONE" as BookOutlineSource
-        };
-      }
-
-      return fetchBookOutline(accessToken, editingBook.bookId);
-    }
-  });
-
-  const outlineSourceMeta = getOutlineSourceMeta(outlineQuery.data?.outlineSource ?? "NONE");
-
-  useEffect(() => {
-    if (!editingBook) {
-      setOutlineEntries([]);
-      return;
-    }
-
-    setOutlineEntries(
-      (outlineQuery.data?.outline ?? []).map((entry) => ({
-        level: entry.level,
-        pageNumber: entry.pageNumber,
-        paragraphNumber: entry.paragraphNumber,
-        title: entry.title
-      })).map((entry) => createOutlineEditorEntry(entry, false))
-    );
-  }, [editingBook, outlineQuery.data]);
 
   async function handleCreateBook(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -294,8 +240,6 @@ export function ShelfPage() {
     setEditingBook(null);
     setBookActionError(null);
     setBookActionSuccess(null);
-    setOutlineError(null);
-    setOutlineSuccess(null);
     setDownloadMenuBookId(null);
   }
 
@@ -317,8 +261,6 @@ export function ShelfPage() {
     setIsImportPanelVisible(false);
     setBookActionError(null);
     setBookActionSuccess(null);
-    setOutlineError(null);
-    setOutlineSuccess(null);
     setDownloadMenuBookId(null);
   }
 
@@ -328,48 +270,7 @@ export function ShelfPage() {
     setBookForm(emptyBookEditForm);
     setBookActionError(null);
     setBookActionSuccess(null);
-    setOutlineError(null);
-    setOutlineSuccess(null);
     setDownloadMenuBookId(null);
-  }
-
-  function updateOutlineEntry(index: number, patch: Partial<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>) {
-    setOutlineEntries((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, ...patch } : entry));
-  }
-
-  function addOutlineEntry() {
-    setOutlineEntries((current) => [...current, createOutlineEditorEntry({ level: 1, pageNumber: 1, paragraphNumber: 1, title: "Nuevo capítulo" }, true)]);
-  }
-
-  function removeOutlineEntry(index: number) {
-    setOutlineEntries((current) => current.filter((_, entryIndex) => entryIndex !== index));
-  }
-
-  async function handleSaveOutline() {
-    if (!accessToken || !editingBook) {
-      return;
-    }
-
-    setOutlineError(null);
-    setOutlineSuccess(null);
-    setIsSavingOutline(true);
-
-    try {
-      await updateBookOutline(accessToken, editingBook.bookId, {
-        entries: outlineEntries.map((entry) => ({
-          level: entry.level,
-          pageNumber: entry.pageNumber,
-          paragraphNumber: entry.paragraphNumber,
-          title: entry.title
-        }))
-      });
-      await outlineQuery.refetch();
-      setOutlineSuccess("El índice editable se guardó correctamente.");
-    } catch (error) {
-      setOutlineError(error instanceof Error ? error.message : "No se pudo guardar el índice.");
-    } finally {
-      setIsSavingOutline(false);
-    }
   }
 
   async function handleDownloadExport(format: "epub" | "pdf") {
@@ -377,15 +278,13 @@ export function ShelfPage() {
       return;
     }
 
-    setOutlineError(null);
-    setOutlineSuccess(null);
     setExportingFormat(format);
 
     try {
       const download = await downloadBookExport(accessToken, editingBook.bookId, format);
       saveBlobDownload(download, buildFallbackFileName(editingBook, format));
     } catch (error) {
-      setOutlineError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
+      setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
       setExportingFormat(null);
     }
@@ -738,79 +637,6 @@ export function ShelfPage() {
               </button>
             </div>
           </form>
-
-          <section className="outline-editor-panel">
-            <div className="panel-header compact-header">
-              <div>
-                <p className="eyebrow">Estructura editorial</p>
-                <h3>Índice editable</h3>
-              </div>
-              <button className="secondary-button" onClick={addOutlineEntry} type="button">
-                Añadir entrada
-              </button>
-            </div>
-
-            {outlineQuery.isLoading ? <p>Cargando índice…</p> : null}
-            {outlineSourceMeta ? (
-              <p className="subdued outline-source-note" title={outlineSourceMeta.description}>
-                <span>Origen actual</span>
-                <span className="reader-navigation-source-badge">{outlineSourceMeta.badgeLabel}</span>
-              </p>
-            ) : null}
-            {outlineQuery.data?.outline.some((entry) => entry.isGenerated) ? <p className="subdued">Se ha precargado una versión derivada del contenido. Puedes corregirla y guardarla para fijarla.</p> : null}
-            {outlineError ? <p className="error-text">{outlineError}</p> : null}
-            {outlineSuccess ? <p className="success-text">{outlineSuccess}</p> : null}
-
-            <div className="outline-editor-list">
-              {outlineEntries.length === 0 ? <p className="subdued">Todavía no hay entradas en el índice.</p> : null}
-              {outlineEntries.map((entry, index) => (
-                <div className="outline-editor-row" key={entry.editorId}>
-                  <input
-                    onChange={(event) => updateOutlineEntry(index, { title: event.target.value })}
-                    placeholder="Título del capítulo"
-                    value={entry.title}
-                  />
-                  {entry.isNew ? (
-                    <>
-                      <input
-                        aria-label="Nivel del capítulo"
-                        min={1}
-                        onChange={(event) => updateOutlineEntry(index, { level: Number(event.target.value) || 1 })}
-                        placeholder="Nivel"
-                        type="number"
-                        value={entry.level}
-                      />
-                      <input
-                        aria-label="Página inicial del capítulo"
-                        min={1}
-                        onChange={(event) => updateOutlineEntry(index, { pageNumber: Number(event.target.value) || 1 })}
-                        placeholder="Página"
-                        type="number"
-                        value={entry.pageNumber}
-                      />
-                      <input
-                        aria-label="Párrafo inicial del capítulo"
-                        min={1}
-                        onChange={(event) => updateOutlineEntry(index, { paragraphNumber: Number(event.target.value) || 1 })}
-                        placeholder="Párrafo"
-                        type="number"
-                        value={entry.paragraphNumber}
-                      />
-                    </>
-                  ) : null}
-                  <button className="secondary-button outline-delete-button" onClick={() => removeOutlineEntry(index)} type="button">
-                    Quitar
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="import-panel-actions">
-              <button className="primary-button" disabled={isSavingOutline} onClick={() => void handleSaveOutline()} type="button">
-                {isSavingOutline ? "Guardando índice..." : "Guardar índice"}
-              </button>
-            </div>
-          </section>
         </section>
       ) : null}
 
