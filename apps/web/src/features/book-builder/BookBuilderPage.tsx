@@ -626,6 +626,10 @@ export function BookBuilderPage() {
   const [appendReferencePageInput, setAppendReferencePageInput] = useState("1");
   const [appendProgressId, setAppendProgressId] = useState<string | null>(null);
   const [appendImportProgress, setAppendImportProgress] = useState<AppendImagesImportProgress | null>(null);
+  const [isCreateCameraModalOpen, setIsCreateCameraModalOpen] = useState(false);
+  const [createCameraStream, setCreateCameraStream] = useState<MediaStream | null>(null);
+  const [isCreateCameraStarting, setIsCreateCameraStarting] = useState(false);
+  const [isCreateCameraCapturing, setIsCreateCameraCapturing] = useState(false);
   const [isAppendCameraModalOpen, setIsAppendCameraModalOpen] = useState(false);
   const [appendCameraStream, setAppendCameraStream] = useState<MediaStream | null>(null);
   const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
@@ -654,6 +658,9 @@ export function BookBuilderPage() {
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
+  const createCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const createCameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const createCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const appendCameraInputRef = useRef<HTMLInputElement | null>(null);
   const appendCameraVideoRef = useRef<HTMLVideoElement | null>(null);
   const appendCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -724,6 +731,39 @@ export function BookBuilderPage() {
       setAppendReferencePageInput(String(initialAppendReferencePage));
     }
   }, [initialAppendReferencePage]);
+
+  useEffect(() => {
+    if (!isCreateCameraModalOpen || !createCameraStream || !createCameraVideoRef.current) {
+      return;
+    }
+
+    const videoElement = createCameraVideoRef.current;
+    videoElement.srcObject = createCameraStream;
+    void videoElement.play().catch(() => undefined);
+
+    return () => {
+      videoElement.pause();
+      videoElement.srcObject = null;
+    };
+  }, [createCameraStream, isCreateCameraModalOpen]);
+
+  useEffect(() => {
+    if (!isCreateCameraModalOpen || typeof document === "undefined") {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !isCreateCameraCapturing) {
+        closeCreateCameraModal();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isCreateCameraCapturing, isCreateCameraModalOpen]);
 
   useEffect(() => {
     if (!isAppendCameraModalOpen || !appendCameraStream || !appendCameraVideoRef.current) {
@@ -1109,6 +1149,26 @@ export function BookBuilderPage() {
     return supportedMimeTypes.has(file.type) || /\.(jpe?g|png|webp)$/u.test(normalizedName);
   }
 
+  function createFiles(files: File[]) {
+    const validFiles = files.filter(isSupportedImageFile);
+    const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
+
+    setSelectedCreateFiles((currentFiles) => [...currentFiles, ...validFiles]);
+
+    if (invalidFiles.length > 0) {
+      const invalidNames = invalidFiles.map((file) => file.name).join(", ");
+      setCreateError(`Algunas imágenes no se pueden usar todavía (${invalidNames}). Usa PNG, JPG o WEBP.`);
+      return;
+    }
+
+    setCreateError(null);
+  }
+
+  function handleCreateFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
+    createFiles(toFileArray(event.target.files));
+    event.target.value = "";
+  }
+
   function appendFiles(files: File[]) {
     const validFiles = files.filter(isSupportedImageFile);
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
@@ -1127,6 +1187,20 @@ export function BookBuilderPage() {
   function handleAppendFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
     appendFiles(toFileArray(event.target.files));
     event.target.value = "";
+  }
+
+  function stopCreateCameraStream() {
+    setCreateCameraStream((currentStream) => {
+      currentStream?.getTracks().forEach((track) => track.stop());
+      return null;
+    });
+  }
+
+  function closeCreateCameraModal() {
+    setIsCreateCameraCapturing(false);
+    setIsCreateCameraStarting(false);
+    setIsCreateCameraModalOpen(false);
+    stopCreateCameraStream();
   }
 
   function stopAppendCameraStream() {
@@ -1149,6 +1223,61 @@ export function BookBuilderPage() {
     }
 
     return /Android|iPhone|iPad|iPod|Mobile/iu.test(navigator.userAgent);
+  }
+
+  async function handleOpenCreateCamera() {
+    if (isCreating || isCreateCameraStarting) {
+      return;
+    }
+
+    if (shouldPreferNativeCameraCapture()) {
+      createCameraInputRef.current?.click();
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCreateError("Este navegador no puede abrir la camara en escritorio. Usa la subida de archivos o prueba otro navegador.");
+      return;
+    }
+
+    setCreateError(null);
+    setIsCreateCameraStarting(true);
+
+    try {
+      const initialStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: true
+      });
+
+      const currentTrack = initialStream.getVideoTracks()[0] ?? null;
+      const currentDeviceId = currentTrack?.getSettings().deviceId;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const preferredDevice = choosePreferredCameraDevice(devices, currentDeviceId);
+
+      let stream = initialStream;
+      if (preferredDevice?.deviceId && preferredDevice.deviceId !== currentDeviceId) {
+        try {
+          const preferredStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+              deviceId: { exact: preferredDevice.deviceId }
+            }
+          });
+
+          initialStream.getTracks().forEach((track) => track.stop());
+          stream = preferredStream;
+        } catch {
+          stream = initialStream;
+        }
+      }
+
+      setCreateCameraStream(stream);
+      setIsCreateCameraModalOpen(true);
+    } catch {
+      setCreateError("No se pudo abrir la camara. Revisa el permiso del navegador y que haya una webcam disponible.");
+    } finally {
+      setIsCreateCameraStarting(false);
+    }
   }
 
   async function handleOpenAppendCamera() {
@@ -1206,6 +1335,39 @@ export function BookBuilderPage() {
     }
   }
 
+  function handleCaptureCreateCameraFrame() {
+    const videoElement = createCameraVideoRef.current;
+    const canvasElement = createCameraCanvasRef.current;
+
+    if (!videoElement || !canvasElement || videoElement.videoWidth <= 0 || videoElement.videoHeight <= 0) {
+      setCreateError("La camara todavia no esta lista para capturar una imagen.");
+      return;
+    }
+
+    const renderingContext = canvasElement.getContext("2d");
+    if (!renderingContext) {
+      setCreateError("No se pudo capturar la imagen de la camara.");
+      return;
+    }
+
+    setIsCreateCameraCapturing(true);
+    canvasElement.width = videoElement.videoWidth;
+    canvasElement.height = videoElement.videoHeight;
+    renderingContext.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+
+    canvasElement.toBlob((blob) => {
+      if (!blob) {
+        setCreateError("No se pudo capturar la imagen de la camara.");
+        setIsCreateCameraCapturing(false);
+        return;
+      }
+
+      const fileName = `camara-${new Date().toISOString().replace(/[:.]/gu, "-")}.jpg`;
+      createFiles([new File([blob], fileName, { type: "image/jpeg" })]);
+      closeCreateCameraModal();
+    }, "image/jpeg", 0.92);
+  }
+
   function handleCaptureAppendCameraFrame() {
     const videoElement = appendCameraVideoRef.current;
     const canvasElement = appendCameraCanvasRef.current;
@@ -1244,6 +1406,11 @@ export function BookBuilderPage() {
     setAppendError(null);
   }
 
+  function clearCreateSelection() {
+    setSelectedCreateFiles([]);
+    setCreateError(null);
+  }
+
   function handleAppendReferencePageInputChange(event: React.ChangeEvent<HTMLInputElement>) {
     const rawValue = Number.parseInt(event.target.value, 10);
     const nextValue = Number.isFinite(rawValue)
@@ -1256,6 +1423,11 @@ export function BookBuilderPage() {
   function removeAppendFile(indexToRemove: number) {
     setSelectedAppendFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setAppendError(null);
+  }
+
+  function removeCreateFile(indexToRemove: number) {
+    setSelectedCreateFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
+    setCreateError(null);
   }
 
   function describeOcrMode(mode: ImageOcrMode): string {
@@ -1944,7 +2116,7 @@ export function BookBuilderPage() {
             {!isAppendOnlyMode ? (
               <article className="builder-form-card">
                 <h3>Crear un libro nuevo</h3>
-                <p className="subdued">Sube varias imágenes de páginas en orden. El backend ejecutará OCR, guardará las imágenes en Oracle y abrirá el lector listo para seguir leyendo.</p>
+                <p className="subdued">Sube o captura varias imágenes de páginas en orden. El backend ejecutará OCR, guardará las imágenes en Oracle y abrirá el lector listo para seguir leyendo.</p>
 
                 <form className="stack-form" onSubmit={handleCreateFromImages}>
                   <label>
@@ -1976,35 +2148,96 @@ export function BookBuilderPage() {
                     />
                   </label>
 
-                  <label>
-                    Imágenes de páginas
-                    <input
-                      accept="image/png,image/jpeg,image/webp"
-                      multiple
-                      onChange={(event) => setSelectedCreateFiles(toFileArray(event.target.files))}
-                      type="file"
-                    />
-                  </label>
+                  <div className="capture-input-grid">
+                    <label aria-label="Imágenes del nuevo libro" className="capture-action-card capture-action-card-icon-only" title="Añadir imágenes">
+                      <span className="capture-action-icon" aria-hidden="true">
+                        <FilesIcon />
+                      </span>
+                      <input
+                        accept="image/png,image/jpeg,image/webp"
+                        className="capture-action-input"
+                        disabled={isCreating}
+                        multiple
+                        onChange={handleCreateFileSelection}
+                        type="file"
+                      />
+                    </label>
+
+                    <button
+                      aria-label="Añadir desde cámara"
+                      className="capture-action-card capture-action-card-icon-only"
+                      disabled={isCreating || isCreateCameraStarting}
+                      onClick={handleOpenCreateCamera}
+                      title="Añadir desde cámara"
+                      type="button"
+                    >
+                      <span className="capture-action-icon" aria-hidden="true">
+                        <CameraIcon />
+                      </span>
+                    </button>
+                  </div>
+
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    className="capture-action-input-hidden"
+                    onChange={handleCreateFileSelection}
+                    ref={createCameraInputRef}
+                    type="file"
+                  />
 
                   <p className="helper-text">Formatos soportados: PNG, JPG y WEBP.</p>
 
-                  <label>
-                    Modo OCR
-                    <select onChange={(event) => setCreateOcrMode(event.target.value as ImageOcrMode)} value={createOcrMode}>
-                      <option value="VISION">OCR preciso con IA</option>
-                      <option value="LOCAL">OCR rápido</option>
-                    </select>
-                  </label>
+                  <div className="selected-book-banner append-ocr-banner">
+                    <span>Modo OCR</span>
+                    <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR para crear el libro">
+                      <button
+                        aria-checked={createOcrMode === "VISION"}
+                        className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setCreateOcrMode("VISION")}
+                        role="radio"
+                        type="button"
+                      >
+                        Preciso con IA
+                      </button>
+                      <button
+                        aria-checked={createOcrMode === "LOCAL"}
+                        className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setCreateOcrMode("LOCAL")}
+                        role="radio"
+                        type="button"
+                      >
+                        Rápido local
+                      </button>
+                    </div>
+                  </div>
 
                   <p className="helper-text">{describeOcrMode(createOcrMode)}</p>
                   <p className="helper-text">El sistema recorta automáticamente la parte superior e inferior de la página para evitar encabezados y números de página.</p>
 
                   {selectedCreateFiles.length > 0 ? (
-                    <div className="file-pill-list">
-                      {selectedCreateFiles.map((file) => (
-                        <span className="file-pill" key={file.name}>{file.name}</span>
+                    <div className="file-pill-list file-pill-list-append">
+                      {selectedCreateFiles.map((file, index) => (
+                        <span className="file-pill file-pill-removable" key={`${file.name}-${index}`}>
+                          <span>{file.name}</span>
+                          <button
+                            aria-label={`Eliminar ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isCreating}
+                            onClick={() => removeCreateFile(index)}
+                            type="button"
+                          >
+                            x
+                          </button>
+                        </span>
                       ))}
                     </div>
+                  ) : null}
+
+                  {selectedCreateFiles.length > 0 ? (
+                    <button className="secondary-button" disabled={isCreating} onClick={clearCreateSelection} type="button">
+                      Limpiar selección
+                    </button>
                   ) : null}
 
                   {createError ? <p className="error-text">{createError}</p> : null}
@@ -2019,200 +2252,219 @@ export function BookBuilderPage() {
               </article>
             ) : null}
 
-            <article className={isAppendOnlyMode ? "builder-form-card builder-form-card-append" : "builder-form-card"}>
-              {!isAppendOnlyMode ? (
-                <>
-                  <h3>Añadir páginas a un libro existente</h3>
-                  <p className="subdued">Úsalo para seguir ampliando un libro que ya empezaste a leer. Si vienes desde el lector, las páginas nuevas se insertarán justo después de la página en la que estabas.</p>
-                </>
-              ) : null}
-
-              <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
-                {!isAppendOnlyMode ? (
-                  <label>
-                    Libro de imágenes
-                    <select onChange={(event) => setSelectedBookId(event.target.value)} value={selectedBookId}>
-                      <option value="">Selecciona un libro</option>
-                      {imageBooks.map((book) => (
-                        <option key={book.bookId} value={book.bookId}>{book.title}</option>
-                      ))}
-                    </select>
-                  </label>
-                ) : null}
-
-                {selectedAppendBook && appendReferencePageNumber !== undefined ? (
-                  <div className="selected-book-banner append-position-banner">
-                    <span>Las páginas añadidas se insertarán</span>
-                    <div className="append-placement-picker" role="radiogroup" aria-label="Posición respecto a la página actual">
-                      <button
-                        aria-checked={appendInsertionSide === "before"}
-                        className={appendInsertionSide === "before" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setAppendInsertionSide("before")}
-                        role="radio"
-                        type="button"
-                      >
-                        Antes
-                      </button>
-                      <button
-                        aria-checked={appendInsertionSide === "after"}
-                        className={appendInsertionSide === "after" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setAppendInsertionSide("after")}
-                        role="radio"
-                        type="button"
-                      >
-                        Después
-                      </button>
+            {isAppendOnlyMode ? (
+              <article className="builder-form-card builder-form-card-append">
+                <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
+                  {selectedAppendBook && appendReferencePageNumber !== undefined ? (
+                    <div className="selected-book-banner append-position-banner">
+                      <span>Las páginas añadidas se insertarán</span>
+                      <div className="append-placement-picker" role="radiogroup" aria-label="Posición respecto a la página actual">
+                        <button
+                          aria-checked={appendInsertionSide === "before"}
+                          className={appendInsertionSide === "before" ? "append-placement-option active" : "append-placement-option"}
+                          onClick={() => setAppendInsertionSide("before")}
+                          role="radio"
+                          type="button"
+                        >
+                          Antes
+                        </button>
+                        <button
+                          aria-checked={appendInsertionSide === "after"}
+                          className={appendInsertionSide === "after" ? "append-placement-option active" : "append-placement-option"}
+                          onClick={() => setAppendInsertionSide("after")}
+                          role="radio"
+                          type="button"
+                        >
+                          Después
+                        </button>
+                      </div>
+                      <span>de la página</span>
+                      <label className="append-reference-page-field" aria-label="Página de referencia">
+                        <input
+                          className="append-reference-page-input"
+                          inputMode="numeric"
+                          max={appendReferencePageMax}
+                          min={1}
+                          onChange={handleAppendReferencePageInputChange}
+                          type="number"
+                          value={appendReferencePageNumber}
+                        />
+                      </label>
+                      <span>{`/ ${appendReferencePageMax}.`}</span>
                     </div>
-                    <span>de la página</span>
-                    <label className="append-reference-page-field" aria-label="Página de referencia">
+                  ) : null}
+
+                  <div className="capture-input-grid">
+                    <label aria-label="Nuevas imágenes" className="capture-action-card capture-action-card-icon-only" title="Nuevas imágenes">
+                      <span className="capture-action-icon" aria-hidden="true">
+                        <FilesIcon />
+                      </span>
                       <input
-                        className="append-reference-page-input"
-                        inputMode="numeric"
-                        max={appendReferencePageMax}
-                        min={1}
-                        onChange={handleAppendReferencePageInputChange}
-                        type="number"
-                        value={appendReferencePageNumber}
+                        accept="image/png,image/jpeg,image/webp"
+                        className="capture-action-input"
+                        disabled={isAppending}
+                        multiple
+                        onChange={handleAppendFileSelection}
+                        type="file"
                       />
                     </label>
-                    <span>{`/ ${appendReferencePageMax}.`}</span>
+
+                    <button
+                      aria-label="Añadir desde cámara"
+                      className="capture-action-card capture-action-card-icon-only"
+                      disabled={isAppending || isAppendCameraStarting}
+                      onClick={handleOpenAppendCamera}
+                      title="Añadir desde cámara"
+                      type="button"
+                    >
+                      <span className="capture-action-icon" aria-hidden="true">
+                        <CameraIcon />
+                      </span>
+                    </button>
                   </div>
-                ) : null}
 
-                <div className="capture-input-grid">
-                  <label aria-label="Nuevas imágenes" className="capture-action-card capture-action-card-icon-only" title="Nuevas imágenes">
-                    <span className="capture-action-icon" aria-hidden="true">
-                      <FilesIcon />
-                    </span>
-                    <input
-                      accept="image/png,image/jpeg,image/webp"
-                      className="capture-action-input"
-                      disabled={isAppending}
-                      multiple
-                      onChange={handleAppendFileSelection}
-                      type="file"
-                    />
-                  </label>
+                  <input
+                    accept="image/*"
+                    capture="environment"
+                    className="capture-action-input-hidden"
+                    onChange={handleAppendFileSelection}
+                    ref={appendCameraInputRef}
+                    type="file"
+                  />
 
+                  {selectedAppendFiles.length > 0 ? (
+                    <div className="file-pill-list file-pill-list-append">
+                      {selectedAppendFiles.map((file, index) => (
+                        <span
+                          className={[
+                            "file-pill",
+                            "file-pill-removable",
+                            isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? "file-pill-completed" : "",
+                            isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? "file-pill-processing" : "",
+                            isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? "file-pill-waiting" : "",
+                            isAppending && (appendImportProgress?.completedFiles ?? 0) <= index && appendImportProgress?.currentFileIndex !== index ? "file-pill-pending" : ""
+                          ].filter(Boolean).join(" ")}
+                          key={`${file.name}-${index}`}
+                        >
+                          <span>{file.name}</span>
+                          {isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? (
+                            <span className="file-pill-status file-pill-status-completed">Hecho</span>
+                          ) : null}
+                          {isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? (
+                            <span className="file-pill-status">OCR...</span>
+                          ) : null}
+                          {isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? (
+                            <span className="file-pill-status">Espera {appendImportProgress.waitSecondsRemaining ?? 0} s</span>
+                          ) : null}
+                          <button
+                            aria-label={`Eliminar ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isAppending}
+                            onClick={() => removeAppendFile(index)}
+                            type="button"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {isAppending && appendImportProgress?.stage === "saving" ? (
+                    <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
+                  ) : null}
+                  {isAppending && appendImportProgress?.stage === "waiting" ? (
+                    <p aria-live="polite" className="helper-text ocr-waiting-text">
+                      {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)}
+                    </p>
+                  ) : null}
+
+                  <div className="selected-book-banner append-ocr-banner">
+                    <span>Modo OCR</span>
+                    <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
+                      <button
+                        aria-checked={appendOcrMode === "VISION"}
+                        className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setAppendOcrMode("VISION")}
+                        role="radio"
+                        type="button"
+                      >
+                        Preciso con IA
+                      </button>
+                      <button
+                        aria-checked={appendOcrMode === "LOCAL"}
+                        className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                        onClick={() => setAppendOcrMode("LOCAL")}
+                        role="radio"
+                        type="button"
+                      >
+                        Rápido local
+                      </button>
+                    </div>
+                  </div>
+
+                  {appendError ? <p className="error-text">{appendError}</p> : null}
+                  {!appendError && appendImportProgress?.stage === "failed" && appendImportProgress.errorMessage ? (
+                    <p className="error-text">{appendImportProgress.errorMessage}</p>
+                  ) : null}
+
+                  <button className="secondary-button" disabled={isAppending} type="submit">
+                    {isAppending ? "Procesando OCR..." : "Añadir páginas"}
+                  </button>
+                </form>
+              </article>
+            ) : null}
+          </div>
+
+          {isCreateCameraModalOpen ? (
+            <div className="camera-capture-backdrop" role="presentation">
+              <div aria-label="Captura desde camara" aria-modal="true" className="camera-capture-modal" role="dialog">
+                <div className="camera-capture-header">
+                  <div>
+                    <p className="eyebrow">Camara</p>
+                    <h3>Capturar pagina</h3>
+                  </div>
                   <button
-                    aria-label="Añadir desde cámara"
-                    className="capture-action-card capture-action-card-icon-only"
-                    disabled={isAppending || isAppendCameraStarting}
-                    onClick={handleOpenAppendCamera}
-                    title="Añadir desde cámara"
+                    aria-label="Cerrar camara"
+                    className="secondary-button reader-header-icon-button"
+                    disabled={isCreateCameraCapturing}
+                    onClick={closeCreateCameraModal}
                     type="button"
                   >
-                    <span className="capture-action-icon" aria-hidden="true">
-                      <CameraIcon />
-                    </span>
+                    <CloseIcon />
                   </button>
                 </div>
 
-                <input
-                  accept="image/*"
-                  capture="environment"
-                  className="capture-action-input-hidden"
-                  onChange={handleAppendFileSelection}
-                  ref={appendCameraInputRef}
-                  type="file"
-                />
-
-                {selectedAppendFiles.length > 0 ? (
-                  <div className="file-pill-list file-pill-list-append">
-                    {selectedAppendFiles.map((file, index) => (
-                      <span
-                        className={[
-                          "file-pill",
-                          "file-pill-removable",
-                          isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? "file-pill-completed" : "",
-                          isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? "file-pill-processing" : "",
-                          isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? "file-pill-waiting" : "",
-                          isAppending && (appendImportProgress?.completedFiles ?? 0) <= index && appendImportProgress?.currentFileIndex !== index ? "file-pill-pending" : ""
-                        ].filter(Boolean).join(" ")}
-                        key={`${file.name}-${index}`}
-                      >
-                        <span>{file.name}</span>
-                        {isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? (
-                          <span className="file-pill-status file-pill-status-completed">Hecho</span>
-                        ) : null}
-                        {isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? (
-                          <span className="file-pill-status">OCR...</span>
-                        ) : null}
-                        {isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? (
-                          <span className="file-pill-status">Espera {appendImportProgress.waitSecondsRemaining ?? 0} s</span>
-                        ) : null}
+                <div className="camera-capture-preview">
+                  {createCameraStream ? (
+                    <>
+                      <video muted playsInline ref={createCameraVideoRef} />
+                      <div className="camera-capture-overlay-actions">
                         <button
-                          aria-label={`Eliminar ${file.name}`}
-                          className="file-pill-remove"
-                          disabled={isAppending}
-                          onClick={() => removeAppendFile(index)}
+                          className="primary-button camera-capture-primary-button"
+                          disabled={!createCameraStream || isCreateCameraCapturing}
+                          onClick={handleCaptureCreateCameraFrame}
                           type="button"
                         >
-                          x
+                          {isCreateCameraCapturing ? "Guardando..." : "Tomar foto"}
                         </button>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-
-                {isAppending && appendImportProgress?.stage === "saving" ? (
-                  <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
-                ) : null}
-                {isAppending && appendImportProgress?.stage === "waiting" ? (
-                  <p aria-live="polite" className="helper-text ocr-waiting-text">
-                    {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)}
-                  </p>
-                ) : null}
-
-                <div className="selected-book-banner append-ocr-banner">
-                  <span>Modo OCR</span>
-                  <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
-                    <button
-                      aria-checked={appendOcrMode === "VISION"}
-                      className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
-                      onClick={() => setAppendOcrMode("VISION")}
-                      role="radio"
-                      type="button"
-                    >
-                      Preciso con IA
-                    </button>
-                    <button
-                      aria-checked={appendOcrMode === "LOCAL"}
-                      className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
-                      onClick={() => setAppendOcrMode("LOCAL")}
-                      role="radio"
-                      type="button"
-                    >
-                      Rápido local
-                    </button>
-                  </div>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="subdued">Abriendo camara...</p>
+                  )}
                 </div>
 
-                {appendError ? <p className="error-text">{appendError}</p> : null}
-                {!appendError && appendImportProgress?.stage === "failed" && appendImportProgress.errorMessage ? (
-                  <p className="error-text">{appendImportProgress.errorMessage}</p>
-                ) : null}
+                <canvas className="camera-capture-canvas" ref={createCameraCanvasRef} />
 
-                <button className="secondary-button" disabled={isAppending} type="submit">
-                  {isAppending ? "Procesando OCR..." : "Añadir páginas"}
-                </button>
-              </form>
-
-              {!isAppendOnlyMode ? (
-                <div className="book-option-list">
-                  <h3>Tus libros de imágenes</h3>
-                  {booksQuery.isLoading ? <p className="subdued">Cargando libros...</p> : null}
-                  {!booksQuery.isLoading && imageBooks.length === 0 ? <p className="subdued">Todavía no tienes libros creados desde imágenes.</p> : null}
-                  {imageBooks.map((book) => (
-                    <Link className="book-option-card" key={book.bookId} to={`/books/${book.bookId}`}>
-                      <strong>{book.title}</strong>
-                      <span>{book.totalPages} páginas, {book.totalParagraphs} párrafos</span>
-                    </Link>
-                  ))}
+                <div className="camera-capture-actions">
+                  <button className="secondary-button" disabled={isCreateCameraCapturing} onClick={closeCreateCameraModal} type="button">
+                    Cancelar
+                  </button>
                 </div>
-              ) : null}
-            </article>
-          </div>
+              </div>
+            </div>
+          ) : null}
 
           {isAppendCameraModalOpen ? (
             <div className="camera-capture-backdrop" role="presentation">
