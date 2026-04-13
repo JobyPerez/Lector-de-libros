@@ -454,6 +454,39 @@ async function findStoredCoverAsset(
   return coverAsset?.contentBlob && coverAsset.mimeType ? coverAsset : null;
 }
 
+async function findStoredPageImageAsset(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  pageNumber?: number
+): Promise<BookBinaryFileRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        file_name AS "fileName",
+        mime_type AS "mimeType",
+        content_blob AS "contentBlob"
+      FROM book_files
+      WHERE book_id = :bookId
+        AND file_kind = 'PAGE_IMAGE'
+        ${pageNumber ? "AND page_number = :pageNumber" : ""}
+      ORDER BY NVL(page_number, 0) ASC, created_at ASC
+      FETCH FIRST 1 ROWS ONLY
+    `,
+    {
+      bookId,
+      ...(pageNumber ? { pageNumber } : {})
+    },
+    {
+      fetchInfo: {
+        contentBlob: { type: oracledb.BUFFER }
+      }
+    }
+  );
+
+  const [pageImageAsset] = (result.rows ?? []) as BookBinaryFileRecord[];
+  return pageImageAsset?.contentBlob && pageImageAsset.mimeType ? pageImageAsset : null;
+}
+
 async function findBookFileByKind(
   connection: Awaited<ReturnType<typeof getConnection>>,
   bookId: string,
@@ -490,6 +523,14 @@ async function resolveBookCoverAsset(
   connection: Awaited<ReturnType<typeof getConnection>>,
   book: OwnedBookRecord
 ): Promise<BookBinaryFileRecord | null> {
+  if (book.sourceType === "IMAGES") {
+    const firstPageImage = await findStoredPageImageAsset(connection, book.bookId, 1)
+      ?? await findStoredPageImageAsset(connection, book.bookId);
+    if (firstPageImage) {
+      return firstPageImage;
+    }
+  }
+
   const storedCover = await findStoredCoverAsset(connection, book.bookId);
   if (storedCover) {
     return storedCover;
@@ -3335,6 +3376,17 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         `,
         {
           pageId: page.pageId
+        }
+      );
+
+      await connection.execute(
+        `
+          UPDATE books
+          SET status = status
+          WHERE book_id = :bookId
+        `,
+        {
+          bookId: params.bookId
         }
       );
 
