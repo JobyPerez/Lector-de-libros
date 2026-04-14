@@ -296,7 +296,7 @@ function parseReviewAlignmentMarker(value: string): { alignment: ReviewTextAlign
 
 function findReviewBlockStart(value: string, index: number) {
   const cursor = Math.max(0, Math.min(index, value.length));
-  const separatorPattern = /\n{2,}/gu;
+  const separatorPattern = /\n+/gu;
   let start = 0;
   let match = separatorPattern.exec(value);
 
@@ -310,7 +310,7 @@ function findReviewBlockStart(value: string, index: number) {
 
 function findReviewBlockEnd(value: string, index: number) {
   const cursor = Math.max(0, Math.min(index, value.length));
-  const match = value.slice(cursor).match(/\n{2,}/u);
+  const match = value.slice(cursor).match(/\n+/u);
   return match && typeof match.index === "number" ? cursor + match.index : value.length;
 }
 
@@ -323,7 +323,7 @@ function detectReviewSelectionAlignment(value: string, selectionStart: number, s
   const blockEnd = findReviewBlockEnd(value, selectionEnd);
   const blocks = value
     .slice(blockStart, blockEnd)
-    .split(/\n{2,}/u)
+    .split(/\n+/u)
     .map((block) => block.trim())
     .filter(Boolean);
 
@@ -918,7 +918,7 @@ export function BookBuilderPage() {
       return;
     }
 
-    const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n\n");
+    const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n");
     setEditedText(nextEditedText);
     setOriginalEditedText(nextEditedText);
     setIsReviewCropMode(false);

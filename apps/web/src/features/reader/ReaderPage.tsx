@@ -459,6 +459,36 @@ function findParagraphTimingForTime(paragraphTimings: TimedAudioBlockParagraph[]
     ?? null;
 }
 
+function normalizeRichTextForComparison(value: string) {
+  return value.replace(/\u00a0/gu, " ").replace(/\s+/gu, " ").trim().toLowerCase();
+}
+
+function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: ParagraphContent[]) {
+  if (!htmlContent || typeof DOMParser === "undefined") {
+    return htmlContent;
+  }
+
+  const document = new DOMParser().parseFromString(htmlContent, "text/html");
+  const richParagraphs = Array.from(document.querySelectorAll<HTMLElement>("[data-paragraph-number]"))
+    .map((node) => normalizeRichTextForComparison(node.textContent ?? ""))
+    .filter(Boolean);
+  const plainParagraphs = paragraphs
+    .map((paragraph) => normalizeRichTextForComparison(paragraph.paragraphText))
+    .filter(Boolean);
+
+  if (richParagraphs.length !== plainParagraphs.length) {
+    return null;
+  }
+
+  for (let index = 0; index < plainParagraphs.length; index += 1) {
+    if (richParagraphs[index] !== plainParagraphs[index]) {
+      return null;
+    }
+  }
+
+  return htmlContent;
+}
+
 function ReaderControlIcon({ children }: { children: ReactNode }) {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -1261,7 +1291,10 @@ export function ReaderPage() {
   }, [isAudioSettingsVisible]);
 
   const currentParagraphs = pageQuery.data?.page.paragraphs ?? [];
-  const currentHtmlContent = pageQuery.data?.page.htmlContent ?? null;
+  const currentHtmlContent = useMemo(
+    () => getSynchronizedRichHtmlContent(pageQuery.data?.page.htmlContent ?? null, currentParagraphs),
+    [currentParagraphs, pageQuery.data?.page.htmlContent]
+  );
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
   const currentParagraphIndex = currentParagraph
     ? currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === currentParagraph.paragraphId)

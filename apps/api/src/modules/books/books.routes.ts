@@ -10,7 +10,7 @@ import { z } from "zod";
 import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
-import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, sanitizeParagraphs, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
+import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
@@ -576,10 +576,6 @@ async function resolveBookCoverAsset(
   return null;
 }
 
-function paragraphsFromEditedText(editedText: string): string[] {
-  return sanitizeParagraphs(buildRichPageFromEditableText(editedText).paragraphs);
-}
-
 async function listPageParagraphs(
   connection: Awaited<ReturnType<typeof getConnection>>,
   bookId: string,
@@ -833,17 +829,14 @@ function resolveReplacementParagraph(
   replacementParagraphs: ReplacementParagraphRecord[]
 ): ReplacementParagraphRecord | null {
   if (record.paragraphId) {
-    const matchedParagraph = paragraphMatches.get(record.paragraphId);
-    if (matchedParagraph) {
-      return matchedParagraph;
-    }
+    return paragraphMatches.get(record.paragraphId) ?? null;
   }
 
-  if (record.paragraphNumber && record.paragraphNumber >= 1 && record.paragraphNumber <= replacementParagraphs.length) {
-    return replacementParagraphs[record.paragraphNumber - 1] ?? null;
+  if (!record.paragraphNumber || record.paragraphNumber < 1 || record.paragraphNumber > replacementParagraphs.length) {
+    return null;
   }
 
-  return null;
+  return replacementParagraphs[record.paragraphNumber - 1] ?? null;
 }
 
 async function shiftSubsequentAnnotationSequenceNumbers(
@@ -1842,6 +1835,9 @@ async function replaceBookPageParagraphs(
     sequenceNumber: previousParagraphCount + paragraphIndex + 1
   })) satisfies ReplacementParagraphRecord[];
   const paragraphMatches = matchReplacementParagraphs(existingParagraphs, replacementParagraphs);
+  for (const [existingParagraphId, replacementParagraph] of paragraphMatches) {
+    replacementParagraph.paragraphId = existingParagraphId;
+  }
   const delta = replacementParagraphs.length - currentParagraphCount;
 
   await invalidateBookAudioCache(connection, options.bookId);
@@ -2557,7 +2553,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           `,
           {
             bookId,
-            editedText: page.paragraphs.join("\n\n"),
+            editedText: page.paragraphs.join("\n"),
             htmlContent: page.htmlContent ?? null,
             pageId,
             pageNumber: page.pageNumber,
@@ -3428,7 +3424,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const pageEmbeddedImages = extractEmbeddedImageSources(page.htmlContent);
       const richPage = buildRichPageFromEditableText(payload.editedText, { embeddedImages: pageEmbeddedImages });
-      const paragraphs = paragraphsFromEditedText(payload.editedText);
+      const paragraphs = richPage.paragraphs;
 
       if (paragraphs.length === 0) {
         return reply.status(422).send({ message: "El texto editado debe producir al menos un párrafo." });

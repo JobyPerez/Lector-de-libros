@@ -3,10 +3,7 @@ type TextAlignment = "center" | "left" | "right";
 const headingPattern = /^(#{1,6})\s+(.+)$/u;
 const imagePattern = /^!\[(.*?)\]\((.+?)\)$/u;
 const alignmentPattern = /^::(left|center|right)::\s*([\s\S]+)$/u;
-const headingKeywordPattern = /^(cap[ií]tulo|chapter|parte|section|pr[oó]logo|ep[ií]logo|prefacio|introducci[oó]n)\b/iu;
 const embeddedImageSourcePattern = /^embedded-image-\d+$/u;
-const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
-const signatureLikePattern = /^[A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+(?:[A-ZÁÉÍÓÚÑ][\p{L}'’-]+|[A-ZÁÉÍÓÚÑ]\.)){1,4}$/u;
 
 type RichBlock = {
   html: string;
@@ -65,44 +62,6 @@ function renderInlineMarkdown(value: string): string {
     .replace(/__(.+?)__/gu, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/gu, "<em>$1</em>")
     .replace(/_(.+?)_/gu, "<em>$1</em>");
-}
-
-function looksLikeHeading(text: string, index: number): number | null {
-  const normalized = normalizeWhitespace(text);
-  if (!normalized) {
-    return null;
-  }
-
-  if (standaloneDatePattern.test(normalized) || signatureLikePattern.test(normalized)) {
-    return null;
-  }
-
-  if (headingKeywordPattern.test(normalized)) {
-    return index === 0 ? 1 : 2;
-  }
-
-  if (/[.!?:;]$/u.test(normalized)) {
-    return null;
-  }
-
-  const words = normalized.split(/\s+/u);
-  if (words.length > 14 || normalized.length > 110) {
-    return null;
-  }
-
-  const uppercaseLetters = normalized.replace(/[^A-ZÁÉÍÓÚÑ]/gu, "");
-  const letterCount = normalized.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/gu, "").length;
-  const uppercaseRatio = letterCount > 0 ? uppercaseLetters.length / letterCount : 0;
-  if (uppercaseRatio >= 0.6) {
-    return index === 0 ? 1 : 2;
-  }
-
-  const titleCaseWordCount = words.filter((word) => /^[A-ZÁÉÍÓÚÑ][\p{Ll}\d'’-]*$/u.test(word)).length;
-  if (titleCaseWordCount >= Math.max(2, words.length - 1) && words.length <= 9) {
-    return index === 0 ? 1 : 2;
-  }
-
-  return null;
 }
 
 function extractEmbeddedImageSources(htmlContent: string | null | undefined): Map<string, string> {
@@ -186,13 +145,6 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     return null;
   }
 
-  const inferredLevel = looksLikeHeading(text, index);
-  if (inferredLevel) {
-    return {
-      html: `<h${inferredLevel} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent)}</h${inferredLevel}>`
-    };
-  }
-
   return {
     html: `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`
   };
@@ -201,7 +153,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
 export function buildOcrPreviewHtml(editedText: string, persistedHtmlContent?: string | null): string | null {
   const paragraphCandidates = editedText
     .replace(/\r/g, "")
-    .split(/\n{2,}/u)
+    .split(/\n/u)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
 

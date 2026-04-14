@@ -430,8 +430,7 @@ function buildParagraphsFromRawText(rawText: string): string[] {
   }
 
   const paragraphCandidates = normalizedText
-    .split(/\n{2,}/u)
-    .flatMap((paragraph) => paragraph.split(/\n(?=[A-ZÁÉÍÓÚÑ0-9])/u))
+    .split(/\n+/u)
     .map(normalizeWhitespace)
     .filter(Boolean);
 
@@ -534,7 +533,7 @@ async function runLocalOcrWithTesseract(fileBuffer: Buffer): Promise<OcrPageResu
     throw new Error("Tesseract no ha podido extraer texto legible de la imagen.");
   }
 
-  const richPage = buildRichPageFromParagraphs(paragraphs);
+  const richPage = buildRichPageFromParagraphs(paragraphs, { inferHeadings: false });
 
   return {
     editedText: richPage.editedText,
@@ -604,8 +603,8 @@ async function buildStructuredVisionPage(
   }
 
   const richPage = paragraphCandidates.length > 0
-    ? buildRichPageFromParagraphs(paragraphCandidates, { embeddedImages })
-    : buildRichPageFromParagraphs(fallbackParagraphs);
+    ? buildRichPageFromParagraphs(paragraphCandidates, { embeddedImages, inferHeadings: false })
+    : buildRichPageFromParagraphs(fallbackParagraphs, { inferHeadings: false });
   const paragraphs = sanitizeParagraphs(richPage.paragraphs.length > 0 ? richPage.paragraphs : fallbackParagraphs);
   const rawText = normalizeWhitespace(richPage.rawText || fallbackRawText || paragraphs.join(" "));
 

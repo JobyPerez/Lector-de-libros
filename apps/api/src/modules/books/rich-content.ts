@@ -13,6 +13,11 @@ type RichBlock = {
   text: string;
 };
 
+type RichPageBuildOptions = {
+  embeddedImages?: EmbeddedImageSourceMap;
+  inferHeadings?: boolean;
+};
+
 export type StructuredRichBlockInput =
   | {
       text: string;
@@ -160,7 +165,15 @@ function resolveImageSource(source: string, embeddedImages?: EmbeddedImageSource
   return normalizedSource;
 }
 
-function buildBlockFromParagraph(paragraph: string, index: number, embeddedImages?: EmbeddedImageSourceMap): RichBlock | null {
+function splitEditableTextIntoBlocks(editedText: string) {
+  return editedText
+    .replace(/\r/g, "")
+    .split(/\n/u)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+function buildBlockFromParagraph(paragraph: string, index: number, options?: RichPageBuildOptions): RichBlock | null {
   const normalizedParagraph = paragraph.replace(/\r/g, "").trim();
   if (!normalizedParagraph) {
     return null;
@@ -176,7 +189,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
   if (imageMatch) {
     const altText = normalizeWhitespace(imageMatch[1] ?? "");
     const sourceToken = (imageMatch[2] ?? "").trim();
-    const resolvedSource = resolveImageSource(sourceToken, embeddedImages);
+    const resolvedSource = resolveImageSource(sourceToken, options?.embeddedImages);
     if (!resolvedSource) {
       return null;
     }
@@ -215,7 +228,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     return null;
   }
 
-  const inferredLevel = looksLikeHeading(text, index);
+  const inferredLevel = options?.inferHeadings === false ? null : looksLikeHeading(text, index);
   if (inferredLevel) {
     return {
       alignment,
@@ -249,10 +262,10 @@ function finalizeRichBlocks(blocks: RichBlock[]) {
   const textBlocks = blocks.filter((block) => block.includeInParagraphs && block.text.length > 0);
 
   return {
-    editedText: blocks.map((block) => block.editableText).filter(Boolean).join("\n\n"),
+    editedText: blocks.map((block) => block.editableText).filter(Boolean).join("\n"),
     htmlContent: wrapRichPageHtml(blocks),
     paragraphs: textBlocks.map((block) => block.text),
-    rawText: textBlocks.map((block) => block.text).join("\n\n")
+    rawText: textBlocks.map((block) => block.text).join("\n")
   };
 }
 
@@ -280,10 +293,10 @@ export function extractEmbeddedImageSources(htmlContent: string | null | undefin
 
 export function buildRichPageFromParagraphs(
   paragraphs: string[],
-  options?: { embeddedImages?: EmbeddedImageSourceMap }
+  options?: RichPageBuildOptions
 ): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string } {
   const blocks = paragraphs
-    .map((paragraph, index) => buildBlockFromParagraph(paragraph, index, options?.embeddedImages))
+    .map((paragraph, index) => buildBlockFromParagraph(paragraph, index, options))
     .filter((block): block is RichBlock => block !== null);
 
   return finalizeRichBlocks(blocks);
@@ -306,18 +319,15 @@ export function buildRichPageFromStructuredBlocks(
     return block.text.trim();
   });
 
-  return buildRichPageFromParagraphs(paragraphCandidates);
+  return buildRichPageFromParagraphs(paragraphCandidates, { inferHeadings: false });
 }
 
 export function buildRichPageFromEditableText(
   editedText: string,
-  options?: { embeddedImages?: EmbeddedImageSourceMap }
+  options?: RichPageBuildOptions
 ): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string } {
-  const paragraphCandidates = editedText
-    .replace(/\r/g, "")
-    .split(/\n{2,}/u)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-
-  return buildRichPageFromParagraphs(paragraphCandidates, options);
+  return buildRichPageFromParagraphs(splitEditableTextIntoBlocks(editedText), {
+    ...options,
+    inferHeadings: false
+  });
 }
