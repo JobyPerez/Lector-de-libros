@@ -1430,12 +1430,6 @@ export function BookBuilderPage() {
     setCreateError(null);
   }
 
-  function describeOcrMode(mode: ImageOcrMode): string {
-    return mode === "VISION"
-      ? "Más preciso para fotos difíciles y páginas con ruido. Si la IA rechaza una imagen por tamaño, el servidor la reintenta optimizada automáticamente."
-      : "Más rápido para páginas limpias. También recorta encabezado y pie antes del OCR.";
-  }
-
   async function waitForOcrRetry(context: OcrRetryContext, retryAfterSeconds: number) {
     if (typeof window === "undefined") {
       return;
@@ -2116,7 +2110,6 @@ export function BookBuilderPage() {
             {!isAppendOnlyMode ? (
               <article className="builder-form-card">
                 <h3>Crear un libro nuevo</h3>
-                <p className="subdued">Sube o captura varias imágenes de páginas en orden. El backend ejecutará OCR, guardará las imágenes en Oracle y abrirá el lector listo para seguir leyendo.</p>
 
                 <form className="stack-form" onSubmit={handleCreateFromImages}>
                   <label>
@@ -2186,8 +2179,6 @@ export function BookBuilderPage() {
                     type="file"
                   />
 
-                  <p className="helper-text">Formatos soportados: PNG, JPG y WEBP.</p>
-
                   <div className="selected-book-banner append-ocr-banner">
                     <span>Modo OCR</span>
                     <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR para crear el libro">
@@ -2211,9 +2202,6 @@ export function BookBuilderPage() {
                       </button>
                     </div>
                   </div>
-
-                  <p className="helper-text">{describeOcrMode(createOcrMode)}</p>
-                  <p className="helper-text">El sistema recorta automáticamente la parte superior e inferior de la página para evitar encabezados y números de página.</p>
 
                   {selectedCreateFiles.length > 0 ? (
                     <div className="file-pill-list file-pill-list-append">
