@@ -352,7 +352,8 @@ textarea {
   top: calc(100% + 0.55rem);
   right: 0;
   z-index: 40;
-  min-width: 220px;
+  width: min(220px, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
   padding: 0.35rem;
   border: 1px solid rgba(31, 43, 35, 0.12);
   border-radius: 20px;
@@ -4178,9 +4179,9 @@ textarea {
   }
 
   .menu-panel {
+    left: auto;
     right: 0;
-    left: 0;
-    width: auto;
+    width: min(220px, calc(100vw - 2rem));
   }
 
   .profile-panel {
