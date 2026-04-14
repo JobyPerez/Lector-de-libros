@@ -827,6 +827,17 @@ textarea {
   min-height: 44vh;
 }
 
+.builder-layout .panel-header > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.builder-layout .panel-header .reader-header-icon-button {
+  margin-left: auto;
+  flex: none;
+  align-self: flex-start;
+}
+
 .loading-panel {
   max-width: 540px;
 }
@@ -4048,6 +4059,11 @@ textarea {
     flex-direction: row;
     align-items: flex-start;
     flex-wrap: wrap;
+  }
+
+  .builder-layout .panel-header {
+    flex-direction: row;
+    align-items: flex-start;
   }
 
   .brand-lockup {
