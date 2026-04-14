@@ -4066,6 +4066,16 @@ textarea {
     align-items: flex-start;
   }
 
+  .reader-layout .panel-header {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
+  .reader-layout .reader-header-actions {
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+
   .brand-lockup {
     flex: 1 1 auto;
     min-width: 0;
