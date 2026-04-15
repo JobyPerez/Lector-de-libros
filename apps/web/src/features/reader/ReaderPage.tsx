@@ -48,9 +48,10 @@ const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
 const PAGE_TURN_DURATION_MS = 720;
 const AUDIO_BLOCK_PARAGRAPH_COUNT = 5;
-const AUDIO_BLOCK_QUEUE_SIZE = 2;
-const AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT = 1;
+const AUDIO_BLOCK_QUEUE_SIZE = 3;
+const AUDIO_RAMP_FIRST_BLOCK_PARAGRAPH_COUNT = 2;
 const AUDIO_BLOCK_FALLBACK_DURATION_MS = 18_000;
+const AUDIO_BLOCK_HANDOFF_PRIME_THRESHOLD_MS = 12_000;
 const READER_POPOVER_HEIGHT_ESTIMATE_PX = 340;
 const READER_POPOVER_WIDTH_ESTIMATE_PX = 432;
 const READER_POPOVER_VIEWPORT_MARGIN_PX = 12;
@@ -1228,7 +1229,7 @@ export function ReaderPage() {
         return;
       }
 
-      if (selectedTtsEngine !== "device" || !isAudioPlaying) {
+      if (!isAudioPlaying && !isAudioLoading && !hasActivePlaybackSession && !autoPlay) {
         return;
       }
 
@@ -1239,7 +1240,7 @@ export function ReaderPage() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [isAudioPlaying, selectedTtsEngine]);
+  }, [autoPlay, hasActivePlaybackSession, isAudioLoading, isAudioPlaying]);
 
   useEffect(() => {
     if (isPageJumpActive) {
@@ -1986,10 +1987,6 @@ export function ReaderPage() {
   }
 
   async function ensureScreenWakeLock() {
-    if (selectedTtsEngine !== "device") {
-      return;
-    }
-
     const wakeLockApi = getWakeLockApi();
     if (!wakeLockApi) {
       return;
@@ -2012,7 +2009,7 @@ export function ReaderPage() {
     }
   }
 
-  function clearAudioResource(options: { cancelDeviceSpeech?: boolean; invalidatePlayback?: boolean } = {}) {
+  function clearAudioResource(options: { cancelDeviceSpeech?: boolean; invalidatePlayback?: boolean; preservePlaybackElement?: boolean } = {}) {
     if (options.invalidatePlayback ?? true) {
       playbackAttemptRef.current += 1;
     }
@@ -2024,8 +2021,20 @@ export function ReaderPage() {
       getSpeechSynthesisApi()?.cancel();
     }
     deviceUtteranceRef.current = null;
-    audioRef.current?.pause();
-    audioRef.current = null;
+    const currentAudioElement = audioRef.current;
+    currentAudioElement?.pause();
+    if (currentAudioElement) {
+      currentAudioElement.onplay = null;
+      currentAudioElement.onpause = null;
+      currentAudioElement.ontimeupdate = null;
+      currentAudioElement.onended = null;
+      currentAudioElement.onerror = null;
+    }
+
+    if (!(options.preservePlaybackElement ?? false)) {
+      audioRef.current = null;
+    }
+
     activeAudioBlockRef.current = null;
     setIsAudioPlaying(false);
     setHasActivePlaybackSession(false);
@@ -2035,6 +2044,16 @@ export function ReaderPage() {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
+  }
+
+  function getOrCreatePlaybackAudioElement() {
+    if (audioRef.current) {
+      return audioRef.current;
+    }
+
+    const audioElement = new Audio();
+    audioRef.current = audioElement;
+    return audioElement;
   }
 
   function getQueuedAudioBlock(startSequenceNumber: number, voiceModel: string) {
@@ -2193,6 +2212,25 @@ export function ReaderPage() {
     }
 
     audioBlockQueueRef.current = audioBlockQueueRef.current.filter((entry) => entry !== queuedBlock);
+
+    return queuedBlock;
+  }
+
+  async function primeQueuedAudioBlock(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
+    ensureQueuedAudioBlocks(startSequenceNumber, voiceModel, paragraphCount);
+
+    const queuedBlock = getQueuedAudioBlock(startSequenceNumber, voiceModel);
+    if (!queuedBlock) {
+      return null;
+    }
+
+    if (!queuedBlock.blob || queuedBlock.paragraphs.length === 0) {
+      await queuedBlock.promise;
+    }
+
+    if (queuedBlock.audioElement) {
+      await (queuedBlock.metadataPromise ?? waitForAudioMetadata(queuedBlock.audioElement));
+    }
 
     return queuedBlock;
   }
@@ -2549,22 +2587,39 @@ export function ReaderPage() {
     const targetParagraph = audioBlock.paragraphs.find(
       (blockParagraph) => blockParagraph.sequenceNumber === targetSequenceNumber
     ) ?? audioBlock.paragraphs[0];
+    const nextBlockStartSequenceNumber = audioBlock.startSequenceNumber + audioBlock.paragraphs.length;
+    const nextBlockParagraphCount = getNextAudioBlockParagraphCount(audioBlock.paragraphs.length);
+    let hasPrimedNextBlockHandoff = false;
+
+    const primeNextBlockHandoff = () => {
+      if (hasPrimedNextBlockHandoff) {
+        return;
+      }
+
+      hasPrimedNextBlockHandoff = true;
+      void primeQueuedAudioBlock(nextBlockStartSequenceNumber, voiceModel, nextBlockParagraphCount).catch(() => undefined);
+    };
 
     if (!targetParagraph || !audioBlock.blob) {
       throw new Error("No se pudo localizar el párrafo dentro del bloque de audio.");
     }
 
     ensureQueuedAudioBlocks(
-      audioBlock.startSequenceNumber + audioBlock.paragraphs.length,
+      nextBlockStartSequenceNumber,
       voiceModel,
-      getNextAudioBlockParagraphCount(audioBlock.paragraphs.length)
+      nextBlockParagraphCount
     );
+    primeNextBlockHandoff();
 
     const audioUrl = audioBlock.audioUrl ?? URL.createObjectURL(audioBlock.blob);
     audioUrlRef.current = audioUrl;
 
-    const audioElement = audioBlock.audioElement ?? new Audio(audioUrl);
+    const audioElement = getOrCreatePlaybackAudioElement();
     audioRef.current = audioElement;
+    if (audioElement.src !== audioUrl) {
+      audioElement.src = audioUrl;
+      audioElement.load();
+    }
     audioElement.preload = "auto";
     audioElement.playbackRate = playbackRate;
 
@@ -2634,6 +2689,11 @@ export function ReaderPage() {
       const activeParagraphTiming = findParagraphTimingForTime(activeAudioBlock.paragraphTimings, audioElement.currentTime * 1000);
       if (activeParagraphTiming) {
         syncReaderLocationFromBlockParagraph(activeParagraphTiming);
+
+        const remainingMs = Math.max(activeParagraphTiming.endMs - (audioElement.currentTime * 1000), 0);
+        if (remainingMs <= AUDIO_BLOCK_HANDOFF_PRIME_THRESHOLD_MS) {
+          primeNextBlockHandoff();
+        }
       }
     };
     audioElement.onended = () => {
@@ -2656,6 +2716,7 @@ export function ReaderPage() {
 
     syncReaderLocationFromBlockParagraph(targetParagraphTiming);
     void persistProgress(targetParagraph, targetParagraph.pageNumber);
+    await ensureScreenWakeLock();
     await audioElement.play();
   }
 
@@ -2666,7 +2727,7 @@ export function ReaderPage() {
     setIsAudioLoading(true);
 
     try {
-      clearAudioResource({ invalidatePlayback: false });
+      clearAudioResource({ invalidatePlayback: false, preservePlaybackElement: true });
       ensureQueuedAudioBlocks(startSequenceNumber, voiceModel, paragraphCount);
       const nextBlock = await resolveAudioBlock(startSequenceNumber, voiceModel, paragraphCount);
 
@@ -2734,8 +2795,12 @@ export function ReaderPage() {
       const audioUrl = URL.createObjectURL(audioBlob);
       audioUrlRef.current = audioUrl;
 
-      const audioElement = new Audio(audioUrl);
+      const audioElement = getOrCreatePlaybackAudioElement();
       audioRef.current = audioElement;
+      if (audioElement.src !== audioUrl) {
+        audioElement.src = audioUrl;
+        audioElement.load();
+      }
       audioElement.preload = "auto";
       audioElement.playbackRate = playbackRate;
       setHasActivePlaybackSession(true);
@@ -2784,6 +2849,7 @@ export function ReaderPage() {
       }
 
       void persistProgress(paragraph, pageNumber);
+      await ensureScreenWakeLock();
       await audioElement.play();
     } finally {
       if (activeAudioRequestRef.current === controller) {
@@ -2809,8 +2875,12 @@ export function ReaderPage() {
       const audioUrl = URL.createObjectURL(audioBlob);
       audioUrlRef.current = audioUrl;
 
-      const audioElement = new Audio(audioUrl);
+      const audioElement = getOrCreatePlaybackAudioElement();
       audioRef.current = audioElement;
+      if (audioElement.src !== audioUrl) {
+        audioElement.src = audioUrl;
+        audioElement.load();
+      }
       audioElement.preload = "auto";
       audioElement.playbackRate = playbackRate;
       setHasActivePlaybackSession(true);
@@ -2834,6 +2904,7 @@ export function ReaderPage() {
 
       setCurrentParagraphNumber(paragraph.paragraphNumber);
       void persistProgress(paragraph, pageNumber);
+      await ensureScreenWakeLock();
       await audioElement.play();
     } finally {
       if (activeAudioRequestRef.current === controller) {
@@ -2926,6 +2997,7 @@ export function ReaderPage() {
     }
 
     if (audioRef.current?.paused && audioRef.current.src) {
+      void ensureScreenWakeLock();
       await audioRef.current.play();
       setHasActivePlaybackSession(true);
       return;
