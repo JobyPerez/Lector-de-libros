@@ -516,6 +516,17 @@ function PageNextIcon() {
   );
 }
 
+function NotionIcon() {
+  return (
+    <ReaderControlIcon>
+      <rect height="14" rx="1.8" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.8" width="10" x="7" y="5" />
+      <path d="M9.8 8.2V15.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="M9.8 8.2L14.2 15.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M14.2 8.2V15.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
 function ParagraphPreviousIcon() {
   return (
     <ReaderControlIcon>
@@ -3475,6 +3486,7 @@ export function ReaderPage() {
   }
 
   const bookTitle = pageQuery.data?.book.title ?? "Cargando libro...";
+  const bookNotionUrl = pageQuery.data?.book.notionBookUrl?.trim() ?? "";
 
   return (
     <div className="page-grid reader-layout reader-floating-layout">
@@ -3868,6 +3880,18 @@ export function ReaderPage() {
         >
           <PageNextIcon />
         </button>
+        {bookNotionUrl ? (
+          <a
+            aria-label="Abrir libro en Notion"
+            className="reader-float-button"
+            href={bookNotionUrl}
+            rel="noreferrer noopener"
+            target="_blank"
+            title="Abrir libro en Notion"
+          >
+            <NotionIcon />
+          </a>
+        ) : null}
       </div>
     </div>
   );

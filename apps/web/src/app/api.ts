@@ -229,6 +229,7 @@ export type BookSummary = {
   authorName: string | null;
   bookId: string;
   createdAt?: string;
+  notionBookUrl?: string | null;
   synopsis?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
@@ -487,7 +488,7 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; synopsis?: string; title: string }) {
+export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; notionBookUrl?: string; synopsis?: string; title: string }) {
   return request<{ book: BookSummary }>(`/books/${bookId}`, {
     accessToken,
     body: payload,

@@ -7,6 +7,7 @@ import { useAuthStore } from "../../app/auth-store";
 
 type BookEditFormState = {
   authorName: string;
+  notionBookUrl: string;
   synopsis: string;
   title: string;
 };
@@ -16,6 +17,7 @@ type ShelfViewTransitionDirection = "back" | "forward";
 
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
+  notionBookUrl: "",
   synopsis: "",
   title: ""
 };
@@ -254,6 +256,7 @@ export function ShelfPage() {
     setEditingBook(book);
     setBookForm({
       authorName: book.authorName ?? "",
+      notionBookUrl: book.notionBookUrl ?? "",
       synopsis: book.synopsis ?? "",
       title: book.title
     });
@@ -362,6 +365,7 @@ export function ShelfPage() {
       await updateBook(accessToken, editingBook.bookId, {
         title: bookForm.title.trim(),
         ...(bookForm.authorName.trim() ? { authorName: bookForm.authorName.trim() } : {}),
+        ...(bookForm.notionBookUrl.trim() ? { notionBookUrl: bookForm.notionBookUrl.trim() } : {}),
         ...(bookForm.synopsis.trim() ? { synopsis: bookForm.synopsis.trim() } : {})
       });
 
@@ -608,6 +612,15 @@ export function ShelfPage() {
                 onChange={(event) => setBookForm((current) => ({ ...current, authorName: event.target.value }))}
                 placeholder="Autor o autora"
                 value={bookForm.authorName}
+              />
+            </label>
+            <label>
+              URL en Notion
+              <input
+                onChange={(event) => setBookForm((current) => ({ ...current, notionBookUrl: event.target.value }))}
+                placeholder="https://www.notion.so/..."
+                type="url"
+                value={bookForm.notionBookUrl}
               />
             </label>
             <label>

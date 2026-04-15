@@ -1,0 +1,1 @@
+ALTER TABLE books ADD notion_book_url VARCHAR2(2000 CHAR);

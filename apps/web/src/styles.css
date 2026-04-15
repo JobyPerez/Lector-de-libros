@@ -2274,7 +2274,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 0.65rem;
-  width: min(46rem, calc(100vw - 2rem));
+  width: min(52rem, calc(100vw - 2rem));
   padding: 0.65rem 1rem;
   border: 1px solid rgba(31, 43, 35, 0.1);
   border-radius: 999px;
@@ -2338,9 +2338,12 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border: 0;
   border-radius: 999px;
   background: rgba(42, 87, 66, 0.1);
   color: var(--forest-700);
+  cursor: pointer;
+  text-decoration: none;
   transition: transform 180ms ease, background 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
 

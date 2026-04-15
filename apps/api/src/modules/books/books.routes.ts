@@ -63,7 +63,8 @@ const sectionParamsSchema = z.object({
 const updateBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
-  synopsis: z.string().trim().max(5000).optional()
+  synopsis: z.string().trim().max(5000).optional(),
+  notionBookUrl: z.string().trim().url().max(2000).optional()
 });
 
 const pageParamsSchema = z.object({
@@ -114,6 +115,7 @@ type ProcessedImagePage = UploadedBinaryFile & {
 type OwnedBookRecord = {
   authorName: string | null;
   bookId: string;
+  notionBookUrl: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
   synopsis: string | null;
@@ -1258,6 +1260,7 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
         book_id AS "bookId",
         title AS "title",
         author_name AS "authorName",
+        notion_book_url AS "notionBookUrl",
         synopsis AS "synopsis",
         source_type AS "sourceType",
         status AS "status",
@@ -2230,6 +2233,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             book_id AS "bookId",
             title AS "title",
             author_name AS "authorName",
+            notion_book_url AS "notionBookUrl",
             synopsis AS "synopsis",
             source_type AS "sourceType",
             status AS "status",
@@ -2272,6 +2276,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           UPDATE books
           SET title = :title,
               author_name = :authorName,
+              notion_book_url = :notionBookUrl,
               synopsis = :synopsis
           WHERE book_id = :bookId
             AND owner_user_id = :ownerUserId
@@ -2279,6 +2284,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         {
           authorName: payload.authorName ?? null,
           bookId: params.bookId,
+          notionBookUrl: payload.notionBookUrl ?? null,
           ownerUserId: request.currentUser.userId,
           synopsis: payload.synopsis ?? null,
           title: payload.title
@@ -2292,6 +2298,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         book: {
           ...existingBook,
           authorName: payload.authorName ?? null,
+          notionBookUrl: payload.notionBookUrl ?? null,
           synopsis: payload.synopsis ?? null,
           title: payload.title
         }
@@ -3087,6 +3094,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             book_id AS "bookId",
             title AS "title",
             author_name AS "authorName",
+            notion_book_url AS "notionBookUrl",
             synopsis AS "synopsis",
             source_type AS "sourceType",
             status AS "status",
@@ -3130,6 +3138,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             book_id AS "bookId",
             title AS "title",
             author_name AS "authorName",
+            notion_book_url AS "notionBookUrl",
             synopsis AS "synopsis",
             source_type AS "sourceType",
             status AS "status",
