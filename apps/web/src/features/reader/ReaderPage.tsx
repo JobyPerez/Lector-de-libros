@@ -10,7 +10,6 @@ import {
   deleteBookPage,
   deleteHighlight,
   deleteNote,
-  fetchBookSearch,
   fetchBookPage,
   fetchDeepgramBalance,
   fetchPageAnnotations,
@@ -20,7 +19,6 @@ import {
   requestParagraphAudioBlock,
   updateNote,
   updateProgress,
-  type BookSearchResult,
   type HighlightColor,
   type ParagraphContent,
   type ReaderAudioBlockParagraph,
@@ -208,10 +206,6 @@ function formatPageAnchor(pageNumber: number) {
 
 function formatRelativeAnchor(pageNumber: number, paragraphNumber: number) {
   return `Pág. ${pageNumber} · párr. ${paragraphNumber}`;
-}
-
-function buildReaderSearchResultKey(result: Pick<BookSearchResult, "bookId" | "pageNumber" | "paragraphNumber" | "paragraphId">) {
-  return `${result.bookId}:${result.pageNumber}:${result.paragraphNumber}:${result.paragraphId}`;
 }
 
 function sectionSummaryHref(bookId: string, targetChapterId: string) {
@@ -1039,12 +1033,6 @@ export function ReaderPage() {
   const [bookmarkAnimationState, setBookmarkAnimationState] = useState<ReaderBookmarkAnimationState>(null);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
-  const [isReaderSearchPanelVisible, setIsReaderSearchPanelVisible] = useState(false);
-  const [readerSearchQuery, setReaderSearchQuery] = useState("");
-  const [readerSearchResults, setReaderSearchResults] = useState<BookSearchResult[]>([]);
-  const [readerSearchError, setReaderSearchError] = useState<string | null>(null);
-  const [isReaderSearchLoading, setIsReaderSearchLoading] = useState(false);
-  const [hasMoreReaderSearchResults, setHasMoreReaderSearchResults] = useState(false);
   const [activeSearchTarget, setActiveSearchTarget] = useState<ActiveSearchTarget | null>(null);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
@@ -1080,8 +1068,6 @@ export function ReaderPage() {
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
-  const readerSearchPanelRef = useRef<HTMLDivElement | null>(null);
-  const readerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
   const readerNotePopoverRef = useRef<HTMLDivElement | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
@@ -1111,11 +1097,6 @@ export function ReaderPage() {
     setPageTurnSnapshot(null);
     setCurrentPageNumber(1);
     setCurrentParagraphNumber(1);
-    setIsReaderSearchPanelVisible(false);
-    setReaderSearchQuery("");
-    setReaderSearchResults([]);
-    setReaderSearchError(null);
-    setHasMoreReaderSearchResults(false);
     setActiveSearchTarget(null);
   }, [bookId]);
 
@@ -1366,21 +1347,6 @@ export function ReaderPage() {
   ]);
 
   useEffect(() => {
-    if (!isReaderSearchPanelVisible) {
-      return;
-    }
-
-    const focusTimeoutId = window.setTimeout(() => {
-      readerSearchInputRef.current?.focus();
-      readerSearchInputRef.current?.select();
-    }, 20);
-
-    return () => {
-      window.clearTimeout(focusTimeoutId);
-    };
-  }, [isReaderSearchPanelVisible]);
-
-  useEffect(() => {
     if (!activeSearchTarget) {
       return;
     }
@@ -1393,64 +1359,6 @@ export function ReaderPage() {
       window.clearTimeout(clearTimeoutId);
     };
   }, [activeSearchTarget]);
-
-  useEffect(() => {
-    if (!accessToken || !bookId) {
-      return;
-    }
-
-    const normalizedQuery = readerSearchQuery.trim();
-    if (!normalizedQuery) {
-      setReaderSearchResults([]);
-      setReaderSearchError(null);
-      setHasMoreReaderSearchResults(false);
-      setIsReaderSearchLoading(false);
-      return;
-    }
-
-    if (normalizedQuery.length < 2) {
-      setReaderSearchResults([]);
-      setReaderSearchError(null);
-      setHasMoreReaderSearchResults(false);
-      setIsReaderSearchLoading(false);
-      return;
-    }
-
-    let isCancelled = false;
-    const timeoutId = window.setTimeout(() => {
-      setIsReaderSearchLoading(true);
-      setReaderSearchError(null);
-
-      void fetchBookSearch(accessToken, bookId, normalizedQuery, { limit: 20, offset: 0 })
-        .then((response) => {
-          if (isCancelled) {
-            return;
-          }
-
-          setReaderSearchResults(response.results);
-          setHasMoreReaderSearchResults(response.hasMore);
-        })
-        .catch((error) => {
-          if (isCancelled) {
-            return;
-          }
-
-          setReaderSearchResults([]);
-          setHasMoreReaderSearchResults(false);
-          setReaderSearchError(error instanceof Error ? error.message : "No se pudo completar la búsqueda en este libro.");
-        })
-        .finally(() => {
-          if (!isCancelled) {
-            setIsReaderSearchLoading(false);
-          }
-        });
-    }, 260);
-
-    return () => {
-      isCancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [accessToken, bookId, readerSearchQuery]);
 
   useEffect(() => {
     const paragraphs = pageQuery.data?.page.paragraphs ?? [];
@@ -1759,7 +1667,6 @@ export function ReaderPage() {
 
     setIsNavigationPanelRendered(true);
     setIsNavigationPanelVisible(true);
-    setIsReaderSearchPanelVisible(false);
   }
 
   function closeNavigationPanel() {
@@ -1782,20 +1689,6 @@ export function ReaderPage() {
     }
 
     openNavigationPanel();
-  }
-
-  function closeReaderSearchPanel() {
-    setIsReaderSearchPanelVisible(false);
-  }
-
-  function toggleReaderSearchPanel() {
-    if (isReaderSearchPanelVisible) {
-      closeReaderSearchPanel();
-      return;
-    }
-
-    closeNavigationPanel();
-    setIsReaderSearchPanelVisible(true);
   }
 
   const activeTocEntryKey = useMemo(() => {
@@ -2148,7 +2041,7 @@ export function ReaderPage() {
   }, [paragraphsById]);
 
   useEffect(() => {
-    if ((!isNavigationPanelVisible && !isReaderSearchPanelVisible && !selectionDraft && !activeReaderNote) || typeof document === "undefined") {
+    if ((!isNavigationPanelVisible && !selectionDraft && !activeReaderNote) || typeof document === "undefined") {
       return;
     }
 
@@ -2166,12 +2059,7 @@ export function ReaderPage() {
         return;
       }
 
-      if (isReaderSearchPanelVisible && readerSearchPanelRef.current?.contains(targetNode)) {
-        return;
-      }
-
       closeNavigationPanel();
-      closeReaderSearchPanel();
       setSelectionDraft(null);
       setSelectionNoteText("");
       setActiveReaderNote(null);
@@ -2184,7 +2072,6 @@ export function ReaderPage() {
       }
 
       closeNavigationPanel();
-  closeReaderSearchPanel();
       setSelectionDraft(null);
       setSelectionNoteText("");
       setActiveReaderNote(null);
@@ -2199,7 +2086,7 @@ export function ReaderPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeReaderNote, isNavigationPanelVisible, isReaderSearchPanelVisible, selectionDraft]);
+  }, [activeReaderNote, isNavigationPanelVisible, selectionDraft]);
 
   useEffect(() => {
     if (!livePageRef.current) {
@@ -3816,16 +3703,6 @@ export function ReaderPage() {
     }
   }
 
-  async function handleSelectReaderSearchResult(result: BookSearchResult) {
-    setActiveSearchTarget({
-      pageNumber: result.pageNumber,
-      paragraphNumber: result.paragraphNumber,
-      query: readerSearchQuery.trim()
-    });
-    closeReaderSearchPanel();
-    await goToLocation(result.pageNumber, result.paragraphNumber);
-  }
-
   function renderParagraphText(paragraph: ParagraphContent) {
     const segments = buildTextSegments(paragraph.paragraphText, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
     const activeSearchQuery = activeSearchTarget
@@ -3893,6 +3770,17 @@ export function ReaderPage() {
 
   const bookTitle = pageQuery.data?.book.title ?? "Cargando libro...";
   const bookNotionUrl = pageQuery.data?.book.notionBookUrl?.trim() ?? "";
+  const readerSearchParams = new URLSearchParams();
+  readerSearchParams.set("bookId", bookId);
+  if (pageQuery.data?.book.title) {
+    readerSearchParams.set("bookTitle", pageQuery.data.book.title);
+  }
+  const currentSearchQuery = activeSearchTarget?.query.trim() ?? "";
+  if (currentSearchQuery) {
+    readerSearchParams.set("q", currentSearchQuery);
+  }
+  const readerSearchHref = `/search?${readerSearchParams.toString()}`;
+  const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
 
   return (
     <div className="page-grid reader-layout reader-floating-layout">
@@ -3910,6 +3798,15 @@ export function ReaderPage() {
               to={isReturningToGlobalSearch ? readerReturnTo : "/"}
             >
               {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
+            </Link>
+            <Link
+              aria-label="Buscar dentro del libro"
+              className="secondary-button link-button reader-header-icon-button"
+              state={{ returnTo: readerSearchReturnTo }}
+              title="Buscar dentro del libro"
+              to={readerSearchHref}
+            >
+              <SearchIcon />
             </Link>
             {pageQuery.data?.book.sourceType === "IMAGES" ? (
               <Link aria-label="Añadir páginas" className="secondary-button link-button reader-header-icon-button" title="Añadir páginas" to={appendPagesLink}>
@@ -4125,80 +4022,6 @@ export function ReaderPage() {
             voiceOptions={TTS_VOICE_OPTIONS}
           />
         </ReaderFloatingAudioPopover>
-        <button
-          aria-expanded={isReaderSearchPanelVisible}
-          aria-label="Buscar dentro del libro"
-          className={isReaderSearchPanelVisible ? "reader-float-button active" : "reader-float-button"}
-          onClick={toggleReaderSearchPanel}
-          title="Buscar dentro del libro"
-          type="button"
-        >
-          <SearchIcon />
-        </button>
-        {isReaderSearchPanelVisible ? (
-          <aside aria-label="Buscar dentro del libro" className="reader-navigation-panel reader-search-panel" ref={readerSearchPanelRef}>
-            <div className="reader-navigation-header">
-              <div>
-                <p className="eyebrow">{bookTitle}</p>
-                <h3>Búsqueda en el libro</h3>
-              </div>
-              <button aria-label="Cerrar búsqueda" className="reader-icon-ghost" onClick={closeReaderSearchPanel} type="button">
-                <CloseIcon />
-              </button>
-            </div>
-
-            <div className="reader-search-panel-body">
-              <label className="reader-search-field">
-                <span>Buscar palabra o frase</span>
-                <input
-                  onChange={(event) => setReaderSearchQuery(event.target.value)}
-                  placeholder="Ejemplo: conejo lector"
-                  ref={readerSearchInputRef}
-                  value={readerSearchQuery}
-                />
-              </label>
-
-              {readerSearchQuery.trim().length === 1 ? <p className="reader-navigation-empty">Escribe al menos 2 caracteres.</p> : null}
-              {isReaderSearchLoading ? <p className="reader-navigation-empty">Buscando coincidencias...</p> : null}
-              {readerSearchError ? <p className="error-text">{readerSearchError}</p> : null}
-
-              {!isReaderSearchLoading && !readerSearchError && readerSearchQuery.trim().length >= 2 && readerSearchResults.length === 0 ? (
-                <p className="reader-navigation-empty">No se encontraron coincidencias en este libro.</p>
-              ) : null}
-
-              {readerSearchResults.length > 0 ? (
-                <div className="reader-search-results">
-                  {readerSearchResults.map((result) => {
-                    const resultKey = buildReaderSearchResultKey(result);
-                    const isActiveResult = activeSearchTarget
-                      ? activeSearchTarget.pageNumber === result.pageNumber && activeSearchTarget.paragraphNumber === result.paragraphNumber
-                      : false;
-
-                    return (
-                      <button
-                        className={isActiveResult ? "reader-navigation-item active reader-search-result" : "reader-navigation-item reader-search-result"}
-                        key={resultKey}
-                        onClick={() => {
-                          void handleSelectReaderSearchResult(result);
-                        }}
-                        type="button"
-                      >
-                        <div className="reader-navigation-item-topline">
-                          <strong>{excerptPreview(result.paragraphText, "Coincidencia")}</strong>
-                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(result.pageNumber, result.paragraphNumber)}</span>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-
-              {hasMoreReaderSearchResults ? (
-                <p className="reader-search-more-note">Hay más coincidencias. Refina la búsqueda para acotar resultados.</p>
-              ) : null}
-            </div>
-          </aside>
-        ) : null}
         <div aria-live="polite" className="reader-floating-status">
           <form className="reader-page-jump-form" onSubmit={(event) => void handlePageJumpSubmit(event)}>
             <label className="reader-page-jump-label">
@@ -4243,6 +4066,7 @@ export function ReaderPage() {
         </button>
         <ReaderNavigationPopover
           buttonLabel="Abrir panel de índice, marcadores y notas"
+          closeLabel="Cerrar panel de navegación"
           eyebrow={bookTitle}
           isOpen={isNavigationPanelVisible}
           isRendered={isNavigationPanelRendered}
@@ -4262,9 +4086,7 @@ export function ReaderPage() {
             expandedNoteId={expandedNavigationNoteId}
             isUpdatingNote={isUpdatingNote}
             items={orderedNavigationItems}
-            onOutlineEditClick={closeNavigationPanel}
             outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
-            outlineEditHref={`/books/${bookId}/outline/edit`}
             onBeginHighlightEditing={beginNavigationHighlightEditing}
             onBeginNoteEditing={beginNavigationNoteEditing}
             onCancelHighlightEditing={() => {
@@ -4284,43 +4106,21 @@ export function ReaderPage() {
             onEditingNoteTextChange={setEditingNavigationNoteText}
             onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText, "navigation")}
             onSaveNote={(noteId, noteText, color) => void handleUpdateExistingNote(noteId, noteText, "navigation", color ?? undefined)}
-            onSelectBookmark={(item) => {
-              void goToLocation(item.pageNumber, item.paragraphNumber);
-              closeNavigationPanel();
-            }}
-            onSelectHighlight={(item) => {
-              void goToLocation(item.pageNumber, item.paragraphNumber);
-              closeNavigationPanel();
-            }}
-            onSelectNote={(item) => {
-              void goToLocation(item.pageNumber, item.paragraphNumber);
-              closeNavigationPanel();
-            }}
-            onSelectToc={(item) => {
-              void goToLocation(item.pageNumber, item.paragraphNumber);
-              closeNavigationPanel();
-            }}
+            onSelectBookmark={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
+            onSelectHighlight={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
+            onSelectNote={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
+            onSelectToc={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
             onSummaryClick={closeNavigationPanel}
             onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
             summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
           />
         </ReaderNavigationPopover>
         <button
-          aria-label="Página anterior"
-          className="reader-float-button"
-          disabled={!pageQuery.data?.hasPreviousPage}
-          onClick={() => void goToPage(currentPageNumber - 1)}
-          title="Página anterior"
-          type="button"
-        >
-          <PagePreviousIcon />
-        </button>
-        <button
           aria-label="Párrafo anterior"
           className="reader-float-button"
           disabled={!canGoToPreviousParagraph}
           onClick={() => void goToParagraph(-1)}
-          title="Párrafo anterior"
+          title={isSavingProgress ? "Guardando progreso" : "Párrafo anterior"}
           type="button"
         >
           <ParagraphPreviousIcon />

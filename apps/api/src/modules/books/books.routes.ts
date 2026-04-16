@@ -212,6 +212,7 @@ type BookSearchResultRecord = {
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
+  sectionTitle: string | null;
   sequenceNumber: number;
   title: string;
 };
@@ -677,7 +678,7 @@ async function searchOwnedBookParagraphs(
   const rows = (result.rows ?? []) as BookSearchResultRecord[];
   return {
     hasMore: rows.length > options.limit,
-    results: rows.slice(0, options.limit)
+    results: await attachSectionTitlesToSearchResults(connection, rows.slice(0, options.limit))
   };
 }
 
@@ -736,8 +737,47 @@ async function searchOwnedLibraryParagraphs(
   const rows = (result.rows ?? []) as BookSearchResultRecord[];
   return {
     hasMore: rows.length > options.limit,
-    results: rows.slice(0, options.limit)
+    results: await attachSectionTitlesToSearchResults(connection, rows.slice(0, options.limit))
   };
+}
+
+async function attachSectionTitlesToSearchResults(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  results: BookSearchResultRecord[]
+): Promise<BookSearchResultRecord[]> {
+  if (results.length === 0) {
+    return results;
+  }
+
+  const outlineByBookId = new Map<string, BookOutlineEntry[]>();
+  const uniqueBookIds = Array.from(new Set(results.map((result) => result.bookId)));
+
+  await Promise.all(uniqueBookIds.map(async (bookId) => {
+    outlineByBookId.set(bookId, await resolveBookOutline(connection, bookId));
+  }));
+
+  return results.map((result) => {
+    const outline = outlineByBookId.get(result.bookId) ?? [];
+    let activeSectionTitle: string | null = null;
+
+    for (const entry of outline) {
+      const isBeforeResult = entry.sequenceNumber < result.sequenceNumber;
+      const isSameSequence = entry.sequenceNumber === result.sequenceNumber;
+      const isSameParagraphOrBefore = entry.pageNumber < result.pageNumber
+        || (entry.pageNumber === result.pageNumber && entry.paragraphNumber <= result.paragraphNumber);
+
+      if (!isBeforeResult && !(isSameSequence && isSameParagraphOrBefore)) {
+        break;
+      }
+
+      activeSectionTitle = entry.title;
+    }
+
+    return {
+      ...result,
+      sectionTitle: activeSectionTitle
+    };
+  });
 }
 
 async function listPageNotes(

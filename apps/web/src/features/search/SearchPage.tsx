@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 
-import { fetchGlobalBookSearch } from "../../app/api";
+import { fetchBookSearch, fetchGlobalBookSearch } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 const SEARCH_DEBOUNCE_MS = 260;
@@ -102,10 +102,15 @@ function buildResultExcerpt(text: string, query: string) {
 
 export function SearchPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlQuery = searchParams.get("q")?.trim() ?? "";
+  const filterBookId = searchParams.get("bookId")?.trim() ?? "";
+  const filterBookTitle = searchParams.get("bookTitle")?.trim() ?? "";
+  const isBookScopedSearch = Boolean(filterBookId);
   const [searchQuery, setSearchQuery] = useState(urlQuery);
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(urlQuery);
+  const navigationState = (location.state as { returnTo?: string } | null) ?? null;
 
   useEffect(() => {
     if (urlQuery === debouncedSearchQuery) {
@@ -126,6 +131,12 @@ export function SearchPage() {
       }
 
       const nextSearchParams = new URLSearchParams();
+      if (filterBookId) {
+        nextSearchParams.set("bookId", filterBookId);
+      }
+      if (filterBookTitle) {
+        nextSearchParams.set("bookTitle", filterBookTitle);
+      }
       if (normalizedQuery) {
         nextSearchParams.set("q", normalizedQuery);
       }
@@ -136,14 +147,18 @@ export function SearchPage() {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [searchQuery, setSearchParams, urlQuery]);
+  }, [filterBookId, filterBookTitle, searchQuery, setSearchParams, urlQuery]);
 
   const globalSearchQuery = useQuery({
     enabled: Boolean(accessToken && debouncedSearchQuery.length >= 2),
-    queryKey: ["books-search", debouncedSearchQuery],
+    queryKey: ["books-search", filterBookId || "all", debouncedSearchQuery],
     queryFn: async () => {
       if (!accessToken) {
         throw new Error("Missing access token.");
+      }
+
+      if (filterBookId) {
+        return fetchBookSearch(accessToken, filterBookId, debouncedSearchQuery, { limit: 24, offset: 0 });
       }
 
       return fetchGlobalBookSearch(accessToken, debouncedSearchQuery, { limit: 24, offset: 0 });
@@ -151,42 +166,67 @@ export function SearchPage() {
     staleTime: 30_000
   });
 
-  const returnTo = debouncedSearchQuery
-    ? `/search?q=${encodeURIComponent(debouncedSearchQuery)}`
-    : "/search";
+  const returnSearchParams = new URLSearchParams();
+  if (filterBookId) {
+    returnSearchParams.set("bookId", filterBookId);
+  }
+  if (filterBookTitle) {
+    returnSearchParams.set("bookTitle", filterBookTitle);
+  }
+  if (debouncedSearchQuery) {
+    returnSearchParams.set("q", debouncedSearchQuery);
+  }
+
+  const returnTo = returnSearchParams.toString() ? `/search?${returnSearchParams.toString()}` : "/search";
+  const backTo = navigationState?.returnTo?.trim() || (filterBookId ? `/books/${filterBookId}` : "/");
+  const backLabel = filterBookId ? "Volver al libro" : "Volver a la estantería";
+  const heading = filterBookId ? "Búsqueda en libro" : "Búsqueda global";
+  const eyebrow = filterBookId ? "Libro" : "Biblioteca";
+  const helperLabel = filterBookId ? "Buscar dentro de este libro" : "Buscar dentro de todos tus libros";
+  const helperPlaceholder = filterBookId ? "Busca palabras o frases en este libro" : "Busca palabras o frases en toda tu biblioteca";
+  const emptyPrompt = filterBookId
+    ? "Escribe una palabra o frase para buscar dentro de este libro."
+    : "Escribe una palabra o frase para buscar en toda tu biblioteca.";
+  const loadingLabel = filterBookId ? "Buscando coincidencias en este libro..." : "Buscando coincidencias en tu biblioteca...";
+  const errorLabel = filterBookId ? "No se pudo completar la búsqueda en este libro." : "No se pudo completar la búsqueda global.";
+  const noResultsLabel = filterBookId ? "No se encontraron coincidencias en este libro." : "No se encontraron coincidencias en tus libros.";
+  const moreResultsLabel = filterBookId
+    ? "Se muestran las primeras coincidencias. Refina la búsqueda para acotar resultados dentro del libro."
+    : "Se muestran las primeras coincidencias. Refina la búsqueda para acotar resultados.";
 
   return (
     <div className="page-stack shelf-layout search-layout">
       <section className="panel wide-panel search-page-panel">
         <div className="panel-header compact-header search-page-header">
           <div className="search-page-copy">
-            <p className="eyebrow">Biblioteca</p>
-            <h2>Búsqueda global</h2>
+            <p className="eyebrow">{eyebrow}</p>
+            <h2>{heading}</h2>
+            {filterBookTitle ? <p className="subdued search-page-scope">{filterBookTitle}</p> : null}
           </div>
           <Link
-            aria-label="Volver a la estantería"
+            aria-label={backLabel}
             className="secondary-button link-button reader-header-icon-button"
-            title="Volver a la estantería"
-            to="/"
+            title={backLabel}
+            to={backTo}
           >
             <BackIcon />
           </Link>
         </div>
 
         <label className="shelf-search-field search-page-field">
-          <span>Buscar dentro de todos tus libros</span>
+          <span>{helperLabel}</span>
           <input
             autoFocus
             onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Busca palabras o frases en toda tu biblioteca"
+            placeholder={helperPlaceholder}
             value={searchQuery}
           />
         </label>
 
-        {searchQuery.trim().length === 0 ? <p className="subdued search-page-status">Escribe una palabra o frase para buscar en toda tu biblioteca.</p> : null}
+        {searchQuery.trim().length === 0 ? <p className="subdued search-page-status">{emptyPrompt}</p> : null}
         {searchQuery.trim().length === 1 ? <p className="subdued search-page-status">Escribe al menos 2 caracteres para buscar en el contenido.</p> : null}
-        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isLoading ? <p className="search-page-status">Buscando coincidencias en tu biblioteca...</p> : null}
-        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isError ? <p className="error-text search-page-status">No se pudo completar la búsqueda global.</p> : null}
+        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isLoading ? <p className="search-page-status">{loadingLabel}</p> : null}
+        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isError ? <p className="error-text search-page-status">{errorLabel}</p> : null}
 
         {debouncedSearchQuery.length >= 2 ? (
           <div className="shelf-search-results search-page-results">
@@ -198,8 +238,8 @@ export function SearchPage() {
                 to={`/books/${result.bookId}?page=${encodeURIComponent(String(result.pageNumber))}&paragraph=${encodeURIComponent(String(result.paragraphNumber))}&search=${encodeURIComponent(debouncedSearchQuery)}`}
               >
                 <div className="book-card-copy shelf-search-result-copy search-page-result-copy">
-                  <h3>{result.title}</h3>
-                  <p>{result.authorName ?? "Autor pendiente"}</p>
+                  {!filterBookId ? <h3>{result.title}</h3> : null}
+                  <p className="search-page-result-section">{result.sectionTitle ?? "Sin sección"}</p>
                   <p className="search-page-result-excerpt">{renderHighlightedExcerpt(buildResultExcerpt(result.paragraphText, debouncedSearchQuery), debouncedSearchQuery)}</p>
                 </div>
                 <dl className="shelf-book-stats shelf-search-result-meta search-page-result-meta">
@@ -216,11 +256,11 @@ export function SearchPage() {
             )) : null}
 
             {!globalSearchQuery.isLoading && !globalSearchQuery.isError && globalSearchQuery.data && globalSearchQuery.data.results.length === 0 ? (
-              <p className="subdued search-page-status">No se encontraron coincidencias en tus libros.</p>
+              <p className="subdued search-page-status">{noResultsLabel}</p>
             ) : null}
 
             {globalSearchQuery.data?.hasMore ? (
-              <p className="subdued search-page-status">Se muestran las primeras coincidencias. Refina la búsqueda para acotar resultados.</p>
+              <p className="subdued search-page-status">{moreResultsLabel}</p>
             ) : null}
           </div>
         ) : null}

@@ -256,6 +256,7 @@ export type BookSearchResult = {
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
+  sectionTitle: string | null;
   sequenceNumber: number;
   title: string;
 };
