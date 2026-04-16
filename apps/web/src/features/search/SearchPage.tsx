@@ -180,13 +180,9 @@ export function SearchPage() {
   const returnTo = returnSearchParams.toString() ? `/search?${returnSearchParams.toString()}` : "/search";
   const backTo = navigationState?.returnTo?.trim() || (filterBookId ? `/books/${filterBookId}` : "/");
   const backLabel = filterBookId ? "Volver al libro" : "Volver a la estantería";
-  const heading = filterBookId ? "Búsqueda en libro" : "Búsqueda global";
-  const eyebrow = filterBookId ? "Libro" : "Biblioteca";
-  const helperLabel = filterBookId ? "Buscar dentro de este libro" : "Buscar dentro de todos tus libros";
+  const heading = filterBookId ? filterBookTitle || "Libro" : null;
+  const eyebrow = filterBookId ? "BÚSQUEDA EN EL LIBRO" : "BÚSQUEDA GLOBAL";
   const helperPlaceholder = filterBookId ? "Busca palabras o frases en este libro" : "Busca palabras o frases en toda tu biblioteca";
-  const emptyPrompt = filterBookId
-    ? "Escribe una palabra o frase para buscar dentro de este libro."
-    : "Escribe una palabra o frase para buscar en toda tu biblioteca.";
   const loadingLabel = filterBookId ? "Buscando coincidencias en este libro..." : "Buscando coincidencias en tu biblioteca...";
   const errorLabel = filterBookId ? "No se pudo completar la búsqueda en este libro." : "No se pudo completar la búsqueda global.";
   const noResultsLabel = filterBookId ? "No se encontraron coincidencias en este libro." : "No se encontraron coincidencias en tus libros.";
@@ -200,8 +196,7 @@ export function SearchPage() {
         <div className="panel-header compact-header search-page-header">
           <div className="search-page-copy">
             <p className="eyebrow">{eyebrow}</p>
-            <h2>{heading}</h2>
-            {filterBookTitle ? <p className="subdued search-page-scope">{filterBookTitle}</p> : null}
+            {heading ? <h2>{heading}</h2> : null}
           </div>
           <Link
             aria-label={backLabel}
@@ -213,17 +208,16 @@ export function SearchPage() {
           </Link>
         </div>
 
-        <label className="shelf-search-field search-page-field">
-          <span>{helperLabel}</span>
+        <div className="shelf-search-field search-page-field">
           <input
+            aria-label="Buscar"
             autoFocus
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={helperPlaceholder}
             value={searchQuery}
           />
-        </label>
+        </div>
 
-        {searchQuery.trim().length === 0 ? <p className="subdued search-page-status">{emptyPrompt}</p> : null}
         {searchQuery.trim().length === 1 ? <p className="subdued search-page-status">Escribe al menos 2 caracteres para buscar en el contenido.</p> : null}
         {debouncedSearchQuery.length >= 2 && globalSearchQuery.isLoading ? <p className="search-page-status">{loadingLabel}</p> : null}
         {debouncedSearchQuery.length >= 2 && globalSearchQuery.isError ? <p className="error-text search-page-status">{errorLabel}</p> : null}
@@ -238,20 +232,16 @@ export function SearchPage() {
                 to={`/books/${result.bookId}?page=${encodeURIComponent(String(result.pageNumber))}&paragraph=${encodeURIComponent(String(result.paragraphNumber))}&search=${encodeURIComponent(debouncedSearchQuery)}`}
               >
                 <div className="book-card-copy shelf-search-result-copy search-page-result-copy">
-                  {!filterBookId ? <h3>{result.title}</h3> : null}
-                  <p className="search-page-result-section">{result.sectionTitle ?? "Sin sección"}</p>
+                  <strong className="search-page-result-book-title">{result.title}</strong>
+                  <div className="search-page-result-meta-line">
+                    <span className="search-page-result-section">Sección: {result.sectionTitle ?? "Sin sección"}</span>
+                    <span aria-hidden="true" className="search-page-result-separator">·</span>
+                    <span className="search-page-result-location">Página: {result.pageNumber}</span>
+                    <span aria-hidden="true" className="search-page-result-separator">·</span>
+                    <span className="search-page-result-paragraph">Párrafo: {result.paragraphNumber}</span>
+                  </div>
                   <p className="search-page-result-excerpt">{renderHighlightedExcerpt(buildResultExcerpt(result.paragraphText, debouncedSearchQuery), debouncedSearchQuery)}</p>
                 </div>
-                <dl className="shelf-book-stats shelf-search-result-meta search-page-result-meta">
-                  <div>
-                    <dt>Página</dt>
-                    <dd>{result.pageNumber}</dd>
-                  </div>
-                  <div>
-                    <dt>Párrafo</dt>
-                    <dd>{result.paragraphNumber}</dd>
-                  </div>
-                </dl>
               </Link>
             )) : null}
 

@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import notionIconUrl from "../../assets/notion.svg";
 
 import {
   createBookmark,
@@ -617,12 +618,7 @@ function SearchIcon() {
 
 function NotionIcon() {
   return (
-    <ReaderControlIcon>
-      <rect height="14" rx="1.8" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.8" width="10" x="7" y="5" />
-      <path d="M9.8 8.2V15.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <path d="M9.8 8.2L14.2 15.8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M14.2 8.2V15.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-    </ReaderControlIcon>
+    <img alt="" aria-hidden="true" className="reader-float-button-icon reader-float-button-icon-notion" src={notionIconUrl} />
   );
 }
 

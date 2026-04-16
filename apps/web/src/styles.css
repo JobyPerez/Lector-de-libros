@@ -993,10 +993,33 @@ textarea {
   gap: 0.4rem;
 }
 
-.search-page-result-section {
-  margin: 0;
+.search-page-result-book-title {
+  color: #1f231b;
+}
+
+.search-page-result-meta-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.18rem 0.45rem;
+  align-items: baseline;
   color: #5d665d;
   font-size: 0.92rem;
+}
+
+.search-page-result-section {
+  margin: 0;
+}
+
+.search-page-result-location {
+  margin: 0;
+}
+
+.search-page-result-paragraph {
+  margin: 0;
+}
+
+.search-page-result-separator {
+  color: #8b8f84;
 }
 
 .search-page-result-excerpt {
@@ -2534,6 +2557,17 @@ textarea {
 .reader-float-button svg {
   width: 1.35rem;
   height: 1.35rem;
+}
+
+.reader-float-button-icon {
+  display: block;
+  width: 1.35rem;
+  height: 1.35rem;
+  object-fit: cover;
+}
+
+.reader-float-button-icon-notion {
+  border-radius: 0.24rem;
 }
 
 .reader-loading-bars {
@@ -4665,9 +4699,9 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .search-page-result-meta,
-  .shelf-search-result-meta {
-    min-width: 0;
+  .search-page-result-meta-line {
+    display: flex;
+    gap: 0.12rem 0.45rem;
   }
 
   .builder-layout .builder-board {
