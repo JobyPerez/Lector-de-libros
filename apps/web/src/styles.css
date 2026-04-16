@@ -819,6 +819,58 @@ textarea {
   flex: none;
 }
 
+.shelf-header-copy {
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.shelf-header-icon-button {
+  width: 2.85rem;
+  height: 2.85rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(42, 87, 66, 0.1);
+  color: var(--forest-700);
+  box-shadow: 0 12px 28px rgba(25, 52, 40, 0.12);
+  transition: transform 180ms ease, background 180ms ease, box-shadow 180ms ease, color 180ms ease;
+}
+
+.shelf-header-icon-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(42, 87, 66, 0.16);
+  box-shadow: 0 18px 36px rgba(25, 52, 40, 0.18);
+}
+
+.shelf-header-icon-button.active {
+  background: rgba(42, 87, 66, 0.2);
+  color: var(--forest-900);
+}
+
+.shelf-header-icon-button svg {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.shelf-search-field {
+  display: grid;
+  gap: 0.35rem;
+  max-width: min(32rem, 100%);
+}
+
+.shelf-search-field span {
+  color: #5d665d;
+  font-size: 0.84rem;
+}
+
+.shelf-search-panel {
+  right: 0;
+  width: min(26rem, calc(100vw - 2rem));
+}
+
 .compact-header {
   margin-bottom: 0.5rem;
 }
@@ -854,6 +906,99 @@ textarea {
 
 .shelf-grid {
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}
+
+.shelf-search-results {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.search-layout {
+  gap: 1rem;
+}
+
+.search-page-panel {
+  min-height: 60vh;
+}
+
+.search-page-header {
+  align-items: flex-start;
+}
+
+.search-page-copy {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.search-page-field {
+  margin-bottom: 0.25rem;
+  max-width: none;
+}
+
+.search-page-field input {
+  min-height: 3.1rem;
+}
+
+.search-page-status {
+  margin: 0.15rem 0 0;
+}
+
+.search-page-results {
+  margin-top: 0.35rem;
+}
+
+.shelf-search-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: flex-start;
+  text-decoration: none;
+}
+
+.shelf-search-result-copy {
+  min-width: 0;
+}
+
+.shelf-search-result-excerpt {
+  margin: 0.45rem 0 0;
+  color: #2c241b;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.shelf-search-highlight {
+  padding: 0 0.12rem;
+  border-radius: 0.3rem;
+  background: rgba(217, 137, 65, 0.24);
+  color: inherit;
+}
+
+.shelf-search-result-meta {
+  min-width: 8rem;
+}
+
+.search-page-result {
+  min-height: 0;
+}
+
+.search-page-result-copy {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.search-page-result-excerpt {
+  margin: 0.2rem 0 0;
+  color: #2c241b;
+  display: block;
+  overflow: visible;
+  line-height: 1.65;
+}
+
+.search-page-result-meta {
+  align-self: stretch;
 }
 
 .book-card {
@@ -2478,6 +2623,52 @@ textarea {
 .reader-navigation-panel[data-state="closed"] {
   pointer-events: none;
   animation-name: reader-navigation-panel-exit;
+}
+
+.reader-search-panel {
+  width: min(29rem, calc(100vw - 1.5rem));
+}
+
+.reader-search-panel-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.reader-search-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.reader-search-field span {
+  color: #5d665d;
+  font-size: 0.84rem;
+}
+
+.reader-search-results {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.reader-search-result {
+  padding: 0.8rem 0.95rem;
+}
+
+.reader-search-more-note {
+  margin: 0;
+  color: #5d665d;
+  font-size: 0.84rem;
+}
+
+.reader-search-match-inline {
+  padding: 0 0.12rem;
+  border-radius: 0.3rem;
+  background: rgba(217, 137, 65, 0.24);
+  color: inherit;
+}
+
+.reader-rich-content .reader-search-hit,
+.reader-prose [data-paragraph-number].reader-search-hit {
+  box-shadow: inset 3px 0 0 rgba(169, 87, 37, 0.3);
 }
 
 .reader-navigation-header {
@@ -4207,6 +4398,11 @@ textarea {
     margin-left: auto;
   }
 
+  .search-page-header {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+
   .menu-panel {
     left: auto;
     right: 0;
@@ -4274,7 +4470,8 @@ textarea {
   }
 
   .shelf-layout,
-  .builder-layout {
+  .builder-layout,
+  .search-layout {
     gap: 0.85rem;
   }
 
@@ -4451,6 +4648,16 @@ textarea {
 
   .shelf-layout .book-card-download-menu {
     min-width: min(200px, calc(100vw - 2.2rem));
+  }
+
+  .search-page-result,
+  .shelf-search-result {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .search-page-result-meta,
+  .shelf-search-result-meta {
+    min-width: 0;
   }
 
   .builder-layout .builder-board {

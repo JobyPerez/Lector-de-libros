@@ -249,6 +249,38 @@ export type ParagraphContent = {
   sequenceNumber: number;
 };
 
+export type BookSearchResult = {
+  authorName: string | null;
+  bookId: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  paragraphText: string;
+  sequenceNumber: number;
+  title: string;
+};
+
+export type BookSearchResponse = {
+  book: {
+    authorName: string | null;
+    bookId: string;
+    title: string;
+  };
+  hasMore: boolean;
+  limit: number;
+  offset: number;
+  query: string;
+  results: BookSearchResult[];
+};
+
+export type GlobalBookSearchResponse = {
+  hasMore: boolean;
+  limit: number;
+  offset: number;
+  query: string;
+  results: BookSearchResult[];
+};
+
 export type HighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
 
 export type ReaderBookmark = {
@@ -603,6 +635,38 @@ export function fetchBook(accessToken: string, bookId: string) {
 
 export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number) {
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
+}
+
+export function fetchBookSearch(accessToken: string, bookId: string, query: string, options?: { limit?: number; offset?: number }) {
+  const searchParams = new URLSearchParams({
+    query
+  });
+
+  if (typeof options?.limit === "number") {
+    searchParams.set("limit", String(options.limit));
+  }
+
+  if (typeof options?.offset === "number") {
+    searchParams.set("offset", String(options.offset));
+  }
+
+  return request<BookSearchResponse>(`/books/${bookId}/search?${searchParams.toString()}`, { accessToken });
+}
+
+export function fetchGlobalBookSearch(accessToken: string, query: string, options?: { limit?: number; offset?: number }) {
+  const searchParams = new URLSearchParams({
+    query
+  });
+
+  if (typeof options?.limit === "number") {
+    searchParams.set("limit", String(options.limit));
+  }
+
+  if (typeof options?.offset === "number") {
+    searchParams.set("offset", String(options.offset));
+  }
+
+  return request<GlobalBookSearchResponse>(`/books/search?${searchParams.toString()}`, { accessToken });
 }
 
 export function fetchPageAnnotations(accessToken: string, bookId: string, pageNumber: number) {

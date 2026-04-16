@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
   createBookmark,
@@ -10,6 +10,7 @@ import {
   deleteBookPage,
   deleteHighlight,
   deleteNote,
+  fetchBookSearch,
   fetchBookPage,
   fetchDeepgramBalance,
   fetchPageAnnotations,
@@ -19,6 +20,7 @@ import {
   requestParagraphAudioBlock,
   updateNote,
   updateProgress,
+  type BookSearchResult,
   type HighlightColor,
   type ParagraphContent,
   type ReaderAudioBlockParagraph,
@@ -208,6 +210,10 @@ function formatRelativeAnchor(pageNumber: number, paragraphNumber: number) {
   return `Pág. ${pageNumber} · párr. ${paragraphNumber}`;
 }
 
+function buildReaderSearchResultKey(result: Pick<BookSearchResult, "bookId" | "pageNumber" | "paragraphNumber" | "paragraphId">) {
+  return `${result.bookId}:${result.pageNumber}:${result.paragraphNumber}:${result.paragraphId}`;
+}
+
 function sectionSummaryHref(bookId: string, targetChapterId: string) {
   return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/summary`;
 }
@@ -245,6 +251,16 @@ type ReaderNotePopoverState = {
 };
 
 type ReaderBookmarkAnimationState = "adding" | "removing" | null;
+
+type ActiveSearchTarget = {
+  pageNumber: number;
+  paragraphNumber: number;
+  query: string;
+};
+
+type ReaderNavigationState = {
+  returnTo?: string;
+};
 
 function createPageTurnSnapshot(pageNumber: number, paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null): PageTurnSnapshot {
   return {
@@ -490,6 +506,86 @@ function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: 
   return htmlContent;
 }
 
+function highlightRichParagraphSearchMatches(paragraphNode: HTMLElement, query: string) {
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery || typeof NodeFilter === "undefined") {
+    return;
+  }
+
+  const paragraphDocument = paragraphNode.ownerDocument;
+  if (!paragraphDocument) {
+    return;
+  }
+
+  const textNodes: Text[] = [];
+  const walker = paragraphDocument.createTreeWalker(
+    paragraphNode,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (!(node instanceof Text)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (!node.nodeValue?.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        const parentElement = node.parentElement;
+        if (!parentElement) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (parentElement.closest("mark.reader-search-match-inline")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  while (walker.nextNode()) {
+    if (walker.currentNode instanceof Text) {
+      textNodes.push(walker.currentNode);
+    }
+  }
+
+  const loweredQuery = normalizedQuery.toLocaleLowerCase("es");
+
+  textNodes.forEach((textNode) => {
+    const textValue = textNode.nodeValue ?? "";
+    const loweredText = textValue.toLocaleLowerCase("es");
+    if (!loweredText.includes(loweredQuery)) {
+      return;
+    }
+
+    const fragment = paragraphDocument.createDocumentFragment();
+    let cursor = 0;
+    let matchIndex = loweredText.indexOf(loweredQuery, cursor);
+
+    while (matchIndex !== -1) {
+      if (matchIndex > cursor) {
+        fragment.append(textValue.slice(cursor, matchIndex));
+      }
+
+      const mark = paragraphDocument.createElement("mark");
+      mark.className = "reader-search-match-inline";
+      mark.textContent = textValue.slice(matchIndex, matchIndex + normalizedQuery.length);
+      fragment.append(mark);
+
+      cursor = matchIndex + normalizedQuery.length;
+      matchIndex = loweredText.indexOf(loweredQuery, cursor);
+    }
+
+    if (cursor < textValue.length) {
+      fragment.append(textValue.slice(cursor));
+    }
+
+    textNode.replaceWith(fragment);
+  });
+}
+
 function ReaderControlIcon({ children }: { children: ReactNode }) {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -512,6 +608,15 @@ function PageNextIcon() {
     <ReaderControlIcon>
       <path d="M17 5V19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M7 7L14 12L7 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ReaderControlIcon>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <ReaderControlIcon>
+      <circle cx="11" cy="11" r="5.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M15 15L19 19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ReaderControlIcon>
   );
 }
@@ -540,6 +645,15 @@ function ParagraphNextIcon() {
     <ReaderControlIcon>
       <path d="M8.5 7L15 12L8.5 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
     </ReaderControlIcon>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </svg>
   );
 }
 
@@ -896,6 +1010,7 @@ function resolveReaderPopoverLayout(anchorRect: DOMRect) {
 
 export function ReaderPage() {
   const { bookId = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -924,6 +1039,13 @@ export function ReaderPage() {
   const [bookmarkAnimationState, setBookmarkAnimationState] = useState<ReaderBookmarkAnimationState>(null);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [isReaderSearchPanelVisible, setIsReaderSearchPanelVisible] = useState(false);
+  const [readerSearchQuery, setReaderSearchQuery] = useState("");
+  const [readerSearchResults, setReaderSearchResults] = useState<BookSearchResult[]>([]);
+  const [readerSearchError, setReaderSearchError] = useState<string | null>(null);
+  const [isReaderSearchLoading, setIsReaderSearchLoading] = useState(false);
+  const [hasMoreReaderSearchResults, setHasMoreReaderSearchResults] = useState(false);
+  const [activeSearchTarget, setActiveSearchTarget] = useState<ActiveSearchTarget | null>(null);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteColor, setEditingNavigationNoteColor] = useState<HighlightColor | null>(null);
@@ -958,15 +1080,24 @@ export function ReaderPage() {
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
+  const readerSearchPanelRef = useRef<HTMLDivElement | null>(null);
+  const readerSearchInputRef = useRef<HTMLInputElement | null>(null);
   const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
   const readerNotePopoverRef = useRef<HTMLDivElement | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
   const pendingParagraphTargetRef = useRef<number | "last" | null>(null);
   const pendingParagraphScrollRef = useRef<number | null>(null);
+  const pendingRouteNavigationRef = useRef<{ pageNumber: number; paragraphNumber: number; query: string | null } | null>(null);
   const deviceAdvanceTimeoutRef = useRef<number | null>(null);
   const wakeLockRef = useRef<ReaderWakeLockSentinel | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
+  const requestedParagraphParam = searchParams.get("paragraph")?.trim() ?? "";
+  const requestedSearchParam = searchParams.get("search")?.trim() ?? "";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
+  const requestedParagraphNumber = requestedParagraphParam ? Number(requestedParagraphParam) : Number.NaN;
+  const navigationState = (location.state as ReaderNavigationState | null) ?? null;
+  const readerReturnTo = navigationState?.returnTo?.trim() ?? "";
+  const isReturningToGlobalSearch = readerReturnTo.startsWith("/search");
 
   useEffect(() => {
     progressHydratedRef.current = false;
@@ -974,11 +1105,18 @@ export function ReaderPage() {
     lastPersistedProgressRef.current = null;
     currentPageNumberRef.current = 1;
     currentParagraphNumberRef.current = 1;
+    pendingRouteNavigationRef.current = null;
     setPendingPageTurnDirection(null);
     setPageTurnDirection(null);
     setPageTurnSnapshot(null);
     setCurrentPageNumber(1);
     setCurrentParagraphNumber(1);
+    setIsReaderSearchPanelVisible(false);
+    setReaderSearchQuery("");
+    setReaderSearchResults([]);
+    setReaderSearchError(null);
+    setHasMoreReaderSearchResults(false);
+    setActiveSearchTarget(null);
   }, [bookId]);
 
   useEffect(() => {
@@ -1126,9 +1264,24 @@ export function ReaderPage() {
   useEffect(() => {
     if (Number.isInteger(requestedPageNumber) && requestedPageNumber >= 1) {
       progressHydratedRef.current = true;
+      const nextParagraphNumber = Number.isInteger(requestedParagraphNumber) && requestedParagraphNumber >= 1
+        ? requestedParagraphNumber
+        : 1;
+      pendingRouteNavigationRef.current = {
+        pageNumber: requestedPageNumber,
+        paragraphNumber: nextParagraphNumber,
+        query: requestedSearchParam || null
+      };
+      if (requestedSearchParam) {
+        setActiveSearchTarget({
+          pageNumber: requestedPageNumber,
+          paragraphNumber: nextParagraphNumber,
+          query: requestedSearchParam
+        });
+      }
+      pendingParagraphTargetRef.current = nextParagraphNumber;
       setCurrentPageNumber(requestedPageNumber);
-      setCurrentParagraphNumber(1);
-      navigate(`/books/${bookId}`, { replace: true });
+      setCurrentParagraphNumber(nextParagraphNumber);
       return;
     }
 
@@ -1140,7 +1293,164 @@ export function ReaderPage() {
     progressHydratedRef.current = true;
     setCurrentPageNumber(savedProgress.currentPageNumber);
     setCurrentParagraphNumber(savedProgress.currentParagraphNumber);
-  }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber]);
+  }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber, requestedParagraphNumber, requestedSearchParam]);
+
+  useEffect(() => {
+    if (!Number.isInteger(requestedPageNumber) || requestedPageNumber < 1) {
+      return;
+    }
+
+    const targetParagraphNumber = Number.isInteger(requestedParagraphNumber) && requestedParagraphNumber >= 1
+      ? requestedParagraphNumber
+      : 1;
+
+    if (requestedSearchParam) {
+      setActiveSearchTarget((current) => {
+        if (
+          current
+          && current.pageNumber === requestedPageNumber
+          && current.paragraphNumber === targetParagraphNumber
+          && current.query === requestedSearchParam
+        ) {
+          return current;
+        }
+
+        return {
+          pageNumber: requestedPageNumber,
+          paragraphNumber: targetParagraphNumber,
+          query: requestedSearchParam
+        };
+      });
+    }
+
+    if (currentPageNumber !== requestedPageNumber) {
+      pendingParagraphTargetRef.current = targetParagraphNumber;
+      setCurrentPageNumber(requestedPageNumber);
+      setCurrentParagraphNumber(targetParagraphNumber);
+      return;
+    }
+
+    if (pageQuery.data?.page.pageNumber !== requestedPageNumber) {
+      return;
+    }
+
+    const targetParagraph = pageQuery.data.page.paragraphs.find((paragraph) => paragraph.paragraphNumber === targetParagraphNumber)
+      ?? pageQuery.data.page.paragraphs[0]
+      ?? null;
+
+    if (!targetParagraph) {
+      return;
+    }
+
+    if (currentParagraphNumber !== targetParagraph.paragraphNumber) {
+      pendingParagraphScrollRef.current = targetParagraph.paragraphNumber;
+      setCurrentParagraphNumber(targetParagraph.paragraphNumber);
+      return;
+    }
+
+    if (pendingRouteNavigationRef.current) {
+      pendingRouteNavigationRef.current = null;
+      navigate(`/books/${bookId}`, { replace: true, state: location.state });
+    }
+  }, [
+    bookId,
+    currentPageNumber,
+    currentParagraphNumber,
+    location.state,
+    navigate,
+    pageQuery.data?.page.pageNumber,
+    pageQuery.data?.page.paragraphs,
+    requestedPageNumber,
+    requestedParagraphNumber,
+    requestedSearchParam
+  ]);
+
+  useEffect(() => {
+    if (!isReaderSearchPanelVisible) {
+      return;
+    }
+
+    const focusTimeoutId = window.setTimeout(() => {
+      readerSearchInputRef.current?.focus();
+      readerSearchInputRef.current?.select();
+    }, 20);
+
+    return () => {
+      window.clearTimeout(focusTimeoutId);
+    };
+  }, [isReaderSearchPanelVisible]);
+
+  useEffect(() => {
+    if (!activeSearchTarget) {
+      return;
+    }
+
+    const clearTimeoutId = window.setTimeout(() => {
+      setActiveSearchTarget((current) => current === activeSearchTarget ? null : current);
+    }, 7000);
+
+    return () => {
+      window.clearTimeout(clearTimeoutId);
+    };
+  }, [activeSearchTarget]);
+
+  useEffect(() => {
+    if (!accessToken || !bookId) {
+      return;
+    }
+
+    const normalizedQuery = readerSearchQuery.trim();
+    if (!normalizedQuery) {
+      setReaderSearchResults([]);
+      setReaderSearchError(null);
+      setHasMoreReaderSearchResults(false);
+      setIsReaderSearchLoading(false);
+      return;
+    }
+
+    if (normalizedQuery.length < 2) {
+      setReaderSearchResults([]);
+      setReaderSearchError(null);
+      setHasMoreReaderSearchResults(false);
+      setIsReaderSearchLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      setIsReaderSearchLoading(true);
+      setReaderSearchError(null);
+
+      void fetchBookSearch(accessToken, bookId, normalizedQuery, { limit: 20, offset: 0 })
+        .then((response) => {
+          if (isCancelled) {
+            return;
+          }
+
+          setReaderSearchResults(response.results);
+          setHasMoreReaderSearchResults(response.hasMore);
+        })
+        .catch((error) => {
+          if (isCancelled) {
+            return;
+          }
+
+          setReaderSearchResults([]);
+          setHasMoreReaderSearchResults(false);
+          setReaderSearchError(error instanceof Error ? error.message : "No se pudo completar la búsqueda en este libro.");
+        })
+        .finally(() => {
+          if (!isCancelled) {
+            setIsReaderSearchLoading(false);
+          }
+        });
+    }, 260);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [accessToken, bookId, readerSearchQuery]);
 
   useEffect(() => {
     const paragraphs = pageQuery.data?.page.paragraphs ?? [];
@@ -1449,6 +1759,7 @@ export function ReaderPage() {
 
     setIsNavigationPanelRendered(true);
     setIsNavigationPanelVisible(true);
+    setIsReaderSearchPanelVisible(false);
   }
 
   function closeNavigationPanel() {
@@ -1471,6 +1782,20 @@ export function ReaderPage() {
     }
 
     openNavigationPanel();
+  }
+
+  function closeReaderSearchPanel() {
+    setIsReaderSearchPanelVisible(false);
+  }
+
+  function toggleReaderSearchPanel() {
+    if (isReaderSearchPanelVisible) {
+      closeReaderSearchPanel();
+      return;
+    }
+
+    closeNavigationPanel();
+    setIsReaderSearchPanelVisible(true);
   }
 
   const activeTocEntryKey = useMemo(() => {
@@ -1760,6 +2085,14 @@ export function ReaderPage() {
 
     setCurrentParagraphNumber(targetParagraph.paragraphNumber);
     pendingParagraphScrollRef.current = targetParagraph.paragraphNumber;
+    if (
+      pendingRouteNavigationRef.current
+      && pendingRouteNavigationRef.current.pageNumber === currentPageNumber
+      && pendingRouteNavigationRef.current.paragraphNumber === targetParagraph.paragraphNumber
+    ) {
+      pendingRouteNavigationRef.current = null;
+      navigate(`/books/${bookId}`, { replace: true, state: location.state });
+    }
     if (pendingAutoPlayNextPage) {
       setPendingAutoPlayNextPage(false);
       void playParagraph(targetParagraph, currentPageNumber, true);
@@ -1815,7 +2148,7 @@ export function ReaderPage() {
   }, [paragraphsById]);
 
   useEffect(() => {
-    if ((!isNavigationPanelVisible && !selectionDraft && !activeReaderNote) || typeof document === "undefined") {
+    if ((!isNavigationPanelVisible && !isReaderSearchPanelVisible && !selectionDraft && !activeReaderNote) || typeof document === "undefined") {
       return;
     }
 
@@ -1833,7 +2166,12 @@ export function ReaderPage() {
         return;
       }
 
+      if (isReaderSearchPanelVisible && readerSearchPanelRef.current?.contains(targetNode)) {
+        return;
+      }
+
       closeNavigationPanel();
+      closeReaderSearchPanel();
       setSelectionDraft(null);
       setSelectionNoteText("");
       setActiveReaderNote(null);
@@ -1846,6 +2184,7 @@ export function ReaderPage() {
       }
 
       closeNavigationPanel();
+  closeReaderSearchPanel();
       setSelectionDraft(null);
       setSelectionNoteText("");
       setActiveReaderNote(null);
@@ -1860,7 +2199,7 @@ export function ReaderPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [activeReaderNote, isNavigationPanelVisible, selectionDraft]);
+  }, [activeReaderNote, isNavigationPanelVisible, isReaderSearchPanelVisible, selectionDraft]);
 
   useEffect(() => {
     if (!livePageRef.current) {
@@ -2335,6 +2674,18 @@ export function ReaderPage() {
 
       node.dataset.paragraphId = paragraph.paragraphId;
       node.classList.toggle("active", Number.isInteger(paragraphNumber) && paragraphNumber === activeParagraphNumber);
+      node.classList.toggle(
+        "reader-search-hit",
+        Boolean(activeSearchTarget
+          && activeSearchTarget.pageNumber === currentPageNumber
+          && activeSearchTarget.paragraphNumber === paragraphNumber)
+      );
+
+      const activeRichSearchQuery = activeSearchTarget
+        && activeSearchTarget.pageNumber === currentPageNumber
+        && activeSearchTarget.paragraphNumber === paragraphNumber
+        ? activeSearchTarget.query.trim()
+        : "";
 
       const noteCount = noteCountsByParagraphId.get(paragraph.paragraphId) ?? 0;
       node.classList.toggle("has-note", noteCount > 0);
@@ -2345,6 +2696,9 @@ export function ReaderPage() {
       }
 
       applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
+      if (activeRichSearchQuery) {
+        highlightRichParagraphSearchMatches(node, activeRichSearchQuery);
+      }
       node.querySelectorAll<HTMLElement>("[data-highlight-id]").forEach((highlightElement) => {
         const highlightId = highlightElement.dataset.highlightId;
         const note = highlightId ? notesByHighlightId.get(highlightId) ?? null : null;
@@ -3462,12 +3816,64 @@ export function ReaderPage() {
     }
   }
 
+  async function handleSelectReaderSearchResult(result: BookSearchResult) {
+    setActiveSearchTarget({
+      pageNumber: result.pageNumber,
+      paragraphNumber: result.paragraphNumber,
+      query: readerSearchQuery.trim()
+    });
+    closeReaderSearchPanel();
+    await goToLocation(result.pageNumber, result.paragraphNumber);
+  }
+
   function renderParagraphText(paragraph: ParagraphContent) {
     const segments = buildTextSegments(paragraph.paragraphText, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
+    const activeSearchQuery = activeSearchTarget
+      && activeSearchTarget.pageNumber === currentPageNumber
+      && activeSearchTarget.paragraphNumber === paragraph.paragraphNumber
+      ? activeSearchTarget.query.trim()
+      : "";
+
+    const renderSearchMatches = (text: string, keyPrefix: string) => {
+      if (!activeSearchQuery) {
+        return [<span key={`${keyPrefix}-plain`}>{text}</span>];
+      }
+
+      const normalizedText = text.toLocaleLowerCase("es");
+      const normalizedQuery = activeSearchQuery.toLocaleLowerCase("es");
+      const matchNodes: ReactNode[] = [];
+      let cursor = 0;
+      let matchIndex = 0;
+
+      while (cursor < text.length) {
+        const nextMatchIndex = normalizedText.indexOf(normalizedQuery, cursor);
+        if (nextMatchIndex === -1) {
+          if (cursor < text.length) {
+            matchNodes.push(<span key={`${keyPrefix}-tail-${matchIndex}`}>{text.slice(cursor)}</span>);
+          }
+          break;
+        }
+
+        if (nextMatchIndex > cursor) {
+          matchNodes.push(<span key={`${keyPrefix}-text-${matchIndex}`}>{text.slice(cursor, nextMatchIndex)}</span>);
+        }
+
+        matchNodes.push(
+          <mark className="reader-search-match-inline" key={`${keyPrefix}-match-${matchIndex}`}>
+            {text.slice(nextMatchIndex, nextMatchIndex + activeSearchQuery.length)}
+          </mark>
+        );
+
+        cursor = nextMatchIndex + activeSearchQuery.length;
+        matchIndex += 1;
+      }
+
+      return matchNodes.length > 0 ? matchNodes : [<span key={`${keyPrefix}-fallback`}>{text}</span>];
+    };
 
     return segments.map((segment, index) => {
       if (!segment.highlight) {
-        return <span key={`${paragraph.paragraphId}-text-${index}`}>{segment.text}</span>;
+        return renderSearchMatches(segment.text, `${paragraph.paragraphId}-text-${index}`);
       }
 
       const linkedNote = notesByHighlightId.get(segment.highlight.highlightId) ?? null;
@@ -3479,7 +3885,7 @@ export function ReaderPage() {
           data-note-id={linkedNote?.noteId}
           key={`${paragraph.paragraphId}-highlight-${index}`}
         >
-          {segment.text}
+          {renderSearchMatches(segment.text, `${paragraph.paragraphId}-highlight-${index}`)}
         </span>
       );
     });
@@ -3497,8 +3903,13 @@ export function ReaderPage() {
             <h2>{bookTitle}</h2>
           </div>
           <div className="reader-header-actions">
-            <Link aria-label="Volver a la estantería" className="secondary-button link-button reader-header-icon-button" title="Volver a la estantería" to="/">
-              <ShelfIcon />
+            <Link
+              aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+              className="secondary-button link-button reader-header-icon-button"
+              title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+              to={isReturningToGlobalSearch ? readerReturnTo : "/"}
+            >
+              {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
             </Link>
             {pageQuery.data?.book.sourceType === "IMAGES" ? (
               <Link aria-label="Añadir páginas" className="secondary-button link-button reader-header-icon-button" title="Añadir páginas" to={appendPagesLink}>
@@ -3714,6 +4125,80 @@ export function ReaderPage() {
             voiceOptions={TTS_VOICE_OPTIONS}
           />
         </ReaderFloatingAudioPopover>
+        <button
+          aria-expanded={isReaderSearchPanelVisible}
+          aria-label="Buscar dentro del libro"
+          className={isReaderSearchPanelVisible ? "reader-float-button active" : "reader-float-button"}
+          onClick={toggleReaderSearchPanel}
+          title="Buscar dentro del libro"
+          type="button"
+        >
+          <SearchIcon />
+        </button>
+        {isReaderSearchPanelVisible ? (
+          <aside aria-label="Buscar dentro del libro" className="reader-navigation-panel reader-search-panel" ref={readerSearchPanelRef}>
+            <div className="reader-navigation-header">
+              <div>
+                <p className="eyebrow">{bookTitle}</p>
+                <h3>Búsqueda en el libro</h3>
+              </div>
+              <button aria-label="Cerrar búsqueda" className="reader-icon-ghost" onClick={closeReaderSearchPanel} type="button">
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="reader-search-panel-body">
+              <label className="reader-search-field">
+                <span>Buscar palabra o frase</span>
+                <input
+                  onChange={(event) => setReaderSearchQuery(event.target.value)}
+                  placeholder="Ejemplo: conejo lector"
+                  ref={readerSearchInputRef}
+                  value={readerSearchQuery}
+                />
+              </label>
+
+              {readerSearchQuery.trim().length === 1 ? <p className="reader-navigation-empty">Escribe al menos 2 caracteres.</p> : null}
+              {isReaderSearchLoading ? <p className="reader-navigation-empty">Buscando coincidencias...</p> : null}
+              {readerSearchError ? <p className="error-text">{readerSearchError}</p> : null}
+
+              {!isReaderSearchLoading && !readerSearchError && readerSearchQuery.trim().length >= 2 && readerSearchResults.length === 0 ? (
+                <p className="reader-navigation-empty">No se encontraron coincidencias en este libro.</p>
+              ) : null}
+
+              {readerSearchResults.length > 0 ? (
+                <div className="reader-search-results">
+                  {readerSearchResults.map((result) => {
+                    const resultKey = buildReaderSearchResultKey(result);
+                    const isActiveResult = activeSearchTarget
+                      ? activeSearchTarget.pageNumber === result.pageNumber && activeSearchTarget.paragraphNumber === result.paragraphNumber
+                      : false;
+
+                    return (
+                      <button
+                        className={isActiveResult ? "reader-navigation-item active reader-search-result" : "reader-navigation-item reader-search-result"}
+                        key={resultKey}
+                        onClick={() => {
+                          void handleSelectReaderSearchResult(result);
+                        }}
+                        type="button"
+                      >
+                        <div className="reader-navigation-item-topline">
+                          <strong>{excerptPreview(result.paragraphText, "Coincidencia")}</strong>
+                          <span className="reader-navigation-inline-meta">{formatRelativeAnchor(result.pageNumber, result.paragraphNumber)}</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+
+              {hasMoreReaderSearchResults ? (
+                <p className="reader-search-more-note">Hay más coincidencias. Refina la búsqueda para acotar resultados.</p>
+              ) : null}
+            </div>
+          </aside>
+        ) : null}
         <div aria-live="polite" className="reader-floating-status">
           <form className="reader-page-jump-form" onSubmit={(event) => void handlePageJumpSubmit(event)}>
             <label className="reader-page-jump-label">

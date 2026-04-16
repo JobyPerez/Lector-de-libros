@@ -11,6 +11,7 @@ import { OutlineEditorPage } from "../features/reader/OutlineEditorPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { SectionSummaryPage } from "../features/reader/SectionSummaryPage";
 import { ResetPasswordPage } from "../features/auth/ResetPasswordPage";
+import { SearchPage } from "../features/search/SearchPage";
 import { ShelfPage } from "../features/shelf/ShelfPage";
 import { UsersAdminPage } from "../features/users/UsersAdminPage";
 
@@ -27,7 +28,7 @@ type AnimatedOutletScreen = {
 };
 
 function buildRouteTransitionKey(location: ReturnType<typeof useLocation>) {
-  return location.key || `${location.pathname}${location.search}${location.hash}`;
+  return `${location.pathname}${location.hash}`;
 }
 
 function RouteScene({ children }: { children: React.ReactNode }) {
@@ -299,6 +300,7 @@ export function AppRouter() {
           />
           <Route element={<ProtectedShell />}>
             <Route path="/" element={<ShelfPage />} />
+            <Route path="/search" element={<SearchPage />} />
             <Route path="/books/:bookId" element={<ReaderPage />} />
             <Route path="/books/:bookId/outline/edit" element={<OutlineEditorPage />} />
             <Route path="/books/:bookId/sections/:chapterId/summary" element={<SectionSummaryPage />} />

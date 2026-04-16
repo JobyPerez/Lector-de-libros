@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBooks, importBook, updateBook, type BlobDownload, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
@@ -60,6 +60,15 @@ function BackIcon() {
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
       <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <circle cx="11" cy="11" r="5.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M15 15L19 19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </svg>
   );
 }
@@ -160,6 +169,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
 
 export function ShelfPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
+  const navigate = useNavigate();
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [editingBook, setEditingBook] = useState<BookSummary | null>(null);
@@ -249,6 +259,11 @@ export function ShelfPage() {
     setViewTransitionDirection("back");
     setIsImportPanelVisible(false);
     setCreateError(null);
+  }
+
+  function openGlobalSearch() {
+    setIsCreateMenuOpen(false);
+    navigate("/search");
   }
 
   function startEditingBook(book: BookSummary) {
@@ -421,7 +436,7 @@ export function ShelfPage() {
       {activeView === "shelf" ? (
       <section className="panel wide-panel overflow-visible-panel screen-scene" data-direction={viewTransitionDirection}>
         <div className="panel-header shelf-header">
-          <div>
+          <div className="shelf-header-copy">
             <h2>Estantería</h2>
           </div>
           <div className="header-actions shelf-header-actions">
@@ -429,10 +444,22 @@ export function ShelfPage() {
               aria-expanded={isCreateMenuOpen}
               aria-label="Abrir menú de creación"
               className="plus-button"
-              onClick={() => setIsCreateMenuOpen((current) => !current)}
+              onClick={() => {
+                setIsCreateMenuOpen((current) => !current);
+              }}
               type="button"
             >
               +
+            </button>
+
+            <button
+              aria-label="Abrir buscador global"
+              className="shelf-header-icon-button"
+              onClick={openGlobalSearch}
+              title="Buscar en todos tus libros"
+              type="button"
+            >
+              <SearchIcon />
             </button>
 
             {isCreateMenuOpen ? (
@@ -445,6 +472,7 @@ export function ShelfPage() {
                 </Link>
               </div>
             ) : null}
+
           </div>
         </div>
 

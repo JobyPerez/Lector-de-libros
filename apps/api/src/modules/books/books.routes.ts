@@ -55,6 +55,12 @@ const bookParamsSchema = z.object({
   bookId: z.string().uuid()
 });
 
+const bookSearchQuerySchema = z.object({
+  query: z.string().trim().min(2).max(120),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  offset: z.coerce.number().int().min(0).max(500).default(0)
+});
+
 const sectionParamsSchema = z.object({
   bookId: z.string().uuid(),
   chapterId: z.string().trim().min(1).max(200)
@@ -197,6 +203,17 @@ type PageParagraphRecord = {
   paragraphNumber: number;
   paragraphText: string;
   sequenceNumber: number;
+};
+
+type BookSearchResultRecord = {
+  authorName: string | null;
+  bookId: string;
+  pageNumber: number;
+  paragraphId: string;
+  paragraphNumber: number;
+  paragraphText: string;
+  sequenceNumber: number;
+  title: string;
 };
 
 type StoredPageNoteRecord = {
@@ -602,6 +619,125 @@ async function listPageParagraphs(
   );
 
   return (result.rows ?? []) as PageParagraphRecord[];
+}
+
+async function searchOwnedBookParagraphs(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  options: {
+    bookId: string;
+    limit: number;
+    offset: number;
+    ownerUserId: string;
+    query: string;
+  }
+): Promise<{ hasMore: boolean; results: BookSearchResultRecord[] }> {
+  const fetchLimit = options.limit + 1;
+  const result = await connection.execute(
+    `
+      SELECT
+        paragraph_id AS "paragraphId",
+        page_number AS "pageNumber",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber",
+        paragraph_text AS "paragraphText",
+        book_id AS "bookId",
+        title AS "title",
+        author_name AS "authorName"
+      FROM (
+        SELECT
+          bp.paragraph_id,
+          bp.page_number,
+          bp.paragraph_number,
+          bp.sequence_number,
+          bp.paragraph_text,
+          b.book_id,
+          b.title,
+          b.author_name,
+          ROW_NUMBER() OVER (ORDER BY bp.sequence_number ASC) AS row_number
+        FROM book_paragraphs bp
+        INNER JOIN books b
+          ON b.book_id = bp.book_id
+        WHERE bp.book_id = :bookId
+          AND b.owner_user_id = :ownerUserId
+          AND INSTR(LOWER(bp.paragraph_text), :query) > 0
+      )
+      WHERE row_number > :offset
+        AND row_number <= :offset + :fetchLimit
+      ORDER BY row_number ASC
+    `,
+    {
+      bookId: options.bookId,
+      fetchLimit,
+      offset: options.offset,
+      ownerUserId: options.ownerUserId,
+      query: options.query.toLocaleLowerCase("es")
+    }
+  );
+
+  const rows = (result.rows ?? []) as BookSearchResultRecord[];
+  return {
+    hasMore: rows.length > options.limit,
+    results: rows.slice(0, options.limit)
+  };
+}
+
+async function searchOwnedLibraryParagraphs(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  options: {
+    limit: number;
+    offset: number;
+    ownerUserId: string;
+    query: string;
+  }
+): Promise<{ hasMore: boolean; results: BookSearchResultRecord[] }> {
+  const fetchLimit = options.limit + 1;
+  const result = await connection.execute(
+    `
+      SELECT
+        paragraph_id AS "paragraphId",
+        page_number AS "pageNumber",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber",
+        paragraph_text AS "paragraphText",
+        book_id AS "bookId",
+        title AS "title",
+        author_name AS "authorName"
+      FROM (
+        SELECT
+          bp.paragraph_id,
+          bp.page_number,
+          bp.paragraph_number,
+          bp.sequence_number,
+          bp.paragraph_text,
+          b.book_id,
+          b.title,
+          b.author_name,
+          ROW_NUMBER() OVER (
+            ORDER BY b.updated_at DESC, b.created_at DESC, b.title ASC, bp.sequence_number ASC
+          ) AS row_number
+        FROM book_paragraphs bp
+        INNER JOIN books b
+          ON b.book_id = bp.book_id
+        WHERE b.owner_user_id = :ownerUserId
+          AND INSTR(LOWER(bp.paragraph_text), :query) > 0
+      )
+      WHERE row_number > :offset
+        AND row_number <= :offset + :fetchLimit
+      ORDER BY row_number ASC
+    `,
+    {
+      fetchLimit,
+      offset: options.offset,
+      ownerUserId: options.ownerUserId,
+      query: options.query.toLocaleLowerCase("es")
+    }
+  );
+
+  const rows = (result.rows ?? []) as BookSearchResultRecord[];
+  return {
+    hasMore: rows.length > options.limit,
+    results: rows.slice(0, options.limit)
+  };
 }
 
 async function listPageNotes(
@@ -2251,6 +2387,74 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       );
 
       return reply.send({ books: result.rows ?? [] });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/search", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const query = bookSearchQuerySchema.parse(request.query);
+    const connection = await getConnection();
+
+    try {
+      const searchResult = await searchOwnedLibraryParagraphs(connection, {
+        limit: query.limit,
+        offset: query.offset,
+        ownerUserId: request.currentUser.userId,
+        query: query.query
+      });
+
+      return reply.send({
+        hasMore: searchResult.hasMore,
+        limit: query.limit,
+        offset: query.offset,
+        query: query.query,
+        results: searchResult.results
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/search", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const query = bookSearchQuerySchema.parse(request.query);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const searchResult = await searchOwnedBookParagraphs(connection, {
+        bookId: params.bookId,
+        limit: query.limit,
+        offset: query.offset,
+        ownerUserId: request.currentUser.userId,
+        query: query.query
+      });
+
+      return reply.send({
+        book: {
+          authorName: book.authorName,
+          bookId: book.bookId,
+          title: book.title
+        },
+        hasMore: searchResult.hasMore,
+        limit: query.limit,
+        offset: query.offset,
+        query: query.query,
+        results: searchResult.results
+      });
     } finally {
       await connection.close();
     }
