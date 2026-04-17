@@ -4112,6 +4112,16 @@ export function ReaderPage() {
           />
         </ReaderNavigationPopover>
         <button
+          aria-label="Página anterior"
+          className="reader-float-button"
+          disabled={!pageQuery.data?.hasPreviousPage}
+          onClick={() => void goToPage(currentPageNumber - 1)}
+          title="Página anterior"
+          type="button"
+        >
+          <PagePreviousIcon />
+        </button>
+        <button
           aria-label="Párrafo anterior"
           className="reader-float-button"
           disabled={!canGoToPreviousParagraph}
