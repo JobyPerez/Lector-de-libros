@@ -116,7 +116,7 @@ async function start() {
   runProcess("worker", "dev:worker");
 
   process.stdout.write("[dev-all] Esperando a que el API abra el puerto 3000...\n");
-  await waitForPort(3000, 60_000);
+  await waitForPort(3000, 120_000);
   process.stdout.write("[dev-all] API disponible en http://localhost:3000. Iniciando web...\n");
 
   runProcess("web", "dev:web");
