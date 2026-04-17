@@ -1900,6 +1900,8 @@ textarea {
   scroll-margin-block: 42vh;
   text-align: justify;
   text-indent: 1.8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: #2c241b;
   cursor: pointer;
   transition: background 180ms ease, box-shadow 180ms ease, color 180ms ease;
@@ -1929,6 +1931,8 @@ textarea {
 .reader-rich-content li[data-paragraph-number],
 .reader-rich-content blockquote[data-paragraph-number] {
   text-align: justify;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .reader-rich-content figure[data-paragraph-number] {
