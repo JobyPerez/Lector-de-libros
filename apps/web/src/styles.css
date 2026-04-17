@@ -2484,16 +2484,19 @@ textarea {
   align-items: baseline;
   justify-content: center;
   gap: 0.12rem;
+  white-space: nowrap;
 }
 
 .reader-page-jump-input {
-  width: 3ch;
+  width: 3.35ch;
+  min-width: 3.35ch;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--forest-900);
   font-family: "Constantia", "Georgia", serif;
   font-size: 0.98rem;
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   line-height: 1;
   text-align: right;
@@ -2506,6 +2509,7 @@ textarea {
 .reader-floating-status strong {
   font-family: "Constantia", "Georgia", serif;
   font-size: 0.98rem;
+  font-variant-numeric: tabular-nums;
   color: var(--forest-900);
 }
 
@@ -4361,12 +4365,13 @@ textarea {
   }
 
   .reader-floating-status {
-    min-width: 4.4rem;
+    min-width: 4.9rem;
     padding: 0;
   }
 
   .reader-page-jump-input {
-    width: 2.6ch;
+    width: 3ch;
+    min-width: 3ch;
   }
 
   .reader-float-button {
