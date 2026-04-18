@@ -1475,6 +1475,10 @@ textarea {
   transition: top 180ms ease, right 180ms ease;
 }
 
+.reader-header-floating-dock.open {
+  align-items: flex-start;
+}
+
 .reader-header-floating-dock-panel,
 .reader-header-floating-toggle {
   pointer-events: auto;
@@ -1491,7 +1495,7 @@ textarea {
   backdrop-filter: blur(16px);
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0;
   overflow: hidden;
   opacity: 0;
@@ -1535,6 +1539,35 @@ textarea {
   width: 2.7rem;
   min-width: 2.7rem;
   min-height: 2.7rem;
+}
+
+@media (max-width: 560px) {
+  .reader-header-floating-dock {
+    gap: 0.35rem;
+  }
+
+  .reader-header-floating-dock-panel.open {
+    width: min(14.6rem, calc(100vw - 4.9rem));
+    max-width: min(14.6rem, calc(100vw - 4.9rem));
+    padding: 0.35rem;
+    border-radius: 1.2rem;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    justify-content: flex-start;
+    gap: 0.35rem;
+  }
+
+  .reader-header-floating-toggle {
+    width: 2.8rem;
+    min-width: 2.8rem;
+    height: 2.8rem;
+  }
+
+  .reader-header-floating-action-button {
+    width: 2.45rem;
+    min-width: 2.45rem;
+    min-height: 2.45rem;
+  }
 }
 
 .reader-page,
