@@ -77,10 +77,16 @@ type VisionImageOptimizationVariant = {
   quality: number;
 };
 
-type VisionOcrPromptAttempt = {
+type VisionOcrPrompt = {
   maxTokens: number;
   system: string;
   user: string;
+};
+
+type RunOcrOnImageOptions = {
+  ocrMode?: ImageOcrMode;
+  promptOverride?: string;
+  rotation?: ImageRotation;
 };
 
 const ocrResponseSchema = z.object({
@@ -616,150 +622,126 @@ async function buildStructuredVisionPage(
   };
 }
 
-async function executeVisionOcrAttempts(
-  croppedBuffer: Buffer,
-  requestPayload: VisionImageRequestPayload
-): Promise<OcrPageResult> {
-  const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
-  const promptAttempts: VisionOcrPromptAttempt[] = [
-    {
-      maxTokens: 2600,
-      system: "Analiza una página de libro en español y devuelve una reconstrucción editorial estructurada. Responde solo JSON con las claves rawText, paragraphs y blocks. Usa blocks en orden de lectura con type=heading, paragraph o image. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Los párrafos deben respetar el layout real, no los saltos de línea impresos. Omite cabeceras repetidas, pies y números de página. No clasifiques como heading las firmas, dedicatorias manuscritas, nombres firmados ni las fechas.",
-      user: "Procesa esta página. Detecta retratos, ilustraciones o imágenes relevantes que formen parte del contenido y devuélvelas como blocks de tipo image. Si el nombre del autor está en negrita, márcalo con **. Si títulos de obras están en cursiva, márcalos con *. Si un heading está claramente centrado o alineado a la derecha, indícalo en alignment. Las firmas y fechas deben ir como paragraph. Una firma seguida por una fecha nunca es heading. Devuelve solo JSON válido."
-    },
-    {
-      maxTokens: 3600,
-      system: "Haz OCR estructurado de una página de libro. Devuelve una sola línea JSON válida con rawText, paragraphs y blocks. paragraphs debe contener el texto limpio por párrafos. blocks debe contener headings, paragraphs e imágenes en orden de lectura. Usa markdown dentro del texto para negrita y cursiva. Usa bbox normalizado 0-1000 para imágenes no decorativas. Para headings puedes añadir alignment con left, center o right solo cuando la alineación sea clara. Las firmas, dedicatorias y fechas nunca deben ir como heading.",
-      user: "Reconstruye esta página para un EPUB: conserva títulos, énfasis tipográficos e imágenes del contenido. No inventes texto. Si un título está claramente centrado o alineado a la derecha, añádelo en alignment. Devuelve firmas y fechas como paragraph. Una firma seguida de fecha no debe ir como heading. Devuelve solo JSON válido."
-    }
-  ];
+function buildVisionOcrPrompt(promptOverride?: string): VisionOcrPrompt {
+  const normalizedPromptOverride = promptOverride?.trim();
 
-  let lastError: Error | null = null;
-
-  for (const promptAttempt of promptAttempts) {
-    const response = await fetch(`${endpointBase}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${appEnv.githubModelsToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        max_tokens: promptAttempt.maxTokens,
-        messages: [
-          {
-            role: "system",
-            content: promptAttempt.system
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: promptAttempt.user
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`
-                }
-              }
-            ]
-          }
-        ],
-        model: appEnv.githubModelsVisionModel,
-        response_format: { type: "json_object" },
-        temperature: 0
-      })
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      const errorDetails = extractVisionProviderErrorDetails(errorBody);
-      const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
-
-      if (response.status === 429 || isVisionRateLimitError(normalizedProviderError)) {
-        throw createVisionRateLimitError(
-          errorDetails.message,
-          extractRetryAfterSeconds(response, normalizedProviderError)
-        );
-      }
-
-      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
-
-      if (isContentFilterError(normalizedProviderError)) {
-        lastError = nextError;
-        continue;
-      }
-
-      throw nextError;
-    }
-
-    const payload = (await response.json()) as ChatCompletionResponse;
-    if (payload.error?.message) {
-      const errorDetails = extractVisionProviderErrorDetails(payload.error);
-      const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
-
-      if (isVisionRateLimitError(normalizedProviderError)) {
-        throw createVisionRateLimitError(
-          errorDetails.message,
-          extractRetryAfterSeconds(null, normalizedProviderError)
-        );
-      }
-
-      const nextError = createVisionProviderError(errorDetails, requestPayload.optimized);
-
-      if (isContentFilterError(normalizedProviderError)) {
-        lastError = nextError;
-        continue;
-      }
-
-      throw nextError;
-    }
-
-    const assistantText = extractAssistantText(payload.choices);
-    const finishReason = payload.choices?.[0]?.finish_reason;
-
-    let parsedPayload: z.infer<typeof ocrResponseSchema>;
-    try {
-      parsedPayload = ocrResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
-    } catch {
-      lastError = createVisionOcrParseError(assistantText, finishReason);
-      continue;
-    }
-
-    const paragraphs = sanitizeParagraphs(parsedPayload.paragraphs.map(normalizeWhitespace).filter(Boolean));
-    const rawText = normalizeWhitespace(parsedPayload.rawText || paragraphs.join(" "));
-
-    if (paragraphs.length === 0 && parsedPayload.blocks.length === 0) {
-      lastError = Object.assign(new Error("GitHub Models no ha podido extraer texto legible de la imagen."), {
-        statusCode: 422
-      });
-      continue;
-    }
-
-    return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
-  }
-
-  throw lastError ?? Object.assign(new Error("GitHub Models no ha podido completar el OCR de la imagen."), {
-    statusCode: 502
-  });
+  return {
+    maxTokens: 3600,
+    system: "Haz OCR estructurado de una página de libro en español. Devuelve solo JSON válido con las claves rawText, paragraphs y blocks. rawText debe contener el texto limpio global; paragraphs debe contener el texto limpio por párrafos; blocks debe contener elementos type=heading, paragraph o image en orden de lectura. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Detecta retratos, ilustraciones o imágenes relevantes del contenido y devuélvelas como blocks de tipo image. Los párrafos deben respetar el layout real, no los saltos de línea impresos. No inventes texto. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Las firmas, dedicatorias manuscritas, nombres firmados y fechas nunca deben clasificarse como heading; deben ir como paragraph. Una firma seguida de una fecha nunca es heading.",
+    user: normalizedPromptOverride || "Sin instrucciones adicionales del usuario. Aplica únicamente las reglas del mensaje system."
+  };
 }
 
-async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeType: string): Promise<OcrPageResult> {
+async function executeVisionOcrRequest(
+  croppedBuffer: Buffer,
+  requestPayload: VisionImageRequestPayload,
+  promptOverride?: string
+): Promise<OcrPageResult> {
+  const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
+  const prompt = buildVisionOcrPrompt(promptOverride);
+
+  const response = await fetch(`${endpointBase}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${appEnv.githubModelsToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      max_tokens: prompt.maxTokens,
+      messages: [
+        {
+          role: "system",
+          content: prompt.system
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: prompt.user
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`
+              }
+            }
+          ]
+        }
+      ],
+      model: appEnv.githubModelsVisionModel,
+      response_format: { type: "json_object" },
+      temperature: 0
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    const errorDetails = extractVisionProviderErrorDetails(errorBody);
+    const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
+
+    if (response.status === 429 || isVisionRateLimitError(normalizedProviderError)) {
+      throw createVisionRateLimitError(
+        errorDetails.message,
+        extractRetryAfterSeconds(response, normalizedProviderError)
+      );
+    }
+
+    throw createVisionProviderError(errorDetails, requestPayload.optimized);
+  }
+
+  const payload = (await response.json()) as ChatCompletionResponse;
+  if (payload.error?.message) {
+    const errorDetails = extractVisionProviderErrorDetails(payload.error);
+    const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
+
+    if (isVisionRateLimitError(normalizedProviderError)) {
+      throw createVisionRateLimitError(
+        errorDetails.message,
+        extractRetryAfterSeconds(null, normalizedProviderError)
+      );
+    }
+
+    throw createVisionProviderError(errorDetails, requestPayload.optimized);
+  }
+
+  const assistantText = extractAssistantText(payload.choices);
+  const finishReason = payload.choices?.[0]?.finish_reason;
+
+  let parsedPayload: z.infer<typeof ocrResponseSchema>;
+  try {
+    parsedPayload = ocrResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
+  } catch {
+    throw createVisionOcrParseError(assistantText, finishReason);
+  }
+
+  const paragraphs = sanitizeParagraphs(parsedPayload.paragraphs.map(normalizeWhitespace).filter(Boolean));
+  const rawText = normalizeWhitespace(parsedPayload.rawText || paragraphs.join(" "));
+
+  if (paragraphs.length === 0 && parsedPayload.blocks.length === 0) {
+    throw Object.assign(new Error("GitHub Models no ha podido extraer texto legible de la imagen."), {
+      statusCode: 422
+    });
+  }
+
+  return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
+}
+
+async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeType: string, promptOverride?: string): Promise<OcrPageResult> {
   const croppedBuffer = await cropImageBufferToContent(fileBuffer);
 
   try {
-    return await executeVisionOcrAttempts(croppedBuffer, {
+    return await executeVisionOcrRequest(croppedBuffer, {
       buffer: croppedBuffer,
       mimeType: normalizedMimeType,
       optimized: false
-    });
+    }, promptOverride);
   } catch (error) {
     if (!(error instanceof Error) || !("retryWithOptimizedImage" in error) || !error.retryWithOptimizedImage) {
       throw error;
     }
 
-    return executeVisionOcrAttempts(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer));
+    return executeVisionOcrRequest(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer), promptOverride);
   }
 }
 
@@ -771,9 +753,11 @@ export async function runOcrOnImage(
   fileBuffer: Buffer,
   fileName: string,
   mimeType: string,
-  ocrMode: ImageOcrMode = "AUTO",
-  rotation: ImageRotation = 0
+  options: RunOcrOnImageOptions = {}
 ): Promise<OcrPageResult> {
+  const ocrMode = options.ocrMode ?? "AUTO";
+  const rotation = options.rotation ?? 0;
+  const promptOverride = options.promptOverride?.trim();
   const normalizedMimeType = inferImageMimeType(fileName, mimeType);
   if (!supportedImageMimeTypes.has(normalizedMimeType)) {
     throw Object.assign(new Error(`Formato de imagen no soportado para OCR: ${mimeType || fileName}. Usa PNG, JPG o WEBP.`), {
@@ -789,14 +773,14 @@ export async function runOcrOnImage(
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType);
+    return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
   }
 
   try {
     return await runLocalOcrWithTesseract(rotatedBuffer);
   } catch (localOcrError) {
     if (hasVisionOcrConfiguration()) {
-      return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType);
+      return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
     }
 
     throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${localOcrError instanceof Error ? localOcrError.message : ""}`.trim()), {

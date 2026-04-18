@@ -242,6 +242,11 @@ export type BookSummary = {
 export type ImageOcrMode = "LOCAL" | "VISION";
 export type ImageRotation = 0 | 90 | 180 | 270;
 
+type ImageOcrRequestOptions = {
+  ocrMode?: ImageOcrMode;
+  promptOverride?: string;
+};
+
 export type ParagraphContent = {
   paragraphId: string;
   paragraphNumber: number;
@@ -536,24 +541,29 @@ export function deleteBook(accessToken: string, bookId: string) {
   });
 }
 
-function createImageUploadPayload(payload: FormData, ocrMode?: ImageOcrMode): FormData {
+function createImageUploadPayload(payload: FormData, options?: ImageOcrRequestOptions): FormData {
   const nextPayload = new FormData();
 
   payload.forEach((value, key) => {
     nextPayload.append(key, value);
   });
 
-  if (ocrMode) {
-    nextPayload.set("ocrMode", ocrMode);
+  if (options?.ocrMode) {
+    nextPayload.set("ocrMode", options.ocrMode);
+  }
+
+  const normalizedPromptOverride = options?.promptOverride?.trim();
+  if (normalizedPromptOverride) {
+    nextPayload.set("promptOverride", normalizedPromptOverride);
   }
 
   return nextPayload;
 }
 
-export async function createImageBook(accessToken: string, payload: FormData, options?: { ocrMode?: ImageOcrMode }) {
+export async function createImageBook(accessToken: string, payload: FormData, options?: ImageOcrRequestOptions) {
   const response = await fetchWithAutoRefresh("/books/from-images", {
     accessToken,
-    body: createImageUploadPayload(payload, options?.ocrMode),
+    body: createImageUploadPayload(payload, options),
     fallbackMessage: "No se pudo crear el libro desde imágenes.",
     headers: createHeaders({ accessToken }),
     method: "POST"
@@ -566,7 +576,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode; progressId?: string }) {
+export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode; progressId?: string; promptOverride?: string }) {
   const searchParams = new URLSearchParams();
   if (options?.afterPage !== undefined) {
     searchParams.set("afterPage", String(options.afterPage));
@@ -582,7 +592,10 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
 
   const response = await fetchWithAutoRefresh(path, {
     accessToken,
-    body: createImageUploadPayload(payload, options?.ocrMode),
+    body: createImageUploadPayload(payload, {
+      ocrMode: options?.ocrMode,
+      promptOverride: options?.promptOverride
+    }),
     fallbackMessage: "No se pudieron añadir imágenes al libro.",
     headers: createHeaders({ accessToken }),
     method: "POST"
@@ -820,10 +833,13 @@ export function updateBookPageImageRotation(accessToken: string, bookId: string,
   });
 }
 
-export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: { ocrMode?: ImageOcrMode }) {
+export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: ImageOcrRequestOptions) {
   return request<void>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr`, {
     accessToken,
-    body: { ocrMode: payload?.ocrMode ?? "VISION" },
+    body: {
+      ocrMode: payload?.ocrMode ?? "VISION",
+      ...(payload?.promptOverride?.trim() ? { promptOverride: payload.promptOverride.trim() } : {})
+    },
     method: "POST"
   });
 }

@@ -143,6 +143,15 @@ function CameraIcon() {
   );
 }
 
+function PromptIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M8 16.5L5.5 18.5L6.4 15.3L14.65 7.05C15.3963 6.30368 16.6068 6.30368 17.3531 7.05C18.0994 7.79632 18.0994 9.00684 17.3531 9.75316L9.1 18" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.5 8.2L16.2 10.9" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
 function cameraDevicePriority(device: MediaDeviceInfo) {
   const label = device.label.trim().toLowerCase();
 
@@ -186,6 +195,62 @@ function choosePreferredCameraDevice(devices: MediaDeviceInfo[], currentDeviceId
 
       return left.label.localeCompare(right.label, "es");
     })[0];
+}
+
+const defaultVisionOcrEditablePrompt = "Omite cabeceras repetidas, pies y números de página.";
+
+function resolveVisionPromptOverride(prompt: string): string | undefined {
+  const normalizedPrompt = prompt.trim();
+  if (!normalizedPrompt || normalizedPrompt === defaultVisionOcrEditablePrompt) {
+    return undefined;
+  }
+
+  return normalizedPrompt;
+}
+
+type OcrPromptEditorProps = {
+  disabled?: boolean;
+  helperText: string;
+  onChange: (value: string) => void;
+  onReset: () => void;
+  value: string;
+};
+
+function OcrPromptEditor({
+  disabled = false,
+  helperText,
+  onChange,
+  onReset,
+  value
+}: OcrPromptEditorProps) {
+  const hasCustomPrompt = value.trim() !== defaultVisionOcrEditablePrompt;
+
+  return (
+    <div className="ocr-prompt-editor-panel">
+      <div className="ocr-prompt-editor-header">
+        <p className="ocr-prompt-editor-title">Mensaje user del OCR con IA</p>
+        <button
+          className="secondary-button ocr-prompt-editor-reset"
+          disabled={disabled || !hasCustomPrompt}
+          onClick={onReset}
+          type="button"
+        >
+          Restablecer
+        </button>
+      </div>
+      <label className="ocr-prompt-editor-field">
+        <span>Contenido del mensaje user</span>
+        <textarea
+          disabled={disabled}
+          maxLength={4000}
+          onChange={(event) => onChange(event.target.value)}
+          rows={7}
+          value={value}
+        />
+      </label>
+      <p className="helper-text">{helperText}</p>
+    </div>
+  );
 }
 
 type ReviewNavigationItem =
@@ -635,6 +700,12 @@ export function BookBuilderPage() {
   const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
   const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("VISION");
+  const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
+  const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
+  const [reviewPromptOverride, setReviewPromptOverride] = useState(defaultVisionOcrEditablePrompt);
+  const [isCreatePromptEditorOpen, setIsCreatePromptEditorOpen] = useState(false);
+  const [isAppendPromptEditorOpen, setIsAppendPromptEditorOpen] = useState(false);
+  const [isReviewPromptEditorOpen, setIsReviewPromptEditorOpen] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [appendError, setAppendError] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
@@ -731,6 +802,29 @@ export function BookBuilderPage() {
       setAppendReferencePageInput(String(initialAppendReferencePage));
     }
   }, [initialAppendReferencePage]);
+
+  useEffect(() => {
+    if (createOcrMode !== "VISION") {
+      setIsCreatePromptEditorOpen(false);
+    }
+  }, [createOcrMode]);
+
+  useEffect(() => {
+    if (appendOcrMode !== "VISION") {
+      setIsAppendPromptEditorOpen(false);
+    }
+  }, [appendOcrMode]);
+
+  useEffect(() => {
+    if (reviewOcrMode !== "VISION") {
+      setIsReviewPromptEditorOpen(false);
+    }
+  }, [reviewOcrMode]);
+
+  useEffect(() => {
+    setReviewPromptOverride(defaultVisionOcrEditablePrompt);
+    setIsReviewPromptEditorOpen(false);
+  }, [reviewBookId, reviewPageNumber]);
 
   useEffect(() => {
     if (!isCreateCameraModalOpen || !createCameraStream || !createCameraVideoRef.current) {
@@ -1404,11 +1498,15 @@ export function BookBuilderPage() {
   function clearAppendSelection() {
     setSelectedAppendFiles([]);
     setAppendError(null);
+    setAppendPromptOverride(defaultVisionOcrEditablePrompt);
+    setIsAppendPromptEditorOpen(false);
   }
 
   function clearCreateSelection() {
     setSelectedCreateFiles([]);
     setCreateError(null);
+    setCreatePromptOverride(defaultVisionOcrEditablePrompt);
+    setIsCreatePromptEditorOpen(false);
   }
 
   function handleAppendReferencePageInputChange(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1522,8 +1620,14 @@ export function BookBuilderPage() {
         formData.append("images", file);
       }
 
-      const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, { ocrMode: createOcrMode }));
+      const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, {
+        ocrMode: createOcrMode,
+        ...(createOcrMode === "VISION" && resolveVisionPromptOverride(createPromptOverride)
+          ? { promptOverride: resolveVisionPromptOverride(createPromptOverride) }
+          : {})
+      }));
       await booksQuery.refetch();
+      clearCreateSelection();
       setReviewBookId(response.book.bookId);
       setReviewPageNumber(1);
       navigate(`/books/${response.book.bookId}`);
@@ -1576,6 +1680,9 @@ export function BookBuilderPage() {
       const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
         ...(appendAfterPageNumber !== undefined ? { afterPage: appendAfterPageNumber } : {}),
         ocrMode: appendOcrMode,
+        ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
+          ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
+          : {}),
         progressId
       });
       await booksQuery.refetch();
@@ -1676,13 +1783,14 @@ export function BookBuilderPage() {
     }
   }
 
-  async function handleRerunOcr(modeOverride?: ImageOcrMode) {
+  async function handleRerunOcr(modeOverride?: ImageOcrMode, promptOverride?: string) {
     if (!accessToken || !reviewBookId) {
       return;
     }
 
     const nextMode = modeOverride ?? reviewOcrMode;
     const hasPendingImageEdits = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
+    const normalizedPromptOverride = nextMode === "VISION" && promptOverride ? resolveVisionPromptOverride(promptOverride) : undefined;
 
     if (!confirmReviewTextReplacement("volver a ejecutar el OCR")) {
       return;
@@ -1700,7 +1808,12 @@ export function BookBuilderPage() {
       }
 
       setReviewOcrMode(nextMode);
-      await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, { ocrMode: nextMode }));
+      await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, {
+        ocrMode: nextMode,
+        ...(normalizedPromptOverride ? { promptOverride: normalizedPromptOverride } : {})
+      }));
+      setReviewPromptOverride(defaultVisionOcrEditablePrompt);
+      setIsReviewPromptEditorOpen(false);
       setReviewMessage(reviewPageAnnotationCount > 0
         ? "El OCR de la página se volvió a reconocer y se intentó conservar las anotaciones existentes."
         : "El OCR de la página se volvió a reconocer correctamente.");
@@ -2181,25 +2294,51 @@ export function BookBuilderPage() {
 
                   <div className="selected-book-banner append-ocr-banner">
                     <span>Modo OCR</span>
-                    <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR para crear el libro">
-                      <button
-                        aria-checked={createOcrMode === "VISION"}
-                        className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setCreateOcrMode("VISION")}
-                        role="radio"
-                        type="button"
-                      >
-                        Preciso con IA
-                      </button>
-                      <button
-                        aria-checked={createOcrMode === "LOCAL"}
-                        className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setCreateOcrMode("LOCAL")}
-                        role="radio"
-                        type="button"
-                      >
-                        Rápido local
-                      </button>
+                    <div className="ocr-prompt-trigger-anchor">
+                      <div className="ocr-prompt-trigger-group">
+                        <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR para crear el libro">
+                          <button
+                            aria-checked={createOcrMode === "VISION"}
+                            className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setCreateOcrMode("VISION")}
+                            role="radio"
+                            type="button"
+                          >
+                            Preciso con IA
+                          </button>
+                          <button
+                            aria-checked={createOcrMode === "LOCAL"}
+                            className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setCreateOcrMode("LOCAL")}
+                            role="radio"
+                            type="button"
+                          >
+                            Rápido local
+                          </button>
+                        </div>
+                        {createOcrMode === "VISION" ? (
+                          <button
+                            aria-expanded={isCreatePromptEditorOpen}
+                            aria-label="Editar prompt de Preciso con IA"
+                            className={isCreatePromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
+                            disabled={isCreating}
+                            onClick={() => setIsCreatePromptEditorOpen((current) => !current)}
+                            title="Editar prompt de Preciso con IA"
+                            type="button"
+                          >
+                            <PromptIcon />
+                          </button>
+                        ) : null}
+                      </div>
+                      {createOcrMode === "VISION" && isCreatePromptEditorOpen ? (
+                        <OcrPromptEditor
+                          disabled={isCreating}
+                          helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para crear este libro. Si lo restableces, vuelve al mensaje user por defecto."
+                          onChange={setCreatePromptOverride}
+                          onReset={() => setCreatePromptOverride(defaultVisionOcrEditablePrompt)}
+                          value={createPromptOverride}
+                        />
+                      ) : null}
                     </div>
                   </div>
 
@@ -2369,25 +2508,51 @@ export function BookBuilderPage() {
 
                   <div className="selected-book-banner append-ocr-banner">
                     <span>Modo OCR</span>
-                    <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
-                      <button
-                        aria-checked={appendOcrMode === "VISION"}
-                        className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setAppendOcrMode("VISION")}
-                        role="radio"
-                        type="button"
-                      >
-                        Preciso con IA
-                      </button>
-                      <button
-                        aria-checked={appendOcrMode === "LOCAL"}
-                        className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
-                        onClick={() => setAppendOcrMode("LOCAL")}
-                        role="radio"
-                        type="button"
-                      >
-                        Rápido local
-                      </button>
+                    <div className="ocr-prompt-trigger-anchor">
+                      <div className="ocr-prompt-trigger-group">
+                        <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
+                          <button
+                            aria-checked={appendOcrMode === "VISION"}
+                            className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setAppendOcrMode("VISION")}
+                            role="radio"
+                            type="button"
+                          >
+                            Preciso con IA
+                          </button>
+                          <button
+                            aria-checked={appendOcrMode === "LOCAL"}
+                            className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setAppendOcrMode("LOCAL")}
+                            role="radio"
+                            type="button"
+                          >
+                            Rápido local
+                          </button>
+                        </div>
+                        {appendOcrMode === "VISION" ? (
+                          <button
+                            aria-expanded={isAppendPromptEditorOpen}
+                            aria-label="Editar prompt de Preciso con IA"
+                            className={isAppendPromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
+                            disabled={isAppending}
+                            onClick={() => setIsAppendPromptEditorOpen((current) => !current)}
+                            title="Editar prompt de Preciso con IA"
+                            type="button"
+                          >
+                            <PromptIcon />
+                          </button>
+                        ) : null}
+                      </div>
+                      {appendOcrMode === "VISION" && isAppendPromptEditorOpen ? (
+                        <OcrPromptEditor
+                          disabled={isAppending}
+                          helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para añadir estas páginas. Si lo restableces, vuelve al mensaje user por defecto."
+                          onChange={setAppendPromptOverride}
+                          onReset={() => setAppendPromptOverride(defaultVisionOcrEditablePrompt)}
+                          value={appendPromptOverride}
+                        />
+                      ) : null}
                     </div>
                   </div>
 
@@ -2959,15 +3124,39 @@ export function BookBuilderPage() {
               {isReviewOcrMenuVisible ? (
                 <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" role="dialog">
                   <p className="review-floating-ocr-title">Volver a reconocer con</p>
-                  <button
-                    className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
-                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                    onClick={() => void handleRerunOcr("VISION")}
-                    type="button"
-                  >
-                    <strong>Preciso con IA</strong>
-                    <span>Mayor precisión para páginas difíciles.</span>
-                  </button>
+                  <div className="review-ocr-option-stack">
+                    <div className="review-ocr-option-row">
+                      <button
+                        className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => void handleRerunOcr("VISION", reviewPromptOverride)}
+                        type="button"
+                      >
+                        <strong>Preciso con IA</strong>
+                        <span>Mayor precisión para páginas difíciles.</span>
+                      </button>
+                      <button
+                        aria-expanded={isReviewPromptEditorOpen}
+                        aria-label="Editar prompt de Preciso con IA"
+                        className={isReviewPromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => setIsReviewPromptEditorOpen((current) => !current)}
+                        title="Editar prompt de Preciso con IA"
+                        type="button"
+                      >
+                        <PromptIcon />
+                      </button>
+                    </div>
+                    {isReviewPromptEditorOpen ? (
+                      <OcrPromptEditor
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para volver a reconocer esta página. Si lo restableces, vuelve al mensaje user por defecto."
+                        onChange={setReviewPromptOverride}
+                        onReset={() => setReviewPromptOverride(defaultVisionOcrEditablePrompt)}
+                        value={reviewPromptOverride}
+                      />
+                    ) : null}
+                  </div>
                   <button
                     className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
                     disabled={isSavingReview || !reviewBookId || isReviewCropMode}

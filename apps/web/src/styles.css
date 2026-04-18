@@ -3559,6 +3559,99 @@ textarea {
   opacity: 0.45;
 }
 
+.ocr-prompt-trigger-anchor {
+  display: grid;
+  gap: 0.65rem;
+  justify-items: end;
+}
+
+.ocr-prompt-trigger-group {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.ocr-prompt-toggle {
+  width: 2.65rem;
+  height: 2.65rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  background: rgba(255, 253, 247, 0.96);
+  color: var(--forest-700);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.ocr-prompt-toggle svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.ocr-prompt-toggle.active {
+  color: var(--forest-900);
+  border-color: rgba(169, 87, 37, 0.24);
+  background: linear-gradient(180deg, rgba(252, 241, 223, 0.9), rgba(255, 252, 247, 0.98));
+}
+
+.ocr-prompt-toggle:disabled {
+  opacity: 0.45;
+}
+
+.ocr-prompt-editor-panel {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.95rem 1rem;
+  border-radius: 18px;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  background: rgba(255, 253, 247, 0.88);
+  width: min(32rem, calc(100vw - 3rem));
+}
+
+.ocr-prompt-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.ocr-prompt-editor-title {
+  margin: 0;
+  font-family: "Constantia", "Georgia", serif;
+  font-size: 0.98rem;
+  color: var(--forest-900);
+}
+
+.ocr-prompt-editor-reset {
+  min-height: 2.2rem;
+  padding-inline: 0.8rem;
+}
+
+.ocr-prompt-editor-field {
+  display: grid;
+  gap: 0.45rem;
+  color: var(--forest-800);
+  font-weight: 600;
+}
+
+.ocr-prompt-editor-field textarea {
+  min-height: 7.5rem;
+  resize: vertical;
+}
+
+.review-ocr-option-stack {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.review-ocr-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: stretch;
+}
+
 .controls-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }

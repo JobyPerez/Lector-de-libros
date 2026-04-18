@@ -31,15 +31,22 @@ const importBookFieldsSchema = z.object({
   sourceType: z.enum(supportedBookSourceTypes).optional()
 });
 
+const ocrPromptOverrideSchema = z.preprocess(
+  (value) => typeof value === "string" && value.trim().length === 0 ? undefined : value,
+  z.string().trim().max(4000).optional()
+);
+
 const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
-  ocrMode: z.enum(supportedImageOcrModes).default("AUTO")
+  ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
+  promptOverride: ocrPromptOverrideSchema
 });
 
 const importImagesFieldsSchema = z.object({
-  ocrMode: z.enum(supportedImageOcrModes).default("AUTO")
+  ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
+  promptOverride: ocrPromptOverrideSchema
 });
 
 const importImagesParamsSchema = z.object({
@@ -86,7 +93,8 @@ const updateOcrPageSchema = z.object({
 });
 
 const rerunOcrPageSchema = z.object({
-  ocrMode: z.enum(supportedImageOcrModes).default("VISION")
+  ocrMode: z.enum(supportedImageOcrModes).default("VISION"),
+  promptOverride: ocrPromptOverrideSchema
 });
 
 const updateImageRotationSchema = z.object({
@@ -1352,6 +1360,7 @@ function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
 async function ocrImageFiles(
   files: UploadedBinaryFile[],
   ocrMode: ImageOcrMode,
+  promptOverride?: string,
   onProgress?: (progress: {
     completedFiles: number;
     currentFileIndex: number;
@@ -1382,7 +1391,10 @@ async function ocrImageFiles(
 
     while (true) {
       try {
-        ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, ocrMode);
+        ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, {
+          ocrMode,
+          ...(promptOverride ? { promptOverride } : {})
+        });
         break;
       } catch (error) {
         if (!isRateLimitOcrError(error) || rateLimitRetries >= maximumOcrRateLimitRetriesPerFile) {
@@ -2883,11 +2895,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const payload = imageBookFieldsSchema.parse({
       authorName: multipartForm.fields.authorName,
       ocrMode: multipartForm.fields.ocrMode,
+      promptOverride: multipartForm.fields.promptOverride,
       synopsis: multipartForm.fields.synopsis,
       title: multipartForm.fields.title
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode);
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.promptOverride);
     const connection = await getConnection();
     const bookId = randomUUID();
 
@@ -2975,7 +2988,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
     const payload = importImagesFieldsSchema.parse({
-      ocrMode: multipartForm.fields.ocrMode
+      ocrMode: multipartForm.fields.ocrMode,
+      promptOverride: multipartForm.fields.promptOverride
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const connection = await getConnection();
@@ -3010,6 +3024,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const processedPages = await ocrImageFiles(
         imageFiles,
         payload.ocrMode,
+        payload.promptOverride,
         (progress) => {
           if (!progressId) {
             return;
@@ -3764,8 +3779,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         sourceFile.contentBlob,
         sourceFile.fileName ?? `page-${params.pageNumber}.png`,
         sourceFile.mimeType,
-        payload.ocrMode,
-        page.sourceImageRotation
+        {
+          ocrMode: payload.ocrMode,
+          ...(payload.promptOverride ? { promptOverride: payload.promptOverride } : {}),
+          rotation: page.sourceImageRotation
+        }
       );
 
       await replaceBookPageParagraphs(connection, {
