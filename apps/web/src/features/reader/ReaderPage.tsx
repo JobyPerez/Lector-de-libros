@@ -738,6 +738,16 @@ function CloseIcon() {
   );
 }
 
+function ActionsMenuIcon() {
+  return (
+    <ReaderControlIcon>
+      <circle cx="6.5" cy="12" fill="currentColor" r="1.5" />
+      <circle cx="12" cy="12" fill="currentColor" r="1.5" />
+      <circle cx="17.5" cy="12" fill="currentColor" r="1.5" />
+    </ReaderControlIcon>
+  );
+}
+
 function EyeIcon() {
   return (
     <ReaderControlIcon>
@@ -1029,6 +1039,9 @@ export function ReaderPage() {
   const [bookmarkAnimationState, setBookmarkAnimationState] = useState<ReaderBookmarkAnimationState>(null);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [isFloatingHeaderActionsVisible, setIsFloatingHeaderActionsVisible] = useState(false);
+  const [isFloatingHeaderActionsExpanded, setIsFloatingHeaderActionsExpanded] = useState(false);
+  const [floatingHeaderDockStyle, setFloatingHeaderDockStyle] = useState<CSSProperties | null>(null);
   const [activeSearchTarget, setActiveSearchTarget] = useState<ActiveSearchTarget | null>(null);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
@@ -1063,6 +1076,9 @@ export function ReaderPage() {
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
+  const readerPanelRef = useRef<HTMLElement | null>(null);
+  const headerActionsRef = useRef<HTMLDivElement | null>(null);
+  const floatingHeaderActionsRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
   const selectionPopoverRef = useRef<HTMLDivElement | null>(null);
   const readerNotePopoverRef = useRef<HTMLDivElement | null>(null);
@@ -1115,6 +1131,78 @@ export function ReaderPage() {
       }
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    function updateFloatingHeaderActionsVisibility() {
+      const shouldFloat = window.innerWidth <= 860;
+      const panelRect = readerPanelRef.current?.getBoundingClientRect();
+      const viewportPadding = 12;
+      const panelInset = 10;
+
+      if (shouldFloat && panelRect) {
+        const nextTop = Math.max(viewportPadding, panelRect.top + panelInset);
+        const nextRight = Math.max(viewportPadding, window.innerWidth - panelRect.right + panelInset);
+        setFloatingHeaderDockStyle((current) => {
+          const top = `${nextTop}px`;
+          const right = `${nextRight}px`;
+          if (current?.top === top && current?.right === right) {
+            return current;
+          }
+
+          return { right, top };
+        });
+      } else {
+        setFloatingHeaderDockStyle(null);
+      }
+
+      setIsFloatingHeaderActionsVisible((current) => current !== shouldFloat ? shouldFloat : current);
+      if (!shouldFloat) {
+        setIsFloatingHeaderActionsExpanded(false);
+      }
+    }
+
+    updateFloatingHeaderActionsVisibility();
+    window.addEventListener("resize", updateFloatingHeaderActionsVisibility);
+    window.addEventListener("scroll", updateFloatingHeaderActionsVisibility, { passive: true });
+
+    return () => {
+      window.removeEventListener("resize", updateFloatingHeaderActionsVisibility);
+      window.removeEventListener("scroll", updateFloatingHeaderActionsVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isFloatingHeaderActionsExpanded || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const targetNode = event.target as Node;
+      if (floatingHeaderActionsRef.current?.contains(targetNode)) {
+        return;
+      }
+
+      setIsFloatingHeaderActionsExpanded(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsFloatingHeaderActionsExpanded(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isFloatingHeaderActionsExpanded]);
 
   const progressQuery = useQuery({
     enabled: Boolean(accessToken && bookId),
@@ -3778,60 +3866,114 @@ export function ReaderPage() {
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
   const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
 
+  function renderReaderHeaderActionButtons(buttonClassName: string, onAction?: () => void) {
+    const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
+      ? "danger-button reader-header-icon-button reader-header-floating-action-button"
+      : "danger-button reader-header-icon-button";
+    const bookmarkButtonClassName = isCurrentPageBookmarked
+      ? `${buttonClassName} active`
+      : buttonClassName;
+
+    return (
+      <>
+        <Link
+          aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          className={buttonClassName}
+          onClick={onAction}
+          title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          to={isReturningToGlobalSearch ? readerReturnTo : "/"}
+        >
+          {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
+        </Link>
+        <Link
+          aria-label="Buscar dentro del libro"
+          className={buttonClassName}
+          onClick={onAction}
+          state={{ returnTo: readerSearchReturnTo }}
+          title="Buscar dentro del libro"
+          to={readerSearchHref}
+        >
+          <SearchIcon />
+        </Link>
+        <button
+          aria-label={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
+          className={bookmarkButtonClassName}
+          data-bookmark-animation={bookmarkAnimationState ?? undefined}
+          disabled={!currentParagraphs.length}
+          onClick={() => {
+            onAction?.();
+            void handleToggleBookmark();
+          }}
+          title={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
+          type="button"
+        >
+          {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
+        </button>
+        {bookNotionUrl ? (
+          <a
+            aria-label="Abrir libro en Notion"
+            className={buttonClassName}
+            href={bookNotionUrl}
+            onClick={onAction}
+            rel="noreferrer noopener"
+            target="_blank"
+            title="Abrir libro en Notion"
+          >
+            <NotionIcon />
+          </a>
+        ) : null}
+        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+          <Link
+            aria-label="Añadir páginas"
+            className={buttonClassName}
+            onClick={onAction}
+            title="Añadir páginas"
+            to={appendPagesLink}
+          >
+            <AddPagesIcon />
+          </Link>
+        ) : null}
+        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+          <Link
+            aria-label="Editar OCR de esta página"
+            className={buttonClassName}
+            onClick={onAction}
+            state={{ returnTo: `/books/${bookId}?page=${currentPageNumber}` }}
+            title="Editar OCR de esta página"
+            to={reviewOcrLink}
+          >
+            <OriginalPageIcon />
+          </Link>
+        ) : null}
+        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+          <button
+            aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
+            className={deleteButtonClassName}
+            disabled={isDeletingPage}
+            onClick={() => {
+              onAction?.();
+              void handleDeleteCurrentPage();
+            }}
+            title={isDeletingPage ? "Borrando página..." : "Borrar página"}
+            type="button"
+          >
+            <DeletePageIcon />
+          </button>
+        ) : null}
+      </>
+    );
+  }
+
   return (
     <div className="page-grid reader-layout reader-floating-layout">
-      <section className="panel wide-panel">
+      <section className="panel wide-panel" ref={readerPanelRef}>
         <div className="panel-header">
-          <div>
+          <div className="reader-header-copy">
             <p className="eyebrow">Lectura</p>
             <h2>{bookTitle}</h2>
           </div>
-          <div className="reader-header-actions">
-            <Link
-              aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
-              className="secondary-button link-button reader-header-icon-button"
-              title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
-              to={isReturningToGlobalSearch ? readerReturnTo : "/"}
-            >
-              {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
-            </Link>
-            <Link
-              aria-label="Buscar dentro del libro"
-              className="secondary-button link-button reader-header-icon-button"
-              state={{ returnTo: readerSearchReturnTo }}
-              title="Buscar dentro del libro"
-              to={readerSearchHref}
-            >
-              <SearchIcon />
-            </Link>
-            {pageQuery.data?.book.sourceType === "IMAGES" ? (
-              <Link aria-label="Añadir páginas" className="secondary-button link-button reader-header-icon-button" title="Añadir páginas" to={appendPagesLink}>
-                <AddPagesIcon />
-              </Link>
-            ) : null}
-            {pageQuery.data?.book.sourceType === "IMAGES" ? (
-              <Link
-                aria-label="Editar OCR de esta página"
-                className="secondary-button link-button reader-header-icon-button"
-                state={{ returnTo: `/books/${bookId}?page=${currentPageNumber}` }}
-                title="Editar OCR de esta página"
-                to={reviewOcrLink}
-              >
-                <OriginalPageIcon />
-              </Link>
-            ) : null}
-            {pageQuery.data?.book.sourceType === "IMAGES" ? (
-              <button
-                aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
-                className="danger-button reader-header-icon-button"
-                disabled={isDeletingPage}
-                onClick={() => void handleDeleteCurrentPage()}
-                title={isDeletingPage ? "Borrando página..." : "Borrar página"}
-                type="button"
-              >
-                <DeletePageIcon />
-              </button>
-            ) : null}
+          <div className="reader-header-actions" ref={headerActionsRef}>
+            {renderReaderHeaderActionButtons("secondary-button link-button reader-header-icon-button")}
           </div>
         </div>
 
@@ -3864,6 +4006,31 @@ export function ReaderPage() {
           </div>
         </div>
       </section>
+
+      {isFloatingHeaderActionsVisible ? (
+        <div
+          className={isFloatingHeaderActionsExpanded ? "reader-header-floating-dock open" : "reader-header-floating-dock"}
+          ref={floatingHeaderActionsRef}
+          style={floatingHeaderDockStyle ?? undefined}
+        >
+          <div className={isFloatingHeaderActionsExpanded ? "reader-header-floating-dock-panel open" : "reader-header-floating-dock-panel"}>
+            {renderReaderHeaderActionButtons(
+              "secondary-button link-button reader-header-icon-button reader-header-floating-action-button",
+              () => setIsFloatingHeaderActionsExpanded(false)
+            )}
+          </div>
+          <button
+            aria-expanded={isFloatingHeaderActionsExpanded}
+            aria-label={isFloatingHeaderActionsExpanded ? "Cerrar acciones del encabezado" : "Abrir acciones del encabezado"}
+            className="reader-header-floating-toggle"
+            onClick={() => setIsFloatingHeaderActionsExpanded((current) => !current)}
+            title={isFloatingHeaderActionsExpanded ? "Cerrar acciones" : "Abrir acciones"}
+            type="button"
+          >
+            {isFloatingHeaderActionsExpanded ? <CloseIcon /> : <ActionsMenuIcon />}
+          </button>
+        </div>
+      ) : null}
 
       {selectionDraft ? (
         <div
@@ -4049,17 +4216,6 @@ export function ReaderPage() {
           </form>
           <span>{readingPercentage.toFixed(1)}%</span>
         </div>
-        <button
-          aria-label={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
-          className={isCurrentPageBookmarked ? "reader-float-button active" : "reader-float-button"}
-          data-bookmark-animation={bookmarkAnimationState ?? undefined}
-          disabled={!currentParagraphs.length}
-          onClick={() => void handleToggleBookmark()}
-          title={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
-          type="button"
-        >
-          {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
-        </button>
         <ReaderNavigationPopover
           buttonLabel="Abrir panel de índice, marcadores y notas"
           closeLabel="Cerrar panel de navegación"
@@ -4171,18 +4327,6 @@ export function ReaderPage() {
         >
           <PageNextIcon />
         </button>
-        {bookNotionUrl ? (
-          <a
-            aria-label="Abrir libro en Notion"
-            className="reader-float-button"
-            href={bookNotionUrl}
-            rel="noreferrer noopener"
-            target="_blank"
-            title="Abrir libro en Notion"
-          >
-            <NotionIcon />
-          </a>
-        ) : null}
       </div>
     </div>
   );
