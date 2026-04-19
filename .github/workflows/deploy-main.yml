@@ -1,13 +1,18 @@
-name: Deploy Main
+name: Deploy Branch
 
 "on":
   push:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Rama a desplegar en el servidor
+        required: true
+        default: main
 
 concurrency:
-  group: deploy-main
+  group: deploy-server
   cancel-in-progress: true
 
 jobs:
@@ -19,6 +24,7 @@ jobs:
     timeout-minutes: 20
     env:
       DEPLOY_PATH: /home/ubuntu/DEV-JPG/Lector-de-libros
+      TARGET_BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
 
     steps:
       - name: Validate deployment path
@@ -38,9 +44,9 @@ jobs:
       - name: Update repository
         working-directory: ${{ env.DEPLOY_PATH }}
         run: |
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
+          git fetch origin "$TARGET_BRANCH"
+          git checkout "$TARGET_BRANCH"
+          git pull --ff-only origin "$TARGET_BRANCH"
 
       - name: Install dependencies
         working-directory: ${{ env.DEPLOY_PATH }}
