@@ -200,7 +200,7 @@ function ProtectedShell() {
   const isHydrated = useAuthStore((state) => state.isHydrated);
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
-  const appVersionLabel = `v${__APP_VERSION__}`;
+  const appVersionLabel = `v${__APP_VERSION__}${__APP_BRANCH__ && __APP_BRANCH__ !== "main" ? ` (${__APP_BRANCH__})` : ""}`;
 
   useEffect(() => {
     if (!accessToken || user) {
