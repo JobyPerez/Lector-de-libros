@@ -9,6 +9,17 @@ import { VitePWA } from "vite-plugin-pwa";
 const workspaceRoot = resolve(__dirname, "../..");
 const rootPackageJsonPath = resolve(workspaceRoot, "package.json");
 
+function resolveGitBranch() {
+  try {
+    return execSync("git rev-parse --abbrev-ref HEAD", {
+      cwd: workspaceRoot,
+      encoding: "utf8"
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function resolveAppVersion() {
   try {
     const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, "utf8")) as { version?: string };
@@ -29,11 +40,13 @@ export default defineConfig(({ mode }) => {
   const environment = loadEnv(mode, workspaceRoot, "");
   const appBasePath = environment.VITE_APP_BASE_PATH || "/conejolector/";
   const appVersion = resolveAppVersion();
+  const appBranch = resolveGitBranch();
 
   return {
     base: appBasePath,
     define: {
-      __APP_VERSION__: JSON.stringify(appVersion)
+      __APP_VERSION__: JSON.stringify(appVersion),
+      __APP_BRANCH__: JSON.stringify(appBranch)
     },
     envDir: workspaceRoot,
     plugins: [
