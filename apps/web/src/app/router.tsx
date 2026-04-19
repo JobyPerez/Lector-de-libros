@@ -200,6 +200,7 @@ function ProtectedShell() {
   const isHydrated = useAuthStore((state) => state.isHydrated);
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
+  const appVersionLabel = `v${__APP_VERSION__}`;
 
   useEffect(() => {
     if (!accessToken || user) {
@@ -241,7 +242,9 @@ function ProtectedShell() {
         <div className="brand-lockup">
           <RabbitMark className="brand-mark" title="El conejo lector" />
           <div className="brand-copy">
-            <p className="eyebrow">El conejo lector</p>
+            <p className="eyebrow">
+              El conejo lector <span className="app-version">{appVersionLabel}</span>
+            </p>
             <h1>Biblioteca contada</h1>
           </div>
         </div>
