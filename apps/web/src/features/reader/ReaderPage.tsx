@@ -132,6 +132,7 @@ type QueuedAudioBlock = {
 };
 
 type ActiveAudioBlock = {
+  activeParagraphIndex: number;
   paragraphCount: number;
   paragraphTimings: TimedAudioBlockParagraph[];
   startSequenceNumber: number;
@@ -2589,15 +2590,29 @@ export function ReaderPage() {
     ) ?? null;
   }
 
+  function findActiveAudioBlockParagraphIndex(sequenceNumber: number) {
+    return activeAudioBlockRef.current?.paragraphTimings.findIndex(
+      (paragraphTiming) => paragraphTiming.sequenceNumber === sequenceNumber
+    ) ?? -1;
+  }
+
   async function jumpWithinActiveAudioBlock(paragraph: ParagraphContent) {
+    const activeAudioBlock = activeAudioBlockRef.current;
     const audioElement = audioRef.current;
-    const paragraphTiming = findActiveAudioBlockParagraph(paragraph.sequenceNumber);
-    if (!audioElement || !paragraphTiming) {
+    const paragraphIndex = findActiveAudioBlockParagraphIndex(paragraph.sequenceNumber);
+    const paragraphTiming = paragraphIndex >= 0
+      ? activeAudioBlock?.paragraphTimings[paragraphIndex] ?? null
+      : null;
+    if (!audioElement || !activeAudioBlock || !paragraphTiming || paragraphIndex < 0) {
       return false;
     }
 
     const shouldKeepPlaying = !audioElement.paused;
     audioElement.currentTime = paragraphTiming.startMs / 1000;
+    activeAudioBlockRef.current = {
+      ...activeAudioBlock,
+      activeParagraphIndex: paragraphIndex
+    };
     syncReaderLocationFromBlockParagraph(paragraphTiming);
 
     if (shouldKeepPlaying) {
@@ -2996,15 +3011,18 @@ export function ReaderPage() {
     }
 
     const paragraphTimings = buildAudioBlockTimings(audioBlock.paragraphs, audioElement.duration * 1000);
-    const targetParagraphTiming = paragraphTimings.find(
-      (timing) => timing.sequenceNumber === targetParagraph.sequenceNumber
-    ) ?? paragraphTimings[0];
+    const targetParagraphIndex = Math.max(
+      paragraphTimings.findIndex((timing) => timing.sequenceNumber === targetParagraph.sequenceNumber),
+      0
+    );
+    const targetParagraphTiming = paragraphTimings[targetParagraphIndex] ?? null;
 
     if (!targetParagraphTiming) {
       throw new Error("No se pudo calcular la posición del bloque de audio.");
     }
 
     activeAudioBlockRef.current = {
+      activeParagraphIndex: targetParagraphIndex,
       paragraphCount: audioBlock.paragraphs.length,
       paragraphTimings,
       startSequenceNumber: audioBlock.startSequenceNumber,
@@ -3049,14 +3067,49 @@ export function ReaderPage() {
         return;
       }
 
-      const activeParagraphTiming = findParagraphTimingForTime(activeAudioBlock.paragraphTimings, audioElement.currentTime * 1000);
-      if (activeParagraphTiming) {
-        syncReaderLocationFromBlockParagraph(activeParagraphTiming);
+      const currentTimeMs = audioElement.currentTime * 1000;
+      const paragraphTimings = activeAudioBlock.paragraphTimings;
+      if (paragraphTimings.length === 0) {
+        return;
+      }
 
-        const remainingMs = Math.max(activeParagraphTiming.endMs - (audioElement.currentTime * 1000), 0);
-        if (remainingMs <= AUDIO_BLOCK_HANDOFF_PRIME_THRESHOLD_MS) {
-          primeNextBlockHandoff();
+      let nextParagraphIndex = Math.min(
+        Math.max(activeAudioBlock.activeParagraphIndex, 0),
+        paragraphTimings.length - 1
+      );
+      let activeParagraphTiming = paragraphTimings[nextParagraphIndex] ?? null;
+      if (!activeParagraphTiming) {
+        return;
+      }
+
+      while (nextParagraphIndex > 0 && currentTimeMs < activeParagraphTiming.startMs) {
+        nextParagraphIndex -= 1;
+        activeParagraphTiming = paragraphTimings[nextParagraphIndex] ?? null;
+        if (!activeParagraphTiming) {
+          return;
         }
+      }
+
+      while (nextParagraphIndex < paragraphTimings.length - 1 && currentTimeMs >= activeParagraphTiming.endMs) {
+        nextParagraphIndex += 1;
+        activeParagraphTiming = paragraphTimings[nextParagraphIndex] ?? null;
+        if (!activeParagraphTiming) {
+          return;
+        }
+      }
+
+      if (nextParagraphIndex !== activeAudioBlock.activeParagraphIndex) {
+        activeAudioBlockRef.current = {
+          ...activeAudioBlock,
+          activeParagraphIndex: nextParagraphIndex
+        };
+      }
+
+      syncReaderLocationFromBlockParagraph(activeParagraphTiming);
+
+      const remainingMs = Math.max(activeParagraphTiming.endMs - currentTimeMs, 0);
+      if (remainingMs <= AUDIO_BLOCK_HANDOFF_PRIME_THRESHOLD_MS) {
+        primeNextBlockHandoff();
       }
     };
     audioElement.onended = () => {
