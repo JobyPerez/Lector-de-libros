@@ -26,6 +26,12 @@ jobs:
           test -d "$DEPLOY_PATH"
           test -d "$DEPLOY_PATH/.git"
 
+      - name: Validate runtime dependencies
+        run: |
+          command -v git
+          command -v npm
+          command -v pm2
+
       - name: Mark repository as safe
         run: git config --global --add safe.directory "$DEPLOY_PATH"
 
