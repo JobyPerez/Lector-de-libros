@@ -199,6 +199,13 @@ textarea {
   margin-bottom: 0.35rem;
 }
 
+.app-version {
+  display: inline-block;
+  margin-left: 0.45rem;
+  color: #264f3d;
+  letter-spacing: 0.08em;
+}
+
 .page-label,
 .paragraph-label,
 .book-spine {

@@ -17,6 +17,7 @@ import { UsersAdminPage } from "../features/users/UsersAdminPage";
 
 const queryClient = new QueryClient();
 const routerBaseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
+const appVersionLabel = `v${__APP_VERSION__}`;
 const routeTransitionDurationMs = 320;
 
 type RouteTransitionDirection = "back" | "forward";
@@ -241,7 +242,9 @@ function ProtectedShell() {
         <div className="brand-lockup">
           <RabbitMark className="brand-mark" title="El conejo lector" />
           <div className="brand-copy">
-            <p className="eyebrow">El conejo lector</p>
+            <p className="eyebrow">
+              El conejo lector <span className="app-version">{appVersionLabel}</span>
+            </p>
             <h1>Biblioteca contada</h1>
           </div>
         </div>

@@ -1,3 +1,5 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import react from "@vitejs/plugin-react";
@@ -5,13 +7,35 @@ import { defineConfig, loadEnv } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
 const workspaceRoot = resolve(__dirname, "../..");
+const rootPackageJsonPath = resolve(workspaceRoot, "package.json");
+
+function resolveAppVersion() {
+  const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, "utf8")) as { version?: string };
+  const baseVersion = rootPackageJson.version ?? "0.1.0";
+  const [major = "0", minor = "1"] = baseVersion.split(".");
+
+  try {
+    const commitCount = execSync("git rev-list --count HEAD", {
+      cwd: workspaceRoot,
+      encoding: "utf8"
+    }).trim();
+
+    return `${major}.${minor}.${commitCount}`;
+  } catch {
+    return baseVersion;
+  }
+}
 
 export default defineConfig(({ mode }) => {
   const environment = loadEnv(mode, workspaceRoot, "");
   const appBasePath = environment.VITE_APP_BASE_PATH || "/conejolector/";
+  const appVersion = resolveAppVersion();
 
   return {
     base: appBasePath,
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     envDir: workspaceRoot,
     plugins: [
       react(),
