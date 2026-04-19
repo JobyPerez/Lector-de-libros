@@ -4330,7 +4330,7 @@ export function ReaderPage() {
               setEditingNavigationNoteColor(null);
               setEditingNavigationNoteText("");
             }}
-            onDeleteBookmark={(bookmarkId) => void handleDeleteSavedBookmark(bookmarkId)}
+            onDeleteBookmark={(bookmarkId) => handleDeleteSavedBookmark(bookmarkId)}
             onDeleteHighlight={(highlightId) => void handleDeleteSavedHighlight(highlightId)}
             onDeleteNote={(noteId) => void handleDeleteSavedNote(noteId)}
             onEditingHighlightTextChange={setEditingNavigationHighlightText}
