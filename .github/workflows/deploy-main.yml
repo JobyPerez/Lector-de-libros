@@ -1,0 +1,49 @@
+name: Deploy Main
+
+"on":
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and restart API
+    runs-on:
+      - self-hosted
+      - linux
+    timeout-minutes: 20
+    env:
+      DEPLOY_PATH: /home/ubuntu/DEV-JPG/Lector-de-libros
+
+    steps:
+      - name: Validate deployment path
+        run: |
+          test -d "$DEPLOY_PATH"
+          test -d "$DEPLOY_PATH/.git"
+
+      - name: Mark repository as safe
+        run: git config --global --add safe.directory "$DEPLOY_PATH"
+
+      - name: Update repository
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+
+      - name: Install dependencies
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: npm ci
+
+      - name: Build project
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: npm run build
+
+      - name: Restart API
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: pm2 restart conejolector-api
