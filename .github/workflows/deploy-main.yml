@@ -6,7 +6,7 @@ name: Deploy Branch
       - main
   workflow_dispatch:
     inputs:
-      branch:
+      target_branch:
         description: Rama a desplegar en el servidor
         required: true
         default: main
@@ -44,10 +44,17 @@ jobs:
         id: target_branch
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "branch=${{ github.event.inputs.branch }}" >> "$GITHUB_OUTPUT"
+            echo "branch=${{ github.event.inputs.target_branch }}" >> "$GITHUB_OUTPUT"
           else
             echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Log workflow ref and target branch
+        env:
+          TARGET_BRANCH: ${{ steps.target_branch.outputs.branch }}
+        run: |
+          echo "Workflow ref: ${{ github.ref_name }}"
+          echo "Target deploy branch: $TARGET_BRANCH"
 
       - name: Validate target branch exists on origin
         working-directory: ${{ env.DEPLOY_PATH }}

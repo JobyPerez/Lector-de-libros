@@ -5,7 +5,7 @@ Este repositorio ya incluye el workflow [.github/workflows/deploy-main.yml](../.
 Comportamiento actual del workflow:
 
 - Hace despliegue automático cuando hay push a main.
-- Permite despliegue manual de cualquier rama usando workflow_dispatch y el input branch.
+- Permite despliegue manual de cualquier rama usando workflow_dispatch y el input target_branch.
 - Si quieres despliegue automático de otra rama concreta, debes añadir esa rama explícitamente en la sección push.branches del workflow.
 
 ## Requisitos
@@ -72,7 +72,7 @@ sudo ./svc.sh status
 
 ## Desplegar una rama concreta
 
-Si quieres desplegar una rama concreta sin tocar el YAML, entra a Actions, abre el workflow Deploy Branch, pulsa Run workflow y escribe el nombre exacto de la rama en el campo branch.
+Si quieres desplegar una rama concreta sin tocar el YAML, entra a Actions, abre el workflow Deploy Branch, pulsa Run workflow y escribe el nombre exacto de la rama en el campo target_branch.
 
 Ejemplos válidos:
 
