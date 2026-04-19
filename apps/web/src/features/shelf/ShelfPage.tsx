@@ -594,6 +594,12 @@ export function ShelfPage() {
                     <dt>Párrafos</dt>
                     <dd>{book.totalParagraphs}</dd>
                   </div>
+                  {book.lastOpenedAt ? (
+                    <div>
+                      <dt>Última lectura</dt>
+                      <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
+                    </div>
+                  ) : null}
                 </dl>
               </Link>
               <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
