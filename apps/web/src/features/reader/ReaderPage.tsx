@@ -438,10 +438,37 @@ function buildAudioBlockTimings(paragraphs: ReaderAudioBlockParagraph[], duratio
     return [];
   }
 
-  const safeDurationMs = Number.isFinite(durationMs) && durationMs > 0
-    ? durationMs
-    : AUDIO_BLOCK_FALLBACK_DURATION_MS;
-  const paragraphWeights = paragraphs.map((paragraph) => Math.max(paragraph.textLength, 48));
+  const paragraphDurationWeights = paragraphs.map((paragraph) => {
+    const paragraphDurationMs = typeof paragraph.durationMs === "number" && Number.isFinite(paragraph.durationMs)
+      ? paragraph.durationMs
+      : 0;
+
+    return paragraphDurationMs > 0 ? paragraphDurationMs : 0;
+  });
+  const hasDurationWeights = paragraphDurationWeights.every((weight) => weight > 0);
+  const knownDurationMs = hasDurationWeights
+    ? paragraphDurationWeights.reduce((sum, weight) => sum + weight, 0)
+    : 0;
+  const safeDurationMs = hasDurationWeights
+    ? knownDurationMs
+    : Number.isFinite(durationMs) && durationMs > 0
+      ? durationMs
+      : AUDIO_BLOCK_FALLBACK_DURATION_MS;
+  const paragraphWeights = paragraphs.map((paragraph, index) => {
+    if (hasDurationWeights) {
+      return paragraphDurationWeights[index] ?? 0;
+    }
+
+    const audioByteLength = typeof paragraph.audioByteLength === "number" && Number.isFinite(paragraph.audioByteLength)
+      ? paragraph.audioByteLength
+      : 0;
+
+    if (audioByteLength > 0) {
+      return Math.max(audioByteLength, 256);
+    }
+
+    return Math.max(paragraph.textLength, 48);
+  });
   const totalWeight = paragraphWeights.reduce((sum, weight) => sum + weight, 0);
   let cursorMs = 0;
 

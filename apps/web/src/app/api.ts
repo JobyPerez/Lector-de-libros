@@ -313,6 +313,8 @@ export type ReaderHighlight = {
 };
 
 export type ReaderAudioBlockParagraph = {
+  audioByteLength?: number;
+  durationMs?: number;
   pageNumber: number;
   paragraphId: string;
   paragraphNumber: number;

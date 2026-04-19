@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 import type { FastifyPluginAsync } from "fastify";
 import oracledb from "oracledb";
@@ -41,6 +46,7 @@ const DEEPGRAM_TTS_MAX_CHUNK_LENGTH = 650;
 const DEEPGRAM_TTS_REQUEST_TIMEOUT_MS = 30_000;
 const DEEPGRAM_TTS_BASE_RETRY_DELAY_MS = 300;
 const DEEPGRAM_TTS_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const execFileAsync = promisify(execFile);
 
 const ttsBlockRequestSchema = z.object({
   paragraphCount: z.coerce.number().int().min(1).max(MAX_TTS_BLOCK_PARAGRAPH_COUNT).default(DEFAULT_TTS_BLOCK_PARAGRAPH_COUNT),
@@ -111,6 +117,53 @@ function delay(durationMs: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, durationMs);
   });
+}
+
+function resolveAudioExtension(contentType: string) {
+  switch (contentType) {
+    case "audio/mpeg":
+    case "audio/mp3":
+      return "mp3";
+    case "audio/wav":
+    case "audio/x-wav":
+    case "audio/wave":
+      return "wav";
+    case "audio/ogg":
+      return "ogg";
+    case "audio/webm":
+      return "webm";
+    default:
+      return "bin";
+  }
+}
+
+async function probeAudioDurationMs(audioBuffer: Buffer, contentType: string) {
+  const extension = resolveAudioExtension(contentType);
+  const tempFilePath = join(tmpdir(), `conejolector-tts-${randomUUID()}.${extension}`);
+
+  try {
+    await writeFile(tempFilePath, audioBuffer);
+    const { stdout } = await execFileAsync("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=noprint_wrappers=1:nokey=1",
+      tempFilePath
+    ]);
+    const durationSeconds = Number.parseFloat(stdout.trim());
+
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+      return null;
+    }
+
+    return Math.round(durationSeconds * 1000);
+  } catch {
+    return null;
+  } finally {
+    await unlink(tempFilePath).catch(() => undefined);
+  }
 }
 
 function splitLongTextForDeepgram(text: string): string[] {
@@ -825,13 +878,19 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         await connection.commit();
       }
 
+      const paragraphDurationMs = await Promise.all(
+        resolvedParagraphs.map(({ audioBuffer, contentType }) => probeAudioDurationMs(audioBuffer, contentType))
+      );
+
       return reply
         .header("Content-Type", contentType ?? "audio/mpeg")
         .header("Cache-Control", "private, max-age=3600")
         .header(
           "X-Reader-Tts-Paragraphs",
           encodeHeaderPayload(
-            resolvedParagraphs.map(({ paragraph }) => ({
+            resolvedParagraphs.map(({ audioBuffer, paragraph }, index) => ({
+              audioByteLength: audioBuffer.length,
+              durationMs: paragraphDurationMs[index] ?? undefined,
               pageNumber: paragraph.pageNumber,
               paragraphId: paragraph.paragraphId,
               paragraphNumber: paragraph.paragraphNumber,
