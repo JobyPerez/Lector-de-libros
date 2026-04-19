@@ -229,6 +229,7 @@ export type BookSummary = {
   authorName: string | null;
   bookId: string;
   createdAt?: string;
+  lastOpenedAt?: string | null;
   notionBookUrl?: string | null;
   synopsis?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";

@@ -2418,20 +2418,22 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const result = await connection.execute(
         `
           SELECT
-            book_id AS "bookId",
-            title AS "title",
-            author_name AS "authorName",
-            notion_book_url AS "notionBookUrl",
-            synopsis AS "synopsis",
-            source_type AS "sourceType",
-            status AS "status",
-            total_pages AS "totalPages",
-            total_paragraphs AS "totalParagraphs",
-            created_at AS "createdAt",
-            updated_at AS "updatedAt"
-          FROM books
-          WHERE owner_user_id = :ownerUserId
-          ORDER BY updated_at DESC, created_at DESC
+            b.book_id AS "bookId",
+            b.title AS "title",
+            b.author_name AS "authorName",
+            b.notion_book_url AS "notionBookUrl",
+            b.synopsis AS "synopsis",
+            b.source_type AS "sourceType",
+            b.status AS "status",
+            b.total_pages AS "totalPages",
+            b.total_paragraphs AS "totalParagraphs",
+            b.created_at AS "createdAt",
+            b.updated_at AS "updatedAt",
+            p.last_opened_at AS "lastOpenedAt"
+          FROM books b
+          LEFT JOIN user_book_progress p ON p.book_id = b.book_id AND p.user_id = :ownerUserId
+          WHERE b.owner_user_id = :ownerUserId
+          ORDER BY p.last_opened_at DESC NULLS LAST, b.created_at DESC
         `,
         {
           ownerUserId: request.currentUser.userId
