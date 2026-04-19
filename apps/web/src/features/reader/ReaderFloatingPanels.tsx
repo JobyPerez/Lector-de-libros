@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref } from "react";
+import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useState } from "react";
 
 import type { BookOutlineSource } from "../../app/api";
 import { getOutlineSourceMeta } from "../../app/outline-source";
@@ -145,7 +145,7 @@ type NavigationPanelContentProps = {
   onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;
   onCancelNoteEditing: () => void;
-  onDeleteBookmark: (bookmarkId: string) => void;
+  onDeleteBookmark: (bookmarkId: string) => Promise<void>;
   onDeleteHighlight: (highlightId: string) => void;
   onDeleteNote: (noteId: string) => void;
   onEditingNoteColorChange: (value: ReaderHighlightColor) => void;
@@ -503,6 +503,20 @@ export function ReaderNavigationPanelContent({
 }: NavigationPanelContentProps) {
   const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
   const tocItemCount = items.filter((item) => item.type === "toc").length;
+  const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
+
+  async function handleDeleteBookmark(bookmarkId: string) {
+    setDeletingBookmarkIds((prev) => new Set(prev).add(bookmarkId));
+    try {
+      await onDeleteBookmark(bookmarkId);
+    } finally {
+      setDeletingBookmarkIds((prev) => {
+        const next = new Set(prev);
+        next.delete(bookmarkId);
+        return next;
+      });
+    }
+  }
 
   return (
     <section className="reader-navigation-section">
@@ -552,8 +566,9 @@ export function ReaderNavigationPanelContent({
             }
 
             if (item.type === "bookmark") {
+              const isDeleting = deletingBookmarkIds.has(item.bookmarkId);
               return (
-                <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
+                <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} data-deleting={isDeleting ? "" : undefined} key={item.key}>
                   <button
                     className="reader-navigation-item reader-navigation-item-bookmark"
                     onClick={() => onSelectBookmark(item)}
@@ -574,11 +589,12 @@ export function ReaderNavigationPanelContent({
                     <button
                       aria-label="Borrar marcador"
                       className="reader-note-delete"
-                      onClick={() => onDeleteBookmark(item.bookmarkId)}
+                      disabled={isDeleting}
+                      onClick={() => void handleDeleteBookmark(item.bookmarkId)}
                       title="Borrar marcador"
                       type="button"
                     >
-                      <DeletePageIcon />
+                      {isDeleting ? <span className="reader-bookmark-delete-spinner" /> : <DeletePageIcon />}
                     </button>
                   </div>
                 </article>

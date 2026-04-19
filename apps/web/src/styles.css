@@ -2357,7 +2357,9 @@ textarea {
   .book-card-removing-dot,
   .route-transition-screen,
   .route-scene,
-  .screen-scene {
+  .screen-scene,
+  .reader-navigation-item-bookmark-card[data-deleting],
+  .reader-bookmark-delete-spinner {
     animation: none !important;
     transition: none;
     transform: none !important;
@@ -3377,6 +3379,32 @@ textarea {
 .reader-note-delete svg {
   width: 0.95rem;
   height: 0.95rem;
+}
+
+.reader-navigation-item-bookmark-card[data-deleting] {
+  opacity: 0.55;
+  filter: saturate(0.6);
+  pointer-events: none;
+  animation: reader-bookmark-card-deleting 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes reader-bookmark-card-deleting {
+  from { opacity: 0.55; }
+  to { opacity: 0.35; }
+}
+
+.reader-bookmark-delete-spinner {
+  display: inline-block;
+  width: 0.95rem;
+  height: 0.95rem;
+  border: 2px solid rgba(180, 55, 44, 0.25);
+  border-top-color: var(--danger);
+  border-radius: 50%;
+  animation: reader-bookmark-delete-spin 0.7s linear infinite;
+}
+
+@keyframes reader-bookmark-delete-spin {
+  to { transform: rotate(360deg); }
 }
 
 .reader-note-composer {
