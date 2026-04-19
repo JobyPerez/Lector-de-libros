@@ -10,11 +10,10 @@ const workspaceRoot = resolve(__dirname, "../..");
 const rootPackageJsonPath = resolve(workspaceRoot, "package.json");
 
 function resolveAppVersion() {
-  const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, "utf8")) as { version?: string };
-  const baseVersion = rootPackageJson.version ?? "0.1.0";
-  const [major = "0", minor = "1"] = baseVersion.split(".");
-
   try {
+    const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, "utf8")) as { version?: string };
+    const baseVersion = rootPackageJson.version ?? "0.1.0";
+    const [major = "0", minor = "1"] = baseVersion.split(".");
     const commitCount = execSync("git rev-list --count HEAD", {
       cwd: workspaceRoot,
       encoding: "utf8"
@@ -22,7 +21,7 @@ function resolveAppVersion() {
 
     return `${major}.${minor}.${commitCount}`;
   } catch {
-    return baseVersion;
+    return "0.1.0";
   }
 }
 

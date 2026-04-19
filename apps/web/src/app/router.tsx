@@ -17,7 +17,6 @@ import { UsersAdminPage } from "../features/users/UsersAdminPage";
 
 const queryClient = new QueryClient();
 const routerBaseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
-const appVersionLabel = `v${__APP_VERSION__}`;
 const routeTransitionDurationMs = 320;
 
 type RouteTransitionDirection = "back" | "forward";
@@ -201,6 +200,7 @@ function ProtectedShell() {
   const isHydrated = useAuthStore((state) => state.isHydrated);
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
+  const appVersionLabel = `v${__APP_VERSION__}`;
 
   useEffect(() => {
     if (!accessToken || user) {
