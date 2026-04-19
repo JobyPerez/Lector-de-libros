@@ -5,6 +5,11 @@ name: Deploy Branch
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Rama de origin a desplegar en el servidor
+        required: true
+        default: main
 
 concurrency:
   group: deploy-server
@@ -35,9 +40,18 @@ jobs:
       - name: Mark repository as safe
         run: git config --global --add safe.directory "$DEPLOY_PATH"
 
+      - name: Resolve target branch
+        id: target_branch
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "branch=${{ github.event.inputs.target_branch }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log workflow ref and target branch
         env:
-          TARGET_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ steps.target_branch.outputs.branch }}
         run: |
           echo "Workflow ref: ${{ github.ref_name }}"
           echo "Target deploy branch: $TARGET_BRANCH"
@@ -45,13 +59,13 @@ jobs:
       - name: Validate target branch exists on origin
         working-directory: ${{ env.DEPLOY_PATH }}
         env:
-          TARGET_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ steps.target_branch.outputs.branch }}
         run: git ls-remote --exit-code --heads origin "$TARGET_BRANCH"
 
       - name: Update repository
         working-directory: ${{ env.DEPLOY_PATH }}
         env:
-          TARGET_BRANCH: ${{ github.ref_name }}
+          TARGET_BRANCH: ${{ steps.target_branch.outputs.branch }}
         run: |
           git fetch origin "$TARGET_BRANCH":"refs/remotes/origin/$TARGET_BRANCH"
           git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"

@@ -5,7 +5,7 @@ Este repositorio ya incluye el workflow [.github/workflows/deploy-main.yml](../.
 Comportamiento actual del workflow:
 
 - Hace despliegue automático cuando hay push a main.
-- Permite despliegue manual de cualquier rama usando workflow_dispatch y la opción Use workflow from.
+- Permite despliegue manual de cualquier rama usando workflow_dispatch y el input target_branch.
 - Si quieres despliegue automático de otra rama concreta, debes añadir esa rama explícitamente en la sección push.branches del workflow.
 
 ## Requisitos
@@ -72,14 +72,14 @@ sudo ./svc.sh status
 
 ## Desplegar una rama concreta
 
-Si quieres desplegar una rama concreta sin tocar el YAML, entra a Actions, abre el workflow Deploy Branch, pulsa Run workflow y elige la rama deseada en Use workflow from.
+Si quieres desplegar una rama concreta sin tocar el YAML, entra a Actions, abre el workflow Deploy Branch, pulsa Run workflow, deja Use workflow from en main y escribe la rama deseada en target_branch.
 
-La rama elegida ahí cumple dos funciones:
+Esto evita depender de la lista de ramas que GitHub enseña en Use workflow from, que puede no mostrar algunas ramas de PR aunque existan en origin.
 
-- GitHub lee desde esa rama el archivo del workflow.
-- El servidor despliega esa misma rama.
+- GitHub lee el workflow estable desde main.
+- El servidor despliega la rama indicada en target_branch.
 
-Ejemplos válidos, siempre que la rama exista en origin y contenga este workflow:
+Ejemplos válidos, siempre que la rama exista en origin:
 
 ```text
 main
@@ -90,8 +90,8 @@ feature/prueba-servidor
 
 Limitación práctica:
 
-- Si una rama no contiene este workflow, no podrás seleccionarla desde Use workflow from.
-- Si quieres poder desplegar ramas nuevas con este método, conviene que nazcan desde una base que ya incluya este workflow.
+- La rama indicada en target_branch debe existir en origin.
+- Si la rama fue borrada del remoto, el workflow fallará en la validación previa al checkout.
 
 Si en cambio quieres despliegue automático al hacer push a una rama concreta, añade esa rama a push.branches:
 
