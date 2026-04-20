@@ -1166,7 +1166,7 @@ export function ReaderPage() {
     }
 
     function updateFloatingHeaderActionsVisibility() {
-      const shouldFloat = window.innerWidth <= 860;
+      const shouldFloat = true;
       const panelRect = readerPanelRef.current?.getBoundingClientRect();
       const viewportPadding = 12;
       const panelInset = 10;
