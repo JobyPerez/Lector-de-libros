@@ -1,6 +1,7 @@
 import multipart from "@fastify/multipart";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 
 import { getDatabaseStatus } from "./config/database.js";
 import { appEnv } from "./config/env.js";
@@ -51,6 +52,14 @@ export function buildApp(): FastifyInstance {
   void app.register(registerUserRoutes, { prefix: "/users" });
 
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof ZodError) {
+      const firstIssue = error.issues[0];
+      const field = firstIssue?.path.join(".") ?? "input";
+      const message = firstIssue?.message ?? "Datos de entrada inválidos.";
+
+      return reply.status(400).send({ message: `${field}: ${message}` });
+    }
+
     const statusCode = typeof (error as { statusCode?: number }).statusCode === "number"
       ? (error as { statusCode: number }).statusCode
       : 500;
