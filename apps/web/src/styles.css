@@ -2698,6 +2698,14 @@ textarea {
   border-radius: 0.24rem;
 }
 
+.shelf-book-notion-icon {
+  display: block;
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: cover;
+  border-radius: 0.2rem;
+}
+
 .reader-loading-bars {
   display: inline-flex;
   align-items: flex-end;
