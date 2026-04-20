@@ -6,6 +6,7 @@ Comportamiento actual del workflow:
 
 - Hace despliegue automático cuando hay push a main.
 - Permite despliegue manual de cualquier rama usando workflow_dispatch y el input target_branch.
+- Permite despliegue manual de la rama elegida en Use workflow from usando el workflow Deploy Selected Branch, sin inputs adicionales.
 - Permite despliegue manual de un pull request usando el workflow Deploy Pull Request y el input pr_number.
 - Si quieres despliegue automático de otra rama concreta, debes añadir esa rama explícitamente en la sección push.branches del workflow.
 
@@ -93,6 +94,23 @@ Limitación práctica:
 
 - La rama indicada en target_branch debe existir en origin.
 - Si la rama fue borrada del remoto, el workflow fallará en la validación previa al checkout.
+
+## Desplegar la rama seleccionada en GitHub
+
+Si quieres exactamente este flujo:
+
+- elegir la rama en Use workflow from
+- no escribir nada más
+
+usa el workflow Deploy Selected Branch.
+
+Ese workflow toma automáticamente github.ref_name como rama a desplegar, así que la rama seleccionada en Use workflow from es la misma que se despliega en el servidor.
+
+Limitación práctica importante:
+
+- La rama elegida debe contener el archivo .github/workflows/deploy-selected-branch.yml.
+- Si una rama fue creada antes de que este workflow existiera, GitHub puede no dejar ejecutarlo desde esa rama hasta que reciba los cambios de main por merge o rebase.
+- Por eso este flujo es cómodo para ramas actualizadas desde main, pero el método más robusto sigue siendo Deploy Branch con target_branch.
 
 ## Desplegar un pull request concreto
 

@@ -1,0 +1,63 @@
+name: Deploy Selected Branch
+
+"on":
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build and restart API
+    runs-on:
+      - self-hosted
+      - linux
+    timeout-minutes: 20
+    env:
+      DEPLOY_PATH: /home/ubuntu/DEV-JPG/Lector-de-libros
+      TARGET_BRANCH: ${{ github.ref_name }}
+
+    steps:
+      - name: Validate deployment path
+        run: |
+          test -d "$DEPLOY_PATH"
+          test -d "$DEPLOY_PATH/.git"
+
+      - name: Validate runtime dependencies
+        run: |
+          command -v git
+          command -v npm
+          command -v pm2
+
+      - name: Mark repository as safe
+        run: git config --global --add safe.directory "$DEPLOY_PATH"
+
+      - name: Log workflow ref and target branch
+        run: |
+          echo "Workflow ref: ${{ github.ref_name }}"
+          echo "Target deploy branch: $TARGET_BRANCH"
+
+      - name: Validate target branch exists on origin
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: git ls-remote --exit-code --heads origin "$TARGET_BRANCH"
+
+      - name: Update repository
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: |
+          git fetch origin "$TARGET_BRANCH":"refs/remotes/origin/$TARGET_BRANCH"
+          git checkout -B "$TARGET_BRANCH" "origin/$TARGET_BRANCH"
+          git branch --set-upstream-to="origin/$TARGET_BRANCH" "$TARGET_BRANCH"
+          git pull --ff-only origin "$TARGET_BRANCH"
+
+      - name: Install dependencies
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: npm ci
+
+      - name: Build project
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: npm run build
+
+      - name: Restart API
+        working-directory: ${{ env.DEPLOY_PATH }}
+        run: pm2 restart conejolector-api
