@@ -2062,21 +2062,24 @@ textarea {
   word-break: break-word;
 }
 
-.reader-rich-content figure[data-paragraph-number] {
+.reader-rich-content figure {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
 }
 
-.reader-rich-content figure[data-paragraph-number] img {
-  margin-right: auto;
+.reader-rich-content figure img {
+  max-width: 100%;
 }
 
-.reader-rich-content figure[data-text-align="center"] img {
-  margin-left: auto;
+.reader-rich-content figure[data-text-align="center"] {
+  align-items: center;
 }
 
-.reader-rich-content figure[data-text-align="right"] img {
-  margin-left: auto;
-  margin-right: 0;
+.reader-rich-content figure[data-text-align="right"] {
+  align-items: flex-end;
 }
 
 .reader-rich-content [data-paragraph-number].active {

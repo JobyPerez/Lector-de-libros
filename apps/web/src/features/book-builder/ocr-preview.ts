@@ -100,7 +100,7 @@ function resolveImageSource(source: string, embeddedImages: Map<string, string>)
   return normalizedSource;
 }
 
-function buildBlockFromParagraph(paragraph: string, index: number, embeddedImages: Map<string, string>): RichBlock | null {
+function buildBlockFromParagraph(paragraph: string, embeddedImages: Map<string, string>): { html: string; isText: boolean } | null {
   const normalizedParagraph = paragraph.replace(/\r/g, "").trim();
   if (!normalizedParagraph) {
     return null;
@@ -122,7 +122,8 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     }
 
     return {
-      html: `<figure class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`
+      html: `<figure class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
+      isText: false
     };
   }
 
@@ -136,7 +137,8 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
     }
 
     return {
-      html: `<h${level} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(headingText)}</h${level}>`
+      html: `<h${level} class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(headingText)}</h${level}>`,
+      isText: true
     };
   }
 
@@ -146,7 +148,8 @@ function buildBlockFromParagraph(paragraph: string, index: number, embeddedImage
   }
 
   return {
-    html: `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`
+    html: `<p class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`,
+    isText: true
   };
 }
 
@@ -159,12 +162,22 @@ export function buildOcrPreviewHtml(editedText: string, persistedHtmlContent?: s
 
   const embeddedImages = extractEmbeddedImageSources(persistedHtmlContent);
   const blocks = paragraphCandidates
-    .map((paragraph, index) => buildBlockFromParagraph(paragraph, index, embeddedImages))
-    .filter((block): block is RichBlock => block !== null);
+    .map((paragraph) => buildBlockFromParagraph(paragraph, embeddedImages))
+    .filter((block): block is { html: string; isText: boolean } => block !== null);
 
   if (blocks.length === 0) {
     return null;
   }
 
-  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
+  let paragraphCounter = 1;
+  const finalizedBlocks = blocks.map((block) => {
+    if (!block.isText) {
+      return block;
+    }
+    const htmlWithParagraphNumber = block.html.replace('class="reader-rich-node"', `class="reader-rich-node" data-paragraph-number="${paragraphCounter}"`);
+    paragraphCounter += 1;
+    return { ...block, html: htmlWithParagraphNumber };
+  });
+
+  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${finalizedBlocks.map((block) => block.html).join("")}</div></div>`;
 }

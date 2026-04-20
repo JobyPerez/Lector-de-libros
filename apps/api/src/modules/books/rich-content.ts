@@ -173,7 +173,7 @@ function splitEditableTextIntoBlocks(editedText: string) {
     .filter(Boolean);
 }
 
-function buildBlockFromParagraph(paragraph: string, index: number, options?: RichPageBuildOptions): RichBlock | null {
+function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptions, indexForHeading?: number): RichBlock | null {
   const normalizedParagraph = paragraph.replace(/\r/g, "").trim();
   if (!normalizedParagraph) {
     return null;
@@ -197,7 +197,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, options?: Ric
     return {
       alignment,
       editableText: prependAlignment(`![${altText}](${sourceToken})`, alignment),
-      html: `<figure class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
+      html: `<figure class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
       includeInParagraphs: false,
       level: null,
       text: ""
@@ -216,7 +216,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, options?: Ric
     return {
       alignment,
       editableText: prependAlignment(`${"#".repeat(level)} ${headingText}`, alignment),
-      html: `<h${level} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(headingText)}</h${level}>`,
+      html: `<h${level} class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(headingText)}</h${level}>`,
       includeInParagraphs: true,
       level,
       text
@@ -228,12 +228,12 @@ function buildBlockFromParagraph(paragraph: string, index: number, options?: Ric
     return null;
   }
 
-  const inferredLevel = options?.inferHeadings === false ? null : looksLikeHeading(text, index);
+  const inferredLevel = options?.inferHeadings === false ? null : looksLikeHeading(text, indexForHeading ?? 0);
   if (inferredLevel) {
     return {
       alignment,
       editableText: prependAlignment(`${"#".repeat(inferredLevel)} ${normalizedContent}`, alignment),
-      html: `<h${inferredLevel} class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent)}</h${inferredLevel}>`,
+      html: `<h${inferredLevel} class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent)}</h${inferredLevel}>`,
       includeInParagraphs: true,
       level: inferredLevel,
       text
@@ -243,7 +243,7 @@ function buildBlockFromParagraph(paragraph: string, index: number, options?: Ric
   return {
     alignment,
     editableText: prependAlignment(normalizedContent, alignment),
-    html: `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`,
+    html: `<p class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}>${renderInlineMarkdown(normalizedContent).replace(/\n+/gu, "<br />")}</p>`,
     includeInParagraphs: true,
     level: null,
     text
@@ -259,11 +259,21 @@ function wrapRichPageHtml(blocks: RichBlock[]): string | null {
 }
 
 function finalizeRichBlocks(blocks: RichBlock[]) {
-  const textBlocks = blocks.filter((block) => block.includeInParagraphs && block.text.length > 0);
+  let paragraphCounter = 1;
+  const finalizedBlocks = blocks.map((block) => {
+    if (!block.includeInParagraphs || block.text.length === 0) {
+      return block;
+    }
+    const htmlWithParagraphNumber = block.html.replace('class="reader-rich-node"', `class="reader-rich-node" data-paragraph-number="${paragraphCounter}"`);
+    paragraphCounter += 1;
+    return { ...block, html: htmlWithParagraphNumber };
+  });
+
+  const textBlocks = finalizedBlocks.filter((block) => block.includeInParagraphs && block.text.length > 0);
 
   return {
-    editedText: blocks.map((block) => block.editableText).filter(Boolean).join("\n"),
-    htmlContent: wrapRichPageHtml(blocks),
+    editedText: finalizedBlocks.map((block) => block.editableText).filter(Boolean).join("\n"),
+    htmlContent: wrapRichPageHtml(finalizedBlocks),
     paragraphs: textBlocks.map((block) => block.text),
     rawText: textBlocks.map((block) => block.text).join("\n")
   };
@@ -296,7 +306,7 @@ export function buildRichPageFromParagraphs(
   options?: RichPageBuildOptions
 ): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string } {
   const blocks = paragraphs
-    .map((paragraph, index) => buildBlockFromParagraph(paragraph, index, options))
+    .map((paragraph, index) => buildBlockFromParagraph(paragraph, options, index))
     .filter((block): block is RichBlock => block !== null);
 
   return finalizeRichBlocks(blocks);
