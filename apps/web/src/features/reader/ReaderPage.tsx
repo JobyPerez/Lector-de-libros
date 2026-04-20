@@ -1803,7 +1803,7 @@ export function ReaderPage() {
     openNavigationPanel();
   }
 
-  const activeTocEntryKey = useMemo(() => {
+  const activeTocEntry = useMemo(() => {
     const tocEntries = navigationQuery.data?.toc ?? [];
     let activeEntry: ReaderTocEntry | null = null;
 
@@ -1815,8 +1815,11 @@ export function ReaderPage() {
       }
     }
 
-    return activeEntry ? tocEntryKey(activeEntry) : null;
+    return activeEntry;
   }, [currentPageNumber, currentParagraphNumber, navigationQuery.data?.toc]);
+
+  const activeTocEntryKey = activeTocEntry ? tocEntryKey(activeTocEntry) : null;
+  const activeChapterTitle = activeTocEntry?.title ?? null;
 
   const orderedNavigationItems = useMemo<NavigationListItem[]>(() => {
     const tocItems: NavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
@@ -4051,6 +4054,7 @@ export function ReaderPage() {
           <div className="reader-header-copy">
             <p className="eyebrow">Lectura</p>
             <h2>{bookTitle}</h2>
+            {activeChapterTitle ? <p className="reader-chapter-title">{activeChapterTitle}</p> : null}
           </div>
           <div className="reader-header-actions" ref={headerActionsRef}>
             {renderReaderHeaderActionButtons("secondary-button link-button reader-header-icon-button")}

@@ -1449,6 +1449,15 @@ textarea {
   min-width: 0;
 }
 
+.reader-chapter-title {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+  color: #5d665d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .reader-header-icon-button {
   width: 3.35rem;
   min-width: 3.35rem;
