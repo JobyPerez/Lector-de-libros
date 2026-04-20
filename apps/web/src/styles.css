@@ -1442,11 +1442,7 @@ textarea {
 }
 
 .reader-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: none;
 }
 
 .reader-header-copy {
@@ -1454,16 +1450,16 @@ textarea {
 }
 
 .reader-header-icon-button {
-  width: 2.95rem;
-  min-width: 2.95rem;
-  min-height: 2.95rem;
+  width: 3.35rem;
+  min-width: 3.35rem;
+  min-height: 3.35rem;
   padding: 0;
   border-radius: 999px;
 }
 
 .reader-header-icon-button svg {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: 1.35rem;
+  height: 1.35rem;
 }
 
 .reader-header-icon-button.active:not(:disabled) {
@@ -1543,9 +1539,9 @@ textarea {
 }
 
 .reader-header-floating-action-button {
-  width: 2.7rem;
-  min-width: 2.7rem;
-  min-height: 2.7rem;
+  width: 3.35rem;
+  min-width: 3.35rem;
+  min-height: 3.35rem;
 }
 
 @media (max-width: 560px) {
@@ -1554,8 +1550,8 @@ textarea {
   }
 
   .reader-header-floating-dock-panel.open {
-    width: min(14.6rem, calc(100vw - 4.9rem));
-    max-width: min(14.6rem, calc(100vw - 4.9rem));
+    width: min(16rem, calc(100vw - 4.9rem));
+    max-width: min(16rem, calc(100vw - 4.9rem));
     padding: 0.35rem;
     border-radius: 1.2rem;
     flex-wrap: wrap;
@@ -1565,15 +1561,15 @@ textarea {
   }
 
   .reader-header-floating-toggle {
-    width: 2.8rem;
-    min-width: 2.8rem;
-    height: 2.8rem;
+    width: 3rem;
+    min-width: 3rem;
+    height: 3rem;
   }
 
   .reader-header-floating-action-button {
-    width: 2.45rem;
-    min-width: 2.45rem;
-    min-height: 2.45rem;
+    width: 3rem;
+    min-width: 3rem;
+    min-height: 3rem;
   }
 }
 
@@ -4560,11 +4556,6 @@ textarea {
     align-items: flex-start;
   }
 
-  .reader-layout .reader-header-actions {
-    margin-left: auto;
-    flex-shrink: 0;
-  }
-
   .brand-lockup {
     flex: 1 1 auto;
     min-width: 0;
@@ -4774,10 +4765,6 @@ textarea {
   .reader-layout .reader-header-copy {
     max-width: 100%;
     padding-right: 0;
-  }
-
-  .reader-layout .reader-header-actions {
-    display: none;
   }
 
   .shelf-layout,
