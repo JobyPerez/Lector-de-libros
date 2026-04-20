@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBooks, importBook, updateBook, type BlobDownload, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import notionIconUrl from "../../assets/notion.svg";
 
 type BookEditFormState = {
   authorName: string;
@@ -513,6 +514,19 @@ export function ShelfPage() {
                 >
                   <DownloadIcon />
                 </button>
+                {book.notionBookUrl?.trim() ? (
+                  <a
+                    aria-label={`Abrir ${book.title} en Notion`}
+                    className="book-card-icon-button book-card-notion-button"
+                    href={book.notionBookUrl.trim()}
+                    onClick={(event) => { event.stopPropagation(); }}
+                    rel="noreferrer noopener"
+                    target="_blank"
+                    title="Abrir libro en Notion"
+                  >
+                    <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
+                  </a>
+                ) : null}
                 <button
                   aria-label={`Editar ${book.title}`}
                   className="book-card-icon-button book-card-edit-button"
