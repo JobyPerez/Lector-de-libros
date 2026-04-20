@@ -6,6 +6,7 @@ Comportamiento actual del workflow:
 
 - Hace despliegue automático cuando hay push a main.
 - Permite despliegue manual de cualquier rama usando workflow_dispatch y el input target_branch.
+- Permite despliegue manual de un pull request usando el workflow Deploy Pull Request y el input pr_number.
 - Si quieres despliegue automático de otra rama concreta, debes añadir esa rama explícitamente en la sección push.branches del workflow.
 
 ## Requisitos
@@ -92,6 +93,25 @@ Limitación práctica:
 
 - La rama indicada en target_branch debe existir en origin.
 - Si la rama fue borrada del remoto, el workflow fallará en la validación previa al checkout.
+
+## Desplegar un pull request concreto
+
+Si quieres desplegar exactamente la rama head de un pull request abierto, entra a Actions, abre el workflow Deploy Pull Request, pulsa Run workflow, deja Use workflow from en main e indica el numero del PR en pr_number.
+
+El workflow resolverá automáticamente estos datos desde GitHub:
+
+- Numero del PR.
+- Rama base del PR.
+- Rama head del PR.
+- Repositorio de la rama head.
+
+Después validará y desplegará la rama head del PR en el servidor.
+
+Limitaciones prácticas:
+
+- El PR debe estar abierto.
+- La rama head del PR debe existir en este mismo repositorio, no en un fork externo.
+- Si la rama head fue borrada del remoto, el workflow fallará antes del checkout.
 
 Si en cambio quieres despliegue automático al hacer push a una rama concreta, añade esa rama a push.branches:
 
