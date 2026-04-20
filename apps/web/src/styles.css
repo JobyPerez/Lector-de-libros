@@ -1508,7 +1508,7 @@ textarea {
 
 .reader-header-floating-dock-panel.open {
   width: auto;
-  max-width: min(24rem, calc(100vw - 5.8rem));
+  max-width: calc(100vw - 5.8rem);
   padding: 0.22rem;
   border-color: rgba(31, 43, 35, 0.08);
   box-shadow: 0 12px 28px rgba(52, 32, 16, 0.14);
