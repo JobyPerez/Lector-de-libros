@@ -193,6 +193,7 @@ type BookSectionContext = {
 };
 
 type StoredSectionSummaryRecord = {
+  chapterId: string;
   createdAt: string;
   endPageNumber: number;
   endParagraphNumber: number;
@@ -1607,6 +1608,7 @@ async function findStoredSectionSummary(
   const result = await connection.execute(
     `
       SELECT
+        chapter_id AS "chapterId",
         summary_id AS "summaryId",
         section_title AS "sectionTitle",
         start_page_number AS "startPageNumber",
@@ -1632,6 +1634,69 @@ async function findStoredSectionSummary(
 
   const [summary] = (result.rows ?? []) as StoredSectionSummaryRecord[];
   return summary ?? null;
+}
+
+async function findGeneratedSectionSummaryFallback(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  userId: string,
+  section: BookSectionContext
+): Promise<StoredSectionSummaryRecord | null> {
+  const result = await connection.execute(
+    `
+      SELECT
+        chapter_id AS "chapterId",
+        summary_id AS "summaryId",
+        section_title AS "sectionTitle",
+        start_page_number AS "startPageNumber",
+        end_page_number AS "endPageNumber",
+        start_paragraph_number AS "startParagraphNumber",
+        end_paragraph_number AS "endParagraphNumber",
+        start_sequence_number AS "startSequenceNumber",
+        end_sequence_number AS "endSequenceNumber",
+        summary_text AS "summaryText",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM user_book_section_summaries
+      WHERE book_id = :bookId
+        AND user_id = :userId
+        AND chapter_id LIKE 'generated:%'
+        AND section_title = :sectionTitle
+      ORDER BY
+        ABS(start_page_number - :startPageNumber) ASC,
+        ABS(end_page_number - :endPageNumber) ASC,
+        ABS(start_paragraph_number - :startParagraphNumber) ASC,
+        ABS(end_paragraph_number - :endParagraphNumber) ASC,
+        updated_at DESC
+      FETCH FIRST 1 ROWS ONLY
+    `,
+    {
+      bookId,
+      endPageNumber: section.endPageNumber,
+      endParagraphNumber: section.endParagraphNumber,
+      sectionTitle: section.title,
+      startPageNumber: section.startPageNumber,
+      startParagraphNumber: section.startParagraphNumber,
+      userId
+    }
+  );
+
+  const [summary] = (result.rows ?? []) as StoredSectionSummaryRecord[];
+  return summary ?? null;
+}
+
+async function findStoredSectionSummaryForSection(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  userId: string,
+  section: BookSectionContext
+): Promise<StoredSectionSummaryRecord | null> {
+  const exactSummary = await findStoredSectionSummary(connection, bookId, section.chapterId, userId);
+  if (exactSummary || !section.isGenerated) {
+    return exactSummary;
+  }
+
+  return findGeneratedSectionSummaryFallback(connection, bookId, userId, section);
 }
 
 async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, pageNumber: number): Promise<BookPageRecord | null> {
@@ -3829,7 +3894,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Section not found." });
       }
 
-      const storedSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+      const storedSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
       const isStale = Boolean(storedSummary) && (
         storedSummary?.startSequenceNumber !== section.startSequenceNumber
         || storedSummary?.endSequenceNumber !== section.endSequenceNumber
@@ -3894,13 +3959,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const summaryText = await generateSectionSummary(section.title, paragraphs);
-      const existingSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+      const existingSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       if (existingSummary) {
         await connection.execute(
           `
             UPDATE user_book_section_summaries
             SET
+              chapter_id = :chapterId,
               section_title = :sectionTitle,
               start_page_number = :startPageNumber,
               end_page_number = :endPageNumber,
@@ -3912,6 +3978,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             WHERE summary_id = :summaryId
           `,
           {
+            chapterId: section.chapterId,
             endPageNumber: section.endPageNumber,
             endParagraphNumber: section.endParagraphNumber,
             endSequenceNumber: section.endSequenceNumber,
@@ -3973,7 +4040,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       await connection.commit();
 
-      const storedSummary = await findStoredSectionSummary(connection, params.bookId, params.chapterId, request.currentUser.userId);
+      const storedSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       return reply.send({
         section,

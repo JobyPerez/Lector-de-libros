@@ -27,6 +27,15 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function createGeneratedChapterSlug(title: string): string {
+  const normalizedTitle = normalizeWhitespace(title)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}+/gu, "")
+    .toLowerCase();
+  const slug = normalizedTitle.replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
+  return slug || "section";
+}
+
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
 
 async function getStoredBookOutlineSource(connection: DatabaseConnection, bookId: string): Promise<StoredBookOutlineSource | null> {
@@ -100,6 +109,7 @@ export async function buildDerivedBookOutline(connection: DatabaseConnection, bo
 
   const outline: BookOutlineEntry[] = [];
   const seenEntries = new Set<string>();
+  const titleOccurrences = new Map<string, number>();
 
   for (const row of (pageResult.rows ?? []) as Array<{ htmlContent: string | null; pageNumber: number }>) {
     if (!row.htmlContent) {
@@ -124,8 +134,12 @@ export async function buildDerivedBookOutline(connection: DatabaseConnection, bo
       }
 
       seenEntries.add(entryKey);
+      const titleKey = createGeneratedChapterSlug(title);
+      const titleOccurrence = (titleOccurrences.get(titleKey) ?? 0) + 1;
+      titleOccurrences.set(titleKey, titleOccurrence);
+
       outline.push({
-        chapterId: `generated:${row.pageNumber}:${paragraphNumber}:${outline.length + 1}`,
+        chapterId: `generated:${titleKey}:${titleOccurrence}`,
         isGenerated: true,
         level,
         pageNumber: row.pageNumber,
