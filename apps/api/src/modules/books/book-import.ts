@@ -47,6 +47,10 @@ function splitLongParagraph(paragraph: string, maxCharacters = 900): string[] {
     return [];
   }
 
+  if (/^!\[.*?\]\(data:image\/.*?;base64,[a-zA-Z0-9+/=]+\)$/iu.test(normalizedParagraph)) {
+    return [normalizedParagraph];
+  }
+
   if (normalizedParagraph.length <= maxCharacters) {
     return [normalizedParagraph];
   }

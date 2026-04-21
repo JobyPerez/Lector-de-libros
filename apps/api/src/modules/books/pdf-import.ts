@@ -1,3 +1,4 @@
+import sharp from "sharp";
 import type { ImportedDocument, ImportedPage } from "./book-import.js";
 import { buildRichPageFromParagraphs } from "./rich-content.js";
 
@@ -397,6 +398,49 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
 
     const lines = buildLines(textItems);
     const paragraphs = linesToParagraphs(lines);
+
+    try {
+      const operatorList = await page.getOperatorList();
+      let imageIndex = 1;
+
+      for (let i = 0; i < operatorList.fnArray.length; i += 1) {
+        const fn = operatorList.fnArray[i];
+        if (fn === pdfModule.OPS.paintImageXObject || fn === pdfModule.OPS.paintInlineImageXObject) {
+          const objId = operatorList.argsArray[i]?.[0];
+          if (!objId) continue;
+
+          try {
+            const imgData = await page.objs.get(objId);
+            if (imgData && imgData.data && imgData.width >= 30 && imgData.height >= 30) {
+              let channels = 3;
+              if (imgData.kind === 1) channels = 1;
+              else if (imgData.kind === 2) channels = 3;
+              else if (imgData.kind === 3) channels = 4;
+
+              const expectedLength = imgData.width * imgData.height * channels;
+              if (imgData.data.length >= expectedLength) {
+                const pixelBuffer = Buffer.from(imgData.data).subarray(0, expectedLength);
+                const pngBuffer = await sharp(pixelBuffer, {
+                  raw: {
+                    width: imgData.width,
+                    height: imgData.height,
+                    channels: channels as 1 | 3 | 4
+                  }
+                }).png().toBuffer();
+
+                paragraphs.push(`![Imagen ${imageIndex} de la página ${pageNumber}](data:image/png;base64,${pngBuffer.toString("base64")})`);
+                imageIndex += 1;
+              }
+            }
+          } catch (error) {
+            // Ignorar errores de extracción de imágenes individuales
+          }
+        }
+      }
+    } catch (error) {
+      // Ignorar errores al obtener la lista de operadores o de extracción general
+    }
+
     const richContent = buildRichPageFromParagraphs(paragraphs);
 
     pages.push({
