@@ -55,6 +55,16 @@ export function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeWhitespacePreservingLineBreaks(value: string): string {
+  return value
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .split(/\n/u)
+    .map((line) => line.replace(/[^\S\n]+/gu, " ").trim())
+    .join("\n")
+    .trim();
+}
+
 function parseAlignment(value: string): { alignment: TextAlignment | null; content: string } {
   const match = value.match(alignmentPattern);
   if (!match) {
@@ -84,6 +94,19 @@ function buildAlignmentAttributes(alignment: TextAlignment | null): string {
 
 function stripInlineMarkdown(value: string): string {
   return normalizeWhitespace(
+    value
+      .replace(alignmentPattern, "$2")
+      .replace(/^#{1,6}\s+/u, "")
+      .replace(/!\[(.*?)\]\((.+?)\)/gu, "")
+      .replace(/\*\*(.+?)\*\*/gu, "$1")
+      .replace(/__(.+?)__/gu, "$1")
+      .replace(/\*(.+?)\*/gu, "$1")
+      .replace(/_(.+?)_/gu, "$1")
+  );
+}
+
+function stripInlineMarkdownPreservingLineBreaks(value: string): string {
+  return normalizeWhitespacePreservingLineBreaks(
     value
       .replace(alignmentPattern, "$2")
       .replace(/^#{1,6}\s+/u, "")
@@ -223,7 +246,7 @@ function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptio
     };
   }
 
-  const text = stripInlineMarkdown(normalizedContent);
+  const text = stripInlineMarkdownPreservingLineBreaks(normalizedContent);
   if (!text) {
     return null;
   }

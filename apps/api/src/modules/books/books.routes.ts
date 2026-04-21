@@ -2818,7 +2818,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           `,
           {
             bookId,
-            editedText: page.paragraphs.join("\n"),
+            editedText: page.editedText ?? page.paragraphs.join("\n"),
             htmlContent: page.htmlContent ?? null,
             pageId,
             pageNumber: page.pageNumber,

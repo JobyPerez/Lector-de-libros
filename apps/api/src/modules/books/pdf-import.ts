@@ -148,6 +148,31 @@ function joinLines(lines: PdfLine[]): string {
   return normalizeWhitespace(mergedText);
 }
 
+function joinLinesPreservingLineBreaks(lines: PdfLine[]): string {
+  let mergedText = "";
+
+  for (const line of lines) {
+    const normalizedLine = normalizeWhitespace(line.text);
+    if (!normalizedLine) {
+      continue;
+    }
+
+    if (!mergedText) {
+      mergedText = normalizedLine;
+      continue;
+    }
+
+    if (/[\p{L}\p{N}]-$/u.test(mergedText) && startsWithLowercaseLetter(normalizedLine)) {
+      mergedText = `${mergedText.slice(0, -1)}${normalizedLine}`;
+      continue;
+    }
+
+    mergedText = `${mergedText}\n${normalizedLine}`;
+  }
+
+  return mergedText.trim();
+}
+
 function buildPageMetrics(lines: PdfLine[]): PdfPageMetrics {
   const positiveGaps = lines.map((line) => line.gapFromPrevious).filter((gap) => gap > 0);
   const dominantLineGap = Math.max(computeMedian(positiveGaps), 6);
@@ -282,6 +307,56 @@ function shouldStartNewParagraph(previousLine: PdfLine, currentLine: PdfLine, me
   return false;
 }
 
+function isVerseLikeParagraph(lines: PdfLine[], metrics: PdfPageMetrics): boolean {
+  if (lines.length < 3) {
+    return false;
+  }
+
+  const normalizedLines = lines.map((line) => normalizeWhitespace(line.text)).filter(Boolean);
+  const lineCharacterCounts = normalizedLines.map((line) => line.length);
+  const averageLineCharacters = lineCharacterCounts.reduce((sum, count) => sum + count, 0) / Math.max(lineCharacterCounts.length, 1);
+  const shortCharacterLineCount = lineCharacterCounts.filter((count) => count <= 42).length;
+  const mediumCharacterLineCount = lineCharacterCounts.filter((count) => count <= 54).length;
+  const widthRatios = lines.map((line) => (metrics.bodyLineWidth > 0 ? line.width / metrics.bodyLineWidth : 1));
+  const shortLineCount = widthRatios.filter((ratio) => ratio <= 0.78).length;
+  const nearFullLineCount = widthRatios.filter((ratio) => ratio >= 0.9).length;
+  const averageRatio = widthRatios.reduce((sum, ratio) => sum + ratio, 0) / Math.max(widthRatios.length, 1);
+  const variableWidthTransitions = widthRatios.slice(0, -1).filter((ratio, index) => {
+    const nextRatio = widthRatios[index + 1] ?? ratio;
+    return Math.abs(nextRatio - ratio) >= 0.16;
+  }).length;
+  const nonTerminalLineCount = normalizedLines
+    .slice(0, -1)
+    .filter((line) => !endsWithSentencePunctuation(line)).length;
+
+  if (
+    averageLineCharacters <= 42
+    && mediumCharacterLineCount >= Math.max(3, normalizedLines.length - 1)
+    && nonTerminalLineCount >= Math.max(2, normalizedLines.length - 2)
+  ) {
+    return true;
+  }
+
+  if (
+    shortCharacterLineCount >= Math.max(2, Math.ceil(normalizedLines.length * 0.6))
+    && nonTerminalLineCount >= Math.max(2, normalizedLines.length - 2)
+  ) {
+    return true;
+  }
+
+  if (nearFullLineCount >= Math.max(2, lines.length - 1) && shortLineCount <= 1) {
+    return false;
+  }
+
+  if (shortLineCount >= Math.max(2, Math.ceil(lines.length * 0.5)) && nearFullLineCount <= Math.floor(lines.length / 2)) {
+    return true;
+  }
+
+  return averageRatio <= 0.84
+    && variableWidthTransitions >= Math.max(2, Math.floor(lines.length / 2))
+    && nonTerminalLineCount >= Math.max(2, lines.length - 2);
+}
+
 function buildLines(items: PositionedTextItem[]): PdfLine[] {
   const sortedItems = [...items].sort((left, right) => {
     if (Math.abs(left.y - right.y) > sameLineTolerance) {
@@ -343,7 +418,11 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
       return;
     }
 
-    paragraphs.push(joinLines(currentParagraphLines));
+    paragraphs.push(
+      isVerseLikeParagraph(currentParagraphLines, metrics)
+        ? joinLinesPreservingLineBreaks(currentParagraphLines)
+        : joinLines(currentParagraphLines)
+    );
     currentParagraphLines = [];
   };
 
@@ -373,7 +452,9 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
 
   flushParagraph();
 
-  return paragraphs.map(normalizeWhitespace).filter(Boolean);
+  return paragraphs
+    .map((paragraph) => paragraph.replace(/\u00a0/g, " ").trim())
+    .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
 }
 
 export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
@@ -397,6 +478,16 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
       .filter((item) => item.text.length > 0);
 
     const lines = buildLines(textItems);
+    
+    // Heurística para eliminar números de página del encabezado y pie de página
+    const pageNumberPattern = /^(?:-?\s*\d+\s*-?|P[aá]gina\s*\d+|P[aá]g\.\s*\d+|\d+\s*\/\s*\d+)$/i;
+    if (lines.length > 0 && pageNumberPattern.test(lines[0]?.text.trim() || "")) {
+      lines.shift();
+    }
+    if (lines.length > 0 && pageNumberPattern.test(lines[lines.length - 1]?.text.trim() || "")) {
+      lines.pop();
+    }
+
     const paragraphs = linesToParagraphs(lines);
 
     try {
@@ -444,10 +535,11 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
     const richContent = buildRichPageFromParagraphs(paragraphs);
 
     pages.push({
+      editedText: paragraphs.join("\n\n") || richContent.editedText,
       htmlContent: richContent.htmlContent,
       pageNumber,
       paragraphs: richContent.paragraphs,
-      rawText: richContent.rawText || lines.map((line) => line.text).join("\n")
+      rawText: paragraphs.join("\n\n") || lines.map((line) => line.text).join("\n")
     });
   }
 

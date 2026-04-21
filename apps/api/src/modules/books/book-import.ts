@@ -8,6 +8,7 @@ export const supportedBookSourceTypes = ["PDF", "EPUB"] as const;
 export type SupportedBookSourceType = (typeof supportedBookSourceTypes)[number];
 
 export type ImportedPage = {
+  editedText?: string | null;
   htmlContent?: string | null;
   pageNumber: number;
   paragraphs: string[];
@@ -41,8 +42,18 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeWhitespacePreservingLineBreaks(value: string): string {
+  return value
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .split(/\n/u)
+    .map((line) => line.replace(/[^\S\n]+/gu, " ").trim())
+    .join("\n")
+    .trim();
+}
+
 function splitLongParagraph(paragraph: string, maxCharacters = 900): string[] {
-  const normalizedParagraph = normalizeWhitespace(paragraph);
+  const normalizedParagraph = normalizeWhitespacePreservingLineBreaks(paragraph);
   if (!normalizedParagraph) {
     return [];
   }
@@ -53,6 +64,36 @@ function splitLongParagraph(paragraph: string, maxCharacters = 900): string[] {
 
   if (normalizedParagraph.length <= maxCharacters) {
     return [normalizedParagraph];
+  }
+
+  if (normalizedParagraph.includes("\n")) {
+    const lines = normalizedParagraph.split(/\n/u).map((line) => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      return [];
+    }
+
+    const chunks: string[] = [];
+    let currentChunk = "";
+
+    for (const line of lines) {
+      const candidate = currentChunk ? `${currentChunk}\n${line}` : line;
+      if (candidate.length <= maxCharacters) {
+        currentChunk = candidate;
+        continue;
+      }
+
+      if (currentChunk) {
+        chunks.push(currentChunk);
+      }
+
+      currentChunk = line;
+    }
+
+    if (currentChunk) {
+      chunks.push(currentChunk);
+    }
+
+    return chunks;
   }
 
   const sentences = normalizedParagraph.split(sentenceBoundaryExpression).map(normalizeWhitespace).filter(Boolean);
@@ -109,8 +150,8 @@ function splitLongParagraph(paragraph: string, maxCharacters = 900): string[] {
 export function sanitizeParagraphs(paragraphs: string[]): string[] {
   return paragraphs
     .flatMap((paragraph) => splitLongParagraph(paragraph))
-    .map(normalizeWhitespace)
-    .filter(Boolean);
+    .map(normalizeWhitespacePreservingLineBreaks)
+    .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
 }
 
 export function inferSourceType(fileName: string, mimeType: string): SupportedBookSourceType | null {
@@ -143,12 +184,14 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
   const normalizedPages = importedDocument.pages
     .map((page) => ({
       originalPageNumber: page.pageNumber,
+      editedText: page.editedText?.trim() || null,
       htmlContent: page.htmlContent?.trim() || null,
       paragraphs: sanitizeParagraphs(page.paragraphs),
       rawText: page.rawText.trim()
     }))
     .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
     .map((page, index) => ({
+      editedText: page.editedText,
       htmlContent: page.htmlContent,
       pageNumber: (() => {
         const normalizedPageNumber = index + 1;

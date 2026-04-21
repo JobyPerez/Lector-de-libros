@@ -503,6 +503,74 @@ function normalizeRichTextForComparison(value: string) {
   return value.replace(/\u00a0/gu, " ").replace(/\s+/gu, " ").trim().toLowerCase();
 }
 
+type RichParagraphTextSegment =
+  | {
+      kind: "break";
+      node: HTMLBRElement;
+    }
+  | {
+      kind: "text";
+      node: Text;
+      text: string;
+    };
+
+function getRichParagraphTextSegments(paragraphNode: HTMLElement): RichParagraphTextSegment[] {
+  if (typeof NodeFilter === "undefined") {
+    return [];
+  }
+
+  const paragraphDocument = paragraphNode.ownerDocument;
+  const segments: RichParagraphTextSegment[] = [];
+  const walker = paragraphDocument.createTreeWalker(
+    paragraphNode,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        if (node instanceof Text) {
+          return node.data.length > 0 ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        }
+
+        if (node instanceof HTMLBRElement) {
+          return NodeFilter.FILTER_ACCEPT;
+        }
+
+        return NodeFilter.FILTER_SKIP;
+      }
+    }
+  );
+
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    if (currentNode instanceof Text) {
+      segments.push({ kind: "text", node: currentNode, text: currentNode.data });
+    } else if (currentNode instanceof HTMLBRElement) {
+      segments.push({ kind: "break", node: currentNode });
+    }
+
+    currentNode = walker.nextNode();
+  }
+
+  return segments;
+}
+
+function extractRichParagraphText(paragraphNode: HTMLElement) {
+  return getRichParagraphTextSegments(paragraphNode)
+    .map((segment) => segment.kind === "break" ? "\n" : segment.text)
+    .join("");
+}
+
+function renderTextWithLineBreaks(text: string, keyPrefix: string): ReactNode[] {
+  const lines = text.split(/\n/u);
+
+  return lines.flatMap((line, index) => {
+    const nodes: ReactNode[] = [<span key={`${keyPrefix}-line-${index}`}>{line}</span>];
+    if (index < lines.length - 1) {
+      nodes.push(<br key={`${keyPrefix}-break-${index}`} />);
+    }
+    return nodes;
+  });
+}
+
 function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: ParagraphContent[]) {
   if (!htmlContent || typeof DOMParser === "undefined") {
     return htmlContent;
@@ -510,7 +578,7 @@ function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: 
 
   const document = new DOMParser().parseFromString(htmlContent, "text/html");
   const richParagraphs = Array.from(document.querySelectorAll<HTMLElement>("[data-paragraph-number]"))
-    .map((node) => normalizeRichTextForComparison(node.textContent ?? ""))
+    .map((node) => normalizeRichTextForComparison(extractRichParagraphText(node)))
     .filter(Boolean);
   const plainParagraphs = paragraphs
     .map((paragraph) => normalizeRichTextForComparison(paragraph.paragraphText))
@@ -859,21 +927,18 @@ function applyHighlightsToRichParagraph(
   }
 
   const orderedHighlights = [...highlights].sort((left, right) => left.charStart - right.charStart || left.charEnd - right.charEnd);
-  const textNodes: Text[] = [];
-  const walker = paragraphNode.ownerDocument.createTreeWalker(paragraphNode, NodeFilter.SHOW_TEXT);
-
-  let currentNode = walker.nextNode();
-  while (currentNode) {
-    if (currentNode instanceof Text && currentNode.data.length > 0) {
-      textNodes.push(currentNode);
-    }
-    currentNode = walker.nextNode();
-  }
+  const segments = getRichParagraphTextSegments(paragraphNode);
 
   let paragraphOffset = 0;
 
-  for (const textNode of textNodes) {
-    const textContent = textNode.data;
+  for (const segment of segments) {
+    if (segment.kind === "break") {
+      paragraphOffset += 1;
+      continue;
+    }
+
+    const textNode = segment.node;
+    const textContent = segment.text;
     const nodeStart = paragraphOffset;
     const nodeEnd = nodeStart + textContent.length;
     paragraphOffset = nodeEnd;
@@ -3880,7 +3945,7 @@ export function ReaderPage() {
 
     const renderSearchMatches = (text: string, keyPrefix: string) => {
       if (!activeSearchQuery) {
-        return [<span key={`${keyPrefix}-plain`}>{text}</span>];
+        return renderTextWithLineBreaks(text, `${keyPrefix}-plain`);
       }
 
       const normalizedText = text.toLocaleLowerCase("es");
@@ -3893,13 +3958,13 @@ export function ReaderPage() {
         const nextMatchIndex = normalizedText.indexOf(normalizedQuery, cursor);
         if (nextMatchIndex === -1) {
           if (cursor < text.length) {
-            matchNodes.push(<span key={`${keyPrefix}-tail-${matchIndex}`}>{text.slice(cursor)}</span>);
+            matchNodes.push(...renderTextWithLineBreaks(text.slice(cursor), `${keyPrefix}-tail-${matchIndex}`));
           }
           break;
         }
 
         if (nextMatchIndex > cursor) {
-          matchNodes.push(<span key={`${keyPrefix}-text-${matchIndex}`}>{text.slice(cursor, nextMatchIndex)}</span>);
+          matchNodes.push(...renderTextWithLineBreaks(text.slice(cursor, nextMatchIndex), `${keyPrefix}-text-${matchIndex}`));
         }
 
         matchNodes.push(
@@ -3912,7 +3977,7 @@ export function ReaderPage() {
         matchIndex += 1;
       }
 
-      return matchNodes.length > 0 ? matchNodes : [<span key={`${keyPrefix}-fallback`}>{text}</span>];
+      return matchNodes.length > 0 ? matchNodes : renderTextWithLineBreaks(text, `${keyPrefix}-fallback`);
     };
 
     return segments.map((segment, index) => {
