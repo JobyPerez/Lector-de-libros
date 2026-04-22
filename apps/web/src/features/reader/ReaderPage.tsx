@@ -4387,6 +4387,8 @@ export function ReaderPage() {
             expandedNoteId={expandedNavigationNoteId}
             isUpdatingNote={isUpdatingNote}
             items={orderedNavigationItems}
+            onOutlineEditClick={closeNavigationPanel}
+            outlineEditHref={`/books/${bookId}/outline/edit`}
             outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
             onBeginHighlightEditing={beginNavigationHighlightEditing}
             onBeginNoteEditing={beginNavigationNoteEditing}
