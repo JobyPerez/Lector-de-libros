@@ -4013,6 +4013,7 @@ export function ReaderPage() {
   }
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
   const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
+  const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF";
 
   function renderReaderHeaderActionButtons(buttonClassName: string, onAction?: () => void) {
     const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
@@ -4081,13 +4082,13 @@ export function ReaderPage() {
             <AddPagesIcon />
           </Link>
         ) : null}
-        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+        {canEditImportedPage ? (
           <Link
-            aria-label="Editar OCR de esta página"
+            aria-label="Editar esta página"
             className={buttonClassName}
             onClick={onAction}
             state={{ returnTo: `/books/${bookId}?page=${currentPageNumber}` }}
-            title="Editar OCR de esta página"
+            title="Editar esta página"
             to={reviewOcrLink}
           >
             <OriginalPageIcon />

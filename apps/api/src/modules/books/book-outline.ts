@@ -38,6 +38,82 @@ function createGeneratedChapterSlug(title: string): string {
 
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
 
+function createOutlineLocationKey(entry: Pick<BookOutlineEntry, "pageNumber" | "paragraphNumber">): string {
+  return `${entry.pageNumber}:${entry.paragraphNumber}`;
+}
+
+function mergeStoredAndDerivedOutline(
+  storedOutline: BookOutlineEntry[],
+  derivedOutline: BookOutlineEntry[],
+  options?: { preferStored?: boolean }
+): BookOutlineEntry[] {
+  const mergedEntries = new Map<string, BookOutlineEntry>();
+  const preferStored = options?.preferStored === true;
+
+  for (const entry of storedOutline) {
+    mergedEntries.set(createOutlineLocationKey(entry), entry);
+  }
+
+  for (const entry of derivedOutline) {
+    const entryKey = createOutlineLocationKey(entry);
+    if (preferStored && mergedEntries.has(entryKey)) {
+      continue;
+    }
+
+    mergedEntries.set(entryKey, entry);
+  }
+
+  return Array.from(mergedEntries.values());
+}
+
+async function resolveOutlineEntrySequenceNumbers(
+  connection: DatabaseConnection,
+  bookId: string,
+  entries: BookOutlineEntry[]
+): Promise<BookOutlineEntry[]> {
+  if (entries.length === 0) {
+    return [];
+  }
+
+  const result = await connection.execute(
+    `
+      SELECT
+        page_number AS "pageNumber",
+        paragraph_number AS "paragraphNumber",
+        sequence_number AS "sequenceNumber"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+    `,
+    { bookId }
+  );
+
+  const sequenceLookup = new Map<string, number>();
+  for (const row of (result.rows ?? []) as Array<{ pageNumber: number; paragraphNumber: number; sequenceNumber: number }>) {
+    sequenceLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, row.sequenceNumber);
+  }
+
+  return [...entries]
+    .map((entry, index) => ({
+      ...entry,
+      sequenceNumber: sequenceLookup.get(createOutlineLocationKey(entry)) ?? entry.sequenceNumber ?? index + 1
+    }))
+    .sort((left, right) => {
+      if (left.sequenceNumber !== right.sequenceNumber) {
+        return left.sequenceNumber - right.sequenceNumber;
+      }
+
+      if (left.pageNumber !== right.pageNumber) {
+        return left.pageNumber - right.pageNumber;
+      }
+
+      if (left.paragraphNumber !== right.paragraphNumber) {
+        return left.paragraphNumber - right.paragraphNumber;
+      }
+
+      return left.level - right.level;
+    });
+}
+
 async function getStoredBookOutlineSource(connection: DatabaseConnection, bookId: string): Promise<StoredBookOutlineSource | null> {
   const result = await connection.execute(
     `
@@ -161,9 +237,18 @@ export async function resolveBookOutline(connection: DatabaseConnection, bookId:
 export async function resolveBookOutlineWithSource(connection: DatabaseConnection, bookId: string): Promise<ResolvedBookOutline> {
   const storedOutline = await listStoredBookOutline(connection, bookId);
   if (storedOutline.length > 0) {
+    const storedSource = await getStoredBookOutlineSource(connection, bookId) ?? "MANUAL";
+
+    const derivedOutline = await buildDerivedBookOutline(connection, bookId);
     return {
-      outline: storedOutline,
-      source: await getStoredBookOutlineSource(connection, bookId) ?? "MANUAL"
+      outline: await resolveOutlineEntrySequenceNumbers(
+        connection,
+        bookId,
+        mergeStoredAndDerivedOutline(storedOutline, derivedOutline, {
+          preferStored: storedSource === "MANUAL"
+        })
+      ),
+      source: storedSource
     };
   }
 

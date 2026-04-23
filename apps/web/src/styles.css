@@ -1441,6 +1441,10 @@ textarea {
   grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
 }
 
+.builder-review-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .reader-header-actions {
   display: none;
 }

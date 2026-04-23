@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { ImportedDocument, ImportedPage } from "./book-import.js";
+import type { ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 import { buildRichPageFromParagraphs } from "./rich-content.js";
 
 type PdfTextItem = {
@@ -37,6 +37,18 @@ type PdfPageMetrics = {
   indentThreshold: number;
   paragraphBreakGap: number;
   typicalLineHeight: number;
+};
+
+type PdfOutlineItem = {
+  dest?: unknown;
+  items?: PdfOutlineItem[];
+  title?: string;
+};
+
+type PdfOutlineDocument = {
+  getDestination: (destinationId: string) => Promise<unknown>;
+  getOutline: () => Promise<PdfOutlineItem[] | null>;
+  getPageIndex: (reference: never) => Promise<number>;
 };
 
 const sameLineTolerance = 2;
@@ -457,6 +469,126 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
     .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
 }
 
+function normalizeOutlineTitle(value: string): string {
+  return normalizeWhitespace(value).toLocaleLowerCase("es");
+}
+
+function resolveOutlineParagraphNumber(title: string, page: ImportedPage | undefined): number {
+  if (!page || page.paragraphs.length === 0) {
+    return 1;
+  }
+
+  const normalizedTitle = normalizeOutlineTitle(title);
+  if (!normalizedTitle) {
+    return 1;
+  }
+
+  const normalizedParagraphs = page.paragraphs.map((paragraph) => normalizeOutlineTitle(paragraph.replace(/\n+/gu, " ")));
+  const exactMatchIndex = normalizedParagraphs.findIndex((paragraph) => paragraph === normalizedTitle);
+  if (exactMatchIndex >= 0) {
+    return exactMatchIndex + 1;
+  }
+
+  const prefixMatchIndex = normalizedParagraphs.findIndex((paragraph) => paragraph.startsWith(normalizedTitle));
+  if (prefixMatchIndex >= 0) {
+    return prefixMatchIndex + 1;
+  }
+
+  const inclusiveMatchIndex = normalizedParagraphs.findIndex((paragraph) => {
+    return normalizedTitle.length >= 6
+      && (paragraph.includes(normalizedTitle) || normalizedTitle.includes(paragraph));
+  });
+  if (inclusiveMatchIndex >= 0) {
+    return inclusiveMatchIndex + 1;
+  }
+
+  return 1;
+}
+
+async function resolvePdfOutlinePageNumber(pdfDocument: PdfOutlineDocument, destination: unknown): Promise<number | null> {
+  if (!destination) {
+    return null;
+  }
+
+  const explicitDestination = Array.isArray(destination)
+    ? destination
+    : typeof destination === "string"
+      ? await pdfDocument.getDestination(destination)
+      : null;
+
+  if (!Array.isArray(explicitDestination) || explicitDestination.length === 0) {
+    return null;
+  }
+
+  const target = explicitDestination[0];
+  if (typeof target === "number" && Number.isInteger(target)) {
+    return target + 1;
+  }
+
+  if (!target || typeof target !== "object") {
+    return null;
+  }
+
+  try {
+    return (await pdfDocument.getPageIndex(target as never)) + 1;
+  } catch {
+    return null;
+  }
+}
+
+async function collectPdfOutlineEntries(
+  pdfDocument: PdfOutlineDocument,
+  outlineItems: PdfOutlineItem[],
+  pages: ImportedPage[],
+  level = 1,
+  entries: ImportedOutlineEntry[] = [],
+  seenKeys: Set<string> = new Set()
+): Promise<ImportedOutlineEntry[]> {
+  for (const outlineItem of outlineItems) {
+    const normalizedTitle = normalizeWhitespace(outlineItem.title ?? "");
+    if (normalizedTitle) {
+      const pageNumber = await resolvePdfOutlinePageNumber(pdfDocument, outlineItem.dest);
+      if (pageNumber && pageNumber >= 1) {
+        const page = pages.find((currentPage) => currentPage.pageNumber === pageNumber);
+        const paragraphNumber = resolveOutlineParagraphNumber(normalizedTitle, page);
+        const dedupeKey = `${pageNumber}:${paragraphNumber}:${normalizedTitle.toLocaleLowerCase("es")}`;
+
+        if (!seenKeys.has(dedupeKey)) {
+          seenKeys.add(dedupeKey);
+          entries.push({
+            level: Math.max(1, Math.min(6, level)),
+            pageNumber,
+            paragraphNumber,
+            title: normalizedTitle
+          });
+        }
+      }
+    }
+
+    if (Array.isArray(outlineItem.items) && outlineItem.items.length > 0) {
+      await collectPdfOutlineEntries(pdfDocument, outlineItem.items, pages, level + 1, entries, seenKeys);
+    }
+  }
+
+  return entries;
+}
+
+async function extractPdfOutlineEntries(
+  pdfDocument: PdfOutlineDocument,
+  pages: ImportedPage[]
+): Promise<ImportedOutlineEntry[]> {
+  try {
+    const outline = await pdfDocument.getOutline();
+    if (!outline || outline.length === 0) {
+      return [];
+    }
+
+    return collectPdfOutlineEntries(pdfDocument, outline as PdfOutlineItem[], pages);
+  } catch {
+    return [];
+  }
+}
+
 export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
   const pdfModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const pdfDocument = await pdfModule.getDocument(new Uint8Array(fileBuffer)).promise;
@@ -543,7 +675,10 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
     });
   }
 
+  const outlineEntries = await extractPdfOutlineEntries(pdfDocument, pages);
+
   return {
+    ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
     pages,
     totalPages: pages.length,
     totalParagraphs: pages.reduce((count, page) => count + page.paragraphs.length, 0)

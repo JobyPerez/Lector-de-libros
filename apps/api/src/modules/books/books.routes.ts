@@ -3748,8 +3748,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      if (book.sourceType !== "IMAGES") {
-        return reply.status(409).send({ message: "La edición OCR solo está disponible para libros creados desde imágenes." });
+      if (book.sourceType !== "IMAGES" && book.sourceType !== "PDF") {
+        return reply.status(409).send({ message: "La edición de páginas solo está disponible para libros PDF o creados desde imágenes." });
       }
 
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
@@ -3774,7 +3774,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         pageNumber: params.pageNumber,
         paragraphs,
         rawText: richPage.rawText || (page.rawText ?? payload.editedText),
-        ...(payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
+        ...(book.sourceType === "IMAGES" && payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
       });
 
       await connection.commit();

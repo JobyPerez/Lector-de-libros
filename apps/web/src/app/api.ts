@@ -244,8 +244,8 @@ export type ImageOcrMode = "LOCAL" | "VISION";
 export type ImageRotation = 0 | 90 | 180 | 270;
 
 type ImageOcrRequestOptions = {
-  ocrMode?: ImageOcrMode;
-  promptOverride?: string;
+  ocrMode?: ImageOcrMode | undefined;
+  promptOverride?: string | undefined;
 };
 
 export type ParagraphContent = {
@@ -579,7 +579,12 @@ export async function createImageBook(accessToken: string, payload: FormData, op
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: { afterPage?: number; ocrMode?: ImageOcrMode; progressId?: string; promptOverride?: string }) {
+export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: {
+  afterPage?: number | undefined;
+  ocrMode?: ImageOcrMode | undefined;
+  progressId?: string | undefined;
+  promptOverride?: string | undefined;
+}) {
   const searchParams = new URLSearchParams();
   if (options?.afterPage !== undefined) {
     searchParams.set("afterPage", String(options.afterPage));

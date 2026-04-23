@@ -763,7 +763,8 @@ export function BookBuilderPage() {
   });
 
   const imageBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES");
-  const selectedReviewBook = imageBooks.find((book) => book.bookId === reviewBookId) ?? null;
+  const reviewableBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES" || book.sourceType === "PDF");
+  const selectedReviewBook = reviewableBooks.find((book) => book.bookId === reviewBookId) ?? null;
   const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
   const requestedReviewPage = requestedReviewPageParam ? Number(requestedReviewPageParam) : Number.NaN;
   const requestedInsertAfterPage = requestedInsertAfterPageParam ? Number(requestedInsertAfterPageParam) : Number.NaN;
@@ -959,20 +960,17 @@ export function BookBuilderPage() {
 
   useEffect(() => {
     const firstImageBook = imageBooks[0];
+    const firstReviewableBook = reviewableBooks[0];
     const hasRequestedAppendBook = requestedAppendBookId
       ? imageBooks.some((book) => book.bookId === requestedAppendBookId)
       : false;
     const requestedReviewBook = requestedReviewBookId
-      ? imageBooks.find((book) => book.bookId === requestedReviewBookId) ?? null
+      ? reviewableBooks.find((book) => book.bookId === requestedReviewBookId) ?? null
       : null;
 
     if (!firstImageBook) {
       setSelectedBookId("");
-      setReviewBookId("");
-      return;
-    }
-
-    if (!selectedBookId) {
+    } else if (!selectedBookId) {
       if (hasRequestedAppendBook) {
         setSelectedBookId(requestedAppendBookId);
       } else {
@@ -980,6 +978,13 @@ export function BookBuilderPage() {
       }
     } else if (!imageBooks.some((book) => book.bookId === selectedBookId)) {
       setSelectedBookId(firstImageBook.bookId);
+    }
+
+    if (!firstReviewableBook) {
+      setReviewBookId("");
+      if (isReviewOnlyMode) {
+        return;
+      }
     }
 
     if (!isReviewOnlyMode) {
@@ -996,14 +1001,14 @@ export function BookBuilderPage() {
             : 1
         );
       } else {
-        setReviewBookId(firstImageBook.bookId);
+        setReviewBookId(firstReviewableBook?.bookId ?? "");
         setReviewPageNumber(1);
       }
-    } else if (!imageBooks.some((book) => book.bookId === reviewBookId)) {
-      setReviewBookId(firstImageBook.bookId);
+    } else if (!reviewableBooks.some((book) => book.bookId === reviewBookId)) {
+      setReviewBookId(firstReviewableBook?.bookId ?? "");
       setReviewPageNumber(1);
     }
-  }, [imageBooks, isReviewOnlyMode, requestedAppendBookId, requestedReviewBookId, requestedReviewPage, reviewBookId, selectedBookId]);
+  }, [imageBooks, isReviewOnlyMode, requestedAppendBookId, requestedReviewBookId, requestedReviewPage, reviewBookId, reviewableBooks, selectedBookId]);
 
   useEffect(() => {
     const page = reviewPageQuery.data?.page;
@@ -2117,6 +2122,8 @@ export function BookBuilderPage() {
   const reviewImageRotationDirty = reviewImageRotation !== originalReviewImageRotation;
   const reviewImageCropDirty = !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
+  const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType !== "PDF";
+  const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
   const isReviewDirty = editedText !== originalEditedText || hasPendingReviewImageEdits;
   const reviewPageBookmarkCount = reviewAnnotationsQuery.data?.bookmarks.length ?? 0;
@@ -2690,20 +2697,21 @@ export function BookBuilderPage() {
           </button>
         </div>
 
-        {imageBooks.length === 0 ? (
+        {reviewableBooks.length === 0 ? (
           <div className="empty-state">
-            <p>Todavía no hay libros creados desde imágenes para revisar.</p>
+            <p>Todavía no hay libros PDF o creados desde imágenes para revisar.</p>
           </div>
         ) : (
           <>
             {reviewPageQuery.isLoading ? <p className="subdued">Cargando página para revisión...</p> : null}
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
 
-            <div className="builder-review-grid">
+            <div className={shouldShowReviewSourcePanel ? "builder-review-grid" : "builder-review-grid builder-review-grid-single"}>
+              {shouldShowReviewSourcePanel ? (
               <article className={isRerunningOcr ? "review-panel review-panel-processing" : "review-panel"}>
                 <div className="source-panel-header">
                   <div>
-                    <p className="page-label">Imagen original</p>
+                    <p className="page-label">{hasReviewImage ? "Imagen original" : "Contenido fuente"}</p>
                     {hasReviewImage ? (
                       <p className={hasPendingReviewImageEdits ? "helper-text review-image-rotation-status is-pending" : "helper-text review-image-rotation-status"}>
                         {isReviewCropMode
@@ -2831,6 +2839,7 @@ export function BookBuilderPage() {
                   )
                 )}
               </article>
+              ) : null}
 
               <article className="review-panel">
                 <form className="stack-form review-editor-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
@@ -2956,7 +2965,7 @@ export function BookBuilderPage() {
           </>
         )}
       </section>
-      {imageBooks.length > 0 ? (
+      {reviewableBooks.length > 0 ? (
         <>
           {isReviewIndexVisible ? (
             <aside aria-label="Índice de páginas para OCR" className="reader-navigation-panel" ref={reviewIndexPanelRef} role="dialog">
@@ -3120,6 +3129,7 @@ export function BookBuilderPage() {
               <PageNextIcon />
             </button>
 
+            {canRerunReviewOcr ? (
             <div className="review-floating-ocr-menu">
               {isReviewOcrMenuVisible ? (
                 <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" role="dialog">
@@ -3183,6 +3193,7 @@ export function BookBuilderPage() {
                 <span>OCR</span>
               </button>
             </div>
+            ) : null}
 
             <button
               aria-label={isSavingReview ? "Guardando cambios" : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar cambios")}
