@@ -57,6 +57,7 @@ const READER_POPOVER_HEIGHT_ESTIMATE_PX = 340;
 const READER_POPOVER_WIDTH_ESTIMATE_PX = 432;
 const READER_POPOVER_VIEWPORT_MARGIN_PX = 12;
 const READER_POPOVER_GAP_PX = 14;
+const READER_SELECTION_DEBOUNCE_MS = 80;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
 const READER_BOOKMARK_ANIMATION_MS = 420;
 
@@ -1039,7 +1040,7 @@ function buildSelectionDraft(
   const charStart = startRange.toString().length;
   const charEnd = endRange.toString().length;
   const selectedText = selection.toString().trim();
-  const rect = range.getBoundingClientRect();
+  const rect = getSelectionAnchorRect(range);
 
   if (charEnd <= charStart || !selectedText || rect.width === 0) {
     return null;
@@ -1059,6 +1060,17 @@ function buildSelectionDraft(
     },
     selectedText
   };
+}
+
+function getSelectionAnchorRect(range: Range) {
+  const rangeRect = range.getBoundingClientRect();
+  if (rangeRect.width > 0 || rangeRect.height > 0) {
+    return rangeRect;
+  }
+
+  const clientRects = Array.from(range.getClientRects());
+  const firstVisibleRect = clientRects.find((rect) => rect.width > 0 || rect.height > 0);
+  return firstVisibleRect ?? rangeRect;
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -1166,6 +1178,7 @@ export function ReaderPage() {
   const pageTurnTimeoutRef = useRef<number | null>(null);
   const bookmarkAnimationTimeoutRef = useRef<number | null>(null);
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
+  const selectionUpdateTimeoutRef = useRef<number | null>(null);
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
@@ -1221,6 +1234,10 @@ export function ReaderPage() {
 
       if (navigationPanelCloseTimeoutRef.current !== null) {
         window.clearTimeout(navigationPanelCloseTimeoutRef.current);
+      }
+
+      if (selectionUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(selectionUpdateTimeoutRef.current);
       }
     };
   }, []);
@@ -2180,7 +2197,7 @@ export function ReaderPage() {
       return;
     }
 
-    function handleSelectionChange() {
+    function updateSelectionDraftFromDocument() {
       const selection = window.getSelection();
       const activeElement = document.activeElement;
       const isInteractingWithPopover = Boolean(
@@ -2209,14 +2226,76 @@ export function ReaderPage() {
       }
     }
 
-    document.addEventListener("mouseup", handleSelectionChange);
-    document.addEventListener("keyup", handleSelectionChange);
-    document.addEventListener("touchend", handleSelectionChange);
+    function scheduleSelectionDraftUpdate() {
+      if (selectionUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(selectionUpdateTimeoutRef.current);
+      }
+
+      selectionUpdateTimeoutRef.current = window.setTimeout(() => {
+        selectionUpdateTimeoutRef.current = null;
+        updateSelectionDraftFromDocument();
+      }, READER_SELECTION_DEBOUNCE_MS);
+    }
+
+    function handleSelectionEvent() {
+      updateSelectionDraftFromDocument();
+    }
+
+    function handleSelectionChange() {
+      scheduleSelectionDraftUpdate();
+    }
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    document.addEventListener("mouseup", handleSelectionEvent);
+    document.addEventListener("keyup", handleSelectionEvent);
+    document.addEventListener("touchend", handleSelectionEvent);
 
     return () => {
-      document.removeEventListener("mouseup", handleSelectionChange);
-      document.removeEventListener("keyup", handleSelectionChange);
-      document.removeEventListener("touchend", handleSelectionChange);
+      if (selectionUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(selectionUpdateTimeoutRef.current);
+        selectionUpdateTimeoutRef.current = null;
+      }
+
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      document.removeEventListener("mouseup", handleSelectionEvent);
+      document.removeEventListener("keyup", handleSelectionEvent);
+      document.removeEventListener("touchend", handleSelectionEvent);
+    };
+  }, [paragraphsById]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") {
+      return;
+    }
+
+    function handleReaderContextMenu(event: MouseEvent) {
+      if (!livePageRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) {
+        return;
+      }
+
+      const selectedText = selection.toString().trim();
+      if (!selectedText) {
+        return;
+      }
+
+      const nextDraft = buildSelectionDraft(selection, paragraphsById, livePageRef.current);
+      if (!nextDraft) {
+        return;
+      }
+
+      event.preventDefault();
+      setSelectionDraft(nextDraft);
+    }
+
+    document.addEventListener("contextmenu", handleReaderContextMenu);
+
+    return () => {
+      document.removeEventListener("contextmenu", handleReaderContextMenu);
     };
   }, [paragraphsById]);
 

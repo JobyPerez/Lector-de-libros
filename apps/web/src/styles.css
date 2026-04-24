@@ -2015,6 +2015,9 @@ textarea {
   display: grid;
   gap: 1rem;
   margin-top: 1.5rem;
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: none;
 }
 
 .review-preview-panel {
