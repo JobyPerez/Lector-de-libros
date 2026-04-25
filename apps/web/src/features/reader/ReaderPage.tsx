@@ -3699,6 +3699,11 @@ export function ReaderPage() {
     setCurrentPageNumber(boundedPageNumber);
   }
 
+  function handleNavigationPanelSelection(pageNumber: number, paragraphNumber: number | "last" = 1) {
+    closeNavigationPanel();
+    void goToLocation(pageNumber, paragraphNumber);
+  }
+
   async function goToPage(nextPageNumber: number) {
     const shouldContinuePlayback = autoPlay || isAudioPlaying || isAudioLoading;
     await goToLocation(nextPageNumber, 1, { continuePlayback: shouldContinuePlayback });
@@ -4489,10 +4494,10 @@ export function ReaderPage() {
             onEditingNoteTextChange={setEditingNavigationNoteText}
             onSaveHighlightNote={(highlightId, noteText) => void handleCreateNoteForHighlight(highlightId, noteText, "navigation")}
             onSaveNote={(noteId, noteText, color) => void handleUpdateExistingNote(noteId, noteText, "navigation", color ?? undefined)}
-            onSelectBookmark={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
-            onSelectHighlight={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
-            onSelectNote={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
-            onSelectToc={(item) => void goToLocation(item.pageNumber, item.paragraphNumber)}
+            onSelectBookmark={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
+            onSelectHighlight={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
+            onSelectNote={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
+            onSelectToc={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
             onSummaryClick={closeNavigationPanel}
             onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
             summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
