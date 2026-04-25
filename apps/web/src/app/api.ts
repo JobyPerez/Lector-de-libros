@@ -723,6 +723,14 @@ export function updateBookOutline(accessToken: string, bookId: string, payload: 
   });
 }
 
+export function regenerateBookOutline(accessToken: string, bookId: string) {
+  return request<void>(`/books/${bookId}/outline/regenerate`, {
+    accessToken,
+    body: {},
+    method: "POST"
+  });
+}
+
 export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string }) {
   return request<{ bookmark: ReaderBookmark }>(`/books/${bookId}/bookmarks`, {
     accessToken,

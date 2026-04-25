@@ -11,7 +11,7 @@ import { getConnection } from "../../config/database.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
-import { replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
+import { buildDerivedBookOutline, replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, syncBookOutlineForPage, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
@@ -2211,6 +2211,8 @@ async function replaceBookPageParagraphs(
       delta
     }
   );
+
+  await syncBookOutlineForPage(connection, options.bookId, options.pageNumber);
 }
 
 async function insertProcessedImagePages(
@@ -3282,8 +3284,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      if (book.sourceType !== "IMAGES") {
-        return reply.status(409).send({ message: "Solo puedes borrar páginas de libros creados desde imágenes." });
+      if (book.sourceType !== "IMAGES" && book.sourceType !== "PDF") {
+        return reply.status(409).send({ message: "Solo puedes borrar páginas de libros PDF o creados desde imágenes." });
       }
 
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
@@ -3309,6 +3311,47 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const nextPageNumber = updatedTotalPages === 0
         ? null
         : Math.min(params.pageNumber, updatedTotalPages);
+
+      await connection.execute(
+        `
+          DELETE FROM user_notes
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      await connection.execute(
+        `
+          DELETE FROM user_book_section_summaries
+          WHERE book_id = :bookId
+            AND chapter_id IN (
+              SELECT chapter_id
+              FROM book_chapters
+              WHERE book_id = :bookId
+                AND page_number = :pageNumber
+            )
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+
+      await connection.execute(
+        `
+          DELETE FROM book_chapters
+          WHERE book_id = :bookId
+            AND page_number = :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
 
       await connection.execute(
         `
@@ -4078,6 +4121,33 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const resolvedOutline = await resolveBookOutlineWithSource(connection, params.bookId);
       return reply.send({ outline: resolvedOutline.outline, outlineSource: resolvedOutline.source });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/:bookId/outline/regenerate", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const derivedOutline = await buildDerivedBookOutline(connection, params.bookId);
+      await replaceBookOutline(connection, params.bookId, derivedOutline, "MANUAL");
+      await connection.commit();
+
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }

@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { fetchBook, fetchBookOutline, updateBookOutline, type BookOutlineEntry, type BookOutlineSource } from "../../app/api";
+import { fetchBook, fetchBookOutline, regenerateBookOutline, updateBookOutline, type BookOutlineEntry, type BookOutlineSource } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
 
@@ -40,6 +40,7 @@ export function OutlineEditorPage() {
   const [outlineEntries, setOutlineEntries] = useState<OutlineEditorEntry[]>([]);
   const [outlineError, setOutlineError] = useState<string | null>(null);
   const [outlineSuccess, setOutlineSuccess] = useState<string | null>(null);
+  const [isRegeneratingOutline, setIsRegeneratingOutline] = useState(false);
   const [isSavingOutline, setIsSavingOutline] = useState(false);
 
   const bookQuery = useQuery({
@@ -128,6 +129,31 @@ export function OutlineEditorPage() {
     }
   }
 
+  async function handleRegenerateOutline() {
+    if (!accessToken || !bookId) {
+      return;
+    }
+
+    setOutlineError(null);
+    setOutlineSuccess(null);
+    setIsRegeneratingOutline(true);
+
+    try {
+      await regenerateBookOutline(accessToken, bookId);
+      await Promise.all([
+        outlineQuery.refetch(),
+        queryClient.invalidateQueries({ queryKey: ["reader-navigation", bookId] }),
+        queryClient.invalidateQueries({ queryKey: ["book-outline", bookId] })
+      ]);
+
+      setOutlineSuccess("El índice se regeneró con los títulos encontrados en el libro.");
+    } catch (error) {
+      setOutlineError(error instanceof Error ? error.message : "No se pudo regenerar el índice.");
+    } finally {
+      setIsRegeneratingOutline(false);
+    }
+  }
+
   return (
     <div className="page-stack shelf-layout">
       <section className="panel form-panel wide-panel import-panel-inline screen-scene">
@@ -153,9 +179,14 @@ export function OutlineEditorPage() {
               <p className="eyebrow">Índice</p>
               <h3>Editor de capítulos</h3>
             </div>
-            <button className="secondary-button" onClick={addOutlineEntry} type="button">
-              Añadir entrada
-            </button>
+            <div className="reader-navigation-section-actions">
+              <button className="secondary-button" disabled={isRegeneratingOutline || isSavingOutline || outlineQuery.isLoading} onClick={() => void handleRegenerateOutline()} type="button">
+                {isRegeneratingOutline ? "Regenerando..." : "Regenerar índice"}
+              </button>
+              <button className="secondary-button" disabled={isRegeneratingOutline || isSavingOutline} onClick={addOutlineEntry} type="button">
+                Añadir entrada
+              </button>
+            </div>
           </div>
 
           {bookQuery.isLoading || outlineQuery.isLoading ? <p>Cargando índice…</p> : null}
@@ -216,7 +247,7 @@ export function OutlineEditorPage() {
           </div>
 
           <div className="import-panel-actions">
-            <button className="primary-button" disabled={isSavingOutline || outlineQuery.isLoading} onClick={() => void handleSaveOutline()} type="button">
+            <button className="primary-button" disabled={isSavingOutline || isRegeneratingOutline || outlineQuery.isLoading} onClick={() => void handleSaveOutline()} type="button">
               {isSavingOutline ? "Guardando índice..." : "Guardar índice"}
             </button>
             <button className="secondary-button" onClick={() => navigate(`/books/${bookId}`)} type="button">

@@ -2678,9 +2678,18 @@ textarea {
   box-shadow: 0 10px 24px rgba(25, 52, 40, 0.22);
 }
 
+.reader-float-button.danger {
+  background: rgba(140, 31, 49, 0.1);
+  color: var(--danger);
+}
+
 .reader-float-button:hover:not(:disabled) {
   transform: translateY(-1px);
   background: rgba(42, 87, 66, 0.16);
+}
+
+.reader-float-button.danger:hover:not(:disabled) {
+  background: rgba(140, 31, 49, 0.16);
 }
 
 .reader-float-button.primary:hover:not(:disabled) {

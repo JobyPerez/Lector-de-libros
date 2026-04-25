@@ -5,6 +5,7 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import {
   appendImagesToBook,
   createImageBook,
+  deleteBookPage,
   fetchAppendImagesImportProgress,
   fetchBookPage,
   fetchBookPageImage,
@@ -117,6 +118,18 @@ function SaveOcrIcon() {
       <path d="M7 5.5H15.8L18.5 8.2V18C18.5 18.8284 17.8284 19.5 17 19.5H7C6.17157 19.5 5.5 18.8284 5.5 18V7C5.5 6.17157 6.17157 5.5 7 5.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M8.5 5.5V10H14.5V5.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M9 15H15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function DeletePageIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M8 7.25H16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 7.25V5.75C9 5.34 9.34 5 9.75 5H14.25C14.66 5 15 5.34 15 5.75V7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M7.25 7.25L8 18.25C8.03 18.67 8.38 19 8.8 19H15.2C15.62 19 15.97 18.67 16 18.25L16.75 7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10.25 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.75 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ToolbarIcon>
   );
 }
@@ -713,6 +726,7 @@ export function BookBuilderPage() {
   const [isCreating, setIsCreating] = useState(false);
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
+  const [isDeletingReviewPage, setIsDeletingReviewPage] = useState(false);
   const [isRerunningOcr, setIsRerunningOcr] = useState(false);
   const [ocrRetryState, setOcrRetryState] = useState<OcrRetryState | null>(null);
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
@@ -1828,6 +1842,54 @@ export function BookBuilderPage() {
     } finally {
       setIsRerunningOcr(false);
       setIsSavingReview(false);
+    }
+  }
+
+  async function handleDeleteReviewPage() {
+    if (!accessToken || !reviewBookId || !selectedReviewBook || isDeletingReviewPage || isSavingReview) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Se borrará la página ${reviewPageNumber} de este libro. Esta acción no se puede deshacer. ¿Continuar?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setReviewError(null);
+    setReviewMessage(null);
+    setIsDeletingReviewPage(true);
+    setIsReviewOcrMenuVisible(false);
+    setIsReviewIndexVisible(false);
+
+    try {
+      const response = await deleteBookPage(accessToken, reviewBookId, reviewPageNumber);
+      await Promise.all([booksQuery.refetch(), reviewNavigationQuery.refetch()]);
+
+      if (response.nextPageNumber === null) {
+        if (response.book.sourceType === "IMAGES") {
+          navigate({
+            hash: "#append-pages",
+            pathname: "/builder",
+            search: `?appendBookId=${encodeURIComponent(reviewBookId)}&insertAfterPage=0`
+          });
+          return;
+        }
+
+        navigate("/");
+        return;
+      }
+
+      setReviewPageNumber(response.nextPageNumber);
+      setReviewPageJumpValue(String(response.nextPageNumber));
+      setReviewMessage(`La página ${response.deletedPageNumber} se borró correctamente.`);
+
+      if (response.nextPageNumber === reviewPageNumber) {
+        await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch()]);
+      }
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "No se pudo borrar la página.");
+    } finally {
+      setIsDeletingReviewPage(false);
     }
   }
 
@@ -3110,7 +3172,7 @@ export function BookBuilderPage() {
             <button
               aria-label="Página anterior"
               className="reader-float-button"
-              disabled={reviewPageNumber <= 1}
+              disabled={isDeletingReviewPage || reviewPageNumber <= 1}
               onClick={() => changeReviewPage(-1)}
               title="Página anterior"
               type="button"
@@ -3121,12 +3183,23 @@ export function BookBuilderPage() {
             <button
               aria-label="Página siguiente"
               className="reader-float-button"
-              disabled={reviewPageNumber >= (selectedReviewBook?.totalPages ?? 0)}
+              disabled={isDeletingReviewPage || reviewPageNumber >= (selectedReviewBook?.totalPages ?? 0)}
               onClick={() => changeReviewPage(1)}
               title="Página siguiente"
               type="button"
             >
               <PageNextIcon />
+            </button>
+
+            <button
+              aria-label={isDeletingReviewPage ? "Borrando página" : "Borrar página"}
+              className="reader-float-button danger"
+              disabled={isDeletingReviewPage || isSavingReview || !reviewBookId || isReviewCropMode}
+              onClick={() => void handleDeleteReviewPage()}
+              title={isDeletingReviewPage ? "Borrando página..." : "Borrar página"}
+              type="button"
+            >
+              <DeletePageIcon />
             </button>
 
             {canRerunReviewOcr ? (
@@ -3198,7 +3271,7 @@ export function BookBuilderPage() {
             <button
               aria-label={isSavingReview ? "Guardando cambios" : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar cambios")}
               className="reader-float-button primary"
-              disabled={isSavingReview || !reviewBookId || !isReviewDirty || isReviewCropMode}
+              disabled={isSavingReview || isDeletingReviewPage || !reviewBookId || !isReviewDirty || isReviewCropMode}
               form="ocr-review-form"
               title={isSavingReview ? "Guardando cambios..." : (!isReviewDirty ? "Sin cambios para guardar" : "Guardar cambios")}
               type="submit"

@@ -3793,12 +3793,17 @@ export function ReaderPage() {
     try {
       const response = await deleteBookPage(accessToken, bookId, currentPageNumber);
 
-      if (response.nextPageNumber === null) {
+      if (response.nextPageNumber === null && response.book.sourceType === "IMAGES") {
         navigate({
           hash: "#append-pages",
           pathname: "/builder",
           search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=0`
         });
+        return;
+      }
+
+      if (response.nextPageNumber === null) {
+        navigate("/");
         return;
       }
 
@@ -4173,7 +4178,7 @@ export function ReaderPage() {
             <OriginalPageIcon />
           </Link>
         ) : null}
-        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+        {canEditImportedPage ? (
           <button
             aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
             className={deleteButtonClassName}

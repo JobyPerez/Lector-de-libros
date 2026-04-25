@@ -42,30 +42,6 @@ function createOutlineLocationKey(entry: Pick<BookOutlineEntry, "pageNumber" | "
   return `${entry.pageNumber}:${entry.paragraphNumber}`;
 }
 
-function mergeStoredAndDerivedOutline(
-  storedOutline: BookOutlineEntry[],
-  derivedOutline: BookOutlineEntry[],
-  options?: { preferStored?: boolean }
-): BookOutlineEntry[] {
-  const mergedEntries = new Map<string, BookOutlineEntry>();
-  const preferStored = options?.preferStored === true;
-
-  for (const entry of storedOutline) {
-    mergedEntries.set(createOutlineLocationKey(entry), entry);
-  }
-
-  for (const entry of derivedOutline) {
-    const entryKey = createOutlineLocationKey(entry);
-    if (preferStored && mergedEntries.has(entryKey)) {
-      continue;
-    }
-
-    mergedEntries.set(entryKey, entry);
-  }
-
-  return Array.from(mergedEntries.values());
-}
-
 async function resolveOutlineEntrySequenceNumbers(
   connection: DatabaseConnection,
   bookId: string,
@@ -151,7 +127,17 @@ export async function listStoredBookOutline(connection: DatabaseConnection, book
   }));
 }
 
-export async function buildDerivedBookOutline(connection: DatabaseConnection, bookId: string): Promise<BookOutlineEntry[]> {
+export async function buildDerivedBookOutline(
+  connection: DatabaseConnection,
+  bookId: string,
+  options?: { pageNumber?: number }
+): Promise<BookOutlineEntry[]> {
+  const pageBinds: Record<string, number | string> = { bookId };
+  const pageNumberFilter = options?.pageNumber !== undefined ? "AND page_number = :pageNumber" : "";
+  if (options?.pageNumber !== undefined) {
+    pageBinds.pageNumber = options.pageNumber;
+  }
+
   const [pageResult, paragraphResult] = await Promise.all([
     connection.execute(
       `
@@ -161,9 +147,10 @@ export async function buildDerivedBookOutline(connection: DatabaseConnection, bo
         FROM book_pages
         WHERE book_id = :bookId
           AND html_content IS NOT NULL
+          ${pageNumberFilter}
         ORDER BY page_number ASC
       `,
-      { bookId }
+      pageBinds
     ),
     connection.execute(
       `
@@ -236,19 +223,11 @@ export async function resolveBookOutline(connection: DatabaseConnection, bookId:
 
 export async function resolveBookOutlineWithSource(connection: DatabaseConnection, bookId: string): Promise<ResolvedBookOutline> {
   const storedOutline = await listStoredBookOutline(connection, bookId);
-  if (storedOutline.length > 0) {
-    const storedSource = await getStoredBookOutlineSource(connection, bookId) ?? "MANUAL";
-
-    const derivedOutline = await buildDerivedBookOutline(connection, bookId);
+  const storedSource = await getStoredBookOutlineSource(connection, bookId);
+  if (storedSource || storedOutline.length > 0) {
     return {
-      outline: await resolveOutlineEntrySequenceNumbers(
-        connection,
-        bookId,
-        mergeStoredAndDerivedOutline(storedOutline, derivedOutline, {
-          preferStored: storedSource === "MANUAL"
-        })
-      ),
-      source: storedSource
+      outline: await resolveOutlineEntrySequenceNumbers(connection, bookId, storedOutline),
+      source: storedSource ?? "MANUAL"
     };
   }
 
@@ -314,7 +293,30 @@ export async function replaceBookOutline(
     `,
     {
       bookId,
-      outlineSource: entries.length > 0 ? source : null
+      outlineSource: source
     }
   );
+}
+
+export async function syncBookOutlineForPage(
+  connection: DatabaseConnection,
+  bookId: string,
+  pageNumber: number
+): Promise<void> {
+  const storedSource = await getStoredBookOutlineSource(connection, bookId);
+  const storedOutline = await listStoredBookOutline(connection, bookId);
+  const baseOutline = storedSource || storedOutline.length > 0
+    ? storedOutline
+    : await buildDerivedBookOutline(connection, bookId);
+  const pageOutline = await buildDerivedBookOutline(connection, bookId, { pageNumber });
+  const nextOutline = await resolveOutlineEntrySequenceNumbers(
+    connection,
+    bookId,
+    [
+      ...baseOutline.filter((entry) => entry.pageNumber !== pageNumber),
+      ...pageOutline
+    ]
+  );
+
+  await replaceBookOutline(connection, bookId, nextOutline, "MANUAL");
 }
