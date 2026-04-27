@@ -1692,7 +1692,7 @@ async function findStoredSectionSummaryForSection(
   section: BookSectionContext
 ): Promise<StoredSectionSummaryRecord | null> {
   const exactSummary = await findStoredSectionSummary(connection, bookId, section.chapterId, userId);
-  if (exactSummary || !section.isGenerated) {
+  if (exactSummary) {
     return exactSummary;
   }
 
