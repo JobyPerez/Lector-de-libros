@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigationType, useOutlet } from "react-router-dom";
 
 import { fetchCurrentUser } from "./api";
@@ -18,6 +18,11 @@ import { UsersAdminPage } from "../features/users/UsersAdminPage";
 const queryClient = new QueryClient();
 const routerBaseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
 const routeTransitionDurationMs = 320;
+const madridDateTimeFormatter = new Intl.DateTimeFormat("es-ES", {
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Europe/Madrid"
+});
 
 type RouteTransitionDirection = "back" | "forward";
 type AnimatedOutletScreen = {
@@ -26,6 +31,16 @@ type AnimatedOutletScreen = {
   node: React.ReactNode;
   phase: "enter" | "exit" | "idle";
 };
+
+function formatMadridDateTime(value: string) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return "Fecha no disponible";
+  }
+
+  return madridDateTimeFormatter.format(date);
+}
 
 function buildRouteTransitionKey(location: ReturnType<typeof useLocation>) {
   return `${location.pathname}${location.hash}`;
@@ -151,6 +166,81 @@ function ProfileIcon() {
   );
 }
 
+function VersionActivity() {
+  const [isOpen, setIsOpen] = useState(false);
+  const activityRef = useRef<HTMLSpanElement>(null);
+  const versionLabel = `v${__APP_VERSION__}`;
+  const branchLabel = __APP_BRANCH__ && __APP_BRANCH__ !== "main" ? __APP_BRANCH__ : "";
+  const buildTimeLabel = formatMadridDateTime(__APP_BUILD_TIME__);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (event.target instanceof Node && activityRef.current?.contains(event.target)) {
+        return;
+      }
+
+      setIsOpen(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsOpen(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen]);
+
+  return (
+    <span className="version-activity" ref={activityRef}>
+      <button
+        aria-expanded={isOpen}
+        aria-label={`Ver actividad de ${versionLabel}`}
+        className="app-version"
+        onClick={() => setIsOpen((current) => !current)}
+        title={branchLabel ? `Ver actividad de ${versionLabel} en ${branchLabel}` : `Ver actividad de ${versionLabel}`}
+        type="button"
+      >
+        {versionLabel}
+      </button>
+      <span className="build-time">Build: {buildTimeLabel}</span>
+
+      {isOpen ? (
+        <div className="version-activity-panel">
+          <div className="version-activity-header">
+            <strong>Actividad reciente</strong>
+            {branchLabel ? <span>Rama {branchLabel}</span> : null}
+          </div>
+          {__APP_RECENT_COMMITS__.length > 0 ? (
+            <ol className="commit-list">
+              {__APP_RECENT_COMMITS__.map((commit) => (
+                <li className="commit-list-item" key={commit.hash}>
+                  <span className="commit-subject" title={commit.subject}>{commit.subject}</span>
+                  <span className="commit-meta">
+                    {commit.authorName} · {commit.shortHash} · {formatMadridDateTime(commit.authoredAt)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p className="commit-empty">No hay commits disponibles en este build.</p>
+          )}
+        </div>
+      ) : null}
+    </span>
+  );
+}
+
 function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUser }) {
   const [isOpen, setIsOpen] = useState(false);
   const displayName = user.displayName ?? user.username;
@@ -200,7 +290,6 @@ function ProtectedShell() {
   const isHydrated = useAuthStore((state) => state.isHydrated);
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
-  const appVersionLabel = `v${__APP_VERSION__}${__APP_BRANCH__ && __APP_BRANCH__ !== "main" ? ` (${__APP_BRANCH__})` : ""}`;
 
   useEffect(() => {
     if (!accessToken || user) {
@@ -243,7 +332,7 @@ function ProtectedShell() {
           <RabbitMark className="brand-mark" title="El conejo lector" />
           <div className="brand-copy">
             <p className="eyebrow">
-              El conejo lector <span className="app-version">{appVersionLabel}</span>
+              El conejo lector <VersionActivity />
             </p>
             <h1>Biblioteca contada</h1>
           </div>
