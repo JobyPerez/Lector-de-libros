@@ -4113,6 +4113,106 @@ textarea {
   backdrop-filter: blur(8px);
 }
 
+.append-ocr-lock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 180;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(20, 36, 29, 0.48);
+  backdrop-filter: blur(10px);
+}
+
+.append-ocr-lock-dialog {
+  width: min(26rem, 100%);
+  display: grid;
+  gap: 1rem;
+  padding: 1.15rem;
+  border: 1px solid rgba(255, 253, 247, 0.32);
+  border-radius: 18px;
+  background: rgba(255, 253, 247, 0.96);
+  box-shadow: 0 24px 70px rgba(20, 36, 29, 0.28);
+}
+
+.append-ocr-lock-header {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.append-ocr-lock-header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.18rem;
+}
+
+.append-ocr-lock-progress {
+  height: 0.55rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(31, 43, 35, 0.1);
+}
+
+.append-ocr-lock-progress span {
+  display: block;
+  height: 100%;
+  min-width: 0.45rem;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--leaf), var(--amber-600));
+  transition: width 180ms ease;
+}
+
+.append-ocr-lock-status {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.append-ocr-lock-detail {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #5d665d;
+  font-size: 0.9rem;
+}
+
+.append-ocr-cancel-hold {
+  --cancel-progress: 0;
+  position: relative;
+  overflow: hidden;
+  min-height: 2.75rem;
+  border-color: rgba(140, 31, 49, 0.22);
+  background: rgba(140, 31, 49, 0.06);
+  color: var(--danger);
+  font-weight: 800;
+  touch-action: none;
+}
+
+.append-ocr-cancel-hold::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: calc(var(--cancel-progress) * 100%);
+  background: rgba(140, 31, 49, 0.16);
+  transition: width 80ms linear;
+}
+
+.append-ocr-cancel-hold:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.append-ocr-cancel-hold {
+  isolation: isolate;
+}
+
+.append-ocr-cancel-hold::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+
 @keyframes file-pill-scan {
   100% {
     transform: translateX(100%);

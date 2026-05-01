@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import {
   appendImagesToBook,
+  cancelAppendImagesImport,
   createImageBook,
   deleteBookPage,
   fetchAppendImagesImportProgress,
@@ -672,11 +673,36 @@ type OcrRetryState = {
   secondsRemaining: number;
 };
 
+type AppendResumeState = {
+  completedFiles: number;
+  insertionStartPageNumber: number | null;
+  nextAfterPage: number | null;
+};
+
+type BuilderWakeLockSentinel = {
+  addEventListener?: (type: "release", listener: () => void) => void;
+  release: () => Promise<void>;
+  released?: boolean;
+};
+
+type BuilderWakeLockApi = {
+  request: (type: "screen") => Promise<BuilderWakeLockSentinel>;
+};
+
 const maximumClientOcrRateLimitRetries = 3;
+const appendCancelHoldMilliseconds = 5000;
 
 function buildOcrRetryCountdownLabel(secondsRemaining: number) {
   const normalizedSeconds = Math.max(Math.ceil(secondsRemaining), 1);
   return `GitHub Models limitó temporalmente el OCR. Reintentando automáticamente en ${normalizedSeconds} s.`;
+}
+
+function getBuilderWakeLockApi() {
+  if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
+    return null;
+  }
+
+  return (navigator as Navigator & { wakeLock?: BuilderWakeLockApi }).wakeLock ?? null;
 }
 
 export function BookBuilderPage() {
@@ -704,6 +730,10 @@ export function BookBuilderPage() {
   const [appendReferencePageInput, setAppendReferencePageInput] = useState("1");
   const [appendProgressId, setAppendProgressId] = useState<string | null>(null);
   const [appendImportProgress, setAppendImportProgress] = useState<AppendImagesImportProgress | null>(null);
+  const [appendProgressOffset, setAppendProgressOffset] = useState(0);
+  const [appendResumeState, setAppendResumeState] = useState<AppendResumeState | null>(null);
+  const [appendCancelHoldProgress, setAppendCancelHoldProgress] = useState(0);
+  const [isAppendCancelRequested, setIsAppendCancelRequested] = useState(false);
   const [isCreateCameraModalOpen, setIsCreateCameraModalOpen] = useState(false);
   const [createCameraStream, setCreateCameraStream] = useState<MediaStream | null>(null);
   const [isCreateCameraStarting, setIsCreateCameraStarting] = useState(false);
@@ -751,6 +781,9 @@ export function BookBuilderPage() {
   const appendCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isMountedRef = useRef(true);
   const ocrRetryIntervalRef = useRef<number | null>(null);
+  const appendWakeLockRef = useRef<BuilderWakeLockSentinel | null>(null);
+  const appendCancelHoldTimeoutRef = useRef<number | null>(null);
+  const appendCancelHoldIntervalRef = useRef<number | null>(null);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -795,6 +828,18 @@ export function BookBuilderPage() {
     : appendInsertionSide === "before"
       ? Math.max(appendReferencePageNumber - 1, 0)
       : appendReferencePageNumber;
+  const appendCompletedFileCount = Math.min(
+    selectedAppendFiles.length,
+    Math.max(0, appendProgressOffset + (isAppending ? appendImportProgress?.completedFiles ?? 0 : appendResumeState?.completedFiles ?? 0))
+  );
+  const appendCurrentFileIndex = isAppending && appendImportProgress?.currentFileIndex !== null && appendImportProgress?.currentFileIndex !== undefined
+    ? Math.min(selectedAppendFiles.length - 1, appendProgressOffset + appendImportProgress.currentFileIndex)
+    : null;
+  const appendProgressStage = appendImportProgress?.stage ?? null;
+  const appendProgressTotalFiles = selectedAppendFiles.length;
+  const appendProgressCompletedPercent = appendProgressTotalFiles > 0
+    ? Math.round((appendCompletedFileCount / appendProgressTotalFiles) * 100)
+    : 0;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -805,11 +850,14 @@ export function BookBuilderPage() {
         window.clearInterval(ocrRetryIntervalRef.current);
         ocrRetryIntervalRef.current = null;
       }
+      clearAppendCancelHold();
+      void releaseAppendScreenWakeLock();
     };
   }, []);
 
   useEffect(() => {
     setAppendInsertionSide("after");
+    resetAppendResumeState();
   }, [requestedAppendBookId, requestedInsertAfterPageParam]);
 
   useEffect(() => {
@@ -835,6 +883,10 @@ export function BookBuilderPage() {
       setIsReviewPromptEditorOpen(false);
     }
   }, [reviewOcrMode]);
+
+  useEffect(() => {
+    resetAppendResumeState();
+  }, [selectedBookId, appendInsertionSide]);
 
   useEffect(() => {
     setReviewPromptOverride(defaultVisionOcrEditablePrompt);
@@ -935,6 +987,35 @@ export function BookBuilderPage() {
       window.clearInterval(intervalId);
     };
   }, [accessToken, appendProgressId, isAppending]);
+
+  useEffect(() => {
+    if (!isAppending || typeof document === "undefined") {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const activeElement = document.activeElement;
+    document.body.style.overflow = "hidden";
+    if (activeElement instanceof HTMLElement) {
+      activeElement.blur();
+    }
+    void ensureAppendScreenWakeLock();
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void ensureAppendScreenWakeLock();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      clearAppendCancelHold();
+      void releaseAppendScreenWakeLock();
+    };
+  }, [isAppending]);
 
   const reviewPageQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
@@ -1282,10 +1363,19 @@ export function BookBuilderPage() {
     event.target.value = "";
   }
 
+  function resetAppendResumeState() {
+    setAppendResumeState(null);
+    setAppendProgressOffset(0);
+    setAppendImportProgress(null);
+    setIsAppendCancelRequested(false);
+    setAppendCancelHoldProgress(0);
+  }
+
   function appendFiles(files: File[]) {
     const validFiles = files.filter(isSupportedImageFile);
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
+    resetAppendResumeState();
     setSelectedAppendFiles((currentFiles) => [...currentFiles, ...validFiles]);
 
     if (invalidFiles.length > 0) {
@@ -1517,6 +1607,7 @@ export function BookBuilderPage() {
   function clearAppendSelection() {
     setSelectedAppendFiles([]);
     setAppendError(null);
+    resetAppendResumeState();
     setAppendPromptOverride(defaultVisionOcrEditablePrompt);
     setIsAppendPromptEditorOpen(false);
   }
@@ -1535,9 +1626,11 @@ export function BookBuilderPage() {
       : 1;
 
     setAppendReferencePageInput(String(nextValue));
+    resetAppendResumeState();
   }
 
   function removeAppendFile(indexToRemove: number) {
+    resetAppendResumeState();
     setSelectedAppendFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setAppendError(null);
   }
@@ -1545,6 +1638,94 @@ export function BookBuilderPage() {
   function removeCreateFile(indexToRemove: number) {
     setSelectedCreateFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setCreateError(null);
+  }
+
+  function clearAppendCancelHold() {
+    if (appendCancelHoldTimeoutRef.current !== null) {
+      window.clearTimeout(appendCancelHoldTimeoutRef.current);
+      appendCancelHoldTimeoutRef.current = null;
+    }
+
+    if (appendCancelHoldIntervalRef.current !== null) {
+      window.clearInterval(appendCancelHoldIntervalRef.current);
+      appendCancelHoldIntervalRef.current = null;
+    }
+
+    setAppendCancelHoldProgress(0);
+  }
+
+  async function releaseAppendScreenWakeLock() {
+    const wakeLock = appendWakeLockRef.current;
+    appendWakeLockRef.current = null;
+
+    if (!wakeLock) {
+      return;
+    }
+
+    try {
+      await wakeLock.release();
+    } catch {
+      // Algunos navegadores liberan el bloqueo automaticamente al cambiar de app.
+    }
+  }
+
+  async function ensureAppendScreenWakeLock() {
+    const wakeLockApi = getBuilderWakeLockApi();
+    if (!wakeLockApi) {
+      return;
+    }
+
+    if (appendWakeLockRef.current && appendWakeLockRef.current.released !== true) {
+      return;
+    }
+
+    try {
+      const wakeLock = await wakeLockApi.request("screen");
+      appendWakeLockRef.current = wakeLock;
+      wakeLock.addEventListener?.("release", () => {
+        if (appendWakeLockRef.current === wakeLock) {
+          appendWakeLockRef.current = null;
+        }
+      });
+    } catch {
+      // Si falla, el OCR continua sin molestar al usuario con un error extra.
+    }
+  }
+
+  async function requestAppendCancellation() {
+    if (!accessToken || !appendProgressId || isAppendCancelRequested) {
+      return;
+    }
+
+    setIsAppendCancelRequested(true);
+
+    try {
+      const response = await cancelAppendImagesImport(accessToken, appendProgressId);
+      setAppendImportProgress(response.progress);
+    } catch (error) {
+      setIsAppendCancelRequested(false);
+      setAppendError(error instanceof Error ? error.message : "No se pudo solicitar la cancelación.");
+    }
+  }
+
+  function beginAppendCancelHold() {
+    if (!isAppending || isAppendCancelRequested) {
+      return;
+    }
+
+    clearAppendCancelHold();
+    const startedAt = Date.now();
+    setAppendCancelHoldProgress(0);
+
+    appendCancelHoldIntervalRef.current = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      setAppendCancelHoldProgress(Math.min(elapsed / appendCancelHoldMilliseconds, 1));
+    }, 100);
+
+    appendCancelHoldTimeoutRef.current = window.setTimeout(() => {
+      clearAppendCancelHold();
+      void requestAppendCancellation();
+    }, appendCancelHoldMilliseconds);
   }
 
   async function waitForOcrRetry(context: OcrRetryContext, retryAfterSeconds: number) {
@@ -1674,30 +1855,46 @@ export function BookBuilderPage() {
       return;
     }
 
+    const alreadyCompletedFiles = Math.min(appendResumeState?.completedFiles ?? 0, selectedAppendFiles.length);
+    const pendingAppendFiles = selectedAppendFiles.slice(alreadyCompletedFiles);
+    const requestAfterPage = appendResumeState?.nextAfterPage ?? appendAfterPageNumber;
+
+    if (pendingAppendFiles.length === 0) {
+      setAppendError("Todas las páginas seleccionadas ya están añadidas.");
+      return;
+    }
+
     setIsAppending(true);
     setAppendError(null);
+    setIsAppendCancelRequested(false);
+    setAppendProgressOffset(alreadyCompletedFiles);
+    void ensureAppendScreenWakeLock();
     const progressId = crypto.randomUUID();
+    const appendTotalPagesBeforeRequest = selectedAppendBook ? Number(selectedAppendBook.totalPages) : null;
     setAppendProgressId(progressId);
     setAppendImportProgress({
       bookId: selectedBookId,
       completedFiles: 0,
-      currentFileIndex: selectedAppendFiles.length > 0 ? 0 : null,
-      currentFileName: selectedAppendFiles[0]?.name ?? null,
+      currentFileIndex: pendingAppendFiles.length > 0 ? 0 : null,
+      currentFileName: pendingAppendFiles[0]?.name ?? null,
       errorMessage: null,
+      insertedPages: 0,
+      insertionStartPageNumber: appendResumeState?.insertionStartPageNumber ?? null,
+      nextAfterPage: requestAfterPage ?? null,
       stage: "ocr",
-      totalFiles: selectedAppendFiles.length,
+      totalFiles: pendingAppendFiles.length,
       waitMessage: null,
       waitSecondsRemaining: null
     });
 
     try {
       const formData = new FormData();
-      for (const file of selectedAppendFiles) {
+      for (const file of pendingAppendFiles) {
         formData.append("images", file);
       }
 
       const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
-        ...(appendAfterPageNumber !== undefined ? { afterPage: appendAfterPageNumber } : {}),
+        ...(requestAfterPage !== undefined && requestAfterPage !== null ? { afterPage: requestAfterPage } : {}),
         ocrMode: appendOcrMode,
         ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
           ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
@@ -1705,17 +1902,70 @@ export function BookBuilderPage() {
         progressId
       });
       await booksQuery.refetch();
+      if (response.cancelled) {
+        const completedFiles = alreadyCompletedFiles + response.addedPages;
+        setAppendResumeState({
+          completedFiles,
+          insertionStartPageNumber: response.insertionStartPageNumber,
+          nextAfterPage: response.nextAfterPage ?? requestAfterPage ?? null
+        });
+        setAppendProgressOffset(completedFiles);
+        setAppendError(response.addedPages > 0
+          ? `Añadido cancelado. Se añadieron ${completedFiles} de ${selectedAppendFiles.length} páginas.`
+          : "Añadido cancelado antes de insertar páginas nuevas.");
+        return;
+      }
+
       clearAppendSelection();
       if (reviewBookId === selectedBookId) {
         setReviewPageNumber(response.insertionStartPageNumber);
       }
       navigate(`/books/${response.book.bookId}?page=${response.insertionStartPageNumber}`);
     } catch (error) {
+      let latestProgress: AppendImagesImportProgress | null = appendImportProgress;
+      let insertedPagesFromBookTotal = 0;
+      if (progressId && accessToken) {
+        try {
+          const response = await fetchAppendImagesImportProgress(accessToken, progressId);
+          latestProgress = response.progress;
+          setAppendImportProgress(response.progress);
+        } catch {
+          // El error principal ya explica el fallo; el progreso solo mejora la reanudación.
+        }
+      }
+
+      try {
+        const refetchResult = await booksQuery.refetch();
+        const refreshedBook = refetchResult.data?.find((book) => book.bookId === selectedBookId) ?? null;
+        if (appendTotalPagesBeforeRequest !== null && refreshedBook) {
+          insertedPagesFromBookTotal = Math.max(0, Number(refreshedBook.totalPages) - appendTotalPagesBeforeRequest);
+        }
+      } catch {
+        // Si no se puede refrescar el libro, el progreso del servidor sigue siendo la fuente principal.
+      }
+
+      const completedFiles = Math.min(
+        selectedAppendFiles.length,
+        alreadyCompletedFiles + Math.max(
+          latestProgress?.insertedPages ?? 0,
+          latestProgress?.completedFiles ?? 0,
+          insertedPagesFromBookTotal
+        )
+      );
+      if (completedFiles > 0) {
+        setAppendResumeState({
+          completedFiles,
+          insertionStartPageNumber: latestProgress?.insertionStartPageNumber ?? appendResumeState?.insertionStartPageNumber ?? null,
+          nextAfterPage: latestProgress?.nextAfterPage ?? appendResumeState?.nextAfterPage ?? requestAfterPage ?? null
+        });
+        setAppendProgressOffset(completedFiles);
+      }
+
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
     } finally {
       setIsAppending(false);
       setAppendProgressId(null);
-      setAppendImportProgress(null);
+      setIsAppendCancelRequested(false);
     }
   }
 
@@ -2458,6 +2708,7 @@ export function BookBuilderPage() {
                         <button
                           aria-checked={appendInsertionSide === "before"}
                           className={appendInsertionSide === "before" ? "append-placement-option active" : "append-placement-option"}
+                          disabled={isAppending}
                           onClick={() => setAppendInsertionSide("before")}
                           role="radio"
                           type="button"
@@ -2467,6 +2718,7 @@ export function BookBuilderPage() {
                         <button
                           aria-checked={appendInsertionSide === "after"}
                           className={appendInsertionSide === "after" ? "append-placement-option active" : "append-placement-option"}
+                          disabled={isAppending}
                           onClick={() => setAppendInsertionSide("after")}
                           role="radio"
                           type="button"
@@ -2481,6 +2733,7 @@ export function BookBuilderPage() {
                           inputMode="numeric"
                           max={appendReferencePageMax}
                           min={1}
+                          disabled={isAppending}
                           onChange={handleAppendReferencePageInputChange}
                           type="number"
                           value={appendReferencePageNumber}
@@ -2523,6 +2776,7 @@ export function BookBuilderPage() {
                     accept="image/*"
                     capture="environment"
                     className="capture-action-input-hidden"
+                    disabled={isAppending}
                     onChange={handleAppendFileSelection}
                     ref={appendCameraInputRef}
                     type="file"
@@ -2535,22 +2789,22 @@ export function BookBuilderPage() {
                           className={[
                             "file-pill",
                             "file-pill-removable",
-                            isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? "file-pill-completed" : "",
-                            isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? "file-pill-processing" : "",
-                            isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? "file-pill-waiting" : "",
-                            isAppending && (appendImportProgress?.completedFiles ?? 0) <= index && appendImportProgress?.currentFileIndex !== index ? "file-pill-pending" : ""
+                            appendCompletedFileCount > index ? "file-pill-completed" : "",
+                            isAppending && appendProgressStage === "ocr" && appendCurrentFileIndex === index ? "file-pill-processing" : "",
+                            isAppending && appendProgressStage === "waiting" && appendCurrentFileIndex === index ? "file-pill-waiting" : "",
+                            isAppending && appendCompletedFileCount <= index && appendCurrentFileIndex !== index ? "file-pill-pending" : ""
                           ].filter(Boolean).join(" ")}
                           key={`${file.name}-${index}`}
                         >
                           <span>{file.name}</span>
-                          {isAppending && (appendImportProgress?.completedFiles ?? 0) > index ? (
+                          {appendCompletedFileCount > index ? (
                             <span className="file-pill-status file-pill-status-completed">Hecho</span>
                           ) : null}
-                          {isAppending && appendImportProgress?.stage === "ocr" && appendImportProgress.currentFileIndex === index ? (
+                          {isAppending && appendProgressStage === "ocr" && appendCurrentFileIndex === index ? (
                             <span className="file-pill-status">OCR...</span>
                           ) : null}
-                          {isAppending && appendImportProgress?.stage === "waiting" && appendImportProgress.currentFileIndex === index ? (
-                            <span className="file-pill-status">Espera {appendImportProgress.waitSecondsRemaining ?? 0} s</span>
+                          {isAppending && appendProgressStage === "waiting" && appendCurrentFileIndex === index ? (
+                            <span className="file-pill-status">Espera {appendImportProgress?.waitSecondsRemaining ?? 0} s</span>
                           ) : null}
                           <button
                             aria-label={`Eliminar ${file.name}`}
@@ -2566,6 +2820,12 @@ export function BookBuilderPage() {
                     </div>
                   ) : null}
 
+                  {appendResumeState && appendResumeState.completedFiles > 0 && !isAppending ? (
+                    <p className="helper-text">
+                      {`Ya están añadidas ${appendResumeState.completedFiles} de ${selectedAppendFiles.length} páginas. Al reintentar se continuará con las pendientes.`}
+                    </p>
+                  ) : null}
+
                   {isAppending && appendImportProgress?.stage === "saving" ? (
                     <p className="helper-text">OCR completado. Guardando páginas en el libro...</p>
                   ) : null}
@@ -2573,6 +2833,9 @@ export function BookBuilderPage() {
                     <p aria-live="polite" className="helper-text ocr-waiting-text">
                       {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)}
                     </p>
+                  ) : null}
+                  {isAppending && appendImportProgress?.stage === "cancelling" ? (
+                    <p className="helper-text">Cancelación solicitada. Se detendrá al terminar la página actual.</p>
                   ) : null}
 
                   <div className="selected-book-banner append-ocr-banner">
@@ -2583,6 +2846,7 @@ export function BookBuilderPage() {
                           <button
                             aria-checked={appendOcrMode === "VISION"}
                             className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isAppending}
                             onClick={() => setAppendOcrMode("VISION")}
                             role="radio"
                             type="button"
@@ -2592,6 +2856,7 @@ export function BookBuilderPage() {
                           <button
                             aria-checked={appendOcrMode === "LOCAL"}
                             className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isAppending}
                             onClick={() => setAppendOcrMode("LOCAL")}
                             role="radio"
                             type="button"
@@ -2631,12 +2896,50 @@ export function BookBuilderPage() {
                   ) : null}
 
                   <button className="secondary-button" disabled={isAppending} type="submit">
-                    {isAppending ? "Procesando OCR..." : "Añadir páginas"}
+                    {isAppending ? "Procesando OCR..." : appendResumeState?.completedFiles ? "Continuar páginas pendientes" : "Añadir páginas"}
                   </button>
                 </form>
               </article>
             ) : null}
           </div>
+
+          {isAppending ? (
+            <div className="append-ocr-lock-backdrop" role="presentation">
+              <div aria-label="Añadiendo páginas" aria-modal="true" className="append-ocr-lock-dialog" role="dialog">
+                <div className="append-ocr-lock-header">
+                  <p className="eyebrow">OCR en curso</p>
+                  <h3>Añadiendo páginas</h3>
+                </div>
+                <div className="append-ocr-lock-progress" aria-hidden="true">
+                  <span style={{ width: `${appendProgressCompletedPercent}%` }} />
+                </div>
+                <p aria-live="polite" className="append-ocr-lock-status">
+                  {appendImportProgress?.stage === "waiting"
+                    ? buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)
+                    : appendImportProgress?.stage === "saving"
+                      ? "Guardando la página reconocida..."
+                      : appendImportProgress?.stage === "cancelling"
+                        ? "Cancelación solicitada. Se detendrá al terminar la página actual."
+                        : `Página ${Math.min(appendCompletedFileCount + 1, appendProgressTotalFiles)} de ${appendProgressTotalFiles}`}
+                </p>
+                <p className="append-ocr-lock-detail">
+                  {appendCurrentFileIndex !== null ? selectedAppendFiles[appendCurrentFileIndex]?.name ?? "Procesando imagen" : "Terminando proceso"}
+                </p>
+                <button
+                  className="append-ocr-cancel-hold"
+                  disabled={isAppendCancelRequested}
+                  onPointerCancel={clearAppendCancelHold}
+                  onPointerDown={beginAppendCancelHold}
+                  onPointerLeave={clearAppendCancelHold}
+                  onPointerUp={clearAppendCancelHold}
+                  style={{ "--cancel-progress": appendCancelHoldProgress } as CSSProperties & Record<"--cancel-progress", number>}
+                  type="button"
+                >
+                  {isAppendCancelRequested ? "Cancelando..." : "Mantener 5 s para cancelar"}
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {isCreateCameraModalOpen ? (
             <div className="camera-capture-backdrop" role="presentation">

@@ -165,7 +165,10 @@ type ImportImagesProgressRecord = {
   currentFileIndex: number | null;
   currentFileName: string | null;
   errorMessage: string | null;
-  stage: "ocr" | "waiting" | "saving" | "completed" | "failed";
+  insertedPages: number;
+  insertionStartPageNumber: number | null;
+  nextAfterPage: number | null;
+  stage: "ocr" | "waiting" | "saving" | "cancelling" | "cancelled" | "completed" | "failed";
   totalFiles: number;
   waitMessage: string | null;
   waitUntil: number | null;
@@ -285,6 +288,7 @@ type RestoredHighlightRecord = HighlightTextRange & {
 };
 
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
+const importImagesCancellationRequests = new Set<string>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
 const maximumUploadedImageBytes = 32 * 1024 * 1024;
 const maximumOcrRateLimitRetriesPerFile = 3;
@@ -301,6 +305,7 @@ function pruneImportImagesProgressStore() {
   for (const [progressId, progress] of importImagesProgressStore.entries()) {
     if (progress.updatedAt < expiresBefore) {
       importImagesProgressStore.delete(progressId);
+      importImagesCancellationRequests.delete(progressId);
     }
   }
 }
@@ -311,6 +316,15 @@ function setImportImagesProgress(progressId: string, progress: ImportImagesProgr
     ...progress,
     updatedAt: Date.now()
   });
+}
+
+function isImportImagesCancellationRequested(progressId: string | undefined): boolean {
+  if (!progressId) {
+    return false;
+  }
+
+  const progress = importImagesProgressStore.get(progressId);
+  return importImagesCancellationRequests.has(progressId) || progress?.stage === "cancelling" || progress?.stage === "cancelled";
 }
 
 function readMultipartField(fields: MultipartFile["fields"], fieldName: string): string | undefined {
@@ -2466,11 +2480,75 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         currentFileIndex: progress.currentFileIndex,
         currentFileName: progress.currentFileName,
         errorMessage: progress.errorMessage,
+        insertedPages: progress.insertedPages,
+        insertionStartPageNumber: progress.insertionStartPageNumber,
+        nextAfterPage: progress.nextAfterPage,
         stage: progress.stage,
         totalFiles: progress.totalFiles,
         waitMessage: progress.waitMessage,
         waitSecondsRemaining: progress.waitUntil ? Math.max(Math.ceil((progress.waitUntil - Date.now()) / 1000), 0) : null
       }
+    });
+  });
+
+  app.post("/import-images/progress/:progressId/cancel", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    pruneImportImagesProgressStore();
+    const params = z.object({ progressId: z.string().uuid() }).parse(request.params);
+    const progress = importImagesProgressStore.get(params.progressId);
+
+    if (!progress || progress.userId !== request.currentUser.userId) {
+      return reply.status(404).send({ message: "Progreso no encontrado." });
+    }
+
+    if (progress.stage === "completed" || progress.stage === "failed" || progress.stage === "cancelled") {
+      return reply.send({
+        progress: {
+          bookId: progress.bookId,
+          completedFiles: progress.completedFiles,
+          currentFileIndex: progress.currentFileIndex,
+          currentFileName: progress.currentFileName,
+          errorMessage: progress.errorMessage,
+          insertedPages: progress.insertedPages,
+          insertionStartPageNumber: progress.insertionStartPageNumber,
+          nextAfterPage: progress.nextAfterPage,
+          stage: progress.stage,
+          totalFiles: progress.totalFiles,
+          waitMessage: progress.waitMessage,
+          waitSecondsRemaining: progress.waitUntil ? Math.max(Math.ceil((progress.waitUntil - Date.now()) / 1000), 0) : null
+        }
+      });
+    }
+
+    setImportImagesProgress(params.progressId, {
+      ...progress,
+      currentFileIndex: progress.currentFileIndex,
+      errorMessage: null,
+      stage: "cancelling",
+      waitMessage: null,
+      waitUntil: null
+    });
+    importImagesCancellationRequests.add(params.progressId);
+
+    const nextProgress = importImagesProgressStore.get(params.progressId);
+    return reply.send({
+      progress: nextProgress ? {
+        bookId: nextProgress.bookId,
+        completedFiles: nextProgress.completedFiles,
+        currentFileIndex: nextProgress.currentFileIndex,
+        currentFileName: nextProgress.currentFileName,
+        errorMessage: nextProgress.errorMessage,
+        insertedPages: nextProgress.insertedPages,
+        insertionStartPageNumber: nextProgress.insertionStartPageNumber,
+        nextAfterPage: nextProgress.nextAfterPage,
+        stage: nextProgress.stage,
+        totalFiles: nextProgress.totalFiles,
+        waitMessage: nextProgress.waitMessage,
+        waitSecondsRemaining: nextProgress.waitUntil ? Math.max(Math.ceil((nextProgress.waitUntil - Date.now()) / 1000), 0) : null
+      } : null
     });
   });
 
@@ -3062,7 +3140,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const connection = await getConnection();
-    let progressId = query.progressId;
+    const progressId = query.progressId;
+    let addedPages = 0;
+    let addedParagraphs = 0;
+    let insertionStartPageNumber: number | null = null;
+    let nextAfterPage: number | null = null;
+    let latestBook: OwnedBookRecord | null = null;
 
     try {
       const existingBook = await findOwnedBook(connection, params.bookId, currentUser.userId);
@@ -3074,13 +3157,26 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "Solo puedes añadir imágenes a libros creados desde imágenes." });
       }
 
+      const requestedInsertionAfterPage = query.afterPage ?? Number(existingBook.totalPages);
+      if (requestedInsertionAfterPage > Number(existingBook.totalPages)) {
+        return reply.status(422).send({ message: "La página de inserción no existe en este libro." });
+      }
+
+      insertionStartPageNumber = requestedInsertionAfterPage + 1;
+      nextAfterPage = requestedInsertionAfterPage;
+      latestBook = existingBook;
+
       if (progressId) {
+        importImagesCancellationRequests.delete(progressId);
         setImportImagesProgress(progressId, {
           bookId: existingBook.bookId,
           completedFiles: 0,
           currentFileIndex: imageFiles.length > 0 ? 0 : null,
           currentFileName: imageFiles[0]?.fileName ?? null,
           errorMessage: null,
+          insertedPages: 0,
+          insertionStartPageNumber,
+          nextAfterPage,
           stage: "ocr",
           totalFiles: imageFiles.length,
           waitMessage: null,
@@ -3090,148 +3186,212 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      const processedPages = await ocrImageFiles(
-        imageFiles,
-        payload.ocrMode,
-        payload.promptOverride,
-        (progress) => {
-          if (!progressId) {
-            return;
-          }
+      for (const [fileIndex, imageFile] of imageFiles.entries()) {
+        if (isImportImagesCancellationRequested(progressId)) {
+          break;
+        }
 
+        if (progressId) {
           setImportImagesProgress(progressId, {
             bookId: existingBook.bookId,
-            completedFiles: progress.completedFiles,
-            currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileIndex,
-            currentFileName: progress.completedFiles >= progress.totalFiles ? null : progress.currentFileName,
+            completedFiles: addedPages,
+            currentFileIndex: fileIndex,
+            currentFileName: imageFile.fileName,
             errorMessage: null,
+            insertedPages: addedPages,
+            insertionStartPageNumber,
+            nextAfterPage,
             stage: "ocr",
-            totalFiles: progress.totalFiles,
+            totalFiles: imageFiles.length,
             waitMessage: null,
             waitUntil: null,
             updatedAt: Date.now(),
             userId: currentUser.userId
           });
-        },
-        (progress) => {
-          if (!progressId) {
-            return;
-          }
+        }
 
+        const processedPages = await ocrImageFiles(
+          [imageFile],
+          payload.ocrMode,
+          payload.promptOverride,
+          (progress) => {
+            if (!progressId) {
+              return;
+            }
+
+            setImportImagesProgress(progressId, {
+              bookId: existingBook.bookId,
+              completedFiles: addedPages,
+              currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : fileIndex,
+              currentFileName: progress.completedFiles >= progress.totalFiles ? null : imageFile.fileName,
+              errorMessage: null,
+              insertedPages: addedPages,
+              insertionStartPageNumber,
+              nextAfterPage,
+              stage: "ocr",
+              totalFiles: imageFiles.length,
+              waitMessage: null,
+              waitUntil: null,
+              updatedAt: Date.now(),
+              userId: currentUser.userId
+            });
+          },
+          (progress) => {
+            if (!progressId) {
+              return;
+            }
+
+            setImportImagesProgress(progressId, {
+              bookId: existingBook.bookId,
+              completedFiles: addedPages,
+              currentFileIndex: fileIndex,
+              currentFileName: imageFile.fileName,
+              errorMessage: null,
+              insertedPages: addedPages,
+              insertionStartPageNumber,
+              nextAfterPage,
+              stage: "waiting",
+              totalFiles: imageFiles.length,
+              waitMessage: progress.waitMessage,
+              waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
+              updatedAt: Date.now(),
+              userId: currentUser.userId
+            });
+          }
+        );
+
+        const processedPage = processedPages[0];
+        if (!processedPage || nextAfterPage === null || insertionStartPageNumber === null || latestBook === null) {
+          throw new Error("No se pudo preparar la página procesada para insertarla.");
+        }
+
+        if (progressId) {
           setImportImagesProgress(progressId, {
             bookId: existingBook.bookId,
-            completedFiles: progress.completedFiles,
-            currentFileIndex: progress.currentFileIndex,
-            currentFileName: progress.currentFileName,
+            completedFiles: addedPages,
+            currentFileIndex: fileIndex,
+            currentFileName: imageFile.fileName,
             errorMessage: null,
-            stage: "waiting",
-            totalFiles: progress.totalFiles,
-            waitMessage: progress.waitMessage,
-            waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
+            insertedPages: addedPages,
+            insertionStartPageNumber,
+            nextAfterPage,
+            stage: "saving",
+            totalFiles: imageFiles.length,
+            waitMessage: null,
+            waitUntil: null,
             updatedAt: Date.now(),
             userId: currentUser.userId
           });
         }
-      );
 
-      const insertionAfterPage = query.afterPage ?? Number(existingBook.totalPages);
-      if (insertionAfterPage > Number(existingBook.totalPages)) {
-        return reply.status(422).send({ message: "La página de inserción no existe en este libro." });
-      }
+        const insertionAfterPage = nextAfterPage;
+        const startingSequenceNumber = (await countParagraphsUpToPage(connection, existingBook.bookId, insertionAfterPage)) + 1;
+        const pageParagraphCount = processedPage.paragraphs.length;
 
-      const insertionStartPageNumber = insertionAfterPage + 1;
-      const startingSequenceNumber = (await countParagraphsUpToPage(connection, existingBook.bookId, insertionAfterPage)) + 1;
-      const addedParagraphs = processedPages.reduce((count, page) => count + page.paragraphs.length, 0);
-
-      if (progressId) {
-        setImportImagesProgress(progressId, {
-          bookId: existingBook.bookId,
-          completedFiles: processedPages.length,
-          currentFileIndex: null,
-          currentFileName: null,
-          errorMessage: null,
-          stage: "saving",
-          totalFiles: imageFiles.length,
-          waitMessage: null,
-          waitUntil: null,
-          updatedAt: Date.now(),
-          userId: currentUser.userId
-        });
-      }
-
-      try {
-        await shiftSubsequentPageNumbers(connection, existingBook.bookId, insertionAfterPage, processedPages.length);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Error al desplazar numeros de pagina: ${message}`);
-      }
-
-      try {
-        await shiftSubsequentSequenceNumbers(connection, existingBook.bookId, insertionAfterPage, addedParagraphs);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Error al desplazar secuencias y anotaciones: ${message}`);
-      }
-
-      try {
-        await shiftSubsequentRelatedReferences(
-          connection,
-          existingBook.bookId,
-          insertionAfterPage,
-          processedPages.length,
-          addedParagraphs
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Error al reajustar referencias del lector: ${message}`);
-      }
-
-      let insertionSummary;
-      try {
-        insertionSummary = await insertProcessedImagePages(
-          connection,
-          existingBook.bookId,
-          processedPages,
-          insertionStartPageNumber,
-          startingSequenceNumber
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`Error al insertar las nuevas paginas: ${message}`);
-      }
-
-      const updatedBook = {
-        ...existingBook,
-        status: "READY",
-        totalPages: Number(existingBook.totalPages) + insertionSummary.addedPages,
-        totalParagraphs: Number(existingBook.totalParagraphs) + insertionSummary.addedParagraphs
-      };
-
-      await connection.execute(
-        `
-          UPDATE books
-          SET status = 'READY',
-              total_pages = :totalPages,
-              total_paragraphs = :totalParagraphs
-          WHERE book_id = :bookId
-        `,
-        {
-          bookId: updatedBook.bookId,
-          totalPages: updatedBook.totalPages,
-          totalParagraphs: updatedBook.totalParagraphs
+        try {
+          await shiftSubsequentPageNumbers(connection, existingBook.bookId, insertionAfterPage, 1);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Error al desplazar numeros de pagina: ${message}`);
         }
-      );
 
-      await connection.commit();
+        try {
+          await shiftSubsequentSequenceNumbers(connection, existingBook.bookId, insertionAfterPage, pageParagraphCount);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Error al desplazar secuencias y anotaciones: ${message}`);
+        }
 
+        try {
+          await shiftSubsequentRelatedReferences(
+            connection,
+            existingBook.bookId,
+            insertionAfterPage,
+            1,
+            pageParagraphCount
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Error al reajustar referencias del lector: ${message}`);
+        }
+
+        let insertionSummary;
+        try {
+          insertionSummary = await insertProcessedImagePages(
+            connection,
+            existingBook.bookId,
+            [processedPage],
+            insertionAfterPage + 1,
+            startingSequenceNumber
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(`Error al insertar las nuevas paginas: ${message}`);
+        }
+
+        latestBook = {
+          ...latestBook,
+          status: "READY",
+          totalPages: Number(latestBook.totalPages) + insertionSummary.addedPages,
+          totalParagraphs: Number(latestBook.totalParagraphs) + insertionSummary.addedParagraphs
+        };
+
+        await connection.execute(
+          `
+            UPDATE books
+            SET status = 'READY',
+                total_pages = :totalPages,
+                total_paragraphs = :totalParagraphs
+            WHERE book_id = :bookId
+          `,
+          {
+            bookId: latestBook.bookId,
+            totalPages: latestBook.totalPages,
+            totalParagraphs: latestBook.totalParagraphs
+          }
+        );
+
+        await connection.commit();
+
+        addedPages += insertionSummary.addedPages;
+        addedParagraphs += insertionSummary.addedParagraphs;
+        nextAfterPage += insertionSummary.addedPages;
+
+        if (progressId) {
+          setImportImagesProgress(progressId, {
+            bookId: existingBook.bookId,
+            completedFiles: addedPages,
+            currentFileIndex: fileIndex + 1 >= imageFiles.length ? null : fileIndex + 1,
+            currentFileName: fileIndex + 1 >= imageFiles.length ? null : imageFiles[fileIndex + 1]?.fileName ?? null,
+            errorMessage: null,
+            insertedPages: addedPages,
+            insertionStartPageNumber,
+            nextAfterPage,
+            stage: "ocr",
+            totalFiles: imageFiles.length,
+            waitMessage: null,
+            waitUntil: null,
+            updatedAt: Date.now(),
+            userId: currentUser.userId
+          });
+        }
+      }
+
+      const wasCancelled = isImportImagesCancellationRequested(progressId);
+      if (progressId) {
+        importImagesCancellationRequests.delete(progressId);
+      }
       if (progressId) {
         setImportImagesProgress(progressId, {
           bookId: existingBook.bookId,
-          completedFiles: processedPages.length,
+          completedFiles: addedPages,
           currentFileIndex: null,
           currentFileName: null,
-          errorMessage: null,
-          stage: "completed",
+          errorMessage: wasCancelled ? "Añadido de páginas cancelado." : null,
+          insertedPages: addedPages,
+          insertionStartPageNumber,
+          nextAfterPage,
+          stage: wasCancelled ? "cancelled" : "completed",
           totalFiles: imageFiles.length,
           waitMessage: null,
           waitUntil: null,
@@ -3240,20 +3400,28 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      return reply.status(201).send({
-        addedPages: insertionSummary.addedPages,
-        addedParagraphs: insertionSummary.addedParagraphs,
-        insertionStartPageNumber,
-        book: updatedBook
+      return reply.status(wasCancelled ? 200 : 201).send({
+        addedPages,
+        addedParagraphs,
+        cancelled: wasCancelled,
+        insertionStartPageNumber: insertionStartPageNumber ?? requestedInsertionAfterPage + 1,
+        nextAfterPage,
+        book: latestBook ?? existingBook
       });
     } catch (error) {
       if (progressId) {
+        importImagesCancellationRequests.delete(progressId);
+      }
+      if (progressId) {
         setImportImagesProgress(progressId, {
           bookId: params.bookId,
-          completedFiles: 0,
+          completedFiles: addedPages,
           currentFileIndex: null,
           currentFileName: null,
           errorMessage: error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.",
+          insertedPages: addedPages,
+          insertionStartPageNumber,
+          nextAfterPage,
           stage: "failed",
           totalFiles: imageFiles.length,
           waitMessage: null,

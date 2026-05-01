@@ -617,7 +617,9 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     addedPages: number;
     addedParagraphs: number;
     book: BookSummary;
+    cancelled?: boolean;
     insertionStartPageNumber: number;
+    nextAfterPage?: number | null;
   }>;
 }
 
@@ -627,7 +629,10 @@ export type AppendImagesImportProgress = {
   currentFileIndex: number | null;
   currentFileName: string | null;
   errorMessage: string | null;
-  stage: "ocr" | "waiting" | "saving" | "completed" | "failed";
+  insertedPages: number;
+  insertionStartPageNumber: number | null;
+  nextAfterPage: number | null;
+  stage: "ocr" | "waiting" | "saving" | "cancelling" | "cancelled" | "completed" | "failed";
   totalFiles: number;
   waitMessage: string | null;
   waitSecondsRemaining: number | null;
@@ -637,6 +642,13 @@ export function fetchAppendImagesImportProgress(accessToken: string, progressId:
   return request<{ progress: AppendImagesImportProgress }>(`/books/import-images/progress/${progressId}`, {
     accessToken,
     method: "GET"
+  });
+}
+
+export function cancelAppendImagesImport(accessToken: string, progressId: string) {
+  return request<{ progress: AppendImagesImportProgress }>(`/books/import-images/progress/${progressId}/cancel`, {
+    accessToken,
+    method: "POST"
   });
 }
 
