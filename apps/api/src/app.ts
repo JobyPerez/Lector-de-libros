@@ -55,13 +55,18 @@ export function buildApp(): FastifyInstance {
       ? (error as { statusCode: number }).statusCode
       : 500;
     const message = error instanceof Error ? error.message : "Unexpected application error.";
+    const retryAfterSeconds = typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number"
+      ? (error as { retryAfterSeconds: number }).retryAfterSeconds
+      : undefined;
+
+    if (retryAfterSeconds !== undefined) {
+      reply.header("Retry-After", String(retryAfterSeconds));
+    }
 
     reply.status(statusCode).send({
       code: typeof (error as { code?: unknown }).code === "string" ? (error as { code: string }).code : undefined,
       message,
-      retryAfterSeconds: typeof (error as { retryAfterSeconds?: unknown }).retryAfterSeconds === "number"
-        ? (error as { retryAfterSeconds: number }).retryAfterSeconds
-        : undefined,
+      retryAfterSeconds,
       retryable: (error as { retryable?: unknown }).retryable === true
         ? true
         : undefined

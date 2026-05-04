@@ -15,7 +15,7 @@ import { buildDerivedBookOutline, replaceBookOutline, resolveBookOutline, resolv
 import { extractEpubCover } from "./epub-import.js";
 import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
-import { generateSectionSummary } from "./section-summary.js";
+import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary } from "./section-summary.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -71,6 +71,19 @@ const bookSearchQuerySchema = z.object({
 const sectionParamsSchema = z.object({
   bookId: z.string().uuid(),
   chapterId: z.string().trim().min(1).max(200)
+});
+
+const sectionSummaryGenerationSchema = z.object({
+  promptOverride: z.string().trim().min(1).max(4000).optional()
+});
+
+const aiRequestPayloadSchema = z.object({
+  promptText: z.string().trim().min(1).max(4000)
+});
+
+const aiRequestParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  requestId: z.string().uuid()
 });
 
 const updateBookSchema = z.object({
@@ -207,6 +220,26 @@ type StoredSectionSummaryRecord = {
   startSequenceNumber: number;
   summaryId: string;
   summaryText: string;
+  updatedAt: string;
+};
+
+type AiRequestScopeType = "BOOK" | "SECTION";
+
+type StoredAiRequestRecord = {
+  bookId: string;
+  chapterId: string | null;
+  createdAt: string;
+  endPageNumber: number | null;
+  endParagraphNumber: number | null;
+  endSequenceNumber: number | null;
+  promptText: string;
+  requestId: string;
+  responseText: string;
+  scopeType: AiRequestScopeType;
+  sectionTitle: string | null;
+  startPageNumber: number | null;
+  startParagraphNumber: number | null;
+  startSequenceNumber: number | null;
   updatedAt: string;
 };
 
@@ -1557,7 +1590,7 @@ async function resolveBookSectionContext(
     return null;
   }
 
-  const nextSection = outline[sectionIndex + 1] ?? null;
+  const nextSection = outline.slice(sectionIndex + 1).find((entry) => entry.level <= currentSection.level) ?? null;
   const startBoundary = await findParagraphBoundary(
     connection,
     bookId,
@@ -1711,6 +1744,210 @@ async function findStoredSectionSummaryForSection(
   }
 
   return findGeneratedSectionSummaryFallback(connection, bookId, userId, section);
+}
+
+async function listSectionParagraphTexts(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  section: BookSectionContext
+): Promise<string[]> {
+  const paragraphsResult = await connection.execute(
+    `
+      SELECT
+        paragraph_text AS "paragraphText"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+        AND sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
+      ORDER BY sequence_number ASC
+    `,
+    {
+      bookId,
+      endSequenceNumber: section.endSequenceNumber,
+      startSequenceNumber: section.startSequenceNumber
+    }
+  );
+
+  return ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+}
+
+async function listBookParagraphTexts(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string
+): Promise<string[]> {
+  const paragraphsResult = await connection.execute(
+    `
+      SELECT
+        paragraph_text AS "paragraphText"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+      ORDER BY sequence_number ASC
+    `,
+    { bookId }
+  );
+
+  return ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+}
+
+async function listAiRequests(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  options: { bookId: string; scopeType: AiRequestScopeType; section?: BookSectionContext | null; userId: string }
+): Promise<StoredAiRequestRecord[]> {
+  if (options.scopeType === "SECTION") {
+    const section = options.section;
+    if (!section) {
+      return [];
+    }
+
+    const result = await connection.execute(
+      `
+        SELECT
+          request_id AS "requestId",
+          book_id AS "bookId",
+          scope_type AS "scopeType",
+          chapter_id AS "chapterId",
+          section_title AS "sectionTitle",
+          start_page_number AS "startPageNumber",
+          end_page_number AS "endPageNumber",
+          start_paragraph_number AS "startParagraphNumber",
+          end_paragraph_number AS "endParagraphNumber",
+          start_sequence_number AS "startSequenceNumber",
+          end_sequence_number AS "endSequenceNumber",
+          prompt_text AS "promptText",
+          response_text AS "responseText",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM user_book_ai_requests
+        WHERE user_id = :userId
+          AND book_id = :bookId
+          AND scope_type = 'SECTION'
+          AND (
+            chapter_id = :chapterId
+            OR (
+              legacy_summary_id IS NOT NULL
+              AND section_title = :sectionTitle
+              AND start_sequence_number <= :endSequenceNumber
+              AND end_sequence_number >= :startSequenceNumber
+            )
+          )
+        ORDER BY
+          CASE WHEN chapter_id = :chapterId THEN 0 ELSE 1 END ASC,
+          ABS(NVL(start_sequence_number, :startSequenceNumber) - :startSequenceNumber) ASC,
+          ABS(NVL(end_sequence_number, :endSequenceNumber) - :endSequenceNumber) ASC,
+          created_at DESC
+      `,
+      {
+        bookId: options.bookId,
+        chapterId: section.chapterId,
+        endSequenceNumber: section.endSequenceNumber,
+        sectionTitle: section.title,
+        startSequenceNumber: section.startSequenceNumber,
+        userId: options.userId
+      }
+    );
+
+    return (result.rows ?? []) as StoredAiRequestRecord[];
+  }
+
+  const result = await connection.execute(
+    `
+      SELECT
+        request_id AS "requestId",
+        book_id AS "bookId",
+        scope_type AS "scopeType",
+        chapter_id AS "chapterId",
+        section_title AS "sectionTitle",
+        start_page_number AS "startPageNumber",
+        end_page_number AS "endPageNumber",
+        start_paragraph_number AS "startParagraphNumber",
+        end_paragraph_number AS "endParagraphNumber",
+        start_sequence_number AS "startSequenceNumber",
+        end_sequence_number AS "endSequenceNumber",
+        prompt_text AS "promptText",
+        response_text AS "responseText",
+        created_at AS "createdAt",
+        updated_at AS "updatedAt"
+      FROM user_book_ai_requests
+      WHERE user_id = :userId
+        AND book_id = :bookId
+        AND scope_type = 'BOOK'
+      ORDER BY created_at DESC
+    `,
+    {
+      bookId: options.bookId,
+      userId: options.userId
+    }
+  );
+
+  return (result.rows ?? []) as StoredAiRequestRecord[];
+}
+
+async function createAiRequest(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  options: {
+    bookId: string;
+    promptText: string;
+    responseText: string;
+    scopeType: AiRequestScopeType;
+    section?: BookSectionContext | null;
+    userId: string;
+  }
+): Promise<string> {
+  const requestId = randomUUID();
+  const section = options.section ?? null;
+
+  await connection.execute(
+    `
+      INSERT INTO user_book_ai_requests (
+        request_id,
+        user_id,
+        book_id,
+        scope_type,
+        chapter_id,
+        section_title,
+        start_page_number,
+        end_page_number,
+        start_paragraph_number,
+        end_paragraph_number,
+        start_sequence_number,
+        end_sequence_number,
+        prompt_text,
+        response_text
+      ) VALUES (
+        :requestId,
+        :userId,
+        :bookId,
+        :scopeType,
+        :chapterId,
+        :sectionTitle,
+        :startPageNumber,
+        :endPageNumber,
+        :startParagraphNumber,
+        :endParagraphNumber,
+        :startSequenceNumber,
+        :endSequenceNumber,
+        :promptText,
+        :responseText
+      )
+    `,
+    {
+      bookId: options.bookId,
+      chapterId: section?.chapterId ?? null,
+      endPageNumber: section?.endPageNumber ?? null,
+      endParagraphNumber: section?.endParagraphNumber ?? null,
+      endSequenceNumber: section?.endSequenceNumber ?? null,
+      promptText: options.promptText,
+      requestId,
+      responseText: options.responseText,
+      scopeType: options.scopeType,
+      sectionTitle: section?.title ?? null,
+      startPageNumber: section?.startPageNumber ?? null,
+      startParagraphNumber: section?.startParagraphNumber ?? null,
+      startSequenceNumber: section?.startSequenceNumber ?? null,
+      userId: options.userId
+    }
+  );
+
+  return requestId;
 }
 
 async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, pageNumber: number): Promise<BookPageRecord | null> {
@@ -4086,6 +4323,231 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/:bookId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const requests = await listAiRequests(connection, {
+        bookId: params.bookId,
+        scopeType: "BOOK",
+        userId: request.currentUser.userId
+      });
+
+      return reply.send({
+        book,
+        prompt: DEFAULT_BOOK_AI_REQUEST_PROMPT,
+        requests
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/:bookId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const body = aiRequestPayloadSchema.parse(request.body ?? {});
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const paragraphs = await listBookParagraphTexts(connection, params.bookId);
+      if (paragraphs.length === 0) {
+        return reply.status(422).send({ message: "El libro no tiene texto suficiente para enviar una petición a la IA." });
+      }
+
+      const responseText = await generateAiRequestResponse({
+        paragraphs,
+        promptOverride: body.promptText,
+        scopeLabel: "Libro",
+        title: book.title
+      });
+      const requestId = await createAiRequest(connection, {
+        bookId: params.bookId,
+        promptText: body.promptText,
+        responseText,
+        scopeType: "BOOK",
+        userId: request.currentUser.userId
+      });
+
+      await connection.commit();
+
+      const requests = await listAiRequests(connection, {
+        bookId: params.bookId,
+        scopeType: "BOOK",
+        userId: request.currentUser.userId
+      });
+
+      return reply.send({
+        request: requests.find((item) => item.requestId === requestId) ?? null
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:bookId/sections/:chapterId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const requests = await listAiRequests(connection, {
+        bookId: params.bookId,
+        section,
+        scopeType: "SECTION",
+        userId: request.currentUser.userId
+      });
+
+      return reply.send({
+        book,
+        prompt: DEFAULT_SECTION_AI_REQUEST_PROMPT,
+        requests,
+        section
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/:bookId/sections/:chapterId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionParamsSchema.parse(request.params);
+    const body = aiRequestPayloadSchema.parse(request.body ?? {});
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const paragraphs = await listSectionParagraphTexts(connection, params.bookId, section);
+      if (paragraphs.length === 0) {
+        return reply.status(422).send({ message: "La sección no tiene texto suficiente para enviar una petición a la IA." });
+      }
+
+      const responseText = await generateAiRequestResponse({
+        paragraphs,
+        promptOverride: body.promptText,
+        scopeLabel: "Sección",
+        title: section.title
+      });
+      const requestId = await createAiRequest(connection, {
+        bookId: params.bookId,
+        promptText: body.promptText,
+        responseText,
+        scopeType: "SECTION",
+        section,
+        userId: request.currentUser.userId
+      });
+
+      await connection.commit();
+
+      const requests = await listAiRequests(connection, {
+        bookId: params.bookId,
+        section,
+        scopeType: "SECTION",
+        userId: request.currentUser.userId
+      });
+
+      return reply.send({
+        request: requests.find((item) => item.requestId === requestId) ?? null
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.delete("/:bookId/ai-requests/:requestId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = aiRequestParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          DELETE FROM user_book_ai_requests ar
+          WHERE ar.request_id = :requestId
+            AND ar.book_id = :bookId
+            AND ar.user_id = :userId
+            AND EXISTS (
+              SELECT 1
+              FROM books b
+              WHERE b.book_id = ar.book_id
+                AND b.owner_user_id = :ownerUserId
+            )
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId,
+          requestId: params.requestId,
+          userId: request.currentUser.userId
+        }
+      );
+
+      if (!result.rowsAffected) {
+        await connection.rollback();
+        return reply.status(404).send({ message: "AI request not found." });
+      }
+
+      await connection.commit();
+      return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.get("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -4129,7 +4591,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/:bookId/sections/:chapterId/summary/prompt", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4148,28 +4610,41 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Section not found." });
       }
 
-      const paragraphsResult = await connection.execute(
-        `
-          SELECT
-            paragraph_text AS "paragraphText"
-          FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
-          ORDER BY sequence_number ASC
-        `,
-        {
-          bookId: params.bookId,
-          endSequenceNumber: section.endSequenceNumber,
-          startSequenceNumber: section.startSequenceNumber
-        }
-      );
+      return reply.send({
+        prompt: DEFAULT_SECTION_SUMMARY_PROMPT,
+        section,
+      });
+    } finally {
+      await connection.close();
+    }
+  });
 
-      const paragraphs = ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+  app.post("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = sectionParamsSchema.parse(request.params);
+    const body = sectionSummaryGenerationSchema.parse(request.body ?? {});
+    const connection = await getConnection();
+
+    try {
+      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const paragraphs = await listSectionParagraphTexts(connection, params.bookId, section);
       if (paragraphs.length === 0) {
         return reply.status(422).send({ message: "La sección no tiene texto suficiente para resumirse." });
       }
 
-      const summaryText = await generateSectionSummary(section.title, paragraphs);
+      const summaryText = await generateSectionSummary(section.title, paragraphs, { promptOverride: body.promptOverride });
       const existingSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       if (existingSummary) {

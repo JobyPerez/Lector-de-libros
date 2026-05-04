@@ -59,6 +59,11 @@ const sectionSummaryTtsParamsSchema = z.object({
   chapterId: z.string().trim().min(1).max(200)
 });
 
+const aiRequestTtsParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  requestId: z.string().uuid()
+});
+
 function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
@@ -947,6 +952,55 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel);
+
+      return reply
+        .header("Content-Type", synthesizedAudio.contentType)
+        .header("Cache-Control", "private, max-age=3600")
+        .send(synthesizedAudio.audioBuffer);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.post("/books/:bookId/ai-requests/:requestId/tts", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = aiRequestTtsParamsSchema.parse(request.params);
+    const payload = z.object({
+      voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
+    }).parse(request.body);
+    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            ar.response_text AS "responseText"
+          FROM user_book_ai_requests ar
+          JOIN books b
+            ON b.book_id = ar.book_id
+          WHERE ar.request_id = :requestId
+            AND ar.book_id = :bookId
+            AND ar.user_id = :userId
+            AND b.owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId,
+          requestId: params.requestId,
+          userId: request.currentUser.userId
+        }
+      );
+
+      const [aiRequest] = (result.rows ?? []) as Array<{ responseText: string }>;
+      if (!aiRequest?.responseText?.trim()) {
+        return reply.status(404).send({ message: "AI request not found." });
+      }
+
+      const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel);
 
       return reply
         .header("Content-Type", synthesizedAudio.contentType)

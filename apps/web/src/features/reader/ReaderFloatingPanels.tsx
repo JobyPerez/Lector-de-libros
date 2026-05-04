@@ -60,6 +60,9 @@ type AudioSettingsContentProps = {
 };
 
 type NavigationPopoverProps = {
+  aiRequestsHref?: string;
+  aiRequestsLabel?: string;
+  onAiRequestsClick?: () => void;
   buttonLabel: string;
   buttonTitle?: string;
   children: ReactNode;
@@ -392,6 +395,8 @@ export function ReaderAudioSettingsContent({
 }
 
 export function ReaderNavigationPopover({
+  aiRequestsHref,
+  aiRequestsLabel = "Peticiones IA del libro",
   buttonLabel,
   buttonTitle,
   children,
@@ -399,6 +404,7 @@ export function ReaderNavigationPopover({
   eyebrow,
   isOpen,
   isRendered,
+  onAiRequestsClick,
   onClose,
   onToggle,
   panelAriaLabel,
@@ -425,9 +431,22 @@ export function ReaderNavigationPopover({
               {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
               <h3>{title}</h3>
             </div>
-            <button aria-label={closeLabel} className="reader-icon-ghost" onClick={onClose} type="button">
-              <CloseIcon />
-            </button>
+            <div className="reader-navigation-header-actions">
+              {aiRequestsHref ? (
+                <Link
+                  aria-label={aiRequestsLabel}
+                  className="reader-icon-ghost"
+                  onClick={onAiRequestsClick}
+                  title={aiRequestsLabel}
+                  to={aiRequestsHref}
+                >
+                  <SummarySectionIcon />
+                </Link>
+              ) : null}
+              <button aria-label={closeLabel} className="reader-icon-ghost" onClick={onClose} type="button">
+                <CloseIcon />
+              </button>
+            </div>
           </div>
 
           {children}
@@ -458,7 +477,7 @@ export function ReaderNavigationTocCard({ buttonRef, isActive, level, onSelect, 
           aria-label={summaryLabel ?? `Abrir resumen de ${title}`}
           className="reader-note-icon-button reader-navigation-summary-link"
           onClick={onSummaryClick}
-          title="Resumen de la sección"
+          title="Peticiones IA de la sección"
           to={summaryHref}
         >
           <SummarySectionIcon />

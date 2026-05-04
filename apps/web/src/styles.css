@@ -3004,6 +3004,12 @@ textarea {
   margin: 0.15rem 0 0;
 }
 
+.reader-navigation-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .reader-icon-ghost {
   width: 2.65rem;
   height: 2.65rem;
@@ -3480,8 +3486,93 @@ textarea {
   line-height: 1.8;
 }
 
+.ai-request-form-panel {
+  padding: 1.15rem;
+}
+
+.ai-request-card {
+  gap: 1rem;
+}
+
+.ai-request-prompt-details {
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  background: rgba(42, 87, 66, 0.06);
+}
+
+.ai-request-prompt-details summary {
+  cursor: pointer;
+  color: var(--forest-800);
+  font-weight: 800;
+}
+
+.ai-request-prompt-details p {
+  margin: 0.7rem 0 0;
+  color: #4d564f;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.danger-icon-button {
+  color: var(--danger);
+}
+
 .reader-section-summary-floating-controls {
   width: min(42rem, calc(100vw - 2rem));
+}
+
+.reader-section-summary-prompt-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 160;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(20, 36, 29, 0.44);
+  backdrop-filter: blur(10px);
+}
+
+.reader-section-summary-prompt-dialog {
+  width: min(58rem, 100%);
+  max-height: min(86vh, 48rem);
+  display: grid;
+  grid-template-rows: auto minmax(10rem, 1fr) auto auto;
+  gap: 0.95rem;
+  padding: clamp(1rem, 2vw, 1.25rem);
+  border: 1px solid rgba(31, 43, 35, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 253, 247, 0.98);
+  box-shadow: 0 28px 72px rgba(25, 52, 40, 0.28);
+}
+
+.reader-section-summary-prompt-header,
+.reader-section-summary-prompt-actions,
+.reader-section-summary-prompt-actions div {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.reader-section-summary-prompt-header,
+.reader-section-summary-prompt-actions {
+  justify-content: space-between;
+}
+
+.reader-section-summary-prompt-header h3 {
+  margin: 0.1rem 0 0;
+  color: var(--ink);
+}
+
+.reader-section-summary-prompt-dialog textarea {
+  min-height: 10rem;
+  max-height: 100%;
+  line-height: 1.65;
+}
+
+.reader-section-summary-prompt-actions span {
+  color: #5d665d;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .reader-note-editor {
@@ -5070,6 +5161,26 @@ textarea {
 
   .reader-section-summary-floating-controls {
     width: calc(100vw - 1rem);
+  }
+
+  .reader-section-summary-prompt-backdrop {
+    padding: 0.55rem;
+  }
+
+  .reader-section-summary-prompt-dialog {
+    max-height: calc(100vh - 1.1rem);
+    border-radius: 18px;
+  }
+
+  .reader-section-summary-prompt-header,
+  .reader-section-summary-prompt-actions,
+  .reader-section-summary-prompt-actions div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .reader-section-summary-prompt-dialog textarea {
+    min-height: 12rem;
   }
 
 

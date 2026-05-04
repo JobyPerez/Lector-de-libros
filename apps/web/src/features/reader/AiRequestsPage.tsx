@@ -4,18 +4,20 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
   createNote,
+  createAiRequest,
   deleteBookmark,
   deleteHighlight,
+  deleteAiRequest,
   deleteNote,
   fetchBook,
   fetchDeepgramBalance,
   fetchReaderNavigation,
-  fetchSectionSummary,
-  fetchSectionSummaryPrompt,
-  generateSectionSummary,
-  requestSectionSummaryAudio,
+  fetchAiRequests,
+  isRetryableRateLimitError,
+  requestAiResponseAudio,
   updateNote,
   type HighlightColor,
+  type AiRequestRecord,
   type ReaderHighlight,
   type ReaderNote,
   type ReaderTocEntry
@@ -23,13 +25,13 @@ import {
 import { useAuthStore } from "../../app/auth-store";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
+const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
 const READER_DEVICE_VOICE_STORAGE_KEY = "lector.reader.deviceVoiceUri";
 const READER_SPEED_STORAGE_KEY = "lector.reader.playbackRate";
 const DEFAULT_TTS_ENGINE = "deepgram";
 const DEFAULT_DEVICE_VOICE_URI = "";
-const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
 const DEFAULT_PLAYBACK_RATE = 1.1;
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
@@ -195,7 +197,7 @@ function pickFallbackDeviceVoice(voices: SpeechSynthesisVoice[]) {
   return voices.find((voice) => isPeninsularSpanishVoice(voice)) ?? null;
 }
 
-function ReaderControlIcon({ children }: { children: ReactNode }) {
+function RequestIcon({ children }: { children: ReactNode }) {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
       {children}
@@ -205,36 +207,48 @@ function ReaderControlIcon({ children }: { children: ReactNode }) {
 
 function BackIcon() {
   return (
-    <ReaderControlIcon>
+    <RequestIcon>
       <path d="M19 12H7" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M12 7L7 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-    </ReaderControlIcon>
+    </RequestIcon>
   );
 }
 
 function ForwardIcon() {
   return (
-    <ReaderControlIcon>
+    <RequestIcon>
       <path d="M5 12H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
       <path d="M12 7L17 12L12 17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-    </ReaderControlIcon>
+    </RequestIcon>
   );
 }
 
 function PlayIcon() {
   return (
-    <ReaderControlIcon>
+    <RequestIcon>
       <path d="M9 7.5V16.5L16.5 12L9 7.5Z" fill="currentColor" />
-    </ReaderControlIcon>
+    </RequestIcon>
   );
 }
 
 function PauseIcon() {
   return (
-    <ReaderControlIcon>
+    <RequestIcon>
       <path d="M9 7H10.8V17H9V7Z" fill="currentColor" />
       <path d="M13.2 7H15V17H13.2V7Z" fill="currentColor" />
-    </ReaderControlIcon>
+    </RequestIcon>
+  );
+}
+
+function DeleteIcon() {
+  return (
+    <RequestIcon>
+      <path d="M6.5 7.5H17.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10 10.5V16.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M14 10.5V16.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M8 7.5L8.6 19H15.4L16 7.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10 7.5V5.5H14V7.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </RequestIcon>
   );
 }
 
@@ -248,42 +262,48 @@ function LoadingAudioIcon() {
   );
 }
 
-function SummaryIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M7 6.5H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M7 11H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M7 15.5H13.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M16.25 14L17 15.5L18.5 16.25L17 17L16.25 18.5L15.5 17L14 16.25L15.5 15.5L16.25 14Z" fill="currentColor" />
-    </ReaderControlIcon>
-  );
+function formatDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Fecha no disponible";
+  }
+
+  return date.toLocaleString("es-ES", {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
 }
 
-function paragraphizeSummary(summaryText: string) {
-  return summaryText
+function paragraphize(value: string) {
+  return value
     .split(/\n{2,}/u)
     .map((paragraph) => paragraph.trim())
     .filter(Boolean);
 }
 
-function sectionSummaryHref(bookId: string, targetChapterId: string) {
-  return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/summary`;
-}
-
-export function SectionSummaryPage() {
-  const { bookId = "", chapterId = "" } = useParams();
-  const navigate = useNavigate();
+export function AiRequestsPage() {
+  const { bookId = "", chapterId } = useParams();
   const accessToken = useAuthStore((state) => state.accessToken);
   const queryClient = useQueryClient();
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isLoadingSummaryPrompt, setIsLoadingSummaryPrompt] = useState(false);
-  const [isSummaryPromptEditorOpen, setIsSummaryPromptEditorOpen] = useState(false);
-  const [summaryPromptText, setSummaryPromptText] = useState("");
-  const [summaryPromptError, setSummaryPromptError] = useState<string | null>(null);
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+  const activeAudioRequestRef = useRef<AbortController | null>(null);
+  const deviceUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const audioSettingsRef = useRef<HTMLDivElement | null>(null);
+  const navigationPanelRef = useRef<HTMLDivElement | null>(null);
+  const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
+  const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
+  const [promptText, setPromptText] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
-  const [isAudioLoading, setIsAudioLoading] = useState(false);
-  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const [loadingAudioRequestId, setLoadingAudioRequestId] = useState<string | null>(null);
+  const [playingRequestId, setPlayingRequestId] = useState<string | null>(null);
   const [hasActivePlaybackSession, setHasActivePlaybackSession] = useState(false);
   const [isAudioSettingsVisible, setIsAudioSettingsVisible] = useState(false);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
@@ -295,32 +315,46 @@ export function SectionSummaryPage() {
   const [editingNavigationHighlightId, setEditingNavigationHighlightId] = useState<string | null>(null);
   const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
   const [isUpdatingNote, setIsUpdatingNote] = useState(false);
-  const [navigationError, setNavigationError] = useState<string | null>(null);
   const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
   const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
   const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
   const [playbackRate, setPlaybackRate] = useState<number>(readStoredPlaybackRate);
   const [availableDeviceVoices, setAvailableDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isDevicePaused, setIsDevicePaused] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioUrlRef = useRef<string | null>(null);
-  const activeAudioRequestRef = useRef<AbortController | null>(null);
-  const deviceUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const audioSettingsRef = useRef<HTMLDivElement | null>(null);
-  const navigationPanelRef = useRef<HTMLDivElement | null>(null);
-  const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
-  const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
-  const summaryPromptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const summaryQuery = useQuery({
-    enabled: Boolean(accessToken && bookId && chapterId),
-    queryKey: ["section-summary", bookId, chapterId],
+  const requestsQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["ai-requests", bookId, chapterId ?? "book"],
     queryFn: async () => {
       if (!accessToken) {
         throw new Error("Missing access token.");
       }
 
-      return fetchSectionSummary(accessToken, bookId, chapterId);
+      return fetchAiRequests(accessToken, bookId, chapterId);
+    }
+  });
+
+  const navigationQuery = useQuery({
+    enabled: Boolean(accessToken && bookId && chapterId),
+    queryKey: ["reader-navigation", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchReaderNavigation(accessToken, bookId);
+    }
+  });
+
+  const bookQuery = useQuery({
+    enabled: Boolean(accessToken && bookId && chapterId),
+    queryKey: ["book", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchBook(accessToken, bookId);
     }
   });
 
@@ -337,29 +371,115 @@ export function SectionSummaryPage() {
     staleTime: 60_000
   });
 
-  const navigationQuery = useQuery({
-    enabled: Boolean(accessToken && bookId),
-    queryKey: ["reader-navigation", bookId],
-    queryFn: async () => {
-      if (!accessToken) {
-        throw new Error("Missing access token.");
+  useEffect(() => {
+    if (requestsQuery.data?.prompt && !promptText) {
+      setPromptText(requestsQuery.data.prompt);
+    }
+  }, [promptText, requestsQuery.data?.prompt]);
+
+  useEffect(() => {
+    if (retryAfterSeconds <= 0 || typeof window === "undefined") {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setRetryAfterSeconds((current) => Math.max(0, current - 1));
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [retryAfterSeconds]);
+
+  useEffect(() => {
+    const audioElement = new Audio();
+
+    const handlePlay = () => {
+      setLoadingAudioRequestId(null);
+      setHasActivePlaybackSession(true);
+      setIsDevicePaused(false);
+      setAudioError(null);
+    };
+    const handlePause = () => {
+      setPlayingRequestId(null);
+    };
+    const handleEnded = () => {
+      setPlayingRequestId(null);
+      setHasActivePlaybackSession(false);
+    };
+    const handleError = () => {
+      setLoadingAudioRequestId(null);
+      setPlayingRequestId(null);
+      setHasActivePlaybackSession(false);
+      setAudioError("No se pudo reproducir el audio de la respuesta.");
+    };
+
+    audioElement.addEventListener("play", handlePlay);
+    audioElement.addEventListener("pause", handlePause);
+    audioElement.addEventListener("ended", handleEnded);
+    audioElement.addEventListener("error", handleError);
+    audioRef.current = audioElement;
+
+    return () => {
+      activeAudioRequestRef.current?.abort();
+      getSpeechSynthesisApi()?.cancel();
+      deviceUtteranceRef.current = null;
+      audioElement.pause();
+      audioElement.removeEventListener("play", handlePlay);
+      audioElement.removeEventListener("pause", handlePause);
+      audioElement.removeEventListener("ended", handleEnded);
+      audioElement.removeEventListener("error", handleError);
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+      if (navigationPanelCloseTimeoutRef.current !== null) {
+        window.clearTimeout(navigationPanelCloseTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const speechSynthesisApi = getSpeechSynthesisApi();
+    if (!speechSynthesisApi) {
+      setAvailableDeviceVoices([]);
+      return;
+    }
+
+    let isMounted = true;
+    let firstRefreshTimeoutId: number | null = null;
+    let secondRefreshTimeoutId: number | null = null;
+
+    const refreshVoices = () => {
+      if (!isMounted) {
+        return;
       }
 
-      return fetchReaderNavigation(accessToken, bookId);
-    }
-  });
+      setAvailableDeviceVoices(speechSynthesisApi.getVoices());
+    };
 
-  const bookQuery = useQuery({
-    enabled: Boolean(accessToken && bookId),
-    queryKey: ["book", bookId],
-    queryFn: async () => {
-      if (!accessToken) {
-        throw new Error("Missing access token.");
+    refreshVoices();
+    speechSynthesisApi.addEventListener("voiceschanged", refreshVoices);
+
+    if (typeof window !== "undefined") {
+      firstRefreshTimeoutId = window.setTimeout(refreshVoices, 250);
+      secondRefreshTimeoutId = window.setTimeout(refreshVoices, 1000);
+    }
+
+    return () => {
+      isMounted = false;
+      speechSynthesisApi.removeEventListener("voiceschanged", refreshVoices);
+
+      if (typeof window !== "undefined") {
+        if (firstRefreshTimeoutId !== null) {
+          window.clearTimeout(firstRefreshTimeoutId);
+        }
+        if (secondRefreshTimeoutId !== null) {
+          window.clearTimeout(secondRefreshTimeoutId);
+        }
       }
-
-      return fetchBook(accessToken, bookId);
-    }
-  });
+    };
+  }, []);
 
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
   const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
@@ -367,14 +487,148 @@ export function SectionSummaryPage() {
     () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri),
     [availableDeviceVoices, selectedDeviceVoiceUri]
   );
-  const summaryText = summaryQuery.data?.summary?.summaryText?.trim() ?? "";
-  const summaryParagraphs = useMemo(() => paragraphizeSummary(summaryText), [summaryText]);
-  const summaryPromptCharacterCount = summaryPromptText.trim().length.toLocaleString("es-ES");
-  const bookTitle = bookQuery.data?.book.title ?? "Cargando libro...";
+
+  useEffect(() => {
+    if (!isDeviceTtsSupported && selectedTtsEngine === "device") {
+      setSelectedTtsEngine("deepgram");
+    }
+  }, [isDeviceTtsSupported, selectedTtsEngine]);
+
+  useEffect(() => {
+    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
+      setSelectedDeviceVoiceUri(DEFAULT_DEVICE_VOICE_URI);
+    }
+  }, [availableDeviceVoices, selectedDeviceVoiceUri]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(READER_TTS_ENGINE_STORAGE_KEY, selectedTtsEngine);
+  }, [selectedTtsEngine]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(READER_VOICE_STORAGE_KEY, selectedVoiceModel);
+  }, [selectedVoiceModel]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(READER_DEVICE_VOICE_STORAGE_KEY, selectedDeviceVoiceUri);
+  }, [selectedDeviceVoiceUri]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(READER_SPEED_STORAGE_KEY, playbackRate.toFixed(2));
+  }, [playbackRate]);
+
+  useEffect(() => {
+    if (!audioRef.current) {
+      return;
+    }
+
+    audioRef.current.playbackRate = playbackRate;
+  }, [playbackRate]);
+
+  useEffect(() => {
+    activeAudioRequestRef.current?.abort();
+    setLoadingAudioRequestId(null);
+    setPlayingRequestId(null);
+    setHasActivePlaybackSession(false);
+    setIsDevicePaused(false);
+    getSpeechSynthesisApi()?.cancel();
+    deviceUtteranceRef.current = null;
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute("src");
+      audioRef.current.load();
+    }
+
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }, [chapterId, selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
+
+  useEffect(() => {
+    if (navigationPanelCloseTimeoutRef.current !== null) {
+      window.clearTimeout(navigationPanelCloseTimeoutRef.current);
+      navigationPanelCloseTimeoutRef.current = null;
+    }
+
+    setIsNavigationPanelRendered(false);
+    setIsNavigationPanelVisible(false);
+    setExpandedNavigationNoteId(null);
+    setEditingNavigationNoteId(null);
+    setEditingNavigationNoteColor(null);
+    setEditingNavigationNoteText("");
+    setEditingNavigationHighlightId(null);
+    setEditingNavigationHighlightText("");
+    setNavigationError(null);
+  }, [chapterId]);
+
+  useEffect(() => {
+    if ((!isAudioSettingsVisible && !isNavigationPanelVisible) || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const targetNode = event.target as Node;
+
+      if (isAudioSettingsVisible && !audioSettingsRef.current?.contains(targetNode)) {
+        setIsAudioSettingsVisible(false);
+      }
+
+      if (isNavigationPanelVisible && !navigationPanelRef.current?.contains(targetNode)) {
+        setIsNavigationPanelVisible(false);
+
+        if (navigationPanelCloseTimeoutRef.current !== null) {
+          window.clearTimeout(navigationPanelCloseTimeoutRef.current);
+        }
+
+        navigationPanelCloseTimeoutRef.current = window.setTimeout(() => {
+          setIsNavigationPanelRendered(false);
+          navigationPanelCloseTimeoutRef.current = null;
+        }, READER_NAVIGATION_PANEL_ANIMATION_MS);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isAudioSettingsVisible, isNavigationPanelVisible]);
+
+  const contextTitle = requestsQuery.data?.section?.title ?? requestsQuery.data?.book.title ?? "Peticiones IA";
+  const isSectionScope = Boolean(chapterId);
+  const backToReaderPath = requestsQuery.data?.section
+    ? `/books/${bookId}?page=${requestsQuery.data.section.startPageNumber}`
+    : `/books/${bookId}`;
+  const requests = requestsQuery.data?.requests ?? [];
+  const bookTitle = bookQuery.data?.book.title ?? requestsQuery.data?.book.title ?? "Cargando libro...";
   const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
     ? deepgramBalanceQuery.error.message
     : "No se pudo consultar el saldo de Deepgram.";
 
+  const groupedRequests = useMemo(
+    () => requests.map((request) => ({
+      ...request,
+      responseParagraphs: paragraphize(request.responseText)
+    })),
+    [requests]
+  );
+  const latestRequest = groupedRequests[0] ?? null;
   const orderedNavigationItems = useMemo<ReaderNavigationListItem[]>(() => {
     const tocItems: ReaderNavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
       chapterId: entry.chapterId ?? null,
@@ -442,263 +696,6 @@ export function SectionSummaryPage() {
       return sortWeight[left.type] - sortWeight[right.type];
     });
   }, [chapterId, navigationQuery.data?.bookmarks, navigationQuery.data?.highlights, navigationQuery.data?.notes, navigationQuery.data?.toc]);
-
-  useEffect(() => {
-    const audioElement = new Audio();
-
-    const handlePlay = () => {
-      setIsAudioLoading(false);
-      setIsAudioPlaying(true);
-      setHasActivePlaybackSession(true);
-      setAudioError(null);
-    };
-
-    const handlePause = () => {
-      setIsAudioPlaying(false);
-    };
-
-    const handleEnded = () => {
-      setIsAudioPlaying(false);
-      setHasActivePlaybackSession(false);
-    };
-
-    const handleError = () => {
-      setIsAudioLoading(false);
-      setIsAudioPlaying(false);
-      setHasActivePlaybackSession(false);
-      setAudioError("No se pudo reproducir el audio del resumen.");
-    };
-
-    audioElement.addEventListener("play", handlePlay);
-    audioElement.addEventListener("pause", handlePause);
-    audioElement.addEventListener("ended", handleEnded);
-    audioElement.addEventListener("error", handleError);
-    audioRef.current = audioElement;
-
-    return () => {
-      audioElement.pause();
-      audioElement.removeEventListener("play", handlePlay);
-      audioElement.removeEventListener("pause", handlePause);
-      audioElement.removeEventListener("ended", handleEnded);
-      audioElement.removeEventListener("error", handleError);
-    };
-  }, []);
-
-  useEffect(() => {
-    const speechSynthesisApi = getSpeechSynthesisApi();
-    if (!speechSynthesisApi) {
-      setAvailableDeviceVoices([]);
-      return;
-    }
-
-    let isMounted = true;
-    let firstRefreshTimeoutId: number | null = null;
-    let secondRefreshTimeoutId: number | null = null;
-
-    const refreshVoices = () => {
-      if (!isMounted) {
-        return;
-      }
-
-      setAvailableDeviceVoices(speechSynthesisApi.getVoices());
-    };
-
-    refreshVoices();
-    speechSynthesisApi.addEventListener("voiceschanged", refreshVoices);
-
-    if (typeof window !== "undefined") {
-      firstRefreshTimeoutId = window.setTimeout(refreshVoices, 250);
-      secondRefreshTimeoutId = window.setTimeout(refreshVoices, 1000);
-    }
-
-    return () => {
-      isMounted = false;
-      speechSynthesisApi.removeEventListener("voiceschanged", refreshVoices);
-
-      if (typeof window !== "undefined") {
-        if (firstRefreshTimeoutId !== null) {
-          window.clearTimeout(firstRefreshTimeoutId);
-        }
-        if (secondRefreshTimeoutId !== null) {
-          window.clearTimeout(secondRefreshTimeoutId);
-        }
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!isDeviceTtsSupported && selectedTtsEngine === "device") {
-      setSelectedTtsEngine("deepgram");
-    }
-  }, [isDeviceTtsSupported, selectedTtsEngine]);
-
-  useEffect(() => {
-    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
-      setSelectedDeviceVoiceUri(DEFAULT_DEVICE_VOICE_URI);
-    }
-  }, [availableDeviceVoices, selectedDeviceVoiceUri]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_TTS_ENGINE_STORAGE_KEY, selectedTtsEngine);
-  }, [selectedTtsEngine]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_VOICE_STORAGE_KEY, selectedVoiceModel);
-  }, [selectedVoiceModel]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_DEVICE_VOICE_STORAGE_KEY, selectedDeviceVoiceUri);
-  }, [selectedDeviceVoiceUri]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_SPEED_STORAGE_KEY, playbackRate.toFixed(2));
-  }, [playbackRate]);
-
-  useEffect(() => {
-    if (!audioRef.current) {
-      return;
-    }
-
-    audioRef.current.playbackRate = playbackRate;
-  }, [playbackRate]);
-
-  useEffect(() => {
-    return () => {
-      if (navigationPanelCloseTimeoutRef.current !== null) {
-        window.clearTimeout(navigationPanelCloseTimeoutRef.current);
-      }
-
-      activeAudioRequestRef.current?.abort();
-      getSpeechSynthesisApi()?.cancel();
-      deviceUtteranceRef.current = null;
-      audioRef.current?.pause();
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-        audioUrlRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    activeAudioRequestRef.current?.abort();
-    setIsAudioLoading(false);
-    setIsAudioPlaying(false);
-    setHasActivePlaybackSession(false);
-    setIsDevicePaused(false);
-    getSpeechSynthesisApi()?.cancel();
-    deviceUtteranceRef.current = null;
-
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.removeAttribute("src");
-      audioRef.current.load();
-    }
-
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-      audioUrlRef.current = null;
-    }
-  }, [selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel, summaryText]);
-
-  useEffect(() => {
-    if (navigationPanelCloseTimeoutRef.current !== null) {
-      window.clearTimeout(navigationPanelCloseTimeoutRef.current);
-      navigationPanelCloseTimeoutRef.current = null;
-    }
-
-    setIsNavigationPanelRendered(false);
-    setIsNavigationPanelVisible(false);
-    setExpandedNavigationNoteId(null);
-    setEditingNavigationNoteId(null);
-    setEditingNavigationNoteColor(null);
-    setEditingNavigationNoteText("");
-    setEditingNavigationHighlightId(null);
-    setEditingNavigationHighlightText("");
-    setNavigationError(null);
-    setIsSummaryPromptEditorOpen(false);
-    setSummaryPromptText("");
-    setSummaryPromptError(null);
-  }, [chapterId]);
-
-  useEffect(() => {
-    if (!isSummaryPromptEditorOpen || typeof window === "undefined") {
-      return;
-    }
-
-    const focusTimeoutId = window.setTimeout(() => {
-      summaryPromptTextareaRef.current?.focus();
-    }, 0);
-
-    return () => {
-      window.clearTimeout(focusTimeoutId);
-    };
-  }, [isSummaryPromptEditorOpen]);
-
-  useEffect(() => {
-    if (!isSummaryPromptEditorOpen || typeof document === "undefined") {
-      return;
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape" && !isGenerating) {
-        setIsSummaryPromptEditorOpen(false);
-      }
-    }
-
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isGenerating, isSummaryPromptEditorOpen]);
-
-  useEffect(() => {
-    if ((!isAudioSettingsVisible && !isNavigationPanelVisible) || typeof document === "undefined") {
-      return;
-    }
-
-    function handlePointerDown(event: PointerEvent) {
-      const targetNode = event.target as Node;
-
-      if (isAudioSettingsVisible && !audioSettingsRef.current?.contains(targetNode)) {
-        setIsAudioSettingsVisible(false);
-      }
-
-      if (isNavigationPanelVisible && !navigationPanelRef.current?.contains(targetNode)) {
-        setIsNavigationPanelVisible(false);
-
-        if (navigationPanelCloseTimeoutRef.current !== null) {
-          window.clearTimeout(navigationPanelCloseTimeoutRef.current);
-        }
-
-        navigationPanelCloseTimeoutRef.current = window.setTimeout(() => {
-          setIsNavigationPanelRendered(false);
-          navigationPanelCloseTimeoutRef.current = null;
-        }, READER_NAVIGATION_PANEL_ANIMATION_MS);
-      }
-    }
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [isAudioSettingsVisible, isNavigationPanelVisible]);
-
   const sectionEntries = useMemo(
     () => (navigationQuery.data?.toc ?? []).flatMap((entry) => entry.chapterId ? [{ ...entry, chapterId: entry.chapterId }] : []),
     [navigationQuery.data?.toc]
@@ -712,6 +709,10 @@ export function SectionSummaryPage() {
     : null;
   const previousSection = currentSectionIndex > 0 ? sectionEntries[currentSectionIndex - 1] ?? null : null;
   const nextSection = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex + 1] ?? null : null;
+
+  function sectionAiRequestsHref(targetChapterId: string) {
+    return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/ai-requests`;
+  }
 
   function openNavigationPanel() {
     if (navigationPanelCloseTimeoutRef.current !== null) {
@@ -752,11 +753,6 @@ export function SectionSummaryPage() {
   function goToReaderLocation(pageNumber: number) {
     closeNavigationPanel();
     navigate(`/books/${bookId}?page=${encodeURIComponent(String(pageNumber))}`);
-  }
-
-  function goToSection(targetChapterId: string) {
-    closeNavigationPanel();
-    navigate(sectionSummaryHref(bookId, targetChapterId));
   }
 
   function beginNavigationNoteEditing(note: { color: HighlightColor | null; noteId: string; noteText: string }) {
@@ -832,7 +828,7 @@ export function SectionSummaryPage() {
 
     try {
       const trimmedNoteText = noteText.trim();
-      const { note } = await createNote(accessToken, bookId, {
+      await createNote(accessToken, bookId, {
         highlightId,
         noteText: trimmedNoteText
       });
@@ -873,140 +869,136 @@ export function SectionSummaryPage() {
     }
   }
 
-  async function handleOpenSummaryPromptEditor() {
-    if (!accessToken) {
+  async function handleCreateRequest() {
+    if (!accessToken || !promptText.trim() || retryAfterSeconds > 0) {
       return;
     }
 
-    setIsLoadingSummaryPrompt(true);
-    setGenerationError(null);
-    setSummaryPromptError(null);
+    setIsSubmitting(true);
+    setSubmitError(null);
 
     try {
-      const response = await fetchSectionSummaryPrompt(accessToken, bookId, chapterId);
-      queryClient.setQueryData(["section-summary", bookId, chapterId], (current: unknown) => {
-        if (current && typeof current === "object") {
-          return {
-            ...current,
-            section: response.section
-          };
-        }
-
-        return {
-          section: response.section,
-          summary: null
-        };
+      await createAiRequest(accessToken, bookId, {
+        ...(chapterId ? { chapterId } : {}),
+        promptText: promptText.trim()
       });
-      setSummaryPromptText(response.prompt);
-      setIsSummaryPromptEditorOpen(true);
+      await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
     } catch (error) {
-      setGenerationError(error instanceof Error ? error.message : "No se pudo preparar el prompt para generar el resumen.");
+      if (isRetryableRateLimitError(error)) {
+        setRetryAfterSeconds(error.retryAfterSeconds);
+        setSubmitError(`GitHub Models está limitando temporalmente las peticiones. Espera ${error.retryAfterSeconds} segundos antes de volver a intentarlo.`);
+      } else {
+        setSubmitError(error instanceof Error ? error.message : "No se pudo crear la petición IA.");
+      }
     } finally {
-      setIsLoadingSummaryPrompt(false);
+      setIsSubmitting(false);
     }
   }
 
-  async function handleGenerateSummary() {
-    if (!accessToken) {
+  async function handleDeleteRequest(request: AiRequestRecord) {
+    if (!accessToken || deletingRequestId) {
       return;
     }
 
-    if (!summaryPromptText.trim()) {
-      setSummaryPromptError("El prompt para generar el resumen no puede estar vacío.");
-      return;
-    }
-
-    setIsGenerating(true);
-    setGenerationError(null);
-    setSummaryPromptError(null);
+    setDeletingRequestId(request.requestId);
+    setDeleteError(null);
 
     try {
-      const response = await generateSectionSummary(accessToken, bookId, chapterId, { promptOverride: summaryPromptText });
-      queryClient.setQueryData(["section-summary", bookId, chapterId], response);
-      setIsSummaryPromptEditorOpen(false);
+      if (playingRequestId === request.requestId || loadingAudioRequestId === request.requestId) {
+        audioRef.current?.pause();
+        activeAudioRequestRef.current?.abort();
+        getSpeechSynthesisApi()?.cancel();
+        deviceUtteranceRef.current = null;
+        setPlayingRequestId(null);
+        setLoadingAudioRequestId(null);
+        setHasActivePlaybackSession(false);
+        setIsDevicePaused(false);
+      }
+
+      await deleteAiRequest(accessToken, bookId, request.requestId);
+      await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
     } catch (error) {
-      setSummaryPromptError(error instanceof Error ? error.message : "No se pudo generar el resumen.");
+      setDeleteError(error instanceof Error ? error.message : "No se pudo borrar la petición IA.");
     } finally {
-      setIsGenerating(false);
+      setDeletingRequestId(null);
     }
   }
 
-  async function handlePlay() {
-    if (!summaryText) {
+  async function handlePlayRequest(request: AiRequestRecord) {
+    const audioElement = audioRef.current;
+    if (!accessToken || !audioElement || !request.responseText.trim()) {
       return;
     }
 
+    if (playingRequestId === request.requestId) {
+      handlePauseRequest();
+      setPlayingRequestId(null);
+      return;
+    }
+
+    activeAudioRequestRef.current?.abort();
+    audioElement.pause();
+    getSpeechSynthesisApi()?.cancel();
+    deviceUtteranceRef.current = null;
     setAudioError(null);
+    setLoadingAudioRequestId(request.requestId);
+    setPlayingRequestId(null);
+    setHasActivePlaybackSession(false);
+    setIsDevicePaused(false);
 
     if (selectedTtsEngine === "device") {
       const speechSynthesisApi = getSpeechSynthesisApi();
       if (!speechSynthesisApi) {
+        setLoadingAudioRequestId(null);
         setAudioError("Este navegador no soporta lectura en voz del dispositivo.");
         return;
       }
 
-      if (speechSynthesisApi.paused && deviceUtteranceRef.current) {
-        speechSynthesisApi.resume();
-        setIsAudioPlaying(true);
-        setHasActivePlaybackSession(true);
-        setIsDevicePaused(false);
-        return;
-      }
-
-      speechSynthesisApi.cancel();
-
-      const utterance = new SpeechSynthesisUtterance(summaryText);
+      const utterance = new SpeechSynthesisUtterance(request.responseText);
       utterance.lang = "es-ES";
       utterance.rate = playbackRate;
       utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices);
       utterance.onstart = () => {
-        setIsAudioLoading(false);
-        setIsAudioPlaying(true);
+        setLoadingAudioRequestId(null);
+        setPlayingRequestId(request.requestId);
         setHasActivePlaybackSession(true);
         setIsDevicePaused(false);
       };
       utterance.onend = () => {
-        setIsAudioPlaying(false);
+        setPlayingRequestId(null);
         setHasActivePlaybackSession(false);
         setIsDevicePaused(false);
         deviceUtteranceRef.current = null;
       };
       utterance.onerror = () => {
-        setIsAudioLoading(false);
-        setIsAudioPlaying(false);
+        setLoadingAudioRequestId(null);
+        setPlayingRequestId(null);
         setHasActivePlaybackSession(false);
         setIsDevicePaused(false);
-        setAudioError("No se pudo reproducir el resumen con la voz del dispositivo.");
+        setAudioError("No se pudo reproducir la respuesta con la voz del dispositivo.");
         deviceUtteranceRef.current = null;
       };
       utterance.onpause = () => {
-        setIsAudioPlaying(false);
+        setPlayingRequestId(null);
         setHasActivePlaybackSession(true);
         setIsDevicePaused(true);
       };
       utterance.onresume = () => {
-        setIsAudioPlaying(true);
+        setPlayingRequestId(request.requestId);
         setHasActivePlaybackSession(true);
         setIsDevicePaused(false);
       };
 
       deviceUtteranceRef.current = utterance;
-      setIsAudioLoading(true);
       speechSynthesisApi.speak(utterance);
       return;
     }
 
-    if (!accessToken) {
-      return;
-    }
-
     const controller = new AbortController();
-    activeAudioRequestRef.current?.abort();
     activeAudioRequestRef.current = controller;
-    setIsAudioLoading(true);
 
     try {
-      const blob = await requestSectionSummaryAudio(accessToken, bookId, chapterId, {
+      const blob = await requestAiResponseAudio(accessToken, bookId, request.requestId, {
         signal: controller.signal,
         voiceModel: selectedVoiceModel
       });
@@ -1021,36 +1013,25 @@ export function SectionSummaryPage() {
 
       const audioUrl = URL.createObjectURL(blob);
       audioUrlRef.current = audioUrl;
-
-      const audioElement = audioRef.current;
-      if (!audioElement) {
-        throw new Error("No se pudo preparar el reproductor de audio.");
-      }
-
       audioElement.src = audioUrl;
       audioElement.playbackRate = playbackRate;
       await audioElement.play();
-      setHasActivePlaybackSession(true);
+      setPlayingRequestId(request.requestId);
     } catch (error) {
-      if (controller.signal.aborted) {
-        return;
+      if (!controller.signal.aborted) {
+        setAudioError(error instanceof Error ? error.message : "No se pudo reproducir la respuesta.");
       }
-
-      setIsAudioLoading(false);
-      setIsAudioPlaying(false);
-      setHasActivePlaybackSession(false);
-      setAudioError(error instanceof Error ? error.message : "No se pudo reproducir el resumen.");
+    } finally {
+      if (!controller.signal.aborted) {
+        setLoadingAudioRequestId(null);
+      }
     }
   }
 
-  function handlePause() {
+  function handlePauseRequest() {
     if (selectedTtsEngine === "device") {
       const speechSynthesisApi = getSpeechSynthesisApi();
-      if (!speechSynthesisApi) {
-        return;
-      }
-
-      if (speechSynthesisApi.speaking && !speechSynthesisApi.paused) {
+      if (speechSynthesisApi?.speaking && !speechSynthesisApi.paused) {
         speechSynthesisApi.pause();
       }
       return;
@@ -1059,11 +1040,24 @@ export function SectionSummaryPage() {
     audioRef.current?.pause();
   }
 
-  const section = summaryQuery.data?.section ?? null;
-  const backToReaderPath = section ? `/books/${bookId}?page=${section.startPageNumber}` : `/books/${bookId}`;
+  function handlePlayLatestRequest() {
+    if (!latestRequest) {
+      return;
+    }
+
+    if (selectedTtsEngine === "device" && isDevicePaused && playingRequestId === null) {
+      const speechSynthesisApi = getSpeechSynthesisApi();
+      if (speechSynthesisApi?.paused && deviceUtteranceRef.current) {
+        speechSynthesisApi.resume();
+        return;
+      }
+    }
+
+    void handlePlayRequest(latestRequest);
+  }
 
   return (
-    <section className="reader-section-summary-page">
+    <section className="reader-section-summary-page ai-requests-page">
       <header className="reader-section-summary-hero">
         <Link
           aria-label="Volver al lector"
@@ -1075,144 +1069,122 @@ export function SectionSummaryPage() {
         </Link>
 
         <div className="reader-section-summary-hero-main">
-          <p className="eyebrow">Resumen de la sección del índice</p>
-          <h2>{section?.title ?? "Cargando sección..."}</h2>
-          {section ? (
+          <p className="eyebrow">{isSectionScope ? "Peticiones IA de sección" : "Peticiones IA del libro"}</p>
+          <h2>{contextTitle}</h2>
+          {requestsQuery.data?.section ? (
             <div className="reader-section-summary-meta">
-              <span>Inicio: pág. {section.startPageNumber}</span>
-              <span>Fin: pág. {section.endPageNumber}</span>
+              <span>Inicio: pág. {requestsQuery.data.section.startPageNumber}</span>
+              <span>Fin: pág. {requestsQuery.data.section.endPageNumber}</span>
             </div>
           ) : null}
-        </div>
-
-        <div className="reader-section-summary-actions">
-          <button
-            className="primary-button reader-section-summary-generate"
-            disabled={isGenerating || isLoadingSummaryPrompt || summaryQuery.isLoading || !section}
-            onClick={() => void handleOpenSummaryPromptEditor()}
-            type="button"
-          >
-            <SummaryIcon />
-            <span>{isLoadingSummaryPrompt ? "Preparando prompt..." : summaryQuery.data?.summary ? "Regenerar resumen" : "Generar resumen"}</span>
-          </button>
         </div>
       </header>
 
-      {isSummaryPromptEditorOpen ? (
-        <div className="reader-section-summary-prompt-backdrop">
-          <div aria-label="Editar prompt para la IA" aria-modal="true" className="reader-section-summary-prompt-dialog" role="dialog">
-            <div className="reader-section-summary-prompt-header">
-              <div>
-                <p className="eyebrow">Prompt para la IA</p>
-                <h3>Revisar antes de generar</h3>
-              </div>
-              <button
-                className="secondary-button"
-                disabled={isGenerating}
-                onClick={() => setIsSummaryPromptEditorOpen(false)}
-                type="button"
-              >
-                Cerrar
-              </button>
-            </div>
-
-            <textarea
-              disabled={isGenerating}
-              onChange={(event) => setSummaryPromptText(event.target.value)}
-              ref={summaryPromptTextareaRef}
-              rows={10}
-              value={summaryPromptText}
-            />
-
-            {summaryPromptError ? <p className="error-text">{summaryPromptError}</p> : null}
-
-            <div className="reader-section-summary-prompt-actions">
-              <span>{summaryPromptCharacterCount} caracteres</span>
-              <div>
-                <button
-                  className="secondary-button"
-                  disabled={isGenerating}
-                  onClick={() => setIsSummaryPromptEditorOpen(false)}
-                  type="button"
-                >
-                  Cancelar
-                </button>
-                <button
-                  className="primary-button"
-                  disabled={isGenerating || !summaryPromptText.trim()}
-                  onClick={() => void handleGenerateSummary()}
-                  type="button"
-                >
-                  {isGenerating ? "Generando..." : "Generar resumen"}
-                </button>
-              </div>
-            </div>
-          </div>
+      <section className="panel reader-section-summary-panel ai-request-form-panel">
+        <label className="reader-note-composer">
+          <span>Petición</span>
+          <textarea
+            disabled={isSubmitting || requestsQuery.isLoading}
+            onChange={(event) => setPromptText(event.target.value)}
+            rows={6}
+            value={promptText}
+          />
+        </label>
+        {submitError ? <p className="error-text">{submitError}</p> : null}
+        <div className="reader-note-editor-actions">
+          <button
+            className="primary-button"
+            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading || !promptText.trim()}
+            onClick={() => void handleCreateRequest()}
+            type="button"
+          >
+            {isSubmitting ? "Enviando..." : retryAfterSeconds > 0 ? `Reintentar en ${retryAfterSeconds}s` : "Enviar petición"}
+          </button>
         </div>
-      ) : null}
+      </section>
 
-      {summaryQuery.isLoading ? (
+      {requestsQuery.isLoading ? (
         <section className="panel reader-section-summary-panel">
-          <p className="subdued">Cargando sección...</p>
+          <p className="subdued">Cargando peticiones...</p>
         </section>
       ) : null}
 
-      {summaryQuery.isError ? (
+      {requestsQuery.isError ? (
         <section className="panel reader-section-summary-panel">
-          <p className="error-text">{summaryQuery.error instanceof Error ? summaryQuery.error.message : "No se pudo cargar la sección."}</p>
+          <p className="error-text">{requestsQuery.error instanceof Error ? requestsQuery.error.message : "No se pudieron cargar las peticiones IA."}</p>
         </section>
       ) : null}
 
-      {generationError ? (
+      {deleteError || audioError || navigationError ? (
         <section className="panel reader-section-summary-panel">
-          <p className="error-text">{generationError}</p>
+          {deleteError ? <p className="error-text">{deleteError}</p> : null}
+          {audioError ? <p className="error-text">{audioError}</p> : null}
+          {navigationError ? <p className="error-text">{navigationError}</p> : null}
         </section>
       ) : null}
 
-      {!summaryQuery.isLoading && !summaryQuery.isError && !summaryQuery.data?.summary ? (
+      {!requestsQuery.isLoading && !requestsQuery.isError && groupedRequests.length === 0 ? (
         <section className="panel reader-section-summary-panel reader-section-summary-empty">
-          <h3>No hay resumen generado todavía</h3>
+          <h3>No hay peticiones todavía</h3>
         </section>
       ) : null}
 
-      {summaryQuery.data?.summary ? (
-        <article className="panel reader-section-summary-panel reader-section-summary-card">
-          {summaryQuery.data.summary.isStale ? (
+      {groupedRequests.map((request) => {
+        const isAudioLoading = loadingAudioRequestId === request.requestId;
+        const isPlaying = playingRequestId === request.requestId;
+        return (
+          <article className="panel reader-section-summary-panel reader-section-summary-card ai-request-card" key={request.requestId}>
             <div className="reader-section-summary-card-header">
+              <div>
+                <p className="eyebrow">{formatDate(request.createdAt)}</p>
+                <h3>{request.scopeType === "BOOK" ? "Petición al libro" : request.sectionTitle ?? "Petición a la sección"}</h3>
+              </div>
               <div className="reader-section-summary-card-badges">
-                <span className="reader-section-summary-badge warning">Necesita regenerarse</span>
+                <button
+                  aria-label={isPlaying ? "Pausar respuesta" : "Reproducir respuesta"}
+                  className="reader-note-icon-button"
+                  disabled={isAudioLoading}
+                  onClick={() => void handlePlayRequest(request)}
+                  title={isPlaying ? "Pausar respuesta" : "Reproducir respuesta"}
+                  type="button"
+                >
+                  {isAudioLoading ? <LoadingAudioIcon /> : isPlaying ? <PauseIcon /> : <PlayIcon />}
+                </button>
+                <button
+                  aria-label="Borrar petición"
+                  className="reader-note-icon-button danger-icon-button"
+                  disabled={deletingRequestId === request.requestId}
+                  onClick={() => void handleDeleteRequest(request)}
+                  title="Borrar petición"
+                  type="button"
+                >
+                  <DeleteIcon />
+                </button>
               </div>
             </div>
-          ) : null}
 
-          <div className="reader-section-summary-copy">
-            {summaryParagraphs.map((paragraph) => (
-              <p key={paragraph}>{paragraph}</p>
-            ))}
-          </div>
-        </article>
-      ) : null}
+            <details className="ai-request-prompt-details">
+              <summary>Ver petición enviada</summary>
+              <p>{request.promptText}</p>
+            </details>
 
-      {audioError ? (
-        <section className="panel reader-section-summary-panel">
-          <p className="error-text">{audioError}</p>
-        </section>
-      ) : null}
+            <div className="reader-section-summary-copy">
+              {request.responseParagraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+            </div>
+          </article>
+        );
+      })}
 
-      {navigationError ? (
-        <section className="panel reader-section-summary-panel">
-          <p className="error-text">{navigationError}</p>
-        </section>
-      ) : null}
-
-      {section ? (
+      {requestsQuery.data?.section ? (
         <div className="reader-floating-controls reader-section-summary-floating-controls">
           <ReaderFloatingAudioPopover
             buttonLabel="Ajustes de audio"
             isOpen={isAudioSettingsVisible}
             menuRef={audioSettingsRef}
             onToggle={() => setIsAudioSettingsVisible((current) => !current)}
-            panelId="section-summary-audio-settings-panel"
+            panelId="ai-requests-audio-settings-panel"
           >
             <ReaderAudioSettingsContent
               deepgramBalanceErrorMessage={deepgramBalanceQuery.isError ? deepgramBalanceErrorMessage : null}
@@ -1246,11 +1218,14 @@ export function SectionSummaryPage() {
           </div>
 
           <ReaderNavigationPopover
+            aiRequestsHref={`/books/${bookId}/ai-requests`}
+            aiRequestsLabel="Peticiones IA del libro"
             buttonLabel="Abrir panel de índice, marcadores y notas"
             closeLabel="Cerrar panel de navegación"
             eyebrow={bookTitle}
             isOpen={isNavigationPanelVisible}
             isRendered={isNavigationPanelRendered}
+            onAiRequestsClick={closeNavigationPanel}
             onClose={closeNavigationPanel}
             onToggle={toggleNavigationPanel}
             panelAriaLabel="Índice, marcadores y notas"
@@ -1293,7 +1268,7 @@ export function SectionSummaryPage() {
               onSelectToc={(item) => goToReaderLocation(item.pageNumber)}
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
-              summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
+              summaryHrefBuilder={(targetChapterId) => sectionAiRequestsHref(targetChapterId)}
             />
           </ReaderNavigationPopover>
 
@@ -1303,7 +1278,7 @@ export function SectionSummaryPage() {
             disabled={!previousSection?.chapterId}
             onClick={() => {
               if (previousSection?.chapterId) {
-                navigate(sectionSummaryHref(bookId, previousSection.chapterId));
+                navigate(sectionAiRequestsHref(previousSection.chapterId));
               }
             }}
             type="button"
@@ -1312,20 +1287,20 @@ export function SectionSummaryPage() {
           </button>
 
           <button
-            aria-label={isAudioLoading ? "Generando audio" : isDevicePaused ? "Reanudar resumen" : "Leer resumen"}
-            className={isAudioLoading ? "reader-float-button primary is-loading" : "reader-float-button primary"}
-            disabled={isAudioLoading || !summaryText}
-            onClick={() => void handlePlay()}
+            aria-label={loadingAudioRequestId === latestRequest?.requestId ? "Generando audio" : isDevicePaused ? "Reanudar respuesta" : "Leer respuesta más reciente"}
+            className={loadingAudioRequestId === latestRequest?.requestId ? "reader-float-button primary is-loading" : "reader-float-button primary"}
+            disabled={!latestRequest || loadingAudioRequestId === latestRequest.requestId}
+            onClick={handlePlayLatestRequest}
             type="button"
           >
-            {isAudioLoading ? <LoadingAudioIcon /> : <PlayIcon />}
+            {loadingAudioRequestId === latestRequest?.requestId ? <LoadingAudioIcon /> : <PlayIcon />}
           </button>
 
           <button
-            aria-label="Pausar resumen"
+            aria-label="Pausar respuesta"
             className="reader-float-button"
-            disabled={!hasActivePlaybackSession || (!isAudioPlaying && !isDevicePaused)}
-            onClick={handlePause}
+            disabled={!hasActivePlaybackSession || (!playingRequestId && !isDevicePaused)}
+            onClick={handlePauseRequest}
             type="button"
           >
             <PauseIcon />
@@ -1337,7 +1312,7 @@ export function SectionSummaryPage() {
             disabled={!nextSection?.chapterId}
             onClick={() => {
               if (nextSection?.chapterId) {
-                navigate(sectionSummaryHref(bookId, nextSection.chapterId));
+                navigate(sectionAiRequestsHref(nextSection.chapterId));
               }
             }}
             type="button"

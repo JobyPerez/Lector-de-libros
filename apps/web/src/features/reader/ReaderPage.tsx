@@ -212,7 +212,7 @@ function formatRelativeAnchor(pageNumber: number, paragraphNumber: number) {
 }
 
 function sectionSummaryHref(bookId: string, targetChapterId: string) {
-  return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/summary`;
+  return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/ai-requests`;
 }
 
 type PersistedParagraphProgress = Pick<ParagraphContent, "paragraphNumber" | "sequenceNumber">;
@@ -4456,11 +4456,14 @@ export function ReaderPage() {
           <span>{readingPercentage.toFixed(1)}%</span>
         </div>
         <ReaderNavigationPopover
+          aiRequestsHref={`/books/${bookId}/ai-requests`}
+          aiRequestsLabel="Peticiones IA del libro"
           buttonLabel="Abrir panel de índice, marcadores y notas"
           closeLabel="Cerrar panel de navegación"
           eyebrow={bookTitle}
           isOpen={isNavigationPanelVisible}
           isRendered={isNavigationPanelRendered}
+          onAiRequestsClick={closeNavigationPanel}
           onClose={closeNavigationPanel}
           onToggle={toggleNavigationPanel}
           panelAriaLabel="Índice, marcadores y notas"

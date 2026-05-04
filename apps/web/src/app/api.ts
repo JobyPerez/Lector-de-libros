@@ -69,7 +69,7 @@ export function isRetryableRateLimitError(error: unknown): error is ApiRequestEr
   return error instanceof Error
     && (error as Partial<ApiRequestError>).retryable === true
     && typeof (error as Partial<ApiRequestError>).retryAfterSeconds === "number"
-    && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT");
+    && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT" || (error as Partial<ApiRequestError>).code === "AI_RATE_LIMIT");
 }
 
 async function refreshAccessToken(): Promise<string> {
@@ -427,6 +427,38 @@ export type SectionSummaryResponse = {
   summary: SectionSummaryRecord | null;
 };
 
+export type SectionSummaryPromptResponse = {
+  prompt: string;
+  section: SectionSummarySection;
+};
+
+export type AiRequestScopeType = "BOOK" | "SECTION";
+
+export type AiRequestRecord = {
+  bookId: string;
+  chapterId: string | null;
+  createdAt: string;
+  endPageNumber: number | null;
+  endParagraphNumber: number | null;
+  endSequenceNumber: number | null;
+  promptText: string;
+  requestId: string;
+  responseText: string;
+  scopeType: AiRequestScopeType;
+  sectionTitle: string | null;
+  startPageNumber: number | null;
+  startParagraphNumber: number | null;
+  startSequenceNumber: number | null;
+  updatedAt: string;
+};
+
+export type AiRequestsResponse = {
+  book: BookSummary;
+  prompt: string;
+  requests: AiRequestRecord[];
+  section?: SectionSummarySection;
+};
+
 export type BookPageResponse = {
   book: BookSummary & { synopsis?: string | null };
   hasNextPage: boolean;
@@ -719,11 +751,40 @@ export function fetchSectionSummary(accessToken: string, bookId: string, chapter
   return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, { accessToken });
 }
 
-export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string) {
+export function fetchSectionSummaryPrompt(accessToken: string, bookId: string, chapterId: string) {
+  return request<SectionSummaryPromptResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary/prompt`, { accessToken });
+}
+
+export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string, payload: { promptOverride?: string } = {}) {
   return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, {
     accessToken,
-    body: {},
+    body: payload,
     method: "POST"
+  });
+}
+
+export function fetchAiRequests(accessToken: string, bookId: string, chapterId?: string) {
+  const path = chapterId
+    ? `/books/${bookId}/sections/${encodeURIComponent(chapterId)}/ai-requests`
+    : `/books/${bookId}/ai-requests`;
+  return request<AiRequestsResponse>(path, { accessToken });
+}
+
+export function createAiRequest(accessToken: string, bookId: string, payload: { promptText: string; chapterId?: string }) {
+  const path = payload.chapterId
+    ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
+    : `/books/${bookId}/ai-requests`;
+  return request<{ request: AiRequestRecord | null }>(path, {
+    accessToken,
+    body: { promptText: payload.promptText },
+    method: "POST"
+  });
+}
+
+export function deleteAiRequest(accessToken: string, bookId: string, requestId: string) {
+  return request<void>(`/books/${bookId}/ai-requests/${requestId}`, {
+    accessToken,
+    method: "DELETE"
   });
 }
 
@@ -933,6 +994,23 @@ export async function requestSectionSummaryAudio(accessToken: string, bookId: st
 
   if (!response.ok) {
     throw await createApiRequestError(response, "No se pudo generar el audio del resumen.");
+  }
+
+  return response.blob();
+}
+
+export async function requestAiResponseAudio(accessToken: string, bookId: string, requestId: string, options: ReaderAudioOptions = {}) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/ai-requests/${requestId}/tts`, {
+    accessToken,
+    body: JSON.stringify({ voiceModel: options.voiceModel }),
+    fallbackMessage: "No se pudo generar el audio de la respuesta.",
+    headers: createHeaders({ accessToken, contentType: "application/json" }),
+    method: "POST",
+    signal: options.signal
+  });
+
+  if (!response.ok) {
+    throw await createApiRequestError(response, "No se pudo generar el audio de la respuesta.");
   }
 
   return response.blob();

@@ -211,7 +211,7 @@ function choosePreferredCameraDevice(devices: MediaDeviceInfo[], currentDeviceId
     })[0];
 }
 
-const defaultVisionOcrEditablePrompt = "Omite cabeceras repetidas, pies y números de página.";
+const defaultVisionOcrEditablePrompt = "";
 
 function resolveVisionPromptOverride(prompt: string): string | undefined {
   const normalizedPrompt = prompt.trim();
