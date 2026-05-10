@@ -4243,7 +4243,7 @@ export function ReaderPage() {
           {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
         </button>
         <button
-          aria-label={isScreenLockEnabled ? "Desactivar pantalla encendida" : "Mantener pantalla encendida"}
+          aria-label={isScreenLockEnabled ? "Desactivar lectura protegida con pantalla encendida" : "Activar lectura protegida con pantalla encendida"}
           className={screenLockButtonClassName}
           onClick={() => {
             onAction?.();
