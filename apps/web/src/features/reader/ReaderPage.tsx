@@ -60,6 +60,10 @@ const READER_POPOVER_GAP_PX = 14;
 const READER_SELECTION_DEBOUNCE_MS = 80;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
 const READER_BOOKMARK_ANIMATION_MS = 420;
+const READER_SCREEN_LOCK_HOLD_MS = 5000;
+const READER_SCREEN_LOCK_HOLD_INTERVAL_MS = 100;
+const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
+const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toFixed(0);
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -845,11 +849,13 @@ function ActionsMenuIcon() {
   );
 }
 
-function EyeIcon() {
+function ScreenLockIcon() {
   return (
     <ReaderControlIcon>
-      <path d="M2.75 12C4.82 8.66 8.11 6.75 12 6.75C15.89 6.75 19.18 8.66 21.25 12C19.18 15.34 15.89 17.25 12 17.25C8.11 17.25 4.82 15.34 2.75 12Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <circle cx="12" cy="12" fill="currentColor" r="2.2" />
+      <path d="M4.75 8.5C4.75 7.26 5.76 6.25 7 6.25H17C18.24 6.25 19.25 7.26 19.25 8.5V15.5C19.25 16.74 18.24 17.75 17 17.75H7C5.76 17.75 4.75 16.74 4.75 15.5V8.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M9 4.75H15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M10 20.25H14" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="12" cy="12" fill="currentColor" r="1.6" />
     </ReaderControlIcon>
   );
 }
@@ -1147,6 +1153,8 @@ export function ReaderPage() {
   const [isFloatingHeaderActionsVisible, setIsFloatingHeaderActionsVisible] = useState(false);
   const [isFloatingHeaderActionsExpanded, setIsFloatingHeaderActionsExpanded] = useState(false);
   const [floatingHeaderDockStyle, setFloatingHeaderDockStyle] = useState<CSSProperties | null>(null);
+  const [isScreenLockEnabled, setIsScreenLockEnabled] = useState(false);
+  const [screenLockHoldProgress, setScreenLockHoldProgress] = useState(0);
   const [activeSearchTarget, setActiveSearchTarget] = useState<ActiveSearchTarget | null>(null);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
@@ -1194,6 +1202,8 @@ export function ReaderPage() {
   const pendingRouteNavigationRef = useRef<{ pageNumber: number; paragraphNumber: number; query: string | null } | null>(null);
   const deviceAdvanceTimeoutRef = useRef<number | null>(null);
   const wakeLockRef = useRef<ReaderWakeLockSentinel | null>(null);
+  const screenLockHoldTimeoutRef = useRef<number | null>(null);
+  const screenLockHoldIntervalRef = useRef<number | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedParagraphParam = searchParams.get("paragraph")?.trim() ?? "";
   const requestedSearchParam = searchParams.get("search")?.trim() ?? "";
@@ -1202,6 +1212,7 @@ export function ReaderPage() {
   const navigationState = (location.state as ReaderNavigationState | null) ?? null;
   const readerReturnTo = navigationState?.returnTo?.trim() ?? "";
   const isReturningToGlobalSearch = readerReturnTo.startsWith("/search");
+  const shouldRestoreScreenWakeLock = isScreenLockEnabled || isAudioPlaying || isAudioLoading || hasActivePlaybackSession || autoPlay;
 
   useEffect(() => {
     progressHydratedRef.current = false;
@@ -1583,8 +1594,9 @@ export function ReaderPage() {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
-    void releaseScreenWakeLock();
+    void releaseScreenWakeLock({ force: true });
 
+    clearScreenLockHold();
     if (pageTurnTimeoutRef.current !== null && typeof window !== "undefined") {
       window.clearTimeout(pageTurnTimeoutRef.current);
       pageTurnTimeoutRef.current = null;
@@ -1648,11 +1660,7 @@ export function ReaderPage() {
     }
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState !== "visible") {
-        return;
-      }
-
-      if (!isAudioPlaying && !isAudioLoading && !hasActivePlaybackSession && !autoPlay) {
+      if (document.visibilityState !== "visible" || !shouldRestoreScreenWakeLock) {
         return;
       }
 
@@ -1663,7 +1671,7 @@ export function ReaderPage() {
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [autoPlay, hasActivePlaybackSession, isAudioLoading, isAudioPlaying]);
+  }, [shouldRestoreScreenWakeLock]);
 
   useEffect(() => {
     if (isPageJumpActive) {
@@ -2467,7 +2475,11 @@ export function ReaderPage() {
     deviceAdvanceTimeoutRef.current = null;
   }
 
-  async function releaseScreenWakeLock() {
+  async function releaseScreenWakeLock(options: { force?: boolean } = {}) {
+    if (isScreenLockEnabled && !options.force) {
+      return;
+    }
+
     const wakeLock = wakeLockRef.current;
     wakeLockRef.current = null;
 
@@ -2482,14 +2494,17 @@ export function ReaderPage() {
     }
   }
 
-  async function ensureScreenWakeLock() {
+  async function ensureScreenWakeLock(options: { reportError?: boolean } = {}) {
     const wakeLockApi = getWakeLockApi();
     if (!wakeLockApi) {
-      return;
+      if (options.reportError) {
+        setReaderError("Este navegador no permite mantener la pantalla encendida.");
+      }
+      return false;
     }
 
     if (wakeLockRef.current && wakeLockRef.current.released !== true) {
-      return;
+      return true;
     }
 
     try {
@@ -2500,9 +2515,86 @@ export function ReaderPage() {
           wakeLockRef.current = null;
         }
       });
+      return true;
     } catch {
-      // Si falla, mantenemos la reproducción sin mostrar un error extra al usuario.
+      if (options.reportError) {
+        setReaderError("No se pudo mantener la pantalla encendida en este momento.");
+      }
+      return false;
     }
+  }
+
+  function clearScreenLockHold() {
+    if (screenLockHoldTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(screenLockHoldTimeoutRef.current);
+      screenLockHoldTimeoutRef.current = null;
+    }
+
+    if (screenLockHoldIntervalRef.current !== null && typeof window !== "undefined") {
+      window.clearInterval(screenLockHoldIntervalRef.current);
+      screenLockHoldIntervalRef.current = null;
+    }
+
+    setScreenLockHoldProgress(0);
+  }
+
+  async function disableScreenLock() {
+    clearScreenLockHold();
+    const shouldKeepWakeLock = isAudioPlaying || isAudioLoading || hasActivePlaybackSession || autoPlay;
+    setIsScreenLockEnabled(false);
+
+    if (!shouldKeepWakeLock) {
+      await releaseScreenWakeLock({ force: true });
+    }
+  }
+
+  function beginScreenLockHold() {
+    if (!isScreenLockEnabled || typeof window === "undefined") {
+      return;
+    }
+
+    clearScreenLockHold();
+    const startedAt = Date.now();
+    setScreenLockHoldProgress(0);
+
+    screenLockHoldIntervalRef.current = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      const nextProgress = Math.min(elapsed / READER_SCREEN_LOCK_HOLD_MS, 1);
+      setScreenLockHoldProgress(nextProgress);
+      if (nextProgress >= 1 && screenLockHoldIntervalRef.current !== null) {
+        window.clearInterval(screenLockHoldIntervalRef.current);
+        screenLockHoldIntervalRef.current = null;
+      }
+    }, READER_SCREEN_LOCK_HOLD_INTERVAL_MS);
+
+    screenLockHoldTimeoutRef.current = window.setTimeout(() => {
+      void disableScreenLock();
+    }, READER_SCREEN_LOCK_HOLD_MS);
+  }
+
+  async function handleToggleScreenLock() {
+    if (isScreenLockEnabled) {
+      await disableScreenLock();
+      return;
+    }
+
+    const hasWakeLock = await ensureScreenWakeLock({ reportError: true });
+    if (!hasWakeLock) {
+      return;
+    }
+
+    clearScreenLockHold();
+    setReaderError(null);
+    setSelectionDraft(null);
+    setSelectionNoteText("");
+    setActiveReaderNote(null);
+    setActiveReaderNoteText("");
+    setIsAudioSettingsVisible(false);
+    setIsPageJumpActive(false);
+    setIsFloatingHeaderActionsExpanded(false);
+    closeNavigationPanel();
+    window.getSelection()?.removeAllRanges();
+    setIsScreenLockEnabled(true);
   }
 
   function clearAudioResource(options: { cancelDeviceSpeech?: boolean; invalidatePlayback?: boolean; preservePlaybackElement?: boolean } = {}) {
@@ -4111,6 +4203,9 @@ export function ReaderPage() {
     const bookmarkButtonClassName = isCurrentPageBookmarked
       ? `${buttonClassName} active`
       : buttonClassName;
+    const screenLockButtonClassName = isScreenLockEnabled
+      ? `${buttonClassName} active`
+      : buttonClassName;
 
     return (
       <>
@@ -4146,6 +4241,18 @@ export function ReaderPage() {
           type="button"
         >
           {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
+        </button>
+        <button
+          aria-label={isScreenLockEnabled ? "Desactivar lectura protegida con pantalla encendida" : "Activar lectura protegida con pantalla encendida"}
+          className={screenLockButtonClassName}
+          onClick={() => {
+            onAction?.();
+            void handleToggleScreenLock();
+          }}
+          title={isScreenLockEnabled ? "Desactivar pantalla encendida" : "Mantener pantalla encendida y bloquear la app"}
+          type="button"
+        >
+          <ScreenLockIcon />
         </button>
         {bookNotionUrl ? (
           <a
@@ -4268,6 +4375,34 @@ export function ReaderPage() {
           >
             {isFloatingHeaderActionsExpanded ? <CloseIcon /> : <ActionsMenuIcon />}
           </button>
+        </div>
+      ) : null}
+
+      {isScreenLockEnabled ? (
+        <div className="reader-screen-lock-backdrop" role="presentation">
+          <div aria-label="Lectura protegida" aria-modal="true" className="reader-screen-lock-dialog" role="dialog">
+            <div className="reader-screen-lock-header">
+              <p className="eyebrow">Pantalla encendida</p>
+              <h3>Lectura protegida</h3>
+            </div>
+            <p className="reader-screen-lock-status">La pantalla seguirá encendida mientras este bloqueo esté activo.</p>
+            <p className="reader-screen-lock-detail">{`Mantén pulsado ${READER_SCREEN_LOCK_HOLD_SECONDS_TEXT} segundos para volver a usar el lector.`}</p>
+            <button
+              className="reader-screen-lock-hold"
+              onContextMenu={(event) => event.preventDefault()}
+              onPointerCancel={clearScreenLockHold}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                beginScreenLockHold();
+              }}
+              onPointerLeave={clearScreenLockHold}
+              onPointerUp={clearScreenLockHold}
+              style={{ "--reader-lock-progress": screenLockHoldProgress } as CSSProperties & Record<"--reader-lock-progress", number>}
+              type="button"
+            >
+              {`Mantener ${READER_SCREEN_LOCK_HOLD_SECONDS_TEXT} s para desbloquear`}
+            </button>
+          </div>
         </div>
       ) : null}
 

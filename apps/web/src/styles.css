@@ -1671,6 +1671,86 @@ textarea {
   min-height: 3.35rem;
 }
 
+.reader-screen-lock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(20, 36, 29, 0.52);
+  backdrop-filter: blur(10px);
+}
+
+.reader-screen-lock-dialog {
+  width: min(25rem, 100%);
+  display: grid;
+  gap: 1rem;
+  padding: 1.2rem;
+  border: 1px solid rgba(255, 253, 247, 0.32);
+  border-radius: 18px;
+  background: rgba(255, 253, 247, 0.96);
+  box-shadow: 0 24px 70px rgba(20, 36, 29, 0.28);
+}
+
+.reader-screen-lock-header {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.reader-screen-lock-header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1.18rem;
+}
+
+.reader-screen-lock-status,
+.reader-screen-lock-detail {
+  margin: 0;
+}
+
+.reader-screen-lock-status {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.reader-screen-lock-detail {
+  color: #5d665d;
+  font-size: 0.95rem;
+}
+
+.reader-screen-lock-hold {
+  --reader-lock-progress: 0;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 2.9rem;
+  border-color: rgba(42, 87, 66, 0.2);
+  background: rgba(42, 87, 66, 0.08);
+  color: var(--forest-900);
+  font-weight: 800;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.reader-screen-lock-hold::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: calc(var(--reader-lock-progress) * 100%);
+  background: rgba(42, 87, 66, 0.16);
+  transition: width 80ms linear;
+}
+
+.reader-screen-lock-hold::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+
 @media (max-width: 560px) {
   .reader-header-floating-dock {
     gap: 0.35rem;
