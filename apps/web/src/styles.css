@@ -5168,9 +5168,12 @@ textarea {
     white-space: normal;
   }
 
+  /* The panel should expand naturally to the right, but be constrained by viewport width */
   .version-activity-panel {
-    left: auto;
-    right: 0;
+    left: -1rem;
+    right: auto;
+    width: min(460px, calc(100vw - 2rem));
+    max-width: calc(100vw - 5rem);
   }
 
   .page-grid,
