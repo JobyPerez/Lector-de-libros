@@ -61,7 +61,9 @@ const READER_SELECTION_DEBOUNCE_MS = 80;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
 const READER_BOOKMARK_ANIMATION_MS = 420;
 const READER_SCREEN_LOCK_HOLD_MS = 5000;
+const READER_SCREEN_LOCK_HOLD_INTERVAL_MS = 100;
 const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
+const READER_SCREEN_LOCK_HOLD_SECONDS_LABEL = READER_SCREEN_LOCK_HOLD_SECONDS.toFixed(0);
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -2563,7 +2565,7 @@ export function ReaderPage() {
         window.clearInterval(screenLockHoldIntervalRef.current);
         screenLockHoldIntervalRef.current = null;
       }
-    }, 100);
+    }, READER_SCREEN_LOCK_HOLD_INTERVAL_MS);
 
     screenLockHoldTimeoutRef.current = window.setTimeout(() => {
       void disableScreenLock();
@@ -4384,7 +4386,7 @@ export function ReaderPage() {
               <h3>Lectura protegida</h3>
             </div>
             <p className="reader-screen-lock-status">La pantalla seguirá encendida mientras este bloqueo esté activo.</p>
-            <p className="reader-screen-lock-detail">{`Mantén pulsado ${READER_SCREEN_LOCK_HOLD_SECONDS} segundos para volver a usar el lector.`}</p>
+            <p className="reader-screen-lock-detail">{`Mantén pulsado ${READER_SCREEN_LOCK_HOLD_SECONDS_LABEL} segundos para volver a usar el lector.`}</p>
             <button
               className="reader-screen-lock-hold"
               onPointerCancel={clearScreenLockHold}
@@ -4394,7 +4396,7 @@ export function ReaderPage() {
               style={{ "--reader-lock-progress": screenLockHoldProgress } as CSSProperties & Record<"--reader-lock-progress", number>}
               type="button"
             >
-              {`Mantener ${READER_SCREEN_LOCK_HOLD_SECONDS} s para desbloquear`}
+              {`Mantener ${READER_SCREEN_LOCK_HOLD_SECONDS_LABEL} s para desbloquear`}
             </button>
           </div>
         </div>
