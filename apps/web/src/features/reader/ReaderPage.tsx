@@ -4389,8 +4389,12 @@ export function ReaderPage() {
             <p className="reader-screen-lock-detail">{`Mantén pulsado ${READER_SCREEN_LOCK_HOLD_SECONDS_LABEL} segundos para volver a usar el lector.`}</p>
             <button
               className="reader-screen-lock-hold"
+              onContextMenu={(event) => event.preventDefault()}
               onPointerCancel={clearScreenLockHold}
-              onPointerDown={beginScreenLockHold}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                beginScreenLockHold();
+              }}
               onPointerLeave={clearScreenLockHold}
               onPointerUp={clearScreenLockHold}
               style={{ "--reader-lock-progress": screenLockHoldProgress } as CSSProperties & Record<"--reader-lock-progress", number>}
