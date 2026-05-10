@@ -847,7 +847,7 @@ function ActionsMenuIcon() {
   );
 }
 
-function KeepScreenAwakeIcon() {
+function ScreenLockIcon() {
   return (
     <ReaderControlIcon>
       <path d="M4.75 8.5C4.75 7.26 5.76 6.25 7 6.25H17C18.24 6.25 19.25 7.26 19.25 8.5V15.5C19.25 16.74 18.24 17.75 17 17.75H7C5.76 17.75 4.75 16.74 4.75 15.5V8.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
@@ -4250,7 +4250,7 @@ export function ReaderPage() {
           title={isScreenLockEnabled ? "Desactivar pantalla encendida" : "Mantener pantalla encendida y bloquear la app"}
           type="button"
         >
-          <KeepScreenAwakeIcon />
+          <ScreenLockIcon />
         </button>
         {bookNotionUrl ? (
           <a
