@@ -243,11 +243,27 @@ function VersionActivity() {
 
 function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUser }) {
   const [isOpen, setIsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const displayName = user.displayName ?? user.username;
   const roleLabel = user.role === "ADMIN" ? "Administrador" : "Editor";
 
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen]);
+
   return (
-    <div className="profile-menu">
+    <div className="profile-menu" ref={menuRef}>
       <button
         aria-expanded={isOpen}
         aria-label="Abrir menú de perfil"
