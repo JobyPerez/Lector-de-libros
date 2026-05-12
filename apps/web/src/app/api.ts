@@ -240,7 +240,7 @@ export type BookSummary = {
   updatedAt?: string;
 };
 
-export type ImageOcrMode = "LOCAL" | "VISION";
+export type ImageOcrMode = "LOCAL" | "VISION" | "TEXTRACT";
 export type ImageRotation = 0 | 90 | 180 | 270;
 
 type ImageOcrRequestOptions = {

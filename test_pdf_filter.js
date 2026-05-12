@@ -1,13 +1,13 @@
-const tests = [
-  "12",
-  "- 12 -",
-  "Página 12",
-  "12 / 40",
-  "Some actual text 12"
-];
+const { load } = require("cheerio")
 
-const regex = /^(?:-?\s*\d+\s*-?|P[aá]gina\s*\d+|P[aá]g\.\s*\d+|\d+\s*\/\s*\d+)$/i;
+const html = `<p>Test text</p><figure><img src="data:image/jpeg;base64,aBcD"/></figure>`;
+const document = load(html);
+let root = document(".epub-page-body").first();
+if (root.length === 0) {
+   root = document("body").first();
+}
 
-tests.forEach(t => {
-  console.log(t, regex.test(t));
-});
+console.log("Root length:", root.length)
+root.children().each((_, child) => {
+   console.log("Child tag:", child.tagName)
+})

@@ -1,5 +1,6 @@
 import { extname } from "node:path";
 
+import { AnalyzeDocumentCommand, DetectDocumentTextCommand, TextractClient } from "@aws-sdk/client-textract";
 import sharp from "sharp";
 import Tesseract from "tesseract.js";
 import { z } from "zod";
@@ -44,7 +45,7 @@ type VisionStructuredBlock =
       type: "heading" | "paragraph";
     };
 
-export const supportedImageOcrModes = ["AUTO", "LOCAL", "VISION"] as const;
+export const supportedImageOcrModes = ["AUTO", "LOCAL", "VISION", "TEXTRACT"] as const;
 
 export type ImageOcrMode = (typeof supportedImageOcrModes)[number];
 export const supportedImageRotations = [0, 90, 180, 270] as const;
@@ -745,6 +746,163 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
   }
 }
 
+function hasTextractConfiguration(): boolean {
+  return Boolean(appEnv.awsRegion && appEnv.awsAccessKeyId && appEnv.awsSecretAccessKey);
+}
+
+function ensureTextractConfiguration(): void {
+  if (!hasTextractConfiguration()) {
+    throw Object.assign(new Error("AWS Textract configuration no está disponible en este entorno."), {
+      statusCode: 503
+    });
+  }
+}
+
+async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
+  ensureTextractConfiguration();
+
+  const optimizedBuffer = await sharp(fileBuffer).flatten({ background: "#ffffff" }).jpeg({ quality: 80 }).toBuffer();
+  const imageMeta = await sharp(optimizedBuffer).metadata();
+  const imgWidth = imageMeta.width || 1000;
+  const imgHeight = imageMeta.height || 1000;
+
+  const client = new TextractClient({
+    region: appEnv.awsRegion!,
+    credentials: {
+      accessKeyId: appEnv.awsAccessKeyId!,
+      secretAccessKey: appEnv.awsSecretAccessKey!
+    }
+  });
+
+  const command = new AnalyzeDocumentCommand({
+    Document: {
+      Bytes: new Uint8Array(optimizedBuffer)
+    },
+    FeatureTypes: ["LAYOUT"]
+  });
+
+  const response = await client.send(command);
+  const blocks = response.Blocks || [];
+  
+  const blockMap = new Map(blocks.map(b => [b.Id, b]));
+
+  const layoutTypes = ["LAYOUT_TEXT", "LAYOUT_TITLE", "LAYOUT_SECTION_HEADER", "LAYOUT_LIST", "LAYOUT_FIGURE"];
+  const contentBlocks = blocks
+    .filter(b => b.BlockType && layoutTypes.includes(b.BlockType) && b.Geometry?.BoundingBox)
+    .sort((a, b) => (a.Geometry!.BoundingBox!.Top || 0) - (b.Geometry!.BoundingBox!.Top || 0));
+
+  const paragraphs: string[] = [];
+  const htmlParts: string[] = [];
+  
+  let imageIndex = 1;
+  
+  for (const layout of contentBlocks) {
+    if (layout.BlockType === "LAYOUT_FIGURE") {
+      const box = layout.Geometry!.BoundingBox!;
+      
+      const cropLeft = Math.floor(Math.max(0, box.Left!) * imgWidth);
+      const cropTop = Math.floor(Math.max(0, box.Top!) * imgHeight);
+      let cropWidth = Math.floor(Math.min(1, box.Width!) * imgWidth);
+      let cropHeight = Math.floor(Math.min(1, box.Height!) * imgHeight);
+      
+      if (cropLeft + cropWidth > imgWidth) cropWidth = imgWidth - cropLeft;
+      if (cropTop + cropHeight > imgHeight) cropHeight = imgHeight - cropTop;
+
+      if (cropWidth > 0 && cropHeight > 0) {
+        const croppedBuffer = await sharp(optimizedBuffer)
+          .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+          .jpeg({ quality: 85 })
+          .toBuffer();
+          
+        const base64Image = croppedBuffer.toString("base64");
+        
+        const left = (box.Left || 0) * 100;
+        const top = (box.Top || 0) * 100;
+        const width = (box.Width || 0) * 100;
+        const height = (box.Height || 0) * 100;
+        
+        const paraIndex = paragraphs.length + 1;
+        paragraphs.push(`![](embedded-image-${imageIndex})`);
+        
+        htmlParts.push(
+          `<figure data-paragraph-number="${paraIndex}" class="reader-rich-node" style="margin: 2em 0; text-align: center;">\n  <img src="data:image/jpeg;base64,${base64Image}" alt="" style="max-width: 100%; height: auto; border-radius: 8px;"/>\n  <span style="display: none;">![](embedded-image-${imageIndex})</span>\n</figure>`
+        );
+        
+        imageIndex++;
+      }
+    } else {
+      const box = layout.Geometry!.BoundingBox!;
+      const left = (box.Left || 0) * 100;
+      const top = (box.Top || 0) * 100;
+      const width = (box.Width || 0) * 100;
+      const height = (box.Height || 0) * 100;
+
+      let textLines: string[] = [];
+      if (layout.Relationships) {
+        for (const rel of layout.Relationships) {
+          if (rel.Type === "CHILD") {
+            for (const childId of rel.Ids || []) {
+              const childBlock = blockMap.get(childId);
+              if (childBlock && childBlock.BlockType === "LINE" && childBlock.Text) {
+                textLines.push(childBlock.Text);
+              }
+            }
+          }
+        }
+      }
+      
+      if(textLines.length === 0 && layout.Text) {
+         textLines.push(layout.Text);
+      }
+      
+      if (textLines.length > 0) {
+        let blockText = textLines.join(" ");
+        let alignMark = "";
+        if(layout.BlockType === "LAYOUT_TITLE" || layout.BlockType === "LAYOUT_SECTION_HEADER") {
+           blockText = `## ${blockText}`;
+           alignMark = "::center::\n";
+        }
+
+        const paraIndex = paragraphs.length + 1;
+        htmlParts.push(
+          `<p data-paragraph-number="${paraIndex}" style="margin-bottom: 1em;">${alignMark ? `<span style="display:none;">${alignMark}</span>` : ""}${blockText}</p>`
+        );
+        paragraphs.push(alignMark + blockText);
+      }
+    }
+  }
+  
+  if (paragraphs.length === 0 && htmlParts.length === 0) {
+     const rawLines = blocks
+      .filter(b => b.BlockType === "LINE" && b.Text && b.Geometry?.BoundingBox)
+      .sort((a, b) => (a.Geometry!.BoundingBox!.Top || 0) - (b.Geometry!.BoundingBox!.Top || 0));
+     
+     for (const line of rawLines) {
+        const box = line.Geometry!.BoundingBox!;
+        const left = (box.Left || 0) * 100;
+        const top = (box.Top || 0) * 100;
+        const width = (box.Width || 0) * 100;
+        const height = (box.Height || 0) * 100;
+        const blockText = line.Text!;
+        const paraIndex = paragraphs.length + 1;
+        htmlParts.push(
+          `<p data-paragraph-number="${paraIndex}" style="margin-bottom: 1em;">${blockText}</p>`
+        );
+        paragraphs.push(blockText);
+     }
+  }
+
+  const rawText = paragraphs.join("\n\n");
+  const htmlContent = htmlParts.length > 0 ? htmlParts.join("\n") : null;
+    
+  return {
+    editedText: rawText,
+    htmlContent,
+    paragraphs,
+    rawText
+  };
+}
+
 export function isSupportedImageUpload(fileName: string, mimeType: string): boolean {
   return supportedImageMimeTypes.has(inferImageMimeType(fileName, mimeType));
 }
@@ -774,6 +932,10 @@ export async function runOcrOnImage(
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
     return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
+  }
+
+  if (ocrMode === "TEXTRACT") {
+    return runTextractOcr(rotatedBuffer);
   }
 
   try {

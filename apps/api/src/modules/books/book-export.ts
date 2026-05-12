@@ -110,7 +110,10 @@ function mimeTypeToExtension(mimeType: string): string {
 function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
   const html = page.htmlContent ?? buildFallbackHtml(page);
   const document = load(html);
-  const root = document(".epub-page-body").first();
+  let root = document(".epub-page-body").first();
+  if (root.length === 0) {
+    root = document("body").first();
+  }
   const blocks: RenderBlock[] = [];
 
   function visit(node: unknown) {

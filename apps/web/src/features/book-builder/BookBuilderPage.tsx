@@ -2626,6 +2626,15 @@ export function BookBuilderPage() {
                             Preciso con IA
                           </button>
                           <button
+                            aria-checked={createOcrMode === "TEXTRACT"}
+                            className={createOcrMode === "TEXTRACT" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setCreateOcrMode("TEXTRACT")}
+                            role="radio"
+                            type="button"
+                          >
+                            AWS Textract
+                          </button>
+                          <button
                             aria-checked={createOcrMode === "LOCAL"}
                             className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
                             onClick={() => setCreateOcrMode("LOCAL")}
@@ -2852,6 +2861,16 @@ export function BookBuilderPage() {
                             type="button"
                           >
                             Preciso con IA
+                          </button>
+                          <button
+                            aria-checked={appendOcrMode === "TEXTRACT"}
+                            className={appendOcrMode === "TEXTRACT" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isAppending}
+                            onClick={() => setAppendOcrMode("TEXTRACT")}
+                            role="radio"
+                            type="button"
+                          >
+                            AWS Textract
                           </button>
                           <button
                             aria-checked={appendOcrMode === "LOCAL"}
@@ -3543,6 +3562,15 @@ export function BookBuilderPage() {
                       />
                     ) : null}
                   </div>
+                  <button
+                    className={reviewOcrMode === "TEXTRACT" ? "review-ocr-option active" : "review-ocr-option"}
+                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                    onClick={() => void handleRerunOcr("TEXTRACT")}
+                    type="button"
+                  >
+                    <strong>AWS Textract</strong>
+                    <span>Extracción de maquetación fija con credenciales AWS.</span>
+                  </button>
                   <button
                     className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
                     disabled={isSavingReview || !reviewBookId || isReviewCropMode}

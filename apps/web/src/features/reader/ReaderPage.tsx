@@ -4283,7 +4283,6 @@ export function ReaderPage() {
             aria-label="Editar esta página"
             className={buttonClassName}
             onClick={onAction}
-            state={{ returnTo: `/books/${bookId}?page=${currentPageNumber}` }}
             title="Editar esta página"
             to={reviewOcrLink}
           >
