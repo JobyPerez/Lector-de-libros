@@ -482,7 +482,7 @@ export function ShelfPage() {
         {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
         {bookActionSuccess ? <p className="success-text">{bookActionSuccess}</p> : null}
 
-        <div className="shelf-grid">
+        <div className="shelf-grid" data-compact-row={booksQuery.data && booksQuery.data.length > 0 && booksQuery.data.length < 3 ? "true" : undefined}>
           {booksQuery.data?.map((book) => {
             const isDeletingBook = deletingBookId === book.bookId;
             const removalState = removingBookId === book.bookId

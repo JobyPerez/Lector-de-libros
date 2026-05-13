@@ -1029,6 +1029,10 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
 }
 
+.shelf-grid[data-compact-row="true"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .shelf-search-results {
   display: grid;
   gap: 0.9rem;
@@ -4949,6 +4953,11 @@ textarea {
 }
 
 @media (max-width: 860px) {
+  .shelf-grid[data-compact-row="true"] {
+    grid-template-columns: minmax(0, min(100%, 320px));
+    justify-content: center;
+  }
+
   .topbar,
   .panel-header,
   .review-toolbar,
