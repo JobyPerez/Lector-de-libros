@@ -3986,6 +3986,9 @@ export function ReaderPage() {
       return;
     }
 
+    setIsUpdatingNote(true);
+    setReaderError(null);
+
     try {
       await deleteNote(accessToken, bookId, noteId);
       setExpandedNavigationNoteId((current) => current === noteId ? null : current);
@@ -3997,6 +4000,8 @@ export function ReaderPage() {
       await refreshReaderMetadata();
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
+    } finally {
+      setIsUpdatingNote(false);
     }
   }
 
@@ -4500,9 +4505,22 @@ export function ReaderPage() {
             />
           </label>
           <div className="reader-note-editor-actions">
+            {activeReaderNote.noteId ? (
+              <button
+                aria-label="Borrar nota"
+                className="reader-note-icon-button danger-icon-button"
+                disabled={isUpdatingNote}
+                onClick={() => void handleDeleteSavedNote(activeReaderNote.noteId as string)}
+                title="Borrar nota"
+                type="button"
+              >
+                <DeletePageIcon />
+              </button>
+            ) : null}
             <button
               aria-label="Cerrar nota"
               className="reader-note-icon-button"
+              disabled={isUpdatingNote}
               onClick={() => {
                 setActiveReaderNote(null);
                 setActiveReaderNoteText("");
