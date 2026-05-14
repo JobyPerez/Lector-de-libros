@@ -2815,7 +2815,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           FROM books b
           LEFT JOIN user_book_progress p ON p.book_id = b.book_id AND p.user_id = :ownerUserId
           WHERE b.owner_user_id = :ownerUserId
-          ORDER BY p.last_opened_at DESC NULLS LAST, b.created_at DESC
+          ORDER BY COALESCE(p.last_opened_at, b.created_at) DESC, b.created_at DESC
         `,
         {
           ownerUserId: request.currentUser.userId
