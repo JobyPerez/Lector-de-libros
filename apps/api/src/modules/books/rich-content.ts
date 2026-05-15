@@ -311,7 +311,7 @@ export function extractEmbeddedImageSources(htmlContent: string | null | undefin
   const document = load(htmlContent);
   let imageIndex = 1;
 
-  document("figure.reader-rich-node img, .reader-rich-node img").each((_, node) => {
+  document("figure.reader-rich-node img, .reader-rich-node img, .epub-page-body img").each((_, node) => {
     const source = document(node).attr("src")?.trim();
     if (!source) {
       return;

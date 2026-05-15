@@ -22,6 +22,14 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeEditableText(value: string): string {
+  return value
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+/gu, " ")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 function parseAlignment(value: string): { alignment: TextAlignment | null; content: string } {
   const match = value.match(alignmentPattern);
   if (!match) {
@@ -71,7 +79,7 @@ function extractEmbeddedImageSources(htmlContent: string | null | undefined): Ma
   }
 
   const document = new DOMParser().parseFromString(htmlContent, "text/html");
-  const images = document.querySelectorAll("figure.reader-rich-node img, .reader-rich-node img");
+  const images = document.querySelectorAll("figure.reader-rich-node img, .reader-rich-node img, .epub-page-body img");
   let imageIndex = 1;
 
   for (const image of Array.from(images)) {
@@ -85,6 +93,82 @@ function extractEmbeddedImageSources(htmlContent: string | null | undefined): Ma
   }
 
   return embeddedImages;
+}
+
+function extractNodeEditableText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent ?? "";
+  }
+
+  if (!(node instanceof Element)) {
+    return "";
+  }
+
+  if (node.tagName.toLowerCase() === "br") {
+    return "\n";
+  }
+
+  return Array.from(node.childNodes).map(extractNodeEditableText).join("");
+}
+
+function getRootRichNodes(document: Document): Element[] {
+  return Array.from(document.querySelectorAll(".reader-rich-node"))
+    .filter((node) => !node.parentElement?.closest(".reader-rich-node"));
+}
+
+function getEditableSourceNodes(document: Document): Element[] {
+  const richNodes = getRootRichNodes(document);
+  if (richNodes.length > 1) {
+    return richNodes;
+  }
+
+  const body = document.querySelector(".epub-page-body") ?? document.body;
+  return Array.from(body.children).filter((node) => node.tagName.toLowerCase() !== "style");
+}
+
+function buildEditableBlockFromRichNode(node: Element, imageIndexes: Map<Element, number>): string | null {
+  const image = node.matches("img") ? node : node.querySelector("img");
+  if (image) {
+    const imageIndex = imageIndexes.get(image);
+    if (imageIndex) {
+      const altText = normalizeWhitespace(image.getAttribute("alt") ?? "");
+      return `![${altText}](embedded-image-${imageIndex})`;
+    }
+  }
+
+  const text = normalizeEditableText(extractNodeEditableText(node));
+  if (!text) {
+    return null;
+  }
+
+  const tagName = node.tagName.toLowerCase();
+  const headingMatch = tagName.match(/^h([1-6])$/u);
+  const headingPrefix = headingMatch ? `${"#".repeat(Number(headingMatch[1]))} ` : "";
+  const alignment = node.getAttribute("data-text-align")?.trim();
+  const alignedText = headingPrefix ? `${headingPrefix}${text}` : text;
+
+  return alignment === "left" || alignment === "center" || alignment === "right"
+    ? `::${alignment}:: ${alignedText}`
+    : alignedText;
+}
+
+export function buildEditableTextFromHtmlContent(htmlContent: string | null | undefined): string | null {
+  if (!htmlContent || typeof DOMParser === "undefined") {
+    return null;
+  }
+
+  const document = new DOMParser().parseFromString(htmlContent, "text/html");
+  const images = Array.from(document.querySelectorAll("figure.reader-rich-node img, .reader-rich-node img, .epub-page-body img"));
+  const imageIndexes = new Map(images.map((image, index) => [image, index + 1]));
+  const blocks = getEditableSourceNodes(document)
+    .map((node) => buildEditableBlockFromRichNode(node, imageIndexes))
+    .filter((block): block is string => Boolean(block));
+
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  return blocks.join("\n");
 }
 
 function resolveImageSource(source: string, embeddedImages: Map<string, string>): string {

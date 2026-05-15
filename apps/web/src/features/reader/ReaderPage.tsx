@@ -4199,7 +4199,8 @@ export function ReaderPage() {
   }
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
   const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
-  const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF";
+  const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
+  const canDeleteImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF";
 
   function renderReaderHeaderActionButtons(buttonClassName: string, onAction?: () => void) {
     const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
@@ -4294,7 +4295,7 @@ export function ReaderPage() {
             <OriginalPageIcon />
           </Link>
         ) : null}
-        {canEditImportedPage ? (
+        {canDeleteImportedPage ? (
           <button
             aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
             className={deleteButtonClassName}

@@ -27,7 +27,7 @@ import {
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
-import { buildOcrPreviewHtml } from "./ocr-preview";
+import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
   return (
@@ -810,7 +810,7 @@ export function BookBuilderPage() {
   });
 
   const imageBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES");
-  const reviewableBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES" || book.sourceType === "PDF");
+  const reviewableBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES" || book.sourceType === "PDF" || book.sourceType === "EPUB");
   const selectedReviewBook = reviewableBooks.find((book) => book.bookId === reviewBookId) ?? null;
   const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
   const requestedReviewPage = requestedReviewPageParam ? Number(requestedReviewPageParam) : Number.NaN;
@@ -1112,7 +1112,10 @@ export function BookBuilderPage() {
       return;
     }
 
-    const nextEditedText = page.editedText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n");
+    const htmlEditableText = buildEditableTextFromHtmlContent(page.htmlContent);
+    const nextEditedText = reviewPageQuery.data?.book.sourceType === "EPUB" && htmlEditableText
+      ? htmlEditableText
+      : page.editedText ?? htmlEditableText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n");
     setEditedText(nextEditedText);
     setOriginalEditedText(nextEditedText);
     setIsReviewCropMode(false);
@@ -2016,7 +2019,9 @@ export function BookBuilderPage() {
       return;
     }
 
-    if (hasTextChanges && !confirmReviewTextReplacement("guardar el OCR")) {
+    const reviewTextLabel = selectedReviewBook?.sourceType === "EPUB" ? "texto" : "OCR";
+
+    if (hasTextChanges && !confirmReviewTextReplacement(`guardar el ${reviewTextLabel}`)) {
       return;
     }
 
@@ -2036,9 +2041,9 @@ export function BookBuilderPage() {
       setOriginalEditedText(editedText);
       setReviewMessage(
         hasTextChanges && hasImageChanges
-          ? (reviewPageAnnotationCount > 0 ? "El texto OCR, la imagen ajustada y el remapeo de anotaciones se guardaron correctamente." : "El texto OCR y la imagen ajustada se guardaron correctamente.")
+          ? (reviewPageAnnotationCount > 0 ? `El ${reviewTextLabel}, la imagen ajustada y el remapeo de anotaciones se guardaron correctamente.` : `El ${reviewTextLabel} y la imagen ajustada se guardaron correctamente.`)
           : hasTextChanges
-            ? (reviewPageAnnotationCount > 0 ? "El texto OCR de la página se actualizó y se intentó conservar las anotaciones existentes." : "El texto OCR de la página se actualizó correctamente.")
+            ? (reviewPageAnnotationCount > 0 ? `El ${reviewTextLabel} de la página se actualizó y se intentó conservar las anotaciones existentes.` : `El ${reviewTextLabel} de la página se actualizó correctamente.`)
             : "La imagen ajustada de la página se guardó correctamente."
       );
 
@@ -2434,10 +2439,12 @@ export function BookBuilderPage() {
   const reviewImageRotationDirty = reviewImageRotation !== originalReviewImageRotation;
   const reviewImageCropDirty = !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
-  const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType !== "PDF";
+  const canDeleteReviewPage = selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF";
+  const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
   const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
   const isReviewDirty = editedText !== originalEditedText || hasPendingReviewImageEdits;
+  const reviewEditorKindLabel = selectedReviewBook?.sourceType === "EPUB" ? "texto" : "OCR";
   const reviewPageBookmarkCount = reviewAnnotationsQuery.data?.bookmarks.length ?? 0;
   const reviewPageHighlightCount = reviewAnnotationsQuery.data?.highlights.length ?? 0;
   const reviewPageNoteCount = reviewAnnotationsQuery.data?.notes.length ?? 0;
@@ -3083,7 +3090,7 @@ export function BookBuilderPage() {
 
         {reviewableBooks.length === 0 ? (
           <div className="empty-state">
-            <p>Todavía no hay libros PDF o creados desde imágenes para revisar.</p>
+            <p>Todavía no hay libros PDF, EPUB o creados desde imágenes para revisar.</p>
           </div>
         ) : (
           <>
@@ -3256,7 +3263,7 @@ export function BookBuilderPage() {
                     />
                   </label>
 
-                  <div aria-label="Barra de formato del editor OCR" className="review-format-toolbar" role="toolbar">
+                  <div aria-label={`Barra de formato del editor ${reviewEditorKindLabel}`} className="review-format-toolbar" role="toolbar">
                     <button
                       className="review-format-button"
                       disabled={isSavingReview || !reviewBookId}
@@ -3352,7 +3359,7 @@ export function BookBuilderPage() {
       {reviewableBooks.length > 0 ? (
         <>
           {isReviewIndexVisible ? (
-            <aside aria-label="Índice de páginas para OCR" className="reader-navigation-panel" ref={reviewIndexPanelRef} role="dialog">
+            <aside aria-label={`Índice de páginas para ${reviewEditorKindLabel}`} className="reader-navigation-panel" ref={reviewIndexPanelRef} role="dialog">
               <div className="reader-navigation-header">
                 <div>
                   <p className="eyebrow">Navegación</p>
@@ -3447,7 +3454,7 @@ export function BookBuilderPage() {
             </aside>
           ) : null}
 
-          <div aria-label="Controles de edición OCR" className="review-floating-controls" role="toolbar">
+          <div aria-label={`Controles de edición ${reviewEditorKindLabel}`} className="review-floating-controls" role="toolbar">
             <div aria-live="polite" className="reader-floating-status review-floating-status">
               <form className="reader-page-jump-form" onSubmit={(event) => handleReviewPageJumpSubmit(event)}>
                 <label className="reader-page-jump-label">
@@ -3513,16 +3520,18 @@ export function BookBuilderPage() {
               <PageNextIcon />
             </button>
 
-            <button
-              aria-label={isDeletingReviewPage ? "Borrando página" : "Borrar página"}
-              className="reader-float-button danger"
-              disabled={isDeletingReviewPage || isSavingReview || !reviewBookId || isReviewCropMode}
-              onClick={() => void handleDeleteReviewPage()}
-              title={isDeletingReviewPage ? "Borrando página..." : "Borrar página"}
-              type="button"
-            >
-              <DeletePageIcon />
-            </button>
+            {canDeleteReviewPage ? (
+              <button
+                aria-label={isDeletingReviewPage ? "Borrando página" : "Borrar página"}
+                className="reader-float-button danger"
+                disabled={isDeletingReviewPage || isSavingReview || !reviewBookId || isReviewCropMode}
+                onClick={() => void handleDeleteReviewPage()}
+                title={isDeletingReviewPage ? "Borrando página..." : "Borrar página"}
+                type="button"
+              >
+                <DeletePageIcon />
+              </button>
+            ) : null}
 
             {canRerunReviewOcr ? (
             <div className="review-floating-ocr-menu">

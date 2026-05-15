@@ -4196,8 +4196,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      if (book.sourceType !== "IMAGES" && book.sourceType !== "PDF") {
-        return reply.status(409).send({ message: "La edición de páginas solo está disponible para libros PDF o creados desde imágenes." });
+      if (book.sourceType !== "IMAGES" && book.sourceType !== "PDF" && book.sourceType !== "EPUB") {
+        return reply.status(409).send({ message: "La edición de páginas solo está disponible para libros PDF, EPUB o creados desde imágenes." });
       }
 
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
