@@ -323,6 +323,27 @@ export type ReaderAudioBlockParagraph = {
   textLength: number;
 };
 
+export type ChapterAudioOfflinePlanBlock = {
+  cachedCharacters: number;
+  missingCharacters: number;
+  paragraphCount: number;
+  startSequenceNumber: number;
+  totalCharacters: number;
+};
+
+export type ChapterAudioOfflinePlan = {
+  blocks: ChapterAudioOfflinePlanBlock[];
+  cachedCharacters: number;
+  chapterId: string;
+  endSequenceNumber: number;
+  estimatedCostUsd: number;
+  missingCharacters: number;
+  startSequenceNumber: number;
+  title: string;
+  totalCharacters: number;
+  voiceModel: string;
+};
+
 export type DeepgramBalanceSummary = {
   success: true;
   balance_usd: number;
@@ -980,6 +1001,11 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
     blob: await response.blob(),
     paragraphs: parseAudioBlockParagraphs(response)
   };
+}
+
+export function fetchChapterAudioOfflinePlan(accessToken: string, bookId: string, chapterId: string, voiceModel: string) {
+  const query = new URLSearchParams({ voiceModel });
+  return request<ChapterAudioOfflinePlan>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/tts/offline-plan?${query.toString()}`, { accessToken });
 }
 
 export async function requestSectionSummaryAudio(accessToken: string, bookId: string, chapterId: string, options: ReaderAudioOptions = {}) {

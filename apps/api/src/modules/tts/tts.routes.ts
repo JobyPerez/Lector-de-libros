@@ -12,6 +12,7 @@ import { z } from "zod";
 import { getConnection } from "../../config/database.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
+import { resolveBookOutline } from "../books/book-outline.js";
 
 type TtsParagraphRow = {
   bookId: string;
@@ -28,6 +29,8 @@ type TtsParagraphRow = {
   paragraphText: string;
   sequenceNumber: number;
 };
+
+type TtsOfflineParagraphRow = Pick<TtsParagraphRow, "cachedTextChecksum" | "paragraphId" | "paragraphText" | "sequenceNumber">;
 
 type DeepgramProjectInfo = {
   projectId: string;
@@ -59,6 +62,15 @@ const sectionSummaryTtsParamsSchema = z.object({
   chapterId: z.string().trim().min(1).max(200)
 });
 
+const offlineChapterAudioPlanParamsSchema = z.object({
+  bookId: z.string().uuid(),
+  chapterId: z.string().trim().min(1).max(200)
+});
+
+const offlineChapterAudioPlanQuerySchema = z.object({
+  voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
+});
+
 const aiRequestTtsParamsSchema = z.object({
   bookId: z.string().uuid(),
   requestId: z.string().uuid()
@@ -78,6 +90,10 @@ function normalizeTextForDeepgram(text: string) {
 
 function getParagraphTextChecksum(paragraphText: string) {
   return computeTextChecksum(normalizeTextForDeepgram(paragraphText));
+}
+
+function estimateDeepgramAura2CostUsd(characterCount: number) {
+  return Number(((Math.max(characterCount, 0) / 1000) * 0.03).toFixed(4));
 }
 
 function encodeHeaderPayload(payload: unknown) {
@@ -667,6 +683,132 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       project_id: project.projectId,
       project_name: project.projectName
     });
+  });
+
+  app.get("/books/:bookId/sections/:chapterId/tts/offline-plan", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = offlineChapterAudioPlanParamsSchema.parse(request.params);
+    const query = offlineChapterAudioPlanQuerySchema.parse(request.query);
+    const requestedVoiceModel = query.voiceModel ?? appEnv.deepgramTtsModel;
+    const connection = await getConnection();
+
+    try {
+      const bookResult = await connection.execute(
+        `
+          SELECT title AS "title"
+          FROM books
+          WHERE book_id = :bookId
+            AND owner_user_id = :ownerUserId
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId
+        }
+      );
+      const [book] = (bookResult.rows ?? []) as Array<{ title: string }>;
+      if (!book) {
+        return reply.status(404).send({ message: "Book not found." });
+      }
+
+      const outline = await resolveBookOutline(connection, params.bookId);
+      const sectionIndex = outline.findIndex((entry) => entry.chapterId === params.chapterId);
+      if (sectionIndex < 0) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+
+      const section = outline[sectionIndex];
+      if (!section) {
+        return reply.status(404).send({ message: "Section not found." });
+      }
+      const nextSection = outline.slice(sectionIndex + 1).find((entry) => entry.level <= section.level) ?? null;
+      const result = await connection.execute(
+        `
+          SELECT
+            bp.paragraph_id AS "paragraphId",
+            bp.sequence_number AS "sequenceNumber",
+            bp.paragraph_text AS "paragraphText",
+            cache.text_checksum_sha256 AS "cachedTextChecksum"
+          FROM book_paragraphs bp
+          LEFT JOIN book_paragraph_tts_audio_cache cache
+            ON cache.paragraph_id = bp.paragraph_id
+            AND cache.voice_model = :voiceModel
+          WHERE bp.book_id = :bookId
+            AND bp.sequence_number >= :startSequenceNumber
+            ${nextSection ? "AND bp.sequence_number < :endSequenceNumber" : ""}
+          ORDER BY bp.sequence_number ASC
+        `,
+        {
+          bookId: params.bookId,
+          ...(nextSection ? { endSequenceNumber: nextSection.sequenceNumber } : {}),
+          startSequenceNumber: section.sequenceNumber,
+          voiceModel: requestedVoiceModel
+        }
+      );
+
+      const paragraphs = (result.rows ?? []) as TtsOfflineParagraphRow[];
+      const blocks: Array<{
+        cachedCharacters: number;
+        missingCharacters: number;
+        paragraphCount: number;
+        startSequenceNumber: number;
+        totalCharacters: number;
+      }> = [];
+      let totalCharacters = 0;
+      let cachedCharacters = 0;
+      let missingCharacters = 0;
+
+      for (let index = 0; index < paragraphs.length; index += MAX_TTS_BLOCK_PARAGRAPH_COUNT) {
+        const blockParagraphs = paragraphs.slice(index, index + MAX_TTS_BLOCK_PARAGRAPH_COUNT);
+        let blockTotalCharacters = 0;
+        let blockCachedCharacters = 0;
+        let blockMissingCharacters = 0;
+
+        for (const paragraph of blockParagraphs) {
+          const textLength = normalizeTextForDeepgram(paragraph.paragraphText).length;
+          const isCached = paragraph.cachedTextChecksum === getParagraphTextChecksum(paragraph.paragraphText);
+
+          blockTotalCharacters += textLength;
+          if (isCached) {
+            blockCachedCharacters += textLength;
+          } else {
+            blockMissingCharacters += textLength;
+          }
+        }
+
+        const startSequenceNumber = blockParagraphs[0]?.sequenceNumber;
+        if (startSequenceNumber !== undefined) {
+          blocks.push({
+            cachedCharacters: blockCachedCharacters,
+            missingCharacters: blockMissingCharacters,
+            paragraphCount: blockParagraphs.length,
+            startSequenceNumber,
+            totalCharacters: blockTotalCharacters
+          });
+        }
+
+        totalCharacters += blockTotalCharacters;
+        cachedCharacters += blockCachedCharacters;
+        missingCharacters += blockMissingCharacters;
+      }
+
+      return reply.send({
+        blocks,
+        cachedCharacters,
+        chapterId: params.chapterId,
+        endSequenceNumber: paragraphs.at(-1)?.sequenceNumber ?? section.sequenceNumber,
+        estimatedCostUsd: estimateDeepgramAura2CostUsd(missingCharacters),
+        missingCharacters,
+        startSequenceNumber: section.sequenceNumber,
+        title: section.title,
+        totalCharacters,
+        voiceModel: requestedVoiceModel
+      });
+    } finally {
+      await connection.close();
+    }
   });
 
   app.post("/books/:bookId/tts", { preHandler: authenticateRequest }, async (request, reply) => {
