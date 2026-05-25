@@ -12,6 +12,7 @@ import {
   deleteHighlight,
   deleteNote,
   fetchBookPage,
+  fetchChapterAudioOfflinePlan,
   fetchDeepgramBalance,
   fetchPageAnnotations,
   fetchProgress,
@@ -29,6 +30,8 @@ import {
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover } from "./ReaderFloatingPanels";
+import { createStoredZip } from "./audio-zip";
+import { getOfflineChapterAudioStatus, loadOfflineAudioBlockContaining, loadOfflineChapterAudioExport, saveChapterAudioBlock } from "./offline-audio-cache";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
@@ -64,6 +67,7 @@ const READER_SCREEN_LOCK_HOLD_MS = 5000;
 const READER_SCREEN_LOCK_HOLD_INTERVAL_MS = 100;
 const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
 const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toFixed(0);
+const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -321,6 +325,28 @@ function readStoredPlaybackRate() {
 
 function formatUsdBalance(amount: number) {
   return USD_BALANCE_FORMATTER.format(amount);
+}
+
+function sanitizeDownloadFileName(value: string) {
+  const normalizedValue = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .replace(/[^a-z0-9._-]+/giu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .toLowerCase();
+
+  return normalizedValue || "capitulo";
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function getSpeechSynthesisApi() {
@@ -1141,6 +1167,11 @@ export function ReaderPage() {
   const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
   const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
   const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
+  const [offlineAudioStatus, setOfflineAudioStatus] = useState<{ blockCount: number; isComplete: boolean; totalBlockCount: number; updatedAt: string } | null>(null);
+  const [offlineAudioProgress, setOfflineAudioProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [offlineAudioMessage, setOfflineAudioMessage] = useState<string | null>(null);
+  const [isOfflineAudioDownloading, setIsOfflineAudioDownloading] = useState(false);
+  const [isOfflineAudioExporting, setIsOfflineAudioExporting] = useState(false);
   const [availableDeviceVoices, setAvailableDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [playbackRate, setPlaybackRate] = useState<number>(readStoredPlaybackRate);
   const [hasActivePlaybackSession, setHasActivePlaybackSession] = useState(false);
@@ -1910,6 +1941,150 @@ export function ReaderPage() {
 
   const activeTocEntryKey = activeTocEntry ? tocEntryKey(activeTocEntry) : null;
   const activeChapterTitle = activeTocEntry?.title ?? null;
+  const activeOfflineChapterId = activeTocEntry?.chapterId ?? null;
+  const activeOfflineChapterTitle = activeTocEntry?.title ?? null;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!activeOfflineChapterId || selectedTtsEngine !== "deepgram") {
+      setOfflineAudioStatus(null);
+      return;
+    }
+
+    getOfflineChapterAudioStatus(bookId, activeOfflineChapterId, selectedVoiceModel)
+      .then((status) => {
+        if (isMounted) {
+          setOfflineAudioStatus(status);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setOfflineAudioStatus(null);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [activeOfflineChapterId, bookId, selectedTtsEngine, selectedVoiceModel]);
+
+  async function downloadChapterAudioOffline() {
+    if (!accessToken || !activeOfflineChapterId) {
+      return;
+    }
+
+    setIsOfflineAudioDownloading(true);
+    setOfflineAudioMessage(null);
+    setOfflineAudioProgress(null);
+
+    try {
+      const plan = await fetchChapterAudioOfflinePlan(accessToken, bookId, activeOfflineChapterId, selectedVoiceModel);
+      if (plan.blocks.length === 0) {
+        setOfflineAudioMessage("Este capítulo no tiene texto para descargar como audio.");
+        return;
+      }
+
+      const estimatedCost = formatUsdBalance(plan.estimatedCostUsd);
+      const shouldDownload = plan.missingCharacters === 0 || window.confirm(
+        `Este capítulo tiene ${plan.missingCharacters.toLocaleString("es-ES")} caracteres pendientes de generar. Coste estimado Deepgram: ${estimatedCost}. ¿Quieres continuar?`
+      );
+      if (!shouldDownload) {
+        setOfflineAudioMessage("Descarga cancelada.");
+        return;
+      }
+
+      let completedBlocks = 0;
+      let nextBlockIndex = 0;
+      setOfflineAudioProgress({ completed: 0, total: plan.blocks.length });
+
+      async function worker() {
+        while (nextBlockIndex < plan.blocks.length) {
+          const block = plan.blocks[nextBlockIndex];
+          nextBlockIndex += 1;
+          if (!block) {
+            continue;
+          }
+
+          const response = await requestParagraphAudioBlock(accessToken as string, bookId, block.startSequenceNumber, {
+            paragraphCount: block.paragraphCount,
+            voiceModel: plan.voiceModel
+          });
+          await saveChapterAudioBlock(bookId, plan, {
+            blob: response.blob,
+            paragraphCount: block.paragraphCount,
+            paragraphs: response.paragraphs,
+            startSequenceNumber: block.startSequenceNumber
+          });
+          completedBlocks += 1;
+          setOfflineAudioProgress({ completed: completedBlocks, total: plan.blocks.length });
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY, plan.blocks.length) }, () => worker()));
+      const status = await getOfflineChapterAudioStatus(bookId, plan.chapterId, plan.voiceModel);
+      setOfflineAudioStatus(status);
+      setOfflineAudioMessage(`Capítulo disponible offline. Coste estimado generado: ${estimatedCost}.`);
+    } catch (error) {
+      setOfflineAudioMessage(error instanceof Error ? error.message : "No se pudo descargar el audio del capítulo.");
+    } finally {
+      setIsOfflineAudioDownloading(false);
+    }
+  }
+
+  async function exportChapterAudioFiles() {
+    if (!activeOfflineChapterId) {
+      return;
+    }
+
+    setIsOfflineAudioExporting(true);
+    setOfflineAudioMessage(null);
+
+    try {
+      const exportData = await loadOfflineChapterAudioExport(bookId, activeOfflineChapterId, selectedVoiceModel);
+      if (!exportData || exportData.blocks.length === 0) {
+        setOfflineAudioMessage("Primero descarga el capítulo para poder exportar sus archivos MP3.");
+        return;
+      }
+
+      if (exportData.blocks.length < exportData.manifest.totalBlockCount) {
+        setOfflineAudioMessage("La descarga offline está incompleta. Actualiza la descarga antes de exportar los MP3.");
+        return;
+      }
+
+      const baseFileName = sanitizeDownloadFileName(`${exportData.manifest.title}-${exportData.manifest.voiceModel}`);
+      const manifest = {
+        bookId: exportData.manifest.bookId,
+        blocks: exportData.blocks.map((block, index) => ({
+          fileName: `${String(index + 1).padStart(3, "0")}-seq-${block.startSequenceNumber}.mp3`,
+          paragraphCount: block.paragraphCount,
+          paragraphs: block.paragraphs,
+          startSequenceNumber: block.startSequenceNumber
+        })),
+        chapterId: exportData.manifest.chapterId,
+        exportedAt: new Date().toISOString(),
+        title: exportData.manifest.title,
+        voiceModel: exportData.manifest.voiceModel
+      };
+      const zipBlob = await createStoredZip([
+        {
+          data: JSON.stringify(manifest, null, 2),
+          name: "manifest.json"
+        },
+        ...exportData.blocks.map((block, index) => ({
+          data: block.blob,
+          name: `${String(index + 1).padStart(3, "0")}-seq-${block.startSequenceNumber}.mp3`
+        }))
+      ]);
+
+      downloadBlob(zipBlob, `${baseFileName}.zip`);
+      setOfflineAudioMessage(`ZIP preparado con ${exportData.blocks.length} archivos MP3.`);
+    } catch (error) {
+      setOfflineAudioMessage(error instanceof Error ? error.message : "No se pudieron exportar los archivos MP3.");
+    } finally {
+      setIsOfflineAudioExporting(false);
+    }
+  }
 
   const orderedNavigationItems = useMemo<NavigationListItem[]>(() => {
     const tocItems: NavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
@@ -2770,6 +2945,17 @@ export function ReaderPage() {
   }
 
   async function resolveAudioBlock(startSequenceNumber: number, voiceModel: string, paragraphCount = AUDIO_BLOCK_PARAGRAPH_COUNT) {
+    const offlineBlock = await loadOfflineAudioBlockContaining(bookId, voiceModel, startSequenceNumber).catch(() => null);
+    if (offlineBlock) {
+      return {
+        blob: offlineBlock.blob,
+        paragraphCount: offlineBlock.paragraphCount,
+        paragraphs: offlineBlock.paragraphs,
+        startSequenceNumber: offlineBlock.startSequenceNumber,
+        voiceModel
+      } satisfies QueuedAudioBlock;
+    }
+
     const queuedBlock = getQueuedAudioBlock(startSequenceNumber, voiceModel) ?? createQueuedAudioBlock(startSequenceNumber, voiceModel, paragraphCount);
     if (!queuedBlock) {
       throw new Error("Missing access token.");
@@ -3383,7 +3569,6 @@ export function ReaderPage() {
 
     try {
       clearAudioResource({ invalidatePlayback: false, preservePlaybackElement: true });
-      ensureQueuedAudioBlocks(startSequenceNumber, voiceModel, paragraphCount);
       const nextBlock = await resolveAudioBlock(startSequenceNumber, voiceModel, paragraphCount);
 
       if (playbackAttempt !== playbackAttemptRef.current) {
@@ -4576,6 +4761,39 @@ export function ReaderPage() {
             selectedVoiceModel={selectedVoiceModel}
             voiceOptions={TTS_VOICE_OPTIONS}
           />
+          {selectedTtsEngine === "deepgram" && activeOfflineChapterId ? (
+            <div className="reader-audio-offline-card">
+              <div>
+                <strong>Audio offline del capítulo</strong>
+                <span>{activeOfflineChapterTitle ?? "Capítulo actual"}</span>
+              </div>
+              {offlineAudioStatus ? (
+                <p>{offlineAudioStatus.blockCount} / {offlineAudioStatus.totalBlockCount} bloques guardados para esta voz.</p>
+              ) : (
+                <p>No descargado para esta voz.</p>
+              )}
+              {offlineAudioProgress ? (
+                <p>Descargando {offlineAudioProgress.completed} / {offlineAudioProgress.total} bloques.</p>
+              ) : null}
+              {offlineAudioMessage ? <p>{offlineAudioMessage}</p> : null}
+              <button
+                className="reader-audio-offline-button"
+                disabled={isOfflineAudioDownloading || isOfflineAudioExporting}
+                onClick={() => void downloadChapterAudioOffline()}
+                type="button"
+              >
+                {isOfflineAudioDownloading ? "Descargando..." : offlineAudioStatus ? "Actualizar descarga" : "Descargar capítulo"}
+              </button>
+              <button
+                className="reader-audio-offline-button secondary"
+                disabled={!offlineAudioStatus?.isComplete || isOfflineAudioDownloading || isOfflineAudioExporting}
+                onClick={() => void exportChapterAudioFiles()}
+                type="button"
+              >
+                {isOfflineAudioExporting ? "Preparando ZIP..." : "Descargar archivos MP3"}
+              </button>
+            </div>
+          ) : null}
         </ReaderFloatingAudioPopover>
         <div aria-live="polite" className="reader-floating-status">
           <form className="reader-page-jump-form" onSubmit={(event) => void handlePageJumpSubmit(event)}>

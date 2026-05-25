@@ -2209,6 +2209,54 @@ textarea {
   white-space: nowrap;
 }
 
+.reader-audio-offline-card {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.95rem;
+  border: 1px solid rgba(42, 87, 66, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 252, 242, 0.8);
+}
+
+.reader-audio-offline-card div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.reader-audio-offline-card strong {
+  color: var(--forest-900);
+  font-family: "Constantia", "Georgia", serif;
+}
+
+.reader-audio-offline-card span,
+.reader-audio-offline-card p {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #5f675f;
+}
+
+.reader-audio-offline-button {
+  justify-self: start;
+  padding: 0.55rem 0.85rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--forest-700);
+  color: #fffaf0;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.reader-audio-offline-button.secondary {
+  border: 1px solid rgba(42, 87, 66, 0.28);
+  background: rgba(42, 87, 66, 0.08);
+  color: var(--forest-800);
+}
+
+.reader-audio-offline-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .reader-prose {
   display: grid;
   gap: 1rem;
