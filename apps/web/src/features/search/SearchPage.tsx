@@ -1,11 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
-import { fetchBookSearch, fetchGlobalBookSearch } from "../../app/api";
+import { fetchBookSearch, fetchGlobalBookSearch, type BookSearchResult } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
 const SEARCH_DEBOUNCE_MS = 260;
+const SEARCH_PAGE_SIZE = 25;
 const LONG_PARAGRAPH_EXCERPT_LENGTH = 340;
 
 function BackIcon() {
@@ -26,22 +27,22 @@ function buildSearchPatterns(query: string) {
   const tokens = normalizedQuery
     .split(/\s+/u)
     .map((token) => token.trim())
-    .filter((token) => token.length >= 2);
+    .filter((token) => token.length >= 1);
 
   return Array.from(new Set(
-    normalizedQuery.length >= 2
+    normalizedQuery.length >= 1
       ? [normalizedQuery, ...tokens]
       : tokens
   )).sort((left, right) => right.length - left.length);
 }
 
-function renderHighlightedExcerpt(text: string, query: string): ReactNode {
+function renderHighlightedExcerpt(text: string, query: string, caseSensitive: boolean): ReactNode {
   const patterns = buildSearchPatterns(query);
   if (patterns.length === 0) {
     return text;
   }
 
-  const pattern = new RegExp(`(${patterns.map((entry) => escapeRegExp(entry)).join("|")})`, "giu");
+  const pattern = new RegExp(`(${patterns.map((entry) => escapeRegExp(entry)).join("|")})`, caseSensitive ? "gu" : "giu");
   const parts = text.split(pattern);
 
   return parts.map((part, index) => {
@@ -49,8 +50,8 @@ function renderHighlightedExcerpt(text: string, query: string): ReactNode {
       return null;
     }
 
-    const partLower = part.toLocaleLowerCase("es");
-    const isMatch = patterns.some((entry) => entry.toLocaleLowerCase("es") === partLower);
+    const comparedPart = caseSensitive ? part : part.toLocaleLowerCase("es");
+    const isMatch = patterns.some((entry) => (caseSensitive ? entry : entry.toLocaleLowerCase("es")) === comparedPart);
     if (!isMatch) {
       return <span key={`excerpt-${index}`}>{part}</span>;
     }
@@ -69,7 +70,7 @@ function clampToWordBoundary(text: string, index: number, direction: "start" | "
   return boundary === -1 ? text.length : boundary;
 }
 
-function buildResultExcerpt(text: string, query: string) {
+function buildResultExcerpt(text: string, query: string, caseSensitive: boolean) {
   const normalizedText = text.replace(/\s+/gu, " ").trim();
   if (!normalizedText) {
     return "";
@@ -80,9 +81,9 @@ function buildResultExcerpt(text: string, query: string) {
   }
 
   const patterns = buildSearchPatterns(query);
-  const haystack = normalizedText.toLocaleLowerCase("es");
+  const haystack = caseSensitive ? normalizedText : normalizedText.toLocaleLowerCase("es");
   const matchIndex = patterns
-    .map((entry) => ({ entry, index: haystack.indexOf(entry.toLocaleLowerCase("es")) }))
+    .map((entry) => ({ entry, index: haystack.indexOf(caseSensitive ? entry : entry.toLocaleLowerCase("es")) }))
     .find((candidate) => candidate.index >= 0);
 
   if (!matchIndex) {
@@ -107,64 +108,116 @@ export function SearchPage() {
   const urlQuery = searchParams.get("q")?.trim() ?? "";
   const filterBookId = searchParams.get("bookId")?.trim() ?? "";
   const filterBookTitle = searchParams.get("bookTitle")?.trim() ?? "";
+  const urlCaseSensitive = searchParams.get("caseSensitive") === "true";
   const isBookScopedSearch = Boolean(filterBookId);
   const [searchQuery, setSearchQuery] = useState(urlQuery);
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(urlQuery);
+  const [executedSearchQuery, setExecutedSearchQuery] = useState(urlQuery);
+  const [caseSensitiveSearch, setCaseSensitiveSearch] = useState(urlCaseSensitive);
+  const [executedCaseSensitiveSearch, setExecutedCaseSensitiveSearch] = useState(urlCaseSensitive);
+  const [searchOffset, setSearchOffset] = useState(0);
+  const [searchResults, setSearchResults] = useState<BookSearchResult[]>([]);
+  const [hasMoreSearchResults, setHasMoreSearchResults] = useState(false);
   const navigationState = (location.state as { returnTo?: string } | null) ?? null;
 
-  useEffect(() => {
-    if (urlQuery === debouncedSearchQuery) {
+  function updateSearchUrl(normalizedQuery: string, caseSensitive: boolean) {
+    if (normalizedQuery === urlQuery && caseSensitive === urlCaseSensitive) {
       return;
     }
 
+    const nextSearchParams = new URLSearchParams();
+    if (filterBookId) {
+      nextSearchParams.set("bookId", filterBookId);
+    }
+    if (filterBookTitle) {
+      nextSearchParams.set("bookTitle", filterBookTitle);
+    }
+    if (normalizedQuery) {
+      nextSearchParams.set("q", normalizedQuery);
+    }
+    if (caseSensitive) {
+      nextSearchParams.set("caseSensitive", "true");
+    }
+
+    setSearchParams(nextSearchParams, { replace: true });
+  }
+
+  function executeSearch(normalizedQuery: string, caseSensitive = caseSensitiveSearch) {
+    setSearchOffset(0);
+    setSearchResults([]);
+    setHasMoreSearchResults(false);
+    setExecutedSearchQuery(normalizedQuery);
+    setExecutedCaseSensitiveSearch(caseSensitive);
+    updateSearchUrl(normalizedQuery, caseSensitive);
+  }
+
+  function handleSearchSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    executeSearch(searchQuery.trim());
+  }
+
+  useEffect(() => {
     setSearchQuery(urlQuery);
-    setDebouncedSearchQuery(urlQuery);
-  }, [debouncedSearchQuery, urlQuery]);
+    setCaseSensitiveSearch(urlCaseSensitive);
+    setExecutedSearchQuery(urlQuery);
+    setExecutedCaseSensitiveSearch(urlCaseSensitive);
+    setSearchOffset(0);
+    setSearchResults([]);
+    setHasMoreSearchResults(false);
+  }, [urlCaseSensitive, urlQuery]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       const normalizedQuery = searchQuery.trim();
-      setDebouncedSearchQuery(normalizedQuery);
+      if (normalizedQuery.length >= 3 || normalizedQuery.length === 0) {
+        if (normalizedQuery === executedSearchQuery && caseSensitiveSearch === executedCaseSensitiveSearch) {
+          return;
+        }
 
-      if (normalizedQuery === urlQuery) {
+        executeSearch(normalizedQuery);
         return;
       }
 
-      const nextSearchParams = new URLSearchParams();
-      if (filterBookId) {
-        nextSearchParams.set("bookId", filterBookId);
+      if (executedSearchQuery && executedSearchQuery !== normalizedQuery) {
+        executeSearch("");
       }
-      if (filterBookTitle) {
-        nextSearchParams.set("bookTitle", filterBookTitle);
-      }
-      if (normalizedQuery) {
-        nextSearchParams.set("q", normalizedQuery);
-      }
-
-      setSearchParams(nextSearchParams, { replace: true });
     }, SEARCH_DEBOUNCE_MS);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [filterBookId, filterBookTitle, searchQuery, setSearchParams, urlQuery]);
+  }, [caseSensitiveSearch, executedCaseSensitiveSearch, executedSearchQuery, filterBookId, filterBookTitle, searchQuery, setSearchParams, urlCaseSensitive, urlQuery]);
 
   const globalSearchQuery = useQuery({
-    enabled: Boolean(accessToken && debouncedSearchQuery.length >= 2),
-    queryKey: ["books-search", filterBookId || "all", debouncedSearchQuery],
+    enabled: Boolean(accessToken && executedSearchQuery.length >= 1),
+    queryKey: ["books-search", filterBookId || "all", executedSearchQuery, executedCaseSensitiveSearch, searchOffset],
     queryFn: async () => {
       if (!accessToken) {
         throw new Error("Missing access token.");
       }
 
       if (filterBookId) {
-        return fetchBookSearch(accessToken, filterBookId, debouncedSearchQuery, { limit: 24, offset: 0 });
+        return fetchBookSearch(accessToken, filterBookId, executedSearchQuery, { caseSensitive: executedCaseSensitiveSearch, limit: SEARCH_PAGE_SIZE, offset: searchOffset });
       }
 
-      return fetchGlobalBookSearch(accessToken, debouncedSearchQuery, { limit: 24, offset: 0 });
+      return fetchGlobalBookSearch(accessToken, executedSearchQuery, { caseSensitive: executedCaseSensitiveSearch, limit: SEARCH_PAGE_SIZE, offset: searchOffset });
     },
     staleTime: 30_000
   });
+
+  useEffect(() => {
+    if (!globalSearchQuery.data) {
+      return;
+    }
+
+    setHasMoreSearchResults(globalSearchQuery.data.hasMore);
+    setSearchResults((current) => searchOffset === 0
+      ? globalSearchQuery.data.results
+      : [...current, ...globalSearchQuery.data.results]);
+  }, [globalSearchQuery.data, searchOffset]);
+
+  function handleLoadMoreSearchResults() {
+    setSearchOffset((current) => current + SEARCH_PAGE_SIZE);
+  }
 
   const returnSearchParams = new URLSearchParams();
   if (filterBookId) {
@@ -173,8 +226,11 @@ export function SearchPage() {
   if (filterBookTitle) {
     returnSearchParams.set("bookTitle", filterBookTitle);
   }
-  if (debouncedSearchQuery) {
-    returnSearchParams.set("q", debouncedSearchQuery);
+  if (executedSearchQuery) {
+    returnSearchParams.set("q", executedSearchQuery);
+  }
+  if (executedCaseSensitiveSearch) {
+    returnSearchParams.set("caseSensitive", "true");
   }
 
   const returnTo = returnSearchParams.toString() ? `/search?${returnSearchParams.toString()}` : "/search";
@@ -187,8 +243,8 @@ export function SearchPage() {
   const errorLabel = filterBookId ? "No se pudo completar la búsqueda en este libro." : "No se pudo completar la búsqueda global.";
   const noResultsLabel = filterBookId ? "No se encontraron coincidencias en este libro." : "No se encontraron coincidencias en tus libros.";
   const moreResultsLabel = filterBookId
-    ? "Se muestran las primeras coincidencias. Refina la búsqueda para acotar resultados dentro del libro."
-    : "Se muestran las primeras coincidencias. Refina la búsqueda para acotar resultados.";
+    ? "Hay más coincidencias dentro del libro."
+    : "Hay más coincidencias en tu biblioteca.";
 
   return (
     <div className="page-stack shelf-layout search-layout">
@@ -208,7 +264,7 @@ export function SearchPage() {
           </Link>
         </div>
 
-        <div className="shelf-search-field search-page-field">
+        <form className="shelf-search-field search-page-field" onSubmit={handleSearchSubmit}>
           <input
             aria-label="Buscar"
             autoFocus
@@ -216,20 +272,37 @@ export function SearchPage() {
             placeholder={helperPlaceholder}
             value={searchQuery}
           />
-        </div>
+          <button className="primary-button" disabled={!searchQuery.trim()} type="submit">Buscar</button>
+        </form>
+        <label className="search-page-case-sensitive-toggle">
+          <input
+            checked={caseSensitiveSearch}
+            onChange={(event) => {
+              const isChecked = event.target.checked;
+              setCaseSensitiveSearch(isChecked);
+              if (searchQuery.trim()) {
+                executeSearch(searchQuery.trim(), isChecked);
+              } else {
+                updateSearchUrl("", isChecked);
+              }
+            }}
+            type="checkbox"
+          />
+          Distinguir mayúsculas y minúsculas
+        </label>
 
-        {searchQuery.trim().length === 1 ? <p className="subdued search-page-status">Escribe al menos 2 caracteres para buscar en el contenido.</p> : null}
-        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isLoading ? <p className="search-page-status">{loadingLabel}</p> : null}
-        {debouncedSearchQuery.length >= 2 && globalSearchQuery.isError ? <p className="error-text search-page-status">{errorLabel}</p> : null}
+        {searchQuery.trim().length > 0 && searchQuery.trim().length < 3 ? <p className="subdued search-page-status">Pulsa Buscar para ejecutar búsquedas cortas. La búsqueda automática empieza con 3 caracteres.</p> : null}
+        {executedSearchQuery.length >= 1 && searchOffset === 0 && globalSearchQuery.isLoading ? <p className="search-page-status">{loadingLabel}</p> : null}
+        {executedSearchQuery.length >= 1 && globalSearchQuery.isError ? <p className="error-text search-page-status">{errorLabel}</p> : null}
 
-        {debouncedSearchQuery.length >= 2 ? (
+        {executedSearchQuery.length >= 1 ? (
           <div className="shelf-search-results search-page-results">
-            {globalSearchQuery.data?.results.length ? globalSearchQuery.data.results.map((result) => (
+            {searchResults.length ? searchResults.map((result) => (
               <Link
                 className="book-card shelf-search-result search-page-result"
                 key={`${result.bookId}:${result.pageNumber}:${result.paragraphNumber}:${result.paragraphId}`}
                 state={{ returnTo }}
-                to={`/books/${result.bookId}?page=${encodeURIComponent(String(result.pageNumber))}&paragraph=${encodeURIComponent(String(result.paragraphNumber))}&search=${encodeURIComponent(debouncedSearchQuery)}`}
+                to={`/books/${result.bookId}?page=${encodeURIComponent(String(result.pageNumber))}&paragraph=${encodeURIComponent(String(result.paragraphNumber))}&search=${encodeURIComponent(executedSearchQuery)}${executedCaseSensitiveSearch ? "&searchCaseSensitive=true" : ""}`}
               >
                 <div className="book-card-copy shelf-search-result-copy search-page-result-copy">
                   <strong className="search-page-result-book-title">{result.title}</strong>
@@ -240,17 +313,22 @@ export function SearchPage() {
                     <span aria-hidden="true" className="search-page-result-separator">·</span>
                     <span className="search-page-result-paragraph">Párrafo: {result.paragraphNumber}</span>
                   </div>
-                  <p className="search-page-result-excerpt">{renderHighlightedExcerpt(buildResultExcerpt(result.paragraphText, debouncedSearchQuery), debouncedSearchQuery)}</p>
+                  <p className="search-page-result-excerpt">{renderHighlightedExcerpt(buildResultExcerpt(result.paragraphText, executedSearchQuery, executedCaseSensitiveSearch), executedSearchQuery, executedCaseSensitiveSearch)}</p>
                 </div>
               </Link>
             )) : null}
 
-            {!globalSearchQuery.isLoading && !globalSearchQuery.isError && globalSearchQuery.data && globalSearchQuery.data.results.length === 0 ? (
+            {!globalSearchQuery.isLoading && !globalSearchQuery.isError && globalSearchQuery.data && searchResults.length === 0 ? (
               <p className="subdued search-page-status">{noResultsLabel}</p>
             ) : null}
 
-            {globalSearchQuery.data?.hasMore ? (
-              <p className="subdued search-page-status">{moreResultsLabel}</p>
+            {hasMoreSearchResults ? (
+              <div className="search-page-load-more">
+                <p className="subdued search-page-status">{moreResultsLabel}</p>
+                <button className="secondary-button" disabled={globalSearchQuery.isFetching} onClick={handleLoadMoreSearchResults} type="button">
+                  {globalSearchQuery.isFetching && searchOffset > 0 ? "Buscando más..." : "Buscar más"}
+                </button>
+              </div>
             ) : null}
           </div>
         ) : null}

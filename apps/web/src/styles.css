@@ -1057,12 +1057,28 @@ textarea {
 }
 
 .search-page-field {
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 0.25rem;
   max-width: none;
 }
 
 .search-page-field input {
   min-height: 3.1rem;
+}
+
+.search-page-field button {
+  min-height: 3.1rem;
+}
+
+.search-page-case-sensitive-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: fit-content;
+  color: #5d665d;
+  font-size: 0.9rem;
+  white-space: nowrap;
 }
 
 .search-page-status {
@@ -1074,6 +1090,15 @@ textarea {
 }
 
 .search-page-results {
+  margin-top: 0.35rem;
+}
+
+.search-page-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
   margin-top: 0.35rem;
 }
 

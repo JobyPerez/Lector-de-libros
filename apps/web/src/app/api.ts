@@ -273,6 +273,7 @@ export type BookSearchResponse = {
     bookId: string;
     title: string;
   };
+  caseSensitive: boolean;
   hasMore: boolean;
   limit: number;
   offset: number;
@@ -281,6 +282,7 @@ export type BookSearchResponse = {
 };
 
 export type GlobalBookSearchResponse = {
+  caseSensitive: boolean;
   hasMore: boolean;
   limit: number;
   offset: number;
@@ -724,10 +726,14 @@ export function fetchBookPage(accessToken: string, bookId: string, pageNumber: n
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
 }
 
-export function fetchBookSearch(accessToken: string, bookId: string, query: string, options?: { limit?: number; offset?: number }) {
+export function fetchBookSearch(accessToken: string, bookId: string, query: string, options?: { caseSensitive?: boolean; limit?: number; offset?: number }) {
   const searchParams = new URLSearchParams({
     query
   });
+
+  if (options?.caseSensitive) {
+    searchParams.set("caseSensitive", "true");
+  }
 
   if (typeof options?.limit === "number") {
     searchParams.set("limit", String(options.limit));
@@ -740,10 +746,14 @@ export function fetchBookSearch(accessToken: string, bookId: string, query: stri
   return request<BookSearchResponse>(`/books/${bookId}/search?${searchParams.toString()}`, { accessToken });
 }
 
-export function fetchGlobalBookSearch(accessToken: string, query: string, options?: { limit?: number; offset?: number }) {
+export function fetchGlobalBookSearch(accessToken: string, query: string, options?: { caseSensitive?: boolean; limit?: number; offset?: number }) {
   const searchParams = new URLSearchParams({
     query
   });
+
+  if (options?.caseSensitive) {
+    searchParams.set("caseSensitive", "true");
+  }
 
   if (typeof options?.limit === "number") {
     searchParams.set("limit", String(options.limit));

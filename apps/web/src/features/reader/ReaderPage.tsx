@@ -258,6 +258,7 @@ type ReaderNotePopoverState = {
 type ReaderBookmarkAnimationState = "adding" | "removing" | null;
 
 type ActiveSearchTarget = {
+  caseSensitive: boolean;
   pageNumber: number;
   paragraphNumber: number;
   query: string;
@@ -628,7 +629,7 @@ function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: 
   return htmlContent;
 }
 
-function highlightRichParagraphSearchMatches(paragraphNode: HTMLElement, query: string) {
+function highlightRichParagraphSearchMatches(paragraphNode: HTMLElement, query: string, caseSensitive: boolean) {
   const normalizedQuery = query.trim();
   if (!normalizedQuery || typeof NodeFilter === "undefined") {
     return;
@@ -673,18 +674,18 @@ function highlightRichParagraphSearchMatches(paragraphNode: HTMLElement, query: 
     }
   }
 
-  const loweredQuery = normalizedQuery.toLocaleLowerCase("es");
+  const comparedQuery = caseSensitive ? normalizedQuery : normalizedQuery.toLocaleLowerCase("es");
 
   textNodes.forEach((textNode) => {
     const textValue = textNode.nodeValue ?? "";
-    const loweredText = textValue.toLocaleLowerCase("es");
-    if (!loweredText.includes(loweredQuery)) {
+    const comparedText = caseSensitive ? textValue : textValue.toLocaleLowerCase("es");
+    if (!comparedText.includes(comparedQuery)) {
       return;
     }
 
     const fragment = paragraphDocument.createDocumentFragment();
     let cursor = 0;
-    let matchIndex = loweredText.indexOf(loweredQuery, cursor);
+    let matchIndex = comparedText.indexOf(comparedQuery, cursor);
 
     while (matchIndex !== -1) {
       if (matchIndex > cursor) {
@@ -697,7 +698,7 @@ function highlightRichParagraphSearchMatches(paragraphNode: HTMLElement, query: 
       fragment.append(mark);
 
       cursor = matchIndex + normalizedQuery.length;
-      matchIndex = loweredText.indexOf(loweredQuery, cursor);
+      matchIndex = comparedText.indexOf(comparedQuery, cursor);
     }
 
     if (cursor < textValue.length) {
@@ -1238,6 +1239,7 @@ export function ReaderPage() {
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
   const requestedParagraphParam = searchParams.get("paragraph")?.trim() ?? "";
   const requestedSearchParam = searchParams.get("search")?.trim() ?? "";
+  const requestedSearchCaseSensitive = searchParams.get("searchCaseSensitive") === "true";
   const requestedPageNumber = requestedPageParam ? Number(requestedPageParam) : Number.NaN;
   const requestedParagraphNumber = requestedParagraphParam ? Number(requestedParagraphParam) : Number.NaN;
   const navigationState = (location.state as ReaderNavigationState | null) ?? null;
@@ -1491,6 +1493,7 @@ export function ReaderPage() {
       };
       if (requestedSearchParam) {
         setActiveSearchTarget({
+          caseSensitive: requestedSearchCaseSensitive,
           pageNumber: requestedPageNumber,
           paragraphNumber: nextParagraphNumber,
           query: requestedSearchParam
@@ -1510,7 +1513,7 @@ export function ReaderPage() {
     progressHydratedRef.current = true;
     setCurrentPageNumber(savedProgress.currentPageNumber);
     setCurrentParagraphNumber(savedProgress.currentParagraphNumber);
-  }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber, requestedParagraphNumber, requestedSearchParam]);
+  }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
 
   useEffect(() => {
     if (!Number.isInteger(requestedPageNumber) || requestedPageNumber < 1) {
@@ -1528,11 +1531,13 @@ export function ReaderPage() {
           && current.pageNumber === requestedPageNumber
           && current.paragraphNumber === targetParagraphNumber
           && current.query === requestedSearchParam
+          && current.caseSensitive === requestedSearchCaseSensitive
         ) {
           return current;
         }
 
         return {
+          caseSensitive: requestedSearchCaseSensitive,
           pageNumber: requestedPageNumber,
           paragraphNumber: targetParagraphNumber,
           query: requestedSearchParam
@@ -1579,6 +1584,7 @@ export function ReaderPage() {
     pageQuery.data?.page.paragraphs,
     requestedPageNumber,
     requestedParagraphNumber,
+    requestedSearchCaseSensitive,
     requestedSearchParam
   ]);
 
@@ -3124,6 +3130,10 @@ export function ReaderPage() {
         && activeSearchTarget.paragraphNumber === paragraphNumber
         ? activeSearchTarget.query.trim()
         : "";
+      const isActiveRichSearchCaseSensitive = Boolean(activeSearchTarget
+        && activeSearchTarget.pageNumber === currentPageNumber
+        && activeSearchTarget.paragraphNumber === paragraphNumber
+        && activeSearchTarget.caseSensitive);
 
       const noteCount = noteCountsByParagraphId.get(paragraph.paragraphId) ?? 0;
       node.classList.toggle("has-note", noteCount > 0);
@@ -3135,7 +3145,7 @@ export function ReaderPage() {
 
       applyHighlightsToRichParagraph(node, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
       if (activeRichSearchQuery) {
-        highlightRichParagraphSearchMatches(node, activeRichSearchQuery);
+        highlightRichParagraphSearchMatches(node, activeRichSearchQuery, isActiveRichSearchCaseSensitive);
       }
       node.querySelectorAll<HTMLElement>("[data-highlight-id]").forEach((highlightElement) => {
         const highlightId = highlightElement.dataset.highlightId;
@@ -4313,14 +4323,18 @@ export function ReaderPage() {
       && activeSearchTarget.paragraphNumber === paragraph.paragraphNumber
       ? activeSearchTarget.query.trim()
       : "";
+    const isActiveSearchCaseSensitive = Boolean(activeSearchTarget
+      && activeSearchTarget.pageNumber === currentPageNumber
+      && activeSearchTarget.paragraphNumber === paragraph.paragraphNumber
+      && activeSearchTarget.caseSensitive);
 
     const renderSearchMatches = (text: string, keyPrefix: string) => {
       if (!activeSearchQuery) {
         return renderTextWithLineBreaks(text, `${keyPrefix}-plain`);
       }
 
-      const normalizedText = text.toLocaleLowerCase("es");
-      const normalizedQuery = activeSearchQuery.toLocaleLowerCase("es");
+      const normalizedText = isActiveSearchCaseSensitive ? text : text.toLocaleLowerCase("es");
+      const normalizedQuery = isActiveSearchCaseSensitive ? activeSearchQuery : activeSearchQuery.toLocaleLowerCase("es");
       const matchNodes: ReactNode[] = [];
       let cursor = 0;
       let matchIndex = 0;
@@ -4381,6 +4395,9 @@ export function ReaderPage() {
   const currentSearchQuery = activeSearchTarget?.query.trim() ?? "";
   if (currentSearchQuery) {
     readerSearchParams.set("q", currentSearchQuery);
+  }
+  if (activeSearchTarget?.caseSensitive) {
+    readerSearchParams.set("caseSensitive", "true");
   }
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
   const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;

@@ -63,7 +63,8 @@ const bookParamsSchema = z.object({
 });
 
 const bookSearchQuerySchema = z.object({
-  query: z.string().trim().min(2).max(120),
+  query: z.string().trim().min(1).max(120),
+  caseSensitive: z.preprocess((value) => value === true || value === "true", z.boolean()).default(false),
   limit: z.coerce.number().int().min(1).max(50).default(20),
   offset: z.coerce.number().int().min(0).max(500).default(0)
 });
@@ -682,6 +683,7 @@ async function searchOwnedBookParagraphs(
   connection: Awaited<ReturnType<typeof getConnection>>,
   options: {
     bookId: string;
+    caseSensitive: boolean;
     limit: number;
     offset: number;
     ownerUserId: string;
@@ -689,6 +691,9 @@ async function searchOwnedBookParagraphs(
   }
 ): Promise<{ hasMore: boolean; results: BookSearchResultRecord[] }> {
   const fetchLimit = options.limit + 1;
+  const searchCondition = options.caseSensitive
+    ? "INSTR(bp.paragraph_text, :query) > 0"
+    : "INSTR(LOWER(bp.paragraph_text), :query) > 0";
   const result = await connection.execute(
     `
       SELECT
@@ -716,7 +721,7 @@ async function searchOwnedBookParagraphs(
           ON b.book_id = bp.book_id
         WHERE bp.book_id = :bookId
           AND b.owner_user_id = :ownerUserId
-          AND INSTR(LOWER(bp.paragraph_text), :query) > 0
+          AND ${searchCondition}
       )
       WHERE row_number > :offset
         AND row_number <= :offset + :fetchLimit
@@ -727,7 +732,7 @@ async function searchOwnedBookParagraphs(
       fetchLimit,
       offset: options.offset,
       ownerUserId: options.ownerUserId,
-      query: options.query.toLocaleLowerCase("es")
+      query: options.caseSensitive ? options.query : options.query.toLocaleLowerCase("es")
     }
   );
 
@@ -741,6 +746,7 @@ async function searchOwnedBookParagraphs(
 async function searchOwnedLibraryParagraphs(
   connection: Awaited<ReturnType<typeof getConnection>>,
   options: {
+    caseSensitive: boolean;
     limit: number;
     offset: number;
     ownerUserId: string;
@@ -748,6 +754,9 @@ async function searchOwnedLibraryParagraphs(
   }
 ): Promise<{ hasMore: boolean; results: BookSearchResultRecord[] }> {
   const fetchLimit = options.limit + 1;
+  const searchCondition = options.caseSensitive
+    ? "INSTR(bp.paragraph_text, :query) > 0"
+    : "INSTR(LOWER(bp.paragraph_text), :query) > 0";
   const result = await connection.execute(
     `
       SELECT
@@ -776,7 +785,7 @@ async function searchOwnedLibraryParagraphs(
         INNER JOIN books b
           ON b.book_id = bp.book_id
         WHERE b.owner_user_id = :ownerUserId
-          AND INSTR(LOWER(bp.paragraph_text), :query) > 0
+          AND ${searchCondition}
       )
       WHERE row_number > :offset
         AND row_number <= :offset + :fetchLimit
@@ -786,7 +795,7 @@ async function searchOwnedLibraryParagraphs(
       fetchLimit,
       offset: options.offset,
       ownerUserId: options.ownerUserId,
-      query: options.query.toLocaleLowerCase("es")
+      query: options.caseSensitive ? options.query : options.query.toLocaleLowerCase("es")
     }
   );
 
@@ -2838,6 +2847,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const searchResult = await searchOwnedLibraryParagraphs(connection, {
+        caseSensitive: query.caseSensitive,
         limit: query.limit,
         offset: query.offset,
         ownerUserId: request.currentUser.userId,
@@ -2846,6 +2856,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.send({
         hasMore: searchResult.hasMore,
+        caseSensitive: query.caseSensitive,
         limit: query.limit,
         offset: query.offset,
         query: query.query,
@@ -2873,6 +2884,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const searchResult = await searchOwnedBookParagraphs(connection, {
         bookId: params.bookId,
+        caseSensitive: query.caseSensitive,
         limit: query.limit,
         offset: query.offset,
         ownerUserId: request.currentUser.userId,
@@ -2886,6 +2898,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           title: book.title
         },
         hasMore: searchResult.hasMore,
+        caseSensitive: query.caseSensitive,
         limit: query.limit,
         offset: query.offset,
         query: query.query,
