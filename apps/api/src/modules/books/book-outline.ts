@@ -241,7 +241,7 @@ export async function resolveBookOutlineWithSource(connection: DatabaseConnectio
 export async function replaceBookOutline(
   connection: DatabaseConnection,
   bookId: string,
-  entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">>,
+  entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title"> & Partial<Pick<BookOutlineEntry, "chapterId">>>,
   source: StoredBookOutlineSource = "MANUAL"
 ): Promise<void> {
   await connection.execute(
@@ -275,7 +275,7 @@ export async function replaceBookOutline(
       `,
       {
         bookId,
-        chapterId: randomUUID(),
+        chapterId: entry.chapterId ?? randomUUID(),
         headingLevel: entry.level,
         pageNumber: entry.pageNumber,
         paragraphNumber: entry.paragraphNumber,

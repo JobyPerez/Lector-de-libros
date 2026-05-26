@@ -1837,6 +1837,12 @@ async function listAiRequests(
               AND start_sequence_number <= :endSequenceNumber
               AND end_sequence_number >= :startSequenceNumber
             )
+            OR (
+              chapter_id LIKE 'generated:%'
+              AND section_title = :sectionTitle
+              AND start_sequence_number <= :endSequenceNumber
+              AND end_sequence_number >= :startSequenceNumber
+            )
           )
         ORDER BY
           CASE WHEN chapter_id = :chapterId THEN 0 ELSE 1 END ASC,
