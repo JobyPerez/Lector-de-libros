@@ -144,6 +144,15 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -791,6 +800,7 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
     .filter(b => b.BlockType && layoutTypes.includes(b.BlockType) && b.Geometry?.BoundingBox)
     .sort((a, b) => (a.Geometry!.BoundingBox!.Top || 0) - (b.Geometry!.BoundingBox!.Top || 0));
 
+  const editedBlocks: string[] = [];
   const paragraphs: string[] = [];
   const htmlParts: string[] = [];
   
@@ -821,11 +831,13 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
         const width = (box.Width || 0) * 100;
         const height = (box.Height || 0) * 100;
         
+        const imageText = `![](embedded-image-${imageIndex})`;
         const paraIndex = paragraphs.length + 1;
-        paragraphs.push(`![](embedded-image-${imageIndex})`);
+        editedBlocks.push(imageText);
+        paragraphs.push(imageText);
         
         htmlParts.push(
-          `<figure data-paragraph-number="${paraIndex}" class="reader-rich-node" style="margin: 2em 0; text-align: center;">\n  <img src="data:image/jpeg;base64,${base64Image}" alt="" style="max-width: 100%; height: auto; border-radius: 8px;"/>\n  <span style="display: none;">![](embedded-image-${imageIndex})</span>\n</figure>`
+          `<figure data-paragraph-number="${paraIndex}" class="reader-rich-node" style="margin: 2em 0; text-align: center;">\n  <img src="data:image/jpeg;base64,${base64Image}" alt="" style="max-width: 100%; height: auto; border-radius: 8px;"/>\n  <span style="display: none;">${escapeHtml(imageText)}</span>\n</figure>`
         );
         
         imageIndex++;
@@ -856,18 +868,22 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
       }
       
       if (textLines.length > 0) {
-        let blockText = textLines.join(" ");
-        let alignMark = "";
+        const plainText = normalizeWhitespace(textLines.join(" "));
+        let editedText = plainText;
+        let tagName = "p";
+        let alignmentAttributes = "";
         if(layout.BlockType === "LAYOUT_TITLE" || layout.BlockType === "LAYOUT_SECTION_HEADER") {
-           blockText = `## ${blockText}`;
-           alignMark = "::center::\n";
+           editedText = `::center:: ## ${plainText}`;
+           tagName = "h2";
+           alignmentAttributes = ' data-text-align="center" style="text-align: center;"';
         }
 
         const paraIndex = paragraphs.length + 1;
         htmlParts.push(
-          `<p data-paragraph-number="${paraIndex}" style="margin-bottom: 1em;">${alignMark ? `<span style="display:none;">${alignMark}</span>` : ""}${blockText}</p>`
+          `<${tagName} class="reader-rich-node" data-paragraph-number="${paraIndex}"${alignmentAttributes}>${escapeHtml(plainText)}</${tagName}>`
         );
-        paragraphs.push(alignMark + blockText);
+        editedBlocks.push(editedText);
+        paragraphs.push(plainText);
       }
     }
   }
@@ -886,17 +902,19 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
         const blockText = line.Text!;
         const paraIndex = paragraphs.length + 1;
         htmlParts.push(
-          `<p data-paragraph-number="${paraIndex}" style="margin-bottom: 1em;">${blockText}</p>`
+          `<p class="reader-rich-node" data-paragraph-number="${paraIndex}">${escapeHtml(blockText)}</p>`
         );
+        editedBlocks.push(blockText);
         paragraphs.push(blockText);
-     }
+      }
   }
 
   const rawText = paragraphs.join("\n\n");
+  const editedText = editedBlocks.join("\n\n");
   const htmlContent = htmlParts.length > 0 ? htmlParts.join("\n") : null;
     
   return {
-    editedText: rawText,
+    editedText,
     htmlContent,
     paragraphs,
     rawText
