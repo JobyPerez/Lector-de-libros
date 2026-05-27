@@ -19,3 +19,4 @@ sqlnet.ora
 *.log
 Thumbs.db
 .DS_Store
+.playwright-mcp

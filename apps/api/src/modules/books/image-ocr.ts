@@ -144,6 +144,35 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function startsWithLowercaseLetter(value: string): boolean {
+  return /^\p{Ll}/u.test(value);
+}
+
+function joinLinesJoiningHyphens(lines: string[]): string {
+  let mergedText = "";
+
+  for (const line of lines) {
+    const normalizedLine = normalizeWhitespace(line);
+    if (!normalizedLine) {
+      continue;
+    }
+
+    if (!mergedText) {
+      mergedText = normalizedLine;
+      continue;
+    }
+
+    if (/[\p{L}\p{N}]-$/u.test(mergedText) && startsWithLowercaseLetter(normalizedLine)) {
+      mergedText = `${mergedText.slice(0, -1)}${normalizedLine}`;
+      continue;
+    }
+
+    mergedText = `${mergedText} ${normalizedLine}`;
+  }
+
+  return normalizeWhitespace(mergedText);
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -229,6 +258,7 @@ function cleanOcrText(rawText: string): string {
     .replace(/[‘’]/g, "'")
     .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/([a-záéíóúñ])\n(?=[a-záéíóúñ])/giu, "$1 ")
+    .replace(/([\p{L}\p{N}])-\n(?=\p{Ll})/gu, "$1")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -868,7 +898,7 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
       }
       
       if (textLines.length > 0) {
-        const plainText = normalizeWhitespace(textLines.join(" "));
+        const plainText = joinLinesJoiningHyphens(textLines);
         let editedText = plainText;
         let tagName = "p";
         let alignmentAttributes = "";
@@ -893,20 +923,16 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
       .filter(b => b.BlockType === "LINE" && b.Text && b.Geometry?.BoundingBox)
       .sort((a, b) => (a.Geometry!.BoundingBox!.Top || 0) - (b.Geometry!.BoundingBox!.Top || 0));
      
-     for (const line of rawLines) {
-        const box = line.Geometry!.BoundingBox!;
-        const left = (box.Left || 0) * 100;
-        const top = (box.Top || 0) * 100;
-        const width = (box.Width || 0) * 100;
-        const height = (box.Height || 0) * 100;
-        const blockText = line.Text!;
-        const paraIndex = paragraphs.length + 1;
+     const lineTexts = rawLines.map(line => line.Text!);
+     const joinedText = joinLinesJoiningHyphens(lineTexts);
+     if (joinedText) {
+        const paraIndex = 1;
         htmlParts.push(
-          `<p class="reader-rich-node" data-paragraph-number="${paraIndex}">${escapeHtml(blockText)}</p>`
+          `<p class="reader-rich-node" data-paragraph-number="${paraIndex}">${escapeHtml(joinedText)}</p>`
         );
-        editedBlocks.push(blockText);
-        paragraphs.push(blockText);
-      }
+        editedBlocks.push(joinedText);
+        paragraphs.push(joinedText);
+     }
   }
 
   const rawText = paragraphs.join("\n\n");
