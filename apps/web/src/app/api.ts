@@ -246,6 +246,7 @@ export type ImageRotation = 0 | 90 | 180 | 270;
 type ImageOcrRequestOptions = {
   ocrMode?: ImageOcrMode | undefined;
   promptOverride?: string | undefined;
+  skipOcr?: boolean | undefined;
 };
 
 export type ParagraphContent = {
@@ -615,6 +616,10 @@ function createImageUploadPayload(payload: FormData, options?: ImageOcrRequestOp
     nextPayload.set("promptOverride", normalizedPromptOverride);
   }
 
+  if (options?.skipOcr) {
+    nextPayload.set("skipOcr", "true");
+  }
+
   return nextPayload;
 }
 
@@ -639,6 +644,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
   ocrMode?: ImageOcrMode | undefined;
   progressId?: string | undefined;
   promptOverride?: string | undefined;
+  skipOcr?: boolean | undefined;
 }) {
   const searchParams = new URLSearchParams();
   if (options?.afterPage !== undefined) {
@@ -657,7 +663,8 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     accessToken,
     body: createImageUploadPayload(payload, {
       ocrMode: options?.ocrMode,
-      promptOverride: options?.promptOverride
+      promptOverride: options?.promptOverride,
+      skipOcr: options?.skipOcr
     }),
     fallbackMessage: "No se pudieron añadir imágenes al libro.",
     headers: createHeaders({ accessToken }),

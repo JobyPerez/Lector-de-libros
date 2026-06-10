@@ -4427,6 +4427,43 @@ textarea {
   font-size: 0.9rem;
 }
 
+.append-ocr-failure-panel {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(140, 31, 49, 0.22);
+  border-radius: 14px;
+  background: rgba(140, 31, 49, 0.06);
+}
+
+.append-ocr-failure-title,
+.append-ocr-failure-file,
+.append-ocr-failure-message {
+  margin: 0;
+}
+
+.append-ocr-failure-title {
+  color: var(--danger);
+  font-weight: 800;
+}
+
+.append-ocr-failure-file,
+.append-ocr-failure-message {
+  overflow-wrap: anywhere;
+  color: #5d665d;
+  font-size: 0.9rem;
+}
+
+.append-ocr-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.append-ocr-failure-actions button {
+  flex: 1 1 9rem;
+}
+
 .append-ocr-cancel-hold {
   --cancel-progress: 0;
   position: relative;

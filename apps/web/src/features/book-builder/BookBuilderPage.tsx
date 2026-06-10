@@ -679,6 +679,15 @@ type AppendResumeState = {
   nextAfterPage: number | null;
 };
 
+type AppendOcrFailureChoice = "retry" | "skip";
+
+type AppendOcrFailureState = {
+  fileName: string;
+  message: string;
+  pageIndex: number;
+  totalPages: number;
+};
+
 type BuilderWakeLockSentinel = {
   addEventListener?: (type: "release", listener: () => void) => void;
   release: () => Promise<void>;
@@ -732,6 +741,7 @@ export function BookBuilderPage() {
   const [appendImportProgress, setAppendImportProgress] = useState<AppendImagesImportProgress | null>(null);
   const [appendProgressOffset, setAppendProgressOffset] = useState(0);
   const [appendResumeState, setAppendResumeState] = useState<AppendResumeState | null>(null);
+  const [appendOcrFailure, setAppendOcrFailure] = useState<AppendOcrFailureState | null>(null);
   const [appendCancelHoldProgress, setAppendCancelHoldProgress] = useState(0);
   const [isAppendCancelRequested, setIsAppendCancelRequested] = useState(false);
   const [isCreateCameraModalOpen, setIsCreateCameraModalOpen] = useState(false);
@@ -782,8 +792,10 @@ export function BookBuilderPage() {
   const isMountedRef = useRef(true);
   const ocrRetryIntervalRef = useRef<number | null>(null);
   const appendWakeLockRef = useRef<BuilderWakeLockSentinel | null>(null);
+  const appendOcrFailureResolverRef = useRef<((choice: AppendOcrFailureChoice) => void) | null>(null);
   const appendCancelHoldTimeoutRef = useRef<number | null>(null);
   const appendCancelHoldIntervalRef = useRef<number | null>(null);
+  const isAppendCancelRequestedRef = useRef(false);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -854,6 +866,10 @@ export function BookBuilderPage() {
       void releaseAppendScreenWakeLock();
     };
   }, []);
+
+  useEffect(() => {
+    isAppendCancelRequestedRef.current = isAppendCancelRequested;
+  }, [isAppendCancelRequested]);
 
   useEffect(() => {
     setAppendInsertionSide("after");
@@ -1371,7 +1387,9 @@ export function BookBuilderPage() {
     setAppendProgressOffset(0);
     setAppendImportProgress(null);
     setIsAppendCancelRequested(false);
+    isAppendCancelRequestedRef.current = false;
     setAppendCancelHoldProgress(0);
+    setAppendOcrFailure(null);
   }
 
   function appendFiles(files: File[]) {
@@ -1701,12 +1719,14 @@ export function BookBuilderPage() {
     }
 
     setIsAppendCancelRequested(true);
+    isAppendCancelRequestedRef.current = true;
 
     try {
       const response = await cancelAppendImagesImport(accessToken, appendProgressId);
       setAppendImportProgress(response.progress);
     } catch (error) {
       setIsAppendCancelRequested(false);
+      isAppendCancelRequestedRef.current = false;
       setAppendError(error instanceof Error ? error.message : "No se pudo solicitar la cancelación.");
     }
   }
@@ -1792,6 +1812,21 @@ export function BookBuilderPage() {
     }
   }
 
+  function requestAppendOcrFailureChoice(failure: AppendOcrFailureState): Promise<AppendOcrFailureChoice> {
+    setAppendOcrFailure(failure);
+
+    return new Promise((resolve) => {
+      appendOcrFailureResolverRef.current = resolve;
+    });
+  }
+
+  function resolveAppendOcrFailure(choice: AppendOcrFailureChoice) {
+    const resolver = appendOcrFailureResolverRef.current;
+    appendOcrFailureResolverRef.current = null;
+    setAppendOcrFailure(null);
+    resolver?.(choice);
+  }
+
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -1872,9 +1907,6 @@ export function BookBuilderPage() {
     setIsAppendCancelRequested(false);
     setAppendProgressOffset(alreadyCompletedFiles);
     void ensureAppendScreenWakeLock();
-    const progressId = crypto.randomUUID();
-    const appendTotalPagesBeforeRequest = selectedAppendBook ? Number(selectedAppendBook.totalPages) : null;
-    setAppendProgressId(progressId);
     setAppendImportProgress({
       bookId: selectedBookId,
       completedFiles: 0,
@@ -1891,79 +1923,165 @@ export function BookBuilderPage() {
     });
 
     try {
-      const formData = new FormData();
-      for (const file of pendingAppendFiles) {
-        formData.append("images", file);
+      let completedFiles = alreadyCompletedFiles;
+      let insertionStartPageNumber = appendResumeState?.insertionStartPageNumber ?? null;
+      let nextAfterPage = requestAfterPage ?? null;
+      let lastBookId = selectedBookId;
+
+      for (const [pendingIndex, file] of pendingAppendFiles.entries()) {
+        const absoluteFileIndex = alreadyCompletedFiles + pendingIndex;
+
+        if (isAppendCancelRequestedRef.current) {
+          break;
+        }
+
+        while (true) {
+          const progressId = crypto.randomUUID();
+          const formData = new FormData();
+          formData.append("images", file);
+          setAppendProgressId(progressId);
+          setAppendProgressOffset(completedFiles);
+          setAppendImportProgress({
+            bookId: selectedBookId,
+            completedFiles: 0,
+            currentFileIndex: 0,
+            currentFileName: file.name,
+            errorMessage: null,
+            insertedPages: 0,
+            insertionStartPageNumber,
+            nextAfterPage,
+            stage: "ocr",
+            totalFiles: 1,
+            waitMessage: null,
+            waitSecondsRemaining: null
+          });
+
+          try {
+            const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
+              ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
+              ocrMode: appendOcrMode,
+              ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
+                ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
+                : {}),
+              progressId
+            });
+
+            if (response.cancelled) {
+              completedFiles += response.addedPages;
+              insertionStartPageNumber = insertionStartPageNumber ?? response.insertionStartPageNumber;
+              nextAfterPage = response.nextAfterPage ?? nextAfterPage;
+              setAppendResumeState({ completedFiles, insertionStartPageNumber, nextAfterPage });
+              setAppendProgressOffset(completedFiles);
+              setAppendError(response.addedPages > 0
+                ? `Añadido cancelado. Se añadieron ${completedFiles} de ${selectedAppendFiles.length} páginas.`
+                : "Añadido cancelado antes de insertar páginas nuevas.");
+              return;
+            }
+
+            completedFiles += response.addedPages;
+            insertionStartPageNumber = insertionStartPageNumber ?? response.insertionStartPageNumber;
+            nextAfterPage = response.nextAfterPage ?? nextAfterPage;
+            lastBookId = response.book.bookId;
+            setAppendResumeState({ completedFiles, insertionStartPageNumber, nextAfterPage });
+            setAppendProgressOffset(completedFiles);
+            setAppendImportProgress((currentProgress) => currentProgress
+              ? { ...currentProgress, completedFiles: 0, currentFileIndex: null, currentFileName: null, stage: "ocr" }
+              : currentProgress);
+            break;
+          } catch (error) {
+            let latestProgress: AppendImagesImportProgress | null = null;
+            try {
+              const response = await fetchAppendImagesImportProgress(accessToken, progressId);
+              latestProgress = response.progress;
+              setAppendImportProgress(response.progress);
+            } catch {
+              // El error principal ya explica el fallo; el progreso solo mejora la reanudación.
+            }
+
+            const insertedPages = latestProgress?.insertedPages ?? latestProgress?.completedFiles ?? 0;
+            if (insertedPages > 0) {
+              completedFiles = Math.min(selectedAppendFiles.length, completedFiles + insertedPages);
+              insertionStartPageNumber = insertionStartPageNumber ?? latestProgress?.insertionStartPageNumber ?? null;
+              nextAfterPage = latestProgress?.nextAfterPage ?? nextAfterPage;
+              setAppendResumeState({ completedFiles, insertionStartPageNumber, nextAfterPage });
+              setAppendProgressOffset(completedFiles);
+              setAppendImportProgress((currentProgress) => currentProgress
+                ? { ...currentProgress, completedFiles: 0, currentFileIndex: null, currentFileName: null, stage: "ocr" }
+                : currentProgress);
+              break;
+            }
+
+            const message = error instanceof Error ? error.message : "No se pudo hacer OCR de esta página.";
+            setAppendImportProgress((currentProgress) => currentProgress
+              ? { ...currentProgress, errorMessage: message, stage: "failed" }
+              : currentProgress);
+            const choice = await requestAppendOcrFailureChoice({
+              fileName: file.name,
+              message,
+              pageIndex: absoluteFileIndex + 1,
+              totalPages: selectedAppendFiles.length
+            });
+
+            if (choice === "retry") {
+              continue;
+            }
+
+            const skipFormData = new FormData();
+            skipFormData.append("images", file);
+            const skipProgressId = crypto.randomUUID();
+            setAppendProgressId(skipProgressId);
+            setAppendImportProgress({
+              bookId: selectedBookId,
+              completedFiles: 0,
+              currentFileIndex: 0,
+              currentFileName: file.name,
+              errorMessage: null,
+              insertedPages: 0,
+              insertionStartPageNumber,
+              nextAfterPage,
+              stage: "saving",
+              totalFiles: 1,
+              waitMessage: null,
+              waitSecondsRemaining: null
+            });
+            const skipResponse = await appendImagesToBook(accessToken, selectedBookId, skipFormData, {
+              ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
+              ocrMode: appendOcrMode,
+              progressId: skipProgressId,
+              skipOcr: true
+            });
+
+            completedFiles += skipResponse.addedPages;
+            insertionStartPageNumber = insertionStartPageNumber ?? skipResponse.insertionStartPageNumber;
+            nextAfterPage = skipResponse.nextAfterPage ?? nextAfterPage;
+            lastBookId = skipResponse.book.bookId;
+            setAppendResumeState({ completedFiles, insertionStartPageNumber, nextAfterPage });
+            setAppendProgressOffset(completedFiles);
+            setAppendImportProgress((currentProgress) => currentProgress
+              ? { ...currentProgress, completedFiles: 0, currentFileIndex: null, currentFileName: null, stage: "ocr" }
+              : currentProgress);
+            break;
+          }
+        }
       }
 
-      const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
-        ...(requestAfterPage !== undefined && requestAfterPage !== null ? { afterPage: requestAfterPage } : {}),
-        ocrMode: appendOcrMode,
-        ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
-          ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
-          : {}),
-        progressId
-      });
       await booksQuery.refetch();
-      if (response.cancelled) {
-        const completedFiles = alreadyCompletedFiles + response.addedPages;
-        setAppendResumeState({
-          completedFiles,
-          insertionStartPageNumber: response.insertionStartPageNumber,
-          nextAfterPage: response.nextAfterPage ?? requestAfterPage ?? null
-        });
-        setAppendProgressOffset(completedFiles);
-        setAppendError(response.addedPages > 0
+
+      if (isAppendCancelRequestedRef.current) {
+        setAppendResumeState({ completedFiles, insertionStartPageNumber, nextAfterPage });
+        setAppendError(completedFiles > alreadyCompletedFiles
           ? `Añadido cancelado. Se añadieron ${completedFiles} de ${selectedAppendFiles.length} páginas.`
           : "Añadido cancelado antes de insertar páginas nuevas.");
         return;
       }
 
+      const targetPageNumber = insertionStartPageNumber ?? requestAfterPage ?? 1;
       clearAppendSelection();
       if (reviewBookId === selectedBookId) {
-        setReviewPageNumber(response.insertionStartPageNumber);
+        setReviewPageNumber(targetPageNumber);
       }
-      navigate(`/books/${response.book.bookId}?page=${response.insertionStartPageNumber}`);
+      navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
     } catch (error) {
-      let latestProgress: AppendImagesImportProgress | null = appendImportProgress;
-      let insertedPagesFromBookTotal = 0;
-      if (progressId && accessToken) {
-        try {
-          const response = await fetchAppendImagesImportProgress(accessToken, progressId);
-          latestProgress = response.progress;
-          setAppendImportProgress(response.progress);
-        } catch {
-          // El error principal ya explica el fallo; el progreso solo mejora la reanudación.
-        }
-      }
-
-      try {
-        const refetchResult = await booksQuery.refetch();
-        const refreshedBook = refetchResult.data?.find((book) => book.bookId === selectedBookId) ?? null;
-        if (appendTotalPagesBeforeRequest !== null && refreshedBook) {
-          insertedPagesFromBookTotal = Math.max(0, Number(refreshedBook.totalPages) - appendTotalPagesBeforeRequest);
-        }
-      } catch {
-        // Si no se puede refrescar el libro, el progreso del servidor sigue siendo la fuente principal.
-      }
-
-      const completedFiles = Math.min(
-        selectedAppendFiles.length,
-        alreadyCompletedFiles + Math.max(
-          latestProgress?.insertedPages ?? 0,
-          latestProgress?.completedFiles ?? 0,
-          insertedPagesFromBookTotal
-        )
-      );
-      if (completedFiles > 0) {
-        setAppendResumeState({
-          completedFiles,
-          insertionStartPageNumber: latestProgress?.insertionStartPageNumber ?? appendResumeState?.insertionStartPageNumber ?? null,
-          nextAfterPage: latestProgress?.nextAfterPage ?? appendResumeState?.nextAfterPage ?? requestAfterPage ?? null
-        });
-        setAppendProgressOffset(completedFiles);
-      }
-
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
     } finally {
       setIsAppending(false);
@@ -2951,18 +3069,36 @@ export function BookBuilderPage() {
                 <p className="append-ocr-lock-detail">
                   {appendCurrentFileIndex !== null ? selectedAppendFiles[appendCurrentFileIndex]?.name ?? "Procesando imagen" : "Terminando proceso"}
                 </p>
-                <button
-                  className="append-ocr-cancel-hold"
-                  disabled={isAppendCancelRequested}
-                  onPointerCancel={clearAppendCancelHold}
-                  onPointerDown={beginAppendCancelHold}
-                  onPointerLeave={clearAppendCancelHold}
-                  onPointerUp={clearAppendCancelHold}
-                  style={{ "--cancel-progress": appendCancelHoldProgress } as CSSProperties & Record<"--cancel-progress", number>}
-                  type="button"
-                >
-                  {isAppendCancelRequested ? "Cancelando..." : "Mantener 5 s para cancelar"}
-                </button>
+                {appendOcrFailure ? (
+                  <div className="append-ocr-failure-panel">
+                    <p className="append-ocr-failure-title">
+                      {`Error en página ${appendOcrFailure.pageIndex} de ${appendOcrFailure.totalPages}`}
+                    </p>
+                    <p className="append-ocr-failure-file">{appendOcrFailure.fileName}</p>
+                    <p className="append-ocr-failure-message">{appendOcrFailure.message}</p>
+                    <div className="append-ocr-failure-actions">
+                      <button className="secondary-button" onClick={() => resolveAppendOcrFailure("retry")} type="button">
+                        Reintentar OCR
+                      </button>
+                      <button className="primary-button" onClick={() => resolveAppendOcrFailure("skip")} type="button">
+                        Añadir sin OCR
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    className="append-ocr-cancel-hold"
+                    disabled={isAppendCancelRequested}
+                    onPointerCancel={clearAppendCancelHold}
+                    onPointerDown={beginAppendCancelHold}
+                    onPointerLeave={clearAppendCancelHold}
+                    onPointerUp={clearAppendCancelHold}
+                    style={{ "--cancel-progress": appendCancelHoldProgress } as CSSProperties & Record<"--cancel-progress", number>}
+                    type="button"
+                  >
+                    {isAppendCancelRequested ? "Cancelando..." : "Mantener 5 s para cancelar"}
+                  </button>
+                )}
               </div>
             </div>
           ) : null}

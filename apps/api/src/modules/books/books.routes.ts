@@ -36,6 +36,11 @@ const ocrPromptOverrideSchema = z.preprocess(
   z.string().trim().max(4000).optional()
 );
 
+const booleanFormFieldSchema = z.preprocess(
+  (value) => value === true || value === "true" || value === "1",
+  z.boolean()
+);
+
 const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
@@ -46,7 +51,8 @@ const imageBookFieldsSchema = z.object({
 
 const importImagesFieldsSchema = z.object({
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
-  promptOverride: ocrPromptOverrideSchema
+  promptOverride: ocrPromptOverrideSchema,
+  skipOcr: booleanFormFieldSchema.default(false)
 });
 
 const importImagesParamsSchema = z.object({
@@ -136,6 +142,7 @@ type UploadedBinaryFile = {
 type ProcessedImagePage = UploadedBinaryFile & {
   editedText: string;
   htmlContent: string | null;
+  ocrStatus?: string;
   paragraphs: string[];
   rawText: string;
 };
@@ -2602,13 +2609,14 @@ async function insertProcessedImagePages(
           :htmlContent,
           :editedText,
           0,
-          'READY'
+          :ocrStatus
         )
       `,
       {
         bookId,
         editedText: processedPage.editedText,
         htmlContent: processedPage.htmlContent,
+        ocrStatus: processedPage.ocrStatus ?? "READY",
         pageId,
         pageNumber,
         rawText: processedPage.rawText,
@@ -3392,7 +3400,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const multipartForm = await collectMultipartForm(request);
     const payload = importImagesFieldsSchema.parse({
       ocrMode: multipartForm.fields.ocrMode,
-      promptOverride: multipartForm.fields.promptOverride
+      promptOverride: multipartForm.fields.promptOverride,
+      skipOcr: multipartForm.fields.skipOcr
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const connection = await getConnection();
@@ -3466,55 +3475,64 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           });
         }
 
-        const processedPages = await ocrImageFiles(
-          [imageFile],
-          payload.ocrMode,
-          payload.promptOverride,
-          (progress) => {
-            if (!progressId) {
-              return;
-            }
+        const processedPages = payload.skipOcr
+          ? [{
+            ...imageFile,
+            editedText: "",
+            htmlContent: null,
+            ocrStatus: "PENDING_OCR",
+            paragraphs: [],
+            rawText: ""
+          }]
+          : await ocrImageFiles(
+            [imageFile],
+            payload.ocrMode,
+            payload.promptOverride,
+            (progress) => {
+              if (!progressId) {
+                return;
+              }
 
-            setImportImagesProgress(progressId, {
-              bookId: existingBook.bookId,
-              completedFiles: addedPages,
-              currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : fileIndex,
-              currentFileName: progress.completedFiles >= progress.totalFiles ? null : imageFile.fileName,
-              errorMessage: null,
-              insertedPages: addedPages,
-              insertionStartPageNumber,
-              nextAfterPage,
-              stage: "ocr",
-              totalFiles: imageFiles.length,
-              waitMessage: null,
-              waitUntil: null,
-              updatedAt: Date.now(),
-              userId: currentUser.userId
-            });
-          },
-          (progress) => {
-            if (!progressId) {
-              return;
-            }
+              setImportImagesProgress(progressId, {
+                bookId: existingBook.bookId,
+                completedFiles: addedPages,
+                currentFileIndex: progress.completedFiles >= progress.totalFiles ? null : fileIndex,
+                currentFileName: progress.completedFiles >= progress.totalFiles ? null : imageFile.fileName,
+                errorMessage: null,
+                insertedPages: addedPages,
+                insertionStartPageNumber,
+                nextAfterPage,
+                stage: "ocr",
+                totalFiles: imageFiles.length,
+                waitMessage: null,
+                waitUntil: null,
+                updatedAt: Date.now(),
+                userId: currentUser.userId
+              });
+            },
+            (progress) => {
+              if (!progressId) {
+                return;
+              }
 
-            setImportImagesProgress(progressId, {
-              bookId: existingBook.bookId,
-              completedFiles: addedPages,
-              currentFileIndex: fileIndex,
-              currentFileName: imageFile.fileName,
-              errorMessage: null,
-              insertedPages: addedPages,
-              insertionStartPageNumber,
-              nextAfterPage,
-              stage: "waiting",
-              totalFiles: imageFiles.length,
-              waitMessage: progress.waitMessage,
-              waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
-              updatedAt: Date.now(),
-              userId: currentUser.userId
-            });
-          }
-        );
+              setImportImagesProgress(progressId, {
+                bookId: existingBook.bookId,
+                completedFiles: addedPages,
+                currentFileIndex: fileIndex,
+                currentFileName: imageFile.fileName,
+                errorMessage: null,
+                insertedPages: addedPages,
+                insertionStartPageNumber,
+                nextAfterPage,
+                stage: "waiting",
+                totalFiles: imageFiles.length,
+                waitMessage: progress.waitMessage,
+                waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
+                updatedAt: Date.now(),
+                userId: currentUser.userId
+              });
+            }
+          );
 
         const processedPage = processedPages[0];
         if (!processedPage || nextAfterPage === null || insertionStartPageNumber === null || latestBook === null) {
