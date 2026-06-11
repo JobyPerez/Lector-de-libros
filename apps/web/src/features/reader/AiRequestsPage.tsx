@@ -294,6 +294,7 @@ export function AiRequestsPage() {
   const navigationPanelRef = useRef<HTMLDivElement | null>(null);
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
+  const wakeLockRef = useRef<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean } | null>(null);
   const [promptText, setPromptText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
@@ -438,6 +439,90 @@ export function AiRequestsPage() {
       }
     };
   }, []);
+
+  const isAudioPlaybackActive = playingRequestId !== null || (hasActivePlaybackSession && !isDevicePaused);
+
+  useEffect(() => {
+    if (!isAudioPlaybackActive) {
+      const wakeLock = wakeLockRef.current;
+      wakeLockRef.current = null;
+      if (wakeLock) {
+        wakeLock.release().catch(() => {});
+      }
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
+      return;
+    }
+
+    const wakeLockApi = (navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean }> } }).wakeLock;
+    if (!wakeLockApi) {
+      return;
+    }
+
+    if (wakeLockRef.current && wakeLockRef.current.released !== true) {
+      return;
+    }
+
+    wakeLockApi.request("screen").then((wakeLock) => {
+      wakeLockRef.current = wakeLock;
+      wakeLock.addEventListener?.("release", () => {
+        if (wakeLockRef.current === wakeLock) {
+          wakeLockRef.current = null;
+        }
+      });
+    }).catch(() => {});
+  }, [isAudioPlaybackActive]);
+
+  useEffect(() => {
+    return () => {
+      const wakeLock = wakeLockRef.current;
+      wakeLockRef.current = null;
+      if (wakeLock) {
+        wakeLock.release().catch(() => {});
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isAudioPlaybackActive || typeof document === "undefined") {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible" || !isAudioPlaybackActive) {
+        return;
+      }
+
+      if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
+        return;
+      }
+
+      const wakeLockApi = (navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean }> } }).wakeLock;
+      if (!wakeLockApi) {
+        return;
+      }
+
+      if (wakeLockRef.current && wakeLockRef.current.released !== true) {
+        return;
+      }
+
+      wakeLockApi.request("screen").then((wakeLock) => {
+        wakeLockRef.current = wakeLock;
+        wakeLock.addEventListener?.("release", () => {
+          if (wakeLockRef.current === wakeLock) {
+            wakeLockRef.current = null;
+          }
+        });
+      }).catch(() => {});
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [isAudioPlaybackActive]);
 
   useEffect(() => {
     const speechSynthesisApi = getSpeechSynthesisApi();
