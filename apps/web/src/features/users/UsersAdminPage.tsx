@@ -5,6 +5,8 @@ import { Navigate } from "react-router-dom";
 import { createManagedUser, deleteManagedUser, fetchCurrentUser, fetchUsers, updateManagedUser, type ManagedUser } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 
+const userRemovalExitAnimationMs = 280;
+
 type UserFormState = {
   displayName: string;
   email: string;
@@ -29,6 +31,8 @@ export function UsersAdminPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
 
   const usersQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -133,6 +137,7 @@ export function UsersAdminPage() {
 
     setErrorMessage(null);
     setSuccessMessage(null);
+    setDeletingUserId(user.userId);
 
     try {
       await deleteManagedUser(adminAccessToken, user.userId);
@@ -141,10 +146,17 @@ export function UsersAdminPage() {
         resetForm();
       }
 
-      setSuccessMessage(`Se eliminó el usuario ${user.username}.`);
+      setRemovingUserId(user.userId);
+      await new Promise<void>((resolve) => {
+        window.setTimeout(resolve, userRemovalExitAnimationMs);
+      });
       await usersQuery.refetch();
+      setSuccessMessage(`Se eliminó el usuario ${user.username}.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo eliminar el usuario.");
+    } finally {
+      setRemovingUserId(null);
+      setDeletingUserId(null);
     }
   }
 
@@ -177,44 +189,59 @@ export function UsersAdminPage() {
         {usersQuery.isError ? <p className="error-text">No se pudo recuperar la lista de usuarios.</p> : null}
 
         <div className="user-list">
-          {(usersQuery.data ?? []).map((managedUser) => (
-            <article className="user-row" key={managedUser.userId}>
-              <div className="user-row-header">
-                <div>
-                  <h3>{managedUser.displayName ?? managedUser.username}</h3>
-                  <p className="subdued">{managedUser.email}</p>
-                </div>
-                <div className="user-row-tags">
-                  <span className="role-pill">{managedUser.role === "ADMIN" ? "Administrador" : "Editor"}</span>
-                  {managedUser.userId === adminUser.userId ? <span className="tag-chip">Tu cuenta</span> : null}
-                </div>
-              </div>
+          {(usersQuery.data ?? []).map((managedUser) => {
+            const isDeletingUser = deletingUserId === managedUser.userId;
+            const removalState = removingUserId === managedUser.userId
+              ? "exiting"
+              : isDeletingUser
+                ? "pending"
+                : undefined;
+            const isUserRemoving = removalState !== undefined;
 
-              <dl className="meta-list compact-meta">
-                <div>
-                  <dt>Usuario</dt>
-                  <dd>{managedUser.username}</dd>
+            return (
+              <article aria-busy={isUserRemoving} className="user-row" data-removing={removalState} key={managedUser.userId}>
+                <div className="user-row-header">
+                  <div>
+                    <h3>{managedUser.displayName ?? managedUser.username}</h3>
+                    <p className="subdued">{managedUser.email}</p>
+                  </div>
+                  <div className="user-row-tags">
+                    <span className="role-pill">{managedUser.role === "ADMIN" ? "Administrador" : "Editor"}</span>
+                    {managedUser.userId === adminUser.userId ? <span className="tag-chip">Tu cuenta</span> : null}
+                  </div>
                 </div>
-                <div>
-                  <dt>Libros</dt>
-                  <dd>{managedUser.totalBooks}</dd>
-                </div>
-                <div>
-                  <dt>Actualizado</dt>
-                  <dd>{new Date(managedUser.updatedAt).toLocaleString()}</dd>
-                </div>
-              </dl>
 
-              <div className="inline-actions">
-                <button className="secondary-button" onClick={() => startEditing(managedUser)} type="button">
-                  Editar
-                </button>
-                <button className="danger-button" onClick={() => void handleDelete(managedUser)} type="button">
-                  Eliminar
-                </button>
-              </div>
-            </article>
-          ))}
+                <dl className="meta-list compact-meta">
+                  <div>
+                    <dt>Usuario</dt>
+                    <dd>{managedUser.username}</dd>
+                  </div>
+                  <div>
+                    <dt>Libros</dt>
+                    <dd>{managedUser.totalBooks}</dd>
+                  </div>
+                  <div>
+                    <dt>Actualizado</dt>
+                    <dd>{new Date(managedUser.updatedAt).toLocaleString()}</dd>
+                  </div>
+                </dl>
+
+                <div className="inline-actions">
+                  <button className="secondary-button" disabled={isUserRemoving} onClick={() => startEditing(managedUser)} type="button">
+                    Editar
+                  </button>
+                  <button className="danger-button" disabled={isUserRemoving} onClick={() => void handleDelete(managedUser)} type="button">
+                    Eliminar
+                  </button>
+                </div>
+
+                <div aria-hidden={!isUserRemoving} className="user-row-removing-badge">
+                  <span className="user-row-removing-dot" />
+                  {removalState === "exiting" ? "Retirando usuario..." : "Eliminando..."}
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section>
 
