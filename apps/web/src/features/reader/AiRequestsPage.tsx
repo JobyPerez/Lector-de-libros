@@ -32,7 +32,7 @@ const READER_DEVICE_VOICE_STORAGE_KEY = "lector.reader.deviceVoiceUri";
 const READER_SPEED_STORAGE_KEY = "lector.reader.playbackRate";
 const DEFAULT_TTS_ENGINE = "deepgram";
 const DEFAULT_DEVICE_VOICE_URI = "";
-const DEFAULT_PLAYBACK_RATE = 1.1;
+const DEFAULT_PLAYBACK_RATE = 1;
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
@@ -126,7 +126,12 @@ function readStoredPlaybackRate() {
     return DEFAULT_PLAYBACK_RATE;
   }
 
-  const storedPlaybackRate = Number(window.localStorage.getItem(READER_SPEED_STORAGE_KEY));
+  const storedValue = window.localStorage.getItem(READER_SPEED_STORAGE_KEY);
+  if (!storedValue) {
+    return DEFAULT_PLAYBACK_RATE;
+  }
+
+  const storedPlaybackRate = Number(storedValue);
   if (!Number.isFinite(storedPlaybackRate)) {
     return DEFAULT_PLAYBACK_RATE;
   }
