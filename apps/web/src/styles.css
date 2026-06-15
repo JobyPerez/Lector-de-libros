@@ -5766,12 +5766,38 @@ textarea {
   }
 }
 
+.export-button-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.export-button-content svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.icon-spin svg {
+  animation: icon-spin 1s linear infinite;
+}
+
+@keyframes icon-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .reader-page-live,
   .reader-page-overlay,
   .reader-page-live::after,
   .reader-page-overlay::after,
-  .reader-page-overlay::before {
+  .reader-page-overlay::before,
+  .icon-spin svg {
     animation: none !important;
     transform: none !important;
     filter: none !important;

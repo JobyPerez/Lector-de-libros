@@ -2508,8 +2508,19 @@ async function insertProcessedImagePages(
   );
   const coverCount = Number(((coverCountResult.rows ?? [])[0] as { coverCount?: number } | undefined)?.coverCount ?? 0);
 
-  if (coverCount === 0 && processedPages[0]) {
+  if (processedPages[0] && (coverCount === 0 || startingPageNumber === 1)) {
     const coverPage = processedPages[0];
+
+    if (coverCount > 0) {
+      await connection.execute(
+        `
+          DELETE FROM book_files
+          WHERE book_id = :bookId
+            AND file_kind = 'COVER_IMAGE'
+        `,
+        { bookId }
+      );
+    }
 
     await connection.execute(
       `

@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import AdmZip from "adm-zip";
 import { load } from "cheerio";
 import PDFDocument from "pdfkit";
+import sharp from "sharp";
 
 import type { BookOutlineEntry } from "./book-outline.js";
 
@@ -89,22 +90,6 @@ function createContentDocument(book: ExportBook, page: ExportPage): string {
     ${htmlContent}
   </body>
 </html>`;
-}
-
-function mimeTypeToExtension(mimeType: string): string {
-  if (/png/u.test(mimeType)) {
-    return "png";
-  }
-
-  if (/webp/u.test(mimeType)) {
-    return "webp";
-  }
-
-  if (/svg/u.test(mimeType)) {
-    return "svg";
-  }
-
-  return "jpg";
 }
 
 function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
@@ -286,19 +271,50 @@ export async function buildEpubExport(options: {
   }
 
   let coverFileName: string | null = null;
+  let coverMediaType = "image/jpeg";
   if (options.coverAsset) {
-    const extension = mimeTypeToExtension(options.coverAsset.mimeType);
-    coverFileName = `OEBPS/assets/cover.${extension}`;
-    archive.addFile(coverFileName, options.coverAsset.buffer);
+    const normalizedCoverBuffer = await sharp(options.coverAsset.buffer).jpeg({ quality: 92 }).toBuffer();
+    coverFileName = "OEBPS/assets/cover.jpg";
+    coverMediaType = "image/jpeg";
+    archive.addFile(coverFileName, normalizedCoverBuffer);
     archive.addFile("OEBPS/cover.xhtml", Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
     <title>${escapeXml(options.book.title)}</title>
     <meta charset="utf-8" />
+    <style type="text/css">
+      .cover-page {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 90vh;
+        text-align: center;
+        padding: 2rem;
+        box-sizing: border-box;
+      }
+      .cover-page img {
+        max-width: 100%;
+        max-height: 70vh;
+        height: auto;
+        object-fit: contain;
+        margin-bottom: 1.5rem;
+      }
+      .cover-page h1 {
+        font-size: 1.8rem;
+        margin: 0 0 0.5rem;
+        line-height: 1.2;
+      }
+      .cover-page p {
+        font-size: 1.1rem;
+        margin: 0;
+        color: #444;
+      }
+    </style>
   </head>
   <body>
-    <section>
-      <img alt="Portada" src="assets/cover.${extension}" style="max-width: 100%; height: auto;" />
+    <section class="cover-page">
+      <img alt="Portada" src="assets/cover.jpg" />
       <h1>${escapeXml(options.book.title)}</h1>
       ${options.book.authorName ? `<p>${escapeXml(options.book.authorName)}</p>` : ""}
     </section>
@@ -334,15 +350,7 @@ export async function buildEpubExport(options: {
   ];
 
   if (coverFileName) {
-    const extension = coverFileName.split(".").pop() ?? "jpg";
-    const mediaType = extension === "png"
-      ? "image/png"
-      : extension === "webp"
-        ? "image/webp"
-        : extension === "svg"
-          ? "image/svg+xml"
-          : "image/jpeg";
-    manifestItems.unshift(`<item id="cover-image" href="assets/cover.${extension}" media-type="${mediaType}" properties="cover-image"/>`);
+    manifestItems.unshift(`<item id="cover-image" href="assets/cover.jpg" media-type="${coverMediaType}" properties="cover-image"/>`);
     manifestItems.unshift(`<item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>`);
   }
 
@@ -390,16 +398,46 @@ export async function buildPdfExport(options: {
   if (options.coverAsset) {
     prefixPages += 1;
     document.addPage();
-    document.image(options.coverAsset.buffer, 50, 60, {
-      fit: [document.page.width - 100, document.page.height * 0.6],
-      align: "center"
-    });
-    document.moveDown(20);
-    document.font("Helvetica-Bold").fontSize(26).fillColor("#111111").text(options.book.title, { align: "center" });
-    if (options.book.authorName) {
-      document.moveDown();
-      document.font("Helvetica").fontSize(14).fillColor("#444444").text(options.book.authorName, { align: "center" });
+
+    try {
+      const normalizedBuffer = await sharp(options.coverAsset.buffer).jpeg({ quality: 92 }).toBuffer();
+      const metadata = await sharp(normalizedBuffer).metadata();
+      const imageWidth = metadata.width ?? 0;
+      const imageHeight = metadata.height ?? 0;
+
+      const margin = 50;
+      const maxWidth = document.page.width - margin * 2;
+      const maxHeight = document.page.height * 0.55;
+
+      let drawWidth = maxWidth;
+      let drawHeight = maxHeight;
+
+      if (imageWidth > 0 && imageHeight > 0) {
+        const scale = Math.min(maxWidth / imageWidth, maxHeight / imageHeight);
+        drawWidth = imageWidth * scale;
+        drawHeight = imageHeight * scale;
+      }
+
+      const imageX = (document.page.width - drawWidth) / 2;
+      const imageY = 60;
+
+      document.image(normalizedBuffer, imageX, imageY, { height: drawHeight, width: drawWidth });
+
+      const titleY = imageY + drawHeight + 40;
+      const textWidth = document.page.width - margin * 2;
+      document.font("Helvetica-Bold").fontSize(26).fillColor("#111111").text(options.book.title, margin, titleY, { align: "center", width: textWidth });
+      if (options.book.authorName) {
+        document.moveDown(0.5);
+        document.font("Helvetica").fontSize(14).fillColor("#444444").text(options.book.authorName, { align: "center" });
+      }
+    } catch {
+      document.font("Helvetica-Bold").fontSize(26).fillColor("#111111").text(options.book.title, { align: "center" });
+      if (options.book.authorName) {
+        document.moveDown();
+        document.font("Helvetica").fontSize(14).fillColor("#444444").text(options.book.authorName, { align: "center" });
+      }
     }
+
     renderPdfPageFooter(document, "1");
   }
 

@@ -79,11 +79,64 @@ function buildFallbackFileName(book: BookSummary, format: "epub" | "pdf"): strin
   return `${normalizedTitle}.${format}`;
 }
 
-function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
+type SaveFilePickerAcceptType = {
+  accept: Record<string, string[]>;
+  description?: string;
+};
+
+type SaveFilePickerOptions = {
+  suggestedName?: string;
+  types?: SaveFilePickerAcceptType[];
+};
+
+type FileSystemWritableFileStream = {
+  close: () => Promise<void>;
+  write: (data: Blob) => Promise<void>;
+};
+
+type FileSystemFileHandle = {
+  createWritable: () => Promise<FileSystemWritableFileStream>;
+};
+
+function resolveSaveFilePickerTypes(fileName: string): SaveFilePickerAcceptType[] {
+  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
+
+  if (extension === "pdf") {
+    return [{ description: "Documento PDF", accept: { "application/pdf": [".pdf"] } }];
+  }
+
+  if (extension === "epub") {
+    return [{ description: "Libro EPUB", accept: { "application/epub+zip": [".epub"] } }];
+  }
+
+  return [{ description: "Archivo", accept: { "application/octet-stream": [`.${extension || "bin"}`] } }];
+}
+
+async function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
+  const fileName = download.fileName || fallbackFileName;
+  const showSaveFilePicker = (window as unknown as { showSaveFilePicker?: (options: SaveFilePickerOptions) => Promise<FileSystemFileHandle> }).showSaveFilePicker;
+
+  if (typeof showSaveFilePicker === "function") {
+    try {
+      const handle = await showSaveFilePicker({
+        suggestedName: fileName,
+        types: resolveSaveFilePickerTypes(fileName)
+      });
+      const writable = await handle.createWritable();
+      await writable.write(download.blob);
+      await writable.close();
+      return;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+    }
+  }
+
   const objectUrl = URL.createObjectURL(download.blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = download.fileName || fallbackFileName;
+  anchor.download = fileName;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
@@ -186,6 +239,8 @@ export function ShelfPage() {
   const [bookActionError, setBookActionError] = useState<string | null>(null);
   const [bookActionSuccess, setBookActionSuccess] = useState<string | null>(null);
   const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | null>(null);
+  const [exportingBookId, setExportingBookId] = useState<string | null>(null);
+  const [exportingFormatCard, setExportingFormatCard] = useState<"epub" | "pdf" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
@@ -297,11 +352,13 @@ export function ShelfPage() {
       return;
     }
 
+    setBookActionError(null);
+    setBookActionSuccess(null);
     setExportingFormat(format);
 
     try {
       const download = await downloadBookExport(accessToken, editingBook.bookId, format);
-      saveBlobDownload(download, buildFallbackFileName(editingBook, format));
+      await saveBlobDownload(download, buildFallbackFileName(editingBook, format));
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
@@ -338,15 +395,17 @@ export function ShelfPage() {
     setBookActionError(null);
     setBookActionSuccess(null);
     setDownloadMenuBookId(null);
-    setDownloadingBookId(book.bookId);
+    setExportingBookId(book.bookId);
+    setExportingFormatCard(format);
 
     try {
       const download = await downloadBookExport(accessToken, book.bookId, format);
-      saveBlobDownload(download, buildFallbackFileName(book, format));
+      await saveBlobDownload(download, buildFallbackFileName(book, format));
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
-      setDownloadingBookId(null);
+      setExportingBookId(null);
+      setExportingFormatCard(null);
     }
   }
 
@@ -506,8 +565,8 @@ export function ShelfPage() {
                   aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
                   aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
                   aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
-                  className="book-card-icon-button book-card-download-button"
-                  disabled={isBookRemoving || downloadingBookId === book.bookId}
+                  className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
+                  disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
                   onClick={(event) => handleDownloadAction(book, event)}
                   title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
                   type="button"
@@ -561,7 +620,7 @@ export function ShelfPage() {
                     <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
                     <button
                       className="menu-item book-card-download-option"
-                      disabled={downloadingBookId === book.bookId}
+                      disabled={exportingBookId === book.bookId}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -570,11 +629,11 @@ export function ShelfPage() {
                       role="menuitem"
                       type="button"
                     >
-                      EPUB
+                      {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
                     </button>
                     <button
                       className="menu-item book-card-download-option"
-                      disabled={downloadingBookId === book.bookId}
+                      disabled={exportingBookId === book.bookId}
                       onClick={(event) => {
                         event.preventDefault();
                         event.stopPropagation();
@@ -583,7 +642,7 @@ export function ShelfPage() {
                       role="menuitem"
                       type="button"
                     >
-                      PDF
+                      {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
                     </button>
                   </div>
                 ) : null}
@@ -687,11 +746,17 @@ export function ShelfPage() {
               <button className="primary-button" disabled={isSavingBook} type="submit">
                 {isSavingBook ? "Guardando..." : "Guardar cambios"}
               </button>
-              <button className="secondary-button" disabled={exportingFormat === "epub"} onClick={() => void handleDownloadExport("epub")} type="button">
-                {exportingFormat === "epub" ? "Exportando EPUB..." : "Exportar EPUB"}
+              <button className={["secondary-button", exportingFormat === "epub" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={exportingFormat === "epub"} onClick={() => void handleDownloadExport("epub")} type="button">
+                <span className="export-button-content">
+                  <DownloadIcon />
+                  {exportingFormat === "epub" ? "Exportando EPUB..." : "Exportar EPUB"}
+                </span>
               </button>
-              <button className="secondary-button" disabled={exportingFormat === "pdf"} onClick={() => void handleDownloadExport("pdf")} type="button">
-                {exportingFormat === "pdf" ? "Exportando PDF..." : "Exportar PDF"}
+              <button className={["secondary-button", exportingFormat === "pdf" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={exportingFormat === "pdf"} onClick={() => void handleDownloadExport("pdf")} type="button">
+                <span className="export-button-content">
+                  <DownloadIcon />
+                  {exportingFormat === "pdf" ? "Exportando PDF..." : "Exportar PDF"}
+                </span>
               </button>
               <button className="secondary-button" onClick={resetBookForm} type="button">
                 Cancelar
