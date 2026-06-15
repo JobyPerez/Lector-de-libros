@@ -32,6 +32,11 @@ export type BlobDownload = {
   fileName: string | null;
 };
 
+type BookDownloadTokenResponse = {
+  expiresInSeconds: number;
+  token: string;
+};
+
 function createHeaders(options: { accessToken?: string | null | undefined; contentType?: string | undefined }): RequestHeaders {
   return {
     ...(options.contentType ? { "Content-Type": options.contentType } : {}),
@@ -942,6 +947,23 @@ export function downloadBookExport(accessToken: string, bookId: string, format: 
 
 export function downloadOriginalBook(accessToken: string, bookId: string) {
   return requestBlobDownload(`/books/${bookId}/download-original`, accessToken);
+}
+
+export async function createBookDownloadUrl(accessToken: string, bookId: string, payload: { format?: "epub" | "pdf"; kind: "export" | "original" }) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/download-token`, {
+    accessToken,
+    body: JSON.stringify(payload),
+    fallbackMessage: "No se pudo preparar la descarga.",
+    headers: createHeaders({ accessToken, contentType: "application/json" }),
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    throw await createApiRequestError(response, "No se pudo preparar la descarga.");
+  }
+
+  const result = await response.json() as BookDownloadTokenResponse;
+  return `${apiBaseUrl}/books/download/${encodeURIComponent(result.token)}`;
 }
 
 export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; sourceImageRotation?: ImageRotation }) {

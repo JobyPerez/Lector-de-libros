@@ -68,6 +68,15 @@ const bookParamsSchema = z.object({
   bookId: z.string().uuid()
 });
 
+const downloadTokenParamsSchema = z.object({
+  token: z.string().uuid()
+});
+
+const createDownloadTokenSchema = z.object({
+  format: z.enum(["epub", "pdf"]).optional(),
+  kind: z.enum(["export", "original"])
+});
+
 const bookSearchQuerySchema = z.object({
   query: z.string().trim().min(1).max(120),
   caseSensitive: z.preprocess((value) => value === true || value === "true", z.boolean()).default(false),
@@ -158,6 +167,54 @@ type OwnedBookRecord = {
   totalPages: number;
   totalParagraphs: number;
 };
+
+type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
+
+type DownloadTokenRecord = {
+  bookId: string;
+  expiresAt: number;
+  format?: "epub" | "pdf";
+  kind: "export" | "original";
+  userId: string;
+};
+
+type DownloadFilePayload = {
+  buffer: Buffer;
+  fileName: string;
+  mimeType: string;
+};
+
+const downloadTokenTtlMs = 2 * 60 * 1000;
+const downloadTokens = new Map<string, DownloadTokenRecord>();
+
+function createDownloadToken(record: Omit<DownloadTokenRecord, "expiresAt">): string {
+  const token = randomUUID();
+  const now = Date.now();
+
+  for (const [storedToken, storedRecord] of downloadTokens.entries()) {
+    if (storedRecord.expiresAt <= now) {
+      downloadTokens.delete(storedToken);
+    }
+  }
+
+  downloadTokens.set(token, {
+    ...record,
+    expiresAt: now + downloadTokenTtlMs
+  });
+
+  return token;
+}
+
+function consumeDownloadToken(token: string): DownloadTokenRecord | null {
+  const record = downloadTokens.get(token);
+  downloadTokens.delete(token);
+
+  if (!record || record.expiresAt <= Date.now()) {
+    return null;
+  }
+
+  return record;
+}
 
 type BookPageRecord = {
   editedText: string | null;
@@ -658,6 +715,116 @@ async function resolveBookCoverAsset(
   }
 
   return null;
+}
+
+async function buildOwnedBookExportDownload(
+  connection: DatabaseConnection,
+  bookId: string,
+  userId: string,
+  format: "epub" | "pdf"
+): Promise<DownloadFilePayload | null> {
+  const book = await findOwnedBook(connection, bookId, userId);
+  if (!book) {
+    return null;
+  }
+
+  const [pagesResult, paragraphsResult, outlineResult, coverAsset] = await Promise.all([
+    connection.execute(
+      `
+        SELECT
+          page_number AS "pageNumber",
+          page_label AS "pageLabel",
+          html_content AS "htmlContent"
+        FROM book_pages
+        WHERE book_id = :bookId
+        ORDER BY page_number ASC
+      `,
+      { bookId }
+    ),
+    connection.execute(
+      `
+        SELECT
+          page_number AS "pageNumber",
+          paragraph_text AS "paragraphText"
+        FROM book_paragraphs
+        WHERE book_id = :bookId
+        ORDER BY sequence_number ASC
+      `,
+      { bookId }
+    ),
+    resolveBookOutline(connection, bookId),
+    resolveBookCoverAsset(connection, book)
+  ]);
+
+  const paragraphsByPage = new Map<number, Array<{ paragraphText: string }>>();
+  for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string }>) {
+    const bucket = paragraphsByPage.get(row.pageNumber) ?? [];
+    bucket.push({ paragraphText: row.paragraphText });
+    paragraphsByPage.set(row.pageNumber, bucket);
+  }
+
+  const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => ({
+    htmlContent: row.htmlContent,
+    pageLabel: row.pageLabel,
+    pageNumber: row.pageNumber,
+    paragraphs: paragraphsByPage.get(row.pageNumber) ?? []
+  }));
+
+  const exportPayload = {
+    book: {
+      authorName: book.authorName,
+      synopsis: book.synopsis,
+      title: book.title
+    },
+    coverAsset: coverAsset?.contentBlob && coverAsset.mimeType
+      ? {
+          buffer: coverAsset.contentBlob,
+          fileName: coverAsset.fileName ?? `${book.title}-cover`,
+          mimeType: coverAsset.mimeType
+        }
+      : null,
+    outline: outlineResult,
+    pages
+  };
+
+  const buffer = format === "epub"
+    ? await buildEpubExport(exportPayload)
+    : await buildPdfExport(exportPayload);
+
+  return {
+    buffer,
+    fileName: buildDownloadFileName(book.title, format),
+    mimeType: format === "epub" ? "application/epub+zip" : "application/pdf"
+  };
+}
+
+async function buildOwnedOriginalBookDownload(
+  connection: DatabaseConnection,
+  bookId: string,
+  userId: string
+): Promise<DownloadFilePayload | null | "IMAGES_SOURCE"> {
+  const book = await findOwnedBook(connection, bookId, userId);
+  if (!book) {
+    return null;
+  }
+
+  if (book.sourceType === "IMAGES") {
+    return "IMAGES_SOURCE";
+  }
+
+  const originalFileKind = book.sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB";
+  const originalFile = await findBookFileByKind(connection, bookId, originalFileKind);
+  if (!originalFile?.contentBlob) {
+    return null;
+  }
+
+  const extension = book.sourceType === "PDF" ? "pdf" : "epub";
+
+  return {
+    buffer: originalFile.contentBlob,
+    fileName: originalFile.fileName?.trim() || buildDownloadFileName(book.title, extension),
+    mimeType: originalFile.mimeType?.trim() || (book.sourceType === "PDF" ? "application/pdf" : "application/epub+zip")
+  };
 }
 
 async function listPageParagraphs(
@@ -4871,6 +5038,62 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.post("/:bookId/download-token", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookParamsSchema.parse(request.params);
+    const payload = createDownloadTokenSchema.parse(request.body);
+
+    if (payload.kind === "export" && !payload.format) {
+      return reply.status(400).send({ message: "El formato de exportación es obligatorio." });
+    }
+
+    const token = createDownloadToken({
+      bookId: params.bookId,
+      ...(payload.format ? { format: payload.format } : {}),
+      kind: payload.kind,
+      userId: request.currentUser.userId
+    });
+
+    return reply.send({
+      expiresInSeconds: Math.floor(downloadTokenTtlMs / 1000),
+      token
+    });
+  });
+
+  app.get("/download/:token", async (request, reply) => {
+    const params = downloadTokenParamsSchema.parse(request.params);
+    const tokenRecord = consumeDownloadToken(params.token);
+    if (!tokenRecord) {
+      return reply.status(404).send({ message: "El enlace de descarga ha caducado." });
+    }
+
+    const connection = await getConnection();
+
+    try {
+      const download = tokenRecord.kind === "export"
+        ? await buildOwnedBookExportDownload(connection, tokenRecord.bookId, tokenRecord.userId, tokenRecord.format ?? "epub")
+        : await buildOwnedOriginalBookDownload(connection, tokenRecord.bookId, tokenRecord.userId);
+
+      if (download === "IMAGES_SOURCE") {
+        return reply.status(409).send({ message: "Los libros creados desde imágenes deben exportarse como EPUB o PDF." });
+      }
+
+      if (!download) {
+        return reply.status(404).send({ message: "No se encontró el archivo para descargar." });
+      }
+
+      return reply
+        .header("Content-Type", download.mimeType)
+        .header("Content-Disposition", `attachment; filename="${download.fileName}"`)
+        .send(download.buffer);
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.get("/:bookId/export/:format", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -4883,97 +5106,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
-      if (!book) {
+      const download = await buildOwnedBookExportDownload(connection, params.bookId, request.currentUser.userId, params.format);
+      if (!download) {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      const [pagesResult, paragraphsResult, outlineResult, coverResult] = await Promise.all([
-        connection.execute(
-          `
-            SELECT
-              page_number AS "pageNumber",
-              page_label AS "pageLabel",
-              html_content AS "htmlContent"
-            FROM book_pages
-            WHERE book_id = :bookId
-            ORDER BY page_number ASC
-          `,
-          { bookId: params.bookId }
-        ),
-        connection.execute(
-          `
-            SELECT
-              page_number AS "pageNumber",
-              paragraph_text AS "paragraphText"
-            FROM book_paragraphs
-            WHERE book_id = :bookId
-            ORDER BY sequence_number ASC
-          `,
-          { bookId: params.bookId }
-        ),
-        resolveBookOutline(connection, params.bookId),
-        connection.execute(
-          `
-            SELECT
-              file_name AS "fileName",
-              mime_type AS "mimeType",
-              content_blob AS "contentBlob"
-            FROM book_files
-            WHERE book_id = :bookId
-              AND file_kind IN ('COVER_IMAGE', 'PAGE_IMAGE')
-            ORDER BY CASE WHEN file_kind = 'COVER_IMAGE' THEN 0 ELSE 1 END, NVL(page_number, 0) ASC, created_at ASC
-            FETCH FIRST 1 ROWS ONLY
-          `,
-          { bookId: params.bookId },
-          {
-            fetchInfo: {
-              contentBlob: { type: oracledb.BUFFER }
-            }
-          }
-        )
-      ]);
-
-      const paragraphsByPage = new Map<number, Array<{ paragraphText: string }>>();
-      for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string }>) {
-        const bucket = paragraphsByPage.get(row.pageNumber) ?? [];
-        bucket.push({ paragraphText: row.paragraphText });
-        paragraphsByPage.set(row.pageNumber, bucket);
-      }
-
-      const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => ({
-        htmlContent: row.htmlContent,
-        pageLabel: row.pageLabel,
-        pageNumber: row.pageNumber,
-        paragraphs: paragraphsByPage.get(row.pageNumber) ?? []
-      }));
-
-      const [coverAsset] = (coverResult.rows ?? []) as Array<{ contentBlob?: Buffer; fileName?: string | null; mimeType?: string }>;
-      const exportPayload = {
-        book: {
-          authorName: book.authorName,
-          synopsis: book.synopsis,
-          title: book.title
-        },
-        coverAsset: coverAsset?.contentBlob && coverAsset.mimeType
-          ? {
-              buffer: coverAsset.contentBlob,
-              fileName: coverAsset.fileName ?? `${book.title}-cover`,
-              mimeType: coverAsset.mimeType
-            }
-          : null,
-        outline: outlineResult,
-        pages
-      };
-      const fileBuffer = params.format === "epub"
-        ? await buildEpubExport(exportPayload)
-        : await buildPdfExport(exportPayload);
-      const fileName = buildDownloadFileName(book.title, params.format);
-
       return reply
-        .header("Content-Type", params.format === "epub" ? "application/epub+zip" : "application/pdf")
-        .header("Content-Disposition", `attachment; filename="${fileName}"`)
-        .send(fileBuffer);
+        .header("Content-Type", download.mimeType)
+        .header("Content-Disposition", `attachment; filename="${download.fileName}"`)
+        .send(download.buffer);
     } finally {
       await connection.close();
     }
@@ -5016,29 +5157,20 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
-      if (!book) {
-        return reply.status(404).send({ message: "Book not found." });
-      }
+      const download = await buildOwnedOriginalBookDownload(connection, params.bookId, request.currentUser.userId);
 
-      if (book.sourceType === "IMAGES") {
+      if (download === "IMAGES_SOURCE") {
         return reply.status(409).send({ message: "Los libros creados desde imágenes deben exportarse como EPUB o PDF." });
       }
 
-      const originalFileKind = book.sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB";
-      const originalFile = await findBookFileByKind(connection, params.bookId, originalFileKind);
-      if (!originalFile?.contentBlob) {
+      if (!download) {
         return reply.status(404).send({ message: "No se encontró el archivo original de este libro." });
       }
 
-      const extension = book.sourceType === "PDF" ? "pdf" : "epub";
-      const fileName = originalFile.fileName?.trim() || buildDownloadFileName(book.title, extension);
-      const mimeType = originalFile.mimeType?.trim() || (book.sourceType === "PDF" ? "application/pdf" : "application/epub+zip");
-
       return reply
-        .header("Content-Type", mimeType)
-        .header("Content-Disposition", `attachment; filename="${fileName}"`)
-        .send(originalFile.contentBlob);
+        .header("Content-Type", download.mimeType)
+        .header("Content-Disposition", `attachment; filename="${download.fileName}"`)
+        .send(download.buffer);
     } finally {
       await connection.close();
     }

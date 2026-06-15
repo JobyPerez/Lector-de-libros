@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { deleteBook, downloadBookExport, downloadOriginalBook, fetchBookCover, fetchBooks, importBook, updateBook, type BlobDownload, type BookSummary } from "../../app/api";
+import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, updateBook, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
 
@@ -74,21 +74,13 @@ function SearchIcon() {
   );
 }
 
-function buildFallbackFileName(book: BookSummary, format: "epub" | "pdf"): string {
-  const normalizedTitle = book.title.trim().replace(/\s+/gu, "-").toLowerCase() || "libro";
-  return `${normalizedTitle}.${format}`;
-}
-
-function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
-  const fileName = download.fileName || fallbackFileName;
-  const objectUrl = URL.createObjectURL(download.blob);
+function startBrowserDownload(downloadUrl: string) {
   const anchor = document.createElement("a");
-  anchor.href = objectUrl;
-  anchor.download = fileName;
+  anchor.href = downloadUrl;
+  anchor.rel = "noreferrer";
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  URL.revokeObjectURL(objectUrl);
 }
 
 function buildBookMonogram(title: string): string {
@@ -305,8 +297,8 @@ export function ShelfPage() {
     setExportingFormat(format);
 
     try {
-      const download = await downloadBookExport(accessToken, editingBook.bookId, format);
-      await saveBlobDownload(download, buildFallbackFileName(editingBook, format));
+      const downloadUrl = await createBookDownloadUrl(accessToken, editingBook.bookId, { format, kind: "export" });
+      startBrowserDownload(downloadUrl);
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
@@ -325,9 +317,8 @@ export function ShelfPage() {
     setDownloadingBookId(book.bookId);
 
     try {
-      const format = book.sourceType === "PDF" ? "pdf" : "epub";
-      const download = await downloadOriginalBook(accessToken, book.bookId);
-      saveBlobDownload(download, buildFallbackFileName(book, format));
+      const downloadUrl = await createBookDownloadUrl(accessToken, book.bookId, { kind: "original" });
+      startBrowserDownload(downloadUrl);
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : "No se pudo descargar el archivo original del libro.");
     } finally {
@@ -347,8 +338,8 @@ export function ShelfPage() {
     setExportingFormatCard(format);
 
     try {
-      const download = await downloadBookExport(accessToken, book.bookId, format);
-      await saveBlobDownload(download, buildFallbackFileName(book, format));
+      const downloadUrl = await createBookDownloadUrl(accessToken, book.bookId, { format, kind: "export" });
+      startBrowserDownload(downloadUrl);
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
