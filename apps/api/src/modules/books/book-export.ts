@@ -285,38 +285,23 @@ export async function buildEpubExport(options: {
     <style type="text/css">
       .cover-page {
         display: flex;
-        flex-direction: column;
         align-items: center;
         justify-content: center;
-        min-height: 90vh;
-        text-align: center;
-        padding: 2rem;
+        min-height: 95vh;
+        padding: 1rem;
         box-sizing: border-box;
       }
       .cover-page img {
         max-width: 100%;
-        max-height: 70vh;
+        max-height: 90vh;
         height: auto;
         object-fit: contain;
-        margin-bottom: 1.5rem;
-      }
-      .cover-page h1 {
-        font-size: 1.8rem;
-        margin: 0 0 0.5rem;
-        line-height: 1.2;
-      }
-      .cover-page p {
-        font-size: 1.1rem;
-        margin: 0;
-        color: #444;
       }
     </style>
   </head>
   <body>
     <section class="cover-page">
       <img alt="Portada" src="assets/cover.jpg" />
-      <h1>${escapeXml(options.book.title)}</h1>
-      ${options.book.authorName ? `<p>${escapeXml(options.book.authorName)}</p>` : ""}
     </section>
   </body>
 </html>`, "utf-8"));
@@ -407,7 +392,7 @@ export async function buildPdfExport(options: {
 
       const margin = 50;
       const maxWidth = document.page.width - margin * 2;
-      const maxHeight = document.page.height * 0.55;
+      const maxHeight = document.page.height - margin * 2;
 
       let drawWidth = maxWidth;
       let drawHeight = maxHeight;
@@ -419,23 +404,12 @@ export async function buildPdfExport(options: {
       }
 
       const imageX = (document.page.width - drawWidth) / 2;
-      const imageY = 60;
+      const imageY = (document.page.height - drawHeight) / 2;
 
       document.image(normalizedBuffer, imageX, imageY, { height: drawHeight, width: drawWidth });
-
-      const titleY = imageY + drawHeight + 40;
-      const textWidth = document.page.width - margin * 2;
-      document.font("Helvetica-Bold").fontSize(26).fillColor("#111111").text(options.book.title, margin, titleY, { align: "center", width: textWidth });
-      if (options.book.authorName) {
-        document.moveDown(0.5);
-        document.font("Helvetica").fontSize(14).fillColor("#444444").text(options.book.authorName, { align: "center" });
-      }
     } catch {
-      document.font("Helvetica-Bold").fontSize(26).fillColor("#111111").text(options.book.title, { align: "center" });
-      if (options.book.authorName) {
-        document.moveDown();
-        document.font("Helvetica").fontSize(14).fillColor("#444444").text(options.book.authorName, { align: "center" });
-      }
+      // Si la imagen de portada no se pudo renderizar, se deja la página en blanco.
+      // El título y los metadatos ya están en el documento como parte del contenido.
     }
 
     renderPdfPageFooter(document, "1");
