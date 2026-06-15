@@ -412,7 +412,6 @@ export async function buildPdfExport(options: {
       // El título y los metadatos ya están en el documento como parte del contenido.
     }
 
-    renderPdfPageFooter(document, "1");
   }
 
   if (options.outline.length > 0) {
@@ -434,8 +433,6 @@ export async function buildPdfExport(options: {
   for (const page of options.pages) {
     const physicalPageNumber = prefixPages + page.pageNumber;
     document.addPage();
-    document.font("Helvetica").fontSize(10).fillColor("#666666").text(`Página ${page.pageLabel ?? page.pageNumber}`, { align: "right" });
-    document.moveDown(0.5);
     renderPdfBlocks(document, extractRenderableBlocks(page));
     renderPdfPageFooter(document, String(physicalPageNumber));
   }
