@@ -184,6 +184,10 @@ function renderPdfPageFooter(document: PDFKit.PDFDocument, pageLabel: string) {
     });
 }
 
+function buildPdfPageDestination(pageNumber: number): string {
+  return `page-${pageNumber}`;
+}
+
 function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
   for (const block of blocks) {
     if (block.type === "heading" && block.text) {
@@ -421,11 +425,13 @@ export async function buildPdfExport(options: {
     document.moveDown();
     for (const entry of options.outline) {
       const physicalPageNumber = prefixPages + entry.pageNumber;
+      const destination = buildPdfPageDestination(entry.pageNumber);
       document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(`${"  ".repeat(Math.max(0, entry.level - 1))}${entry.title}`, {
         continued: true,
+        goTo: destination,
         indent: Math.max(0, entry.level - 1) * 14
       });
-      document.text(String(physicalPageNumber), { align: "right" });
+      document.text(String(physicalPageNumber), { align: "right", goTo: destination });
     }
     renderPdfPageFooter(document, String(prefixPages));
   }
@@ -433,6 +439,7 @@ export async function buildPdfExport(options: {
   for (const page of options.pages) {
     const physicalPageNumber = prefixPages + page.pageNumber;
     document.addPage();
+    document.addNamedDestination(buildPdfPageDestination(page.pageNumber), "FitH", document.page.height - document.page.margins.top);
     renderPdfBlocks(document, extractRenderableBlocks(page));
     renderPdfPageFooter(document, String(physicalPageNumber));
   }
