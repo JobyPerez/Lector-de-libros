@@ -733,8 +733,8 @@ export function BookBuilderPage() {
   const [originalReviewImageCrop, setOriginalReviewImageCrop] = useState<ReviewImageCrop>(defaultReviewImageCrop);
   const [reviewImageRotation, setReviewImageRotation] = useState<ImageRotation>(0);
   const [originalReviewImageRotation, setOriginalReviewImageRotation] = useState<ImageRotation>(0);
-  const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("VISION");
-  const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("VISION");
+  const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("TEXTRACT");
+  const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("TEXTRACT");
   const [appendInsertionSide, setAppendInsertionSide] = useState<AppendInsertionSide>("after");
   const [appendReferencePageInput, setAppendReferencePageInput] = useState("1");
   const [appendProgressId, setAppendProgressId] = useState<string | null>(null);
@@ -752,7 +752,7 @@ export function BookBuilderPage() {
   const [appendCameraStream, setAppendCameraStream] = useState<MediaStream | null>(null);
   const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
   const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
-  const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("VISION");
+  const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("TEXTRACT");
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [reviewPromptOverride, setReviewPromptOverride] = useState(defaultVisionOcrEditablePrompt);

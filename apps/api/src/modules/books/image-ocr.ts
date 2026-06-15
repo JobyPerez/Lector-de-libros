@@ -983,14 +983,22 @@ export async function runOcrOnImage(
   }
 
   try {
-    return await runLocalOcrWithTesseract(rotatedBuffer);
-  } catch (localOcrError) {
+    return await runTextractOcr(rotatedBuffer);
+  } catch (textractError) {
     if (hasVisionOcrConfiguration()) {
-      return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
+      try {
+        return await runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
+      } catch {
+        // fall through to local
+      }
     }
 
-    throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${localOcrError instanceof Error ? localOcrError.message : ""}`.trim()), {
-      statusCode: 422
-    });
+    try {
+      return await runLocalOcrWithTesseract(rotatedBuffer);
+    } catch (localOcrError) {
+      throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${textractError instanceof Error ? textractError.message : ""}`.trim()), {
+        statusCode: 422
+      });
+    }
   }
 }

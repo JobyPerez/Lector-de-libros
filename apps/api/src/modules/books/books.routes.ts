@@ -122,7 +122,7 @@ const updateOcrPageSchema = z.object({
 });
 
 const rerunOcrPageSchema = z.object({
-  ocrMode: z.enum(supportedImageOcrModes).default("VISION"),
+  ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
   promptOverride: ocrPromptOverrideSchema
 });
 
