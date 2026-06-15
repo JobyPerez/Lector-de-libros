@@ -79,60 +79,8 @@ function buildFallbackFileName(book: BookSummary, format: "epub" | "pdf"): strin
   return `${normalizedTitle}.${format}`;
 }
 
-type SaveFilePickerAcceptType = {
-  accept: Record<string, string[]>;
-  description?: string;
-};
-
-type SaveFilePickerOptions = {
-  suggestedName?: string;
-  types?: SaveFilePickerAcceptType[];
-};
-
-type FileSystemWritableFileStream = {
-  close: () => Promise<void>;
-  write: (data: Blob) => Promise<void>;
-};
-
-type FileSystemFileHandle = {
-  createWritable: () => Promise<FileSystemWritableFileStream>;
-};
-
-function resolveSaveFilePickerTypes(fileName: string): SaveFilePickerAcceptType[] {
-  const extension = fileName.split(".").pop()?.toLowerCase() ?? "";
-
-  if (extension === "pdf") {
-    return [{ description: "Documento PDF", accept: { "application/pdf": [".pdf"] } }];
-  }
-
-  if (extension === "epub") {
-    return [{ description: "Libro EPUB", accept: { "application/epub+zip": [".epub"] } }];
-  }
-
-  return [{ description: "Archivo", accept: { "application/octet-stream": [`.${extension || "bin"}`] } }];
-}
-
-async function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
+function saveBlobDownload(download: BlobDownload, fallbackFileName: string) {
   const fileName = download.fileName || fallbackFileName;
-  const showSaveFilePicker = (window as unknown as { showSaveFilePicker?: (options: SaveFilePickerOptions) => Promise<FileSystemFileHandle> }).showSaveFilePicker;
-
-  if (typeof showSaveFilePicker === "function") {
-    try {
-      const handle = await showSaveFilePicker({
-        suggestedName: fileName,
-        types: resolveSaveFilePickerTypes(fileName)
-      });
-      const writable = await handle.createWritable();
-      await writable.write(download.blob);
-      await writable.close();
-      return;
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return;
-      }
-    }
-  }
-
   const objectUrl = URL.createObjectURL(download.blob);
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
