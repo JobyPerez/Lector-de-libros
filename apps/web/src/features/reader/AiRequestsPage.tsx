@@ -300,6 +300,7 @@ export function AiRequestsPage() {
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
   const wakeLockRef = useRef<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean } | null>(null);
+  const initialPromptKeyRef = useRef<string | null>(null);
   const [promptText, setPromptText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
@@ -378,10 +379,13 @@ export function AiRequestsPage() {
   });
 
   useEffect(() => {
-    if (requestsQuery.data?.prompt && !promptText) {
+    const promptKey = `${bookId}:${chapterId ?? "book"}`;
+
+    if (requestsQuery.data?.prompt && initialPromptKeyRef.current !== promptKey) {
+      initialPromptKeyRef.current = promptKey;
       setPromptText(requestsQuery.data.prompt);
     }
-  }, [promptText, requestsQuery.data?.prompt]);
+  }, [bookId, chapterId, requestsQuery.data?.prompt]);
 
   useEffect(() => {
     if (retryAfterSeconds <= 0 || typeof window === "undefined") {
@@ -960,7 +964,12 @@ export function AiRequestsPage() {
   }
 
   async function handleCreateRequest() {
-    if (!accessToken || !promptText.trim() || retryAfterSeconds > 0) {
+    if (!accessToken || retryAfterSeconds > 0) {
+      return;
+    }
+
+    if (!promptText.trim()) {
+      setSubmitError("La petición no puede estar vacía.");
       return;
     }
 
@@ -1175,7 +1184,10 @@ export function AiRequestsPage() {
           <span>Petición</span>
           <textarea
             disabled={isSubmitting || requestsQuery.isLoading}
-            onChange={(event) => setPromptText(event.target.value)}
+            onChange={(event) => {
+              setPromptText(event.target.value);
+              setSubmitError(null);
+            }}
             rows={6}
             value={promptText}
           />
@@ -1184,7 +1196,7 @@ export function AiRequestsPage() {
         <div className="reader-note-editor-actions">
           <button
             className="primary-button"
-            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading || !promptText.trim()}
+            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading}
             onClick={() => void handleCreateRequest()}
             type="button"
           >
