@@ -29,7 +29,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover } from "./ReaderFloatingPanels";
+import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
 import { createStoredZip } from "./audio-zip";
 import { getOfflineChapterAudioStatus, loadOfflineAudioBlockContaining, loadOfflineChapterAudioExport, saveChapterAudioBlock } from "./offline-audio-cache";
 
@@ -68,6 +68,8 @@ const READER_SCREEN_LOCK_HOLD_INTERVAL_MS = 100;
 const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
 const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toFixed(0);
 const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
+const ESTIMATED_WORDS_PER_MINUTE = 155;
+const FALLBACK_WORDS_PER_PARAGRAPH = 70;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -331,6 +333,42 @@ function readStoredPlaybackRate() {
 
 function formatUsdBalance(amount: number) {
   return USD_BALANCE_FORMATTER.format(amount);
+}
+
+function countWords(value: string) {
+  return value.trim().split(/\s+/u).filter(Boolean).length;
+}
+
+function formatEstimatedReadingTime(totalMinutes: number) {
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
+    return "menos de 1 min";
+  }
+
+  const roundedMinutes = Math.max(1, Math.round(totalMinutes));
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+
+  if (hours === 0) {
+    return `${minutes} min`;
+  }
+
+  if (minutes === 0) {
+    return `${hours} h`;
+  }
+
+  return `${hours} h ${minutes} min`;
+}
+
+function estimateReadingMinutes(paragraphCount: number, wordsPerParagraph: number, playbackRate: number) {
+  const safeParagraphCount = Math.max(0, paragraphCount);
+  const safeWordsPerParagraph = Number.isFinite(wordsPerParagraph) && wordsPerParagraph > 0
+    ? wordsPerParagraph
+    : FALLBACK_WORDS_PER_PARAGRAPH;
+  const safePlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0
+    ? playbackRate
+    : DEFAULT_PLAYBACK_RATE;
+
+  return (safeParagraphCount * safeWordsPerParagraph) / ESTIMATED_WORDS_PER_MINUTE / safePlaybackRate;
 }
 
 function sanitizeDownloadFileName(value: string) {
@@ -1783,6 +1821,7 @@ export function ReaderPage() {
     ? deepgramBalanceQuery.error.message
     : "No se pudo consultar el saldo de Deepgram.";
   const totalPages = pageQuery.data?.book.totalPages ?? 0;
+  const totalParagraphs = pageQuery.data?.book.totalParagraphs ?? 0;
   const hasRichPageContent = Boolean(currentHtmlContent);
 
   useEffect(() => {
@@ -1819,12 +1858,12 @@ export function ReaderPage() {
   };
 
   const readingPercentage = useMemo(() => {
-    if (!pageQuery.data?.book.totalParagraphs || !currentParagraph) {
+    if (!totalParagraphs || !currentParagraph) {
       return 0;
     }
 
-    return Math.min((currentParagraph.sequenceNumber / pageQuery.data.book.totalParagraphs) * 100, 100);
-  }, [currentParagraph, pageQuery.data?.book.totalParagraphs]);
+    return Math.min((currentParagraph.sequenceNumber / totalParagraphs) * 100, 100);
+  }, [currentParagraph, totalParagraphs]);
 
   const paragraphsById = useMemo(
     () => new Map(currentParagraphs.map((paragraph) => [paragraph.paragraphId, paragraph])),
@@ -1954,6 +1993,54 @@ export function ReaderPage() {
   const activeChapterTitle = activeTocEntry?.title ?? null;
   const activeOfflineChapterId = activeTocEntry?.chapterId ?? null;
   const activeOfflineChapterTitle = activeTocEntry?.title ?? null;
+  const readingTimeStats = useMemo<ReaderAudioReadingTimeStats | null>(() => {
+    if (!currentParagraph || totalParagraphs <= 0) {
+      return null;
+    }
+
+    const currentPageWordCount = currentParagraphs.reduce((total, paragraph) => total + countWords(paragraph.paragraphText), 0);
+    const wordsPerParagraph = currentParagraphs.length > 0
+      ? currentPageWordCount / currentParagraphs.length
+      : FALLBACK_WORDS_PER_PARAGRAPH;
+    const bookRemainingParagraphs = Math.max(0, totalParagraphs - currentParagraph.sequenceNumber + 1);
+    const stats: ReaderAudioReadingTimeStats = {
+      bookRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(bookRemainingParagraphs, wordsPerParagraph, playbackRate)),
+      bookTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(totalParagraphs, wordsPerParagraph, playbackRate)),
+      chapterRemainingLabel: null,
+      chapterTitle: null,
+      chapterTotalLabel: null
+    };
+
+    if (!activeTocEntry || activeTocEntry.sequenceNumber === null) {
+      return stats;
+    }
+
+    const tocEntries = navigationQuery.data?.toc ?? [];
+    const activeEntryIndex = tocEntries.findIndex((entry) => tocEntryKey(entry) === tocEntryKey(activeTocEntry));
+    const nextSiblingOrParentEntry = activeEntryIndex >= 0
+      ? tocEntries.slice(activeEntryIndex + 1).find((entry) => entry.level <= activeTocEntry.level) ?? null
+      : null;
+    const chapterStartSequence = activeTocEntry.sequenceNumber;
+    const chapterEndExclusiveSequence = nextSiblingOrParentEntry?.sequenceNumber ?? totalParagraphs + 1;
+    const chapterParagraphs = Math.max(0, chapterEndExclusiveSequence - chapterStartSequence);
+
+    if (chapterParagraphs <= 0) {
+      return stats;
+    }
+
+    const currentSequenceInChapter = Math.min(
+      Math.max(currentParagraph.sequenceNumber, chapterStartSequence),
+      chapterEndExclusiveSequence
+    );
+    const chapterRemainingParagraphs = Math.max(0, chapterEndExclusiveSequence - currentSequenceInChapter);
+
+    return {
+      ...stats,
+      chapterRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterRemainingParagraphs, wordsPerParagraph, playbackRate)),
+      chapterTitle: activeTocEntry.title,
+      chapterTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterParagraphs, wordsPerParagraph, playbackRate))
+    };
+  }, [activeTocEntry, currentParagraph, currentParagraphs, navigationQuery.data?.toc, playbackRate, totalParagraphs]);
 
   useEffect(() => {
     let isMounted = true;
@@ -4778,6 +4865,7 @@ export function ReaderPage() {
             onVoiceModelChange={setSelectedVoiceModel}
             playbackRate={playbackRate}
             playbackRateStep={PLAYBACK_RATE_STEP}
+            readingTimeStats={readingTimeStats}
             selectedDeviceVoiceUri={selectedDeviceVoiceUri}
             selectedTtsEngine={selectedTtsEngine}
             selectedVoiceModel={selectedVoiceModel}

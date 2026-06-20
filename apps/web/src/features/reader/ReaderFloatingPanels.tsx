@@ -16,6 +16,14 @@ type AudioVoiceOption = {
   value: string;
 };
 
+export type ReaderAudioReadingTimeStats = {
+  bookRemainingLabel: string;
+  bookTotalLabel: string;
+  chapterRemainingLabel: string | null;
+  chapterTitle: string | null;
+  chapterTotalLabel: string | null;
+};
+
 type ReaderHighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
 
 const HIGHLIGHT_OPTIONS: Array<{ color: ReaderHighlightColor; label: string }> = [
@@ -53,6 +61,7 @@ type AudioSettingsContentProps = {
   onVoiceModelChange: (value: string) => void;
   playbackRate: number;
   playbackRateStep: number;
+  readingTimeStats?: ReaderAudioReadingTimeStats | null;
   selectedDeviceVoiceUri: string;
   selectedTtsEngine: "deepgram" | "device";
   selectedVoiceModel: string;
@@ -309,6 +318,7 @@ export function ReaderAudioSettingsContent({
   onVoiceModelChange,
   playbackRate,
   playbackRateStep,
+  readingTimeStats,
   selectedDeviceVoiceUri,
   selectedTtsEngine,
   selectedVoiceModel,
@@ -390,6 +400,37 @@ export function ReaderAudioSettingsContent({
           value={playbackRate}
         />
       </label>
+
+      {readingTimeStats ? (
+        <section aria-label="Tiempo estimado de lectura" className="reader-audio-reading-time-card">
+          <div className="reader-audio-reading-time-heading">
+            <strong>Tiempo estimado</strong>
+            <span>Según texto y velocidad actual</span>
+          </div>
+          <dl>
+            <div>
+              <dt>Libro</dt>
+              <dd>{readingTimeStats.bookTotalLabel}</dd>
+            </div>
+            <div>
+              <dt>Te queda</dt>
+              <dd>{readingTimeStats.bookRemainingLabel}</dd>
+            </div>
+            {readingTimeStats.chapterTotalLabel && readingTimeStats.chapterRemainingLabel ? (
+              <>
+                <div>
+                  <dt>{readingTimeStats.chapterTitle ?? "Capítulo"}</dt>
+                  <dd>{readingTimeStats.chapterTotalLabel}</dd>
+                </div>
+                <div>
+                  <dt>Te queda del capítulo</dt>
+                  <dd>{readingTimeStats.chapterRemainingLabel}</dd>
+                </div>
+              </>
+            ) : null}
+          </dl>
+        </section>
+      ) : null}
     </>
   );
 }
