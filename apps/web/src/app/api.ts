@@ -37,6 +37,23 @@ type BookDownloadTokenResponse = {
   token: string;
 };
 
+export type AppVersionCommit = {
+  authorName: string;
+  authoredAt: string;
+  hash: string;
+  shortHash: string;
+  subject: string;
+};
+
+export type AppVersionResponse = {
+  commits: AppVersionCommit[];
+  currentCommit: string;
+  currentShortCommit: string;
+  currentVersion: string;
+  hasUpdate: boolean;
+  rangeFound: boolean;
+};
+
 function createHeaders(options: { accessToken?: string | null | undefined; contentType?: string | undefined }): RequestHeaders {
   return {
     ...(options.contentType ? { "Content-Type": options.contentType } : {}),
@@ -75,6 +92,11 @@ export function isRetryableRateLimitError(error: unknown): error is ApiRequestEr
     && (error as Partial<ApiRequestError>).retryable === true
     && typeof (error as Partial<ApiRequestError>).retryAfterSeconds === "number"
     && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT" || (error as Partial<ApiRequestError>).code === "AI_RATE_LIMIT");
+}
+
+export function fetchAppVersion(fromCommit: string) {
+  const query = new URLSearchParams({ fromCommit });
+  return request<AppVersionResponse>(`/app-version?${query.toString()}`);
 }
 
 async function refreshAccessToken(): Promise<string> {

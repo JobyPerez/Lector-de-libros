@@ -320,6 +320,65 @@ textarea {
   padding: 0.8rem;
 }
 
+.app-update-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(15, 27, 21, 0.62);
+  backdrop-filter: blur(10px);
+}
+
+.app-update-modal {
+  width: min(560px, 100%);
+  max-height: min(720px, calc(100vh - 2rem));
+  display: grid;
+  gap: 1rem;
+  overflow: hidden;
+  padding: clamp(1.25rem, 4vw, 1.75rem);
+  border: 1px solid rgba(255, 253, 247, 0.4);
+  border-radius: 30px;
+  background: rgba(255, 249, 240, 0.98);
+  box-shadow: 0 30px 90px rgba(7, 14, 10, 0.34);
+}
+
+.app-update-modal h2,
+.app-update-modal p {
+  margin: 0;
+}
+
+.app-update-modal h2 {
+  font-family: "Constantia", "Georgia", serif;
+  color: var(--forest-900);
+  font-size: clamp(1.75rem, 6vw, 2.4rem);
+  line-height: 1.08;
+}
+
+.app-update-copy {
+  color: #3f4b43;
+}
+
+.app-update-changes {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(31, 43, 35, 0.1);
+  border-radius: 20px;
+  background: rgba(255, 253, 247, 0.72);
+}
+
+.app-update-commit-list {
+  max-height: min(320px, 36vh);
+  overflow: auto;
+  padding: 0 0.45rem 0.45rem;
+}
+
+.app-update-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .page-label,
 .paragraph-label,
 .book-spine {

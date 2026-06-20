@@ -28,6 +28,17 @@ function resolveGitBranch() {
   }
 }
 
+function resolveGitCommitHash() {
+  try {
+    return execSync("git rev-parse HEAD", {
+      cwd: workspaceRoot,
+      encoding: "utf8"
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
 function resolveAppVersion() {
   try {
     const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, "utf8")) as { version?: string };
@@ -80,6 +91,7 @@ export default defineConfig(({ mode }) => {
   const appBasePath = environment.VITE_APP_BASE_PATH || "/conejolector/";
   const appVersion = resolveAppVersion();
   const appBranch = resolveGitBranch();
+  const appCommitHash = resolveGitCommitHash();
   const appBuildTime = new Date().toISOString();
   const appRecentCommits = resolveRecentCommits();
 
@@ -88,6 +100,7 @@ export default defineConfig(({ mode }) => {
     define: {
       __APP_VERSION__: JSON.stringify(appVersion),
       __APP_BRANCH__: JSON.stringify(appBranch),
+      __APP_COMMIT_HASH__: JSON.stringify(appCommitHash),
       __APP_BUILD_TIME__: JSON.stringify(appBuildTime),
       __APP_RECENT_COMMITS__: JSON.stringify(appRecentCommits)
     },
@@ -127,7 +140,8 @@ export default defineConfig(({ mode }) => {
           start_url: appBasePath,
           theme_color: "#264f3d"
         },
-        registerType: "autoUpdate"
+        injectRegister: null,
+        registerType: "prompt"
       })
     ],
     publicDir: resolve(__dirname, "public")

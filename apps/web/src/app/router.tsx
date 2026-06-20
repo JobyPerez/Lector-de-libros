@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigationType, useOutlet } from "react-router-dom";
+import { registerSW } from "virtual:pwa-register";
 
-import { fetchCurrentUser } from "./api";
+import { fetchAppVersion, fetchCurrentUser, type AppVersionCommit, type AppVersionResponse } from "./api";
 import { useAuthStore, type SessionUser } from "./auth-store";
 import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
@@ -30,6 +31,14 @@ type AnimatedOutletScreen = {
   key: string;
   node: React.ReactNode;
   phase: "enter" | "exit" | "idle";
+};
+
+type AppUpdateState = {
+  errorMessage: string | null;
+  info: AppVersionResponse | null;
+  isChecking: boolean;
+  isUpdating: boolean;
+  updateSW: ((reloadPage?: boolean) => Promise<void>) | null;
 };
 
 function formatMadridDateTime(value: string) {
@@ -241,6 +250,169 @@ function VersionActivity() {
   );
 }
 
+function formatCommitList(commits: AppVersionCommit[]) {
+  return commits.map((commit) => (
+    <li className="commit-list-item" key={commit.hash}>
+      <span className="commit-subject" title={commit.subject}>{commit.subject}</span>
+      <span className="commit-meta">
+        {commit.authorName} · {commit.shortHash} · {formatMadridDateTime(commit.authoredAt)}
+      </span>
+    </li>
+  ));
+}
+
+function AppUpdateGate() {
+  const [updateState, setUpdateState] = useState<AppUpdateState>({
+    errorMessage: null,
+    info: null,
+    isChecking: false,
+    isUpdating: false,
+    updateSW: null
+  });
+
+  useEffect(() => {
+    if (!__APP_COMMIT_HASH__) {
+      return;
+    }
+
+    let isMounted = true;
+    let updateSWRef: ((reloadPage?: boolean) => Promise<void>) | null = null;
+
+    async function loadUpdateInfo() {
+      if (!isMounted) {
+        return;
+      }
+
+      setUpdateState((current) => ({
+        ...current,
+        errorMessage: null,
+        isChecking: true,
+        updateSW: updateSWRef
+      }));
+
+      try {
+        const info = await fetchAppVersion(__APP_COMMIT_HASH__);
+
+        if (!isMounted) {
+          return;
+        }
+
+        setUpdateState((current) => ({
+          ...current,
+          errorMessage: null,
+          info,
+          isChecking: false,
+          updateSW: updateSWRef
+        }));
+      } catch (error) {
+        if (!isMounted) {
+          return;
+        }
+
+        setUpdateState((current) => ({
+          ...current,
+          errorMessage: error instanceof Error ? error.message : "No se pudieron cargar los cambios de la actualización.",
+          info: null,
+          isChecking: false,
+          updateSW: updateSWRef
+        }));
+      }
+    }
+
+    updateSWRef = registerSW({
+      immediate: true,
+      onNeedRefresh() {
+        void loadUpdateInfo();
+      },
+      onRegisteredSW(_swUrl, registration) {
+        if (!registration) {
+          return;
+        }
+
+        window.setInterval(() => {
+          void registration.update();
+        }, 60 * 60 * 1000);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const hasMandatoryUpdate = updateState.isChecking || updateState.info?.hasUpdate === true || Boolean(updateState.errorMessage);
+
+  if (!hasMandatoryUpdate) {
+    return null;
+  }
+
+  const commits = updateState.info?.commits ?? [];
+  const currentVersionLabel = `v${__APP_VERSION__}`;
+  const nextVersionLabel = updateState.info ? `v${updateState.info.currentVersion}` : "nueva versión";
+
+  async function handleUpdateClick() {
+    if (!updateState.updateSW) {
+      setUpdateState((current) => ({
+        ...current,
+        errorMessage: "La actualización aún no está lista. Inténtalo de nuevo en unos segundos."
+      }));
+      return;
+    }
+
+    setUpdateState((current) => ({ ...current, errorMessage: null, isUpdating: true }));
+
+    try {
+      await updateState.updateSW(true);
+    } catch (error) {
+      setUpdateState((current) => ({
+        ...current,
+        errorMessage: error instanceof Error ? error.message : "No se pudo aplicar la actualización.",
+        isUpdating: false
+      }));
+    }
+  }
+
+  return (
+    <div aria-labelledby="app-update-title" aria-modal="true" className="app-update-backdrop" role="dialog">
+      <section className="app-update-modal">
+        <p className="eyebrow">Actualización obligatoria</p>
+        <h2 id="app-update-title">Nueva versión disponible</h2>
+        <p className="app-update-copy">
+          Para seguir usando El conejo lector necesitas actualizar de {currentVersionLabel} a {nextVersionLabel}.
+        </p>
+
+        {updateState.errorMessage ? (
+          <p className="error-text" role="alert">{updateState.errorMessage}</p>
+        ) : null}
+
+        {updateState.isChecking ? (
+          <p className="subdued">Recuperando comentarios de commit...</p>
+        ) : (
+          <div className="app-update-changes">
+            <div className="version-activity-header">
+              <strong>Cambios incluidos</strong>
+              {updateState.info?.rangeFound === false ? <span>Últimos commits</span> : null}
+            </div>
+            {commits.length > 0 ? (
+              <ol className="commit-list app-update-commit-list">
+                {formatCommitList(commits)}
+              </ol>
+            ) : (
+              <p className="commit-empty">No hay comentarios de commit disponibles para esta actualización.</p>
+            )}
+          </div>
+        )}
+
+        <div className="app-update-actions">
+          <button className="primary-button" disabled={updateState.isChecking || updateState.isUpdating} onClick={handleUpdateClick} type="button">
+            {updateState.isUpdating ? "Actualizando..." : "Actualizar ahora"}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUser }) {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -387,6 +559,7 @@ function StartupHydrator() {
 export function AppRouter() {
   return (
     <QueryClientProvider client={queryClient}>
+      <AppUpdateGate />
       <BrowserRouter basename={routerBaseName}>
         <StartupHydrator />
         <Routes>
