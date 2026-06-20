@@ -252,13 +252,17 @@ function VersionActivity() {
   );
 }
 
-function formatCommitList(commits: AppVersionCommit[]) {
+function formatCommitList(commits: AppVersionCommit[], options: { showMeta?: boolean } = {}) {
+  const showMeta = options.showMeta ?? true;
+
   return commits.map((commit) => (
     <li className="commit-list-item" key={commit.hash}>
       <span className="commit-subject" title={commit.subject}>{commit.subject}</span>
-      <span className="commit-meta">
-        {commit.authorName} · {commit.shortHash} · {formatMadridDateTime(commit.authoredAt)}
-      </span>
+      {showMeta ? (
+        <span className="commit-meta">
+          {commit.authorName} · {commit.shortHash} · {formatMadridDateTime(commit.authoredAt)}
+        </span>
+      ) : null}
     </li>
   ));
 }
@@ -402,7 +406,7 @@ function AppUpdateGate() {
             </div>
             {commits.length > 0 ? (
               <ol className="commit-list app-update-commit-list">
-                {formatCommitList(commits)}
+                {formatCommitList(commits, { showMeta: false })}
               </ol>
             ) : (
               <p className="commit-empty">No hay comentarios de commit disponibles para esta actualización.</p>

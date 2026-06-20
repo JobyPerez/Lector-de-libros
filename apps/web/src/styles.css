@@ -2361,9 +2361,9 @@ textarea {
 }
 
 .reader-audio-reading-time-card dl div {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
   align-items: baseline;
-  justify-content: space-between;
   gap: 0.85rem;
 }
 
@@ -2373,7 +2373,7 @@ textarea {
 }
 
 .reader-audio-reading-time-card dt {
-  max-width: 65%;
+  min-width: 0;
   overflow: hidden;
   color: #5f675f;
   font-size: 0.84rem;
@@ -3289,7 +3289,7 @@ textarea {
   left: 0;
   bottom: calc(100% + 0.8rem);
   z-index: 110;
-  width: min(340px, calc(100vw - 2rem));
+  width: min(440px, calc(100vw - 2rem));
   max-height: min(76vh, 38rem);
   display: grid;
   gap: 0.85rem;
