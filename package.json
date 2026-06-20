@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "build:client": "npm run build --workspace @lector/web",
     "dev:api": "npm run dev --workspace @lector/api",
     "dev:all": "node scripts/dev-all.mjs",
     "dev:web": "npm run dev --workspace @lector/web",

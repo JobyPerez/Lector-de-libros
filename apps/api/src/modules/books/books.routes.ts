@@ -8,12 +8,13 @@ import oracledb from "oracledb";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
+import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { buildDerivedBookOutline, replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, syncBookOutlineForPage, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
-import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
+import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
 import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary } from "./section-summary.js";
 
@@ -1592,6 +1593,7 @@ async function ocrImageFiles(
   files: UploadedBinaryFile[],
   ocrMode: ImageOcrMode,
   promptOverride?: string,
+  awsCredentials?: AwsTextractCredentials | null,
   onProgress?: (progress: {
     completedFiles: number;
     currentFileIndex: number;
@@ -1623,6 +1625,7 @@ async function ocrImageFiles(
     while (true) {
       try {
         ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, {
+          awsCredentials,
           ocrMode,
           ...(promptOverride ? { promptOverride } : {})
         });
@@ -3489,7 +3492,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       title: multipartForm.fields.title
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.promptOverride);
+    const aiCredentials = await getUserAiCredentials(request.currentUser.userId);
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.promptOverride, {
+      accessKeyId: aiCredentials.awsAccessKeyId,
+      region: aiCredentials.awsRegion,
+      secretAccessKey: aiCredentials.awsSecretAccessKey
+    });
     const connection = await getConnection();
     const bookId = randomUUID();
 
@@ -3608,6 +3616,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       insertionStartPageNumber = requestedInsertionAfterPage + 1;
       nextAfterPage = requestedInsertionAfterPage;
       latestBook = existingBook;
+      const aiCredentials = await getUserAiCredentials(currentUser.userId, connection);
+      const awsCredentials = {
+        accessKeyId: aiCredentials.awsAccessKeyId,
+        region: aiCredentials.awsRegion,
+        secretAccessKey: aiCredentials.awsSecretAccessKey
+      };
 
       if (progressId) {
         importImagesCancellationRequests.delete(progressId);
@@ -3666,6 +3680,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             [imageFile],
             payload.ocrMode,
             payload.promptOverride,
+            awsCredentials,
             (progress) => {
               if (!progressId) {
                 return;
@@ -4505,11 +4520,18 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Source image not found." });
       }
 
+      const aiCredentials = await getUserAiCredentials(request.currentUser.userId, connection);
+
       const ocrResult = await runOcrOnImage(
         sourceFile.contentBlob,
         sourceFile.fileName ?? `page-${params.pageNumber}.png`,
         sourceFile.mimeType,
         {
+          awsCredentials: {
+            accessKeyId: aiCredentials.awsAccessKeyId,
+            region: aiCredentials.awsRegion,
+            secretAccessKey: aiCredentials.awsSecretAccessKey
+          },
           ocrMode: payload.ocrMode,
           ...(payload.promptOverride ? { promptOverride: payload.promptOverride } : {}),
           rotation: page.sourceImageRotation

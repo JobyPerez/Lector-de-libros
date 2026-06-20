@@ -6,8 +6,9 @@ import jwt, { type JwtPayload } from "jsonwebtoken";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
-import { appEnv } from "../../config/env.js";
+import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
 import { sendPasswordResetEmail } from "../../services/mailer.js";
+import { encryptOptionalSecret, getUserAiCredentialSummary } from "../../services/user-ai-credentials.js";
 
 export type UserRole = "ADMIN" | "EDITOR";
 
@@ -58,6 +59,18 @@ const forgotPasswordSchema = z.object({
 const resetPasswordSchema = z.object({
   password: z.string().min(8).max(72),
   token: z.string().min(1)
+});
+
+const updateProfileSchema = z.object({
+  awsAccessKeyId: z.string().trim().min(1).max(500).optional(),
+  awsRegion: z.string().trim().min(1).max(100).optional(),
+  awsSecretAccessKey: z.string().trim().min(1).max(500).optional(),
+  clearAwsCredentials: z.boolean().optional(),
+  clearDeepgramApiKey: z.boolean().optional(),
+  deepgramApiKey: z.string().trim().min(1).max(1000).optional(),
+  deepgramTtsModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional(),
+  displayName: z.string().trim().max(120).optional(),
+  email: z.string().email()
 });
 
 function hashToken(token: string): string {
@@ -634,11 +647,91 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const user = await findUserById(request.currentUser.userId);
-    if (!user) {
-      return reply.status(404).send({ message: "User not found." });
+    const connection = await getConnection();
+
+    try {
+      const user = await findUserById(request.currentUser.userId, connection);
+      if (!user) {
+        return reply.status(404).send({ message: "User not found." });
+      }
+
+      const aiCredentials = await getUserAiCredentialSummary(user.userId, connection);
+      return reply.send({ user: { ...user, aiCredentials } });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/me/profile", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    return reply.send({ user });
+    const payload = updateProfileSchema.parse(request.body);
+    const connection = await getConnection();
+    const deepgramApiKeyEncrypted = encryptOptionalSecret(payload.deepgramApiKey);
+    const awsAccessKeyIdEncrypted = encryptOptionalSecret(payload.awsAccessKeyId);
+    const awsSecretAccessKeyEncrypted = encryptOptionalSecret(payload.awsSecretAccessKey);
+
+    try {
+      await connection.execute(
+        `
+          UPDATE users
+          SET display_name = :displayName,
+              email = :email,
+              deepgram_tts_model = COALESCE(:deepgramTtsModel, deepgram_tts_model),
+              deepgram_api_key_encrypted = CASE
+                WHEN :clearDeepgramApiKey = 1 THEN NULL
+                WHEN :deepgramApiKeyEncrypted IS NOT NULL THEN :deepgramApiKeyEncrypted
+                ELSE deepgram_api_key_encrypted
+              END,
+              aws_region = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsRegion IS NOT NULL THEN :awsRegion
+                ELSE aws_region
+              END,
+              aws_access_key_id_encrypted = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsAccessKeyIdEncrypted IS NOT NULL THEN :awsAccessKeyIdEncrypted
+                ELSE aws_access_key_id_encrypted
+              END,
+              aws_secret_access_key_encrypted = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsSecretAccessKeyEncrypted IS NOT NULL THEN :awsSecretAccessKeyEncrypted
+                ELSE aws_secret_access_key_encrypted
+              END
+          WHERE user_id = :userId
+        `,
+        {
+          awsAccessKeyIdEncrypted: awsAccessKeyIdEncrypted ?? null,
+          awsRegion: payload.awsRegion ?? null,
+          awsSecretAccessKeyEncrypted: awsSecretAccessKeyEncrypted ?? null,
+          clearAwsCredentials: payload.clearAwsCredentials ? 1 : 0,
+          clearDeepgramApiKey: payload.clearDeepgramApiKey ? 1 : 0,
+          deepgramApiKeyEncrypted: deepgramApiKeyEncrypted ?? null,
+          deepgramTtsModel: payload.deepgramTtsModel ?? null,
+          displayName: payload.displayName?.trim() || null,
+          email: payload.email.toLowerCase(),
+          userId: request.currentUser.userId
+        },
+        { autoCommit: true }
+      );
+
+      const user = await findUserById(request.currentUser.userId, connection);
+      if (!user) {
+        return reply.status(404).send({ message: "User not found." });
+      }
+
+      const aiCredentials = await getUserAiCredentialSummary(user.userId, connection);
+      return reply.send({ user: { ...user, aiCredentials } });
+    } catch (error) {
+      if ((error as { errorNum?: number }).errorNum === 1) {
+        return reply.status(409).send({ message: "Ya existe un usuario con ese correo." });
+      }
+
+      throw error;
+    } finally {
+      await connection.close();
+    }
   });
 };

@@ -10,7 +10,8 @@ import oracledb from "oracledb";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
-import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
+import { ALLOWED_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
+import { getUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutline } from "../books/book-outline.js";
 
@@ -271,9 +272,9 @@ function getCachedParagraphAudio(paragraph: TtsParagraphRow, voiceModel: string)
   return null;
 }
 
-async function fetchDeepgramJson(path: string) {
-  if (!appEnv.deepgramApiKey) {
-    throw Object.assign(new Error("Deepgram no está configurado en el entorno."), {
+async function fetchDeepgramJson(path: string, apiKey: string) {
+  if (!apiKey) {
+    throw Object.assign(new Error("Configura tu clave de Deepgram en tu perfil para usar este servicio."), {
       statusCode: 503
     });
   }
@@ -281,7 +282,7 @@ async function fetchDeepgramJson(path: string) {
   const response = await fetch(`https://api.deepgram.com${path}`, {
     headers: {
       Accept: "application/json",
-      Authorization: `Token ${appEnv.deepgramApiKey}`
+      Authorization: `Token ${apiKey}`
     },
     method: "GET"
   });
@@ -392,11 +393,11 @@ function parseDeepgramBalanceUsd(payload: unknown): number | null {
   return null;
 }
 
-async function fetchDeepgramProject() {
-  return parseDeepgramProject(await fetchDeepgramJson("/v1/projects"));
+async function fetchDeepgramProject(apiKey: string) {
+  return parseDeepgramProject(await fetchDeepgramJson("/v1/projects", apiKey));
 }
 
-async function fetchDeepgramProjectBalanceUsd(projectId: string) {
+async function fetchDeepgramProjectBalanceUsd(projectId: string, apiKey: string) {
   const balancePaths = [
     `/v1/projects/${encodeURIComponent(projectId)}/balances`,
     `/v1/projects/${encodeURIComponent(projectId)}/balance`
@@ -406,7 +407,7 @@ async function fetchDeepgramProjectBalanceUsd(projectId: string) {
 
   for (const balancePath of balancePaths) {
     try {
-      const parsedBalance = parseDeepgramBalanceUsd(await fetchDeepgramJson(balancePath));
+      const parsedBalance = parseDeepgramBalanceUsd(await fetchDeepgramJson(balancePath, apiKey));
       if (parsedBalance !== null) {
         return parsedBalance;
       }
@@ -424,13 +425,17 @@ async function fetchDeepgramProjectBalanceUsd(projectId: string) {
   });
 }
 
-async function synthesizeDeepgramTextChunk(text: string, voiceModel: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
-  if (!appEnv.deepgramApiKey) {
-    throw Object.assign(new Error("Deepgram no está configurado en el entorno."), {
+function requireDeepgramApiKey(credentials: UserAiCredentials): string {
+  if (!credentials.deepgramApiKey) {
+    throw Object.assign(new Error("Configura tu clave de Deepgram en tu perfil para generar audio."), {
       statusCode: 503
     });
   }
 
+  return credentials.deepgramApiKey;
+}
+
+async function synthesizeDeepgramTextChunk(text: string, voiceModel: string, apiKey: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
   const normalizedText = normalizeTextForDeepgram(text);
   if (!normalizedText) {
     throw Object.assign(new Error("El párrafo no contiene texto para sintetizar."), {
@@ -450,7 +455,7 @@ async function synthesizeDeepgramTextChunk(text: string, voiceModel: string): Pr
       const response = await fetch(`https://api.deepgram.com/v1/speak?model=${encodeURIComponent(voiceModel)}`, {
         method: "POST",
         headers: {
-          Authorization: `Token ${appEnv.deepgramApiKey}`,
+          Authorization: `Token ${apiKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
@@ -511,7 +516,7 @@ async function synthesizeDeepgramTextChunk(text: string, voiceModel: string): Pr
   throw lastError ?? buildDeepgramError("No se pudo sintetizar el texto con Deepgram.");
 }
 
-async function synthesizeTextWithDeepgram(text: string, voiceModel: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
+async function synthesizeTextWithDeepgram(text: string, voiceModel: string, apiKey: string): Promise<{ audioBuffer: Buffer; contentType: string }> {
   const chunks = splitLongTextForDeepgram(text);
   if (chunks.length === 0) {
     throw Object.assign(new Error("El párrafo no contiene texto para sintetizar."), {
@@ -527,10 +532,10 @@ async function synthesizeTextWithDeepgram(text: string, voiceModel: string): Pro
       });
     }
 
-    return synthesizeDeepgramTextChunk(singleChunk, voiceModel);
+    return synthesizeDeepgramTextChunk(singleChunk, voiceModel, apiKey);
   }
 
-  const synthesizedChunks = await Promise.all(chunks.map((chunk) => synthesizeDeepgramTextChunk(chunk, voiceModel)));
+  const synthesizedChunks = await Promise.all(chunks.map((chunk) => synthesizeDeepgramTextChunk(chunk, voiceModel, apiKey)));
   const contentType = synthesizedChunks[0]?.contentType ?? "audio/mpeg";
 
   if (synthesizedChunks.some((chunk) => chunk.contentType !== contentType)) {
@@ -598,7 +603,8 @@ async function persistParagraphAudioBuffer(
   paragraph: TtsParagraphRow,
   voiceModel: string,
   audioBuffer: Buffer,
-  contentType: string
+  contentType: string,
+  updateLegacyAudioFileId: boolean
 ) {
   const audioFileId = randomUUID();
 
@@ -646,7 +652,7 @@ async function persistParagraphAudioBuffer(
     audioFileId
   );
 
-  if (voiceModel === appEnv.deepgramTtsModel) {
+  if (updateLegacyAudioFileId) {
     await connection.execute(
       `
         UPDATE book_paragraphs
@@ -674,8 +680,10 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const project = await fetchDeepgramProject();
-    const balanceUsd = await fetchDeepgramProjectBalanceUsd(project.projectId);
+    const credentials = await getUserAiCredentials(request.currentUser.userId);
+    const deepgramApiKey = requireDeepgramApiKey(credentials);
+    const project = await fetchDeepgramProject(deepgramApiKey);
+    const balanceUsd = await fetchDeepgramProjectBalanceUsd(project.projectId, deepgramApiKey);
 
     return reply.send({
       success: true,
@@ -692,10 +700,11 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     const params = offlineChapterAudioPlanParamsSchema.parse(request.params);
     const query = offlineChapterAudioPlanQuerySchema.parse(request.query);
-    const requestedVoiceModel = query.voiceModel ?? appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
+      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const requestedVoiceModel = query.voiceModel ?? credentials.deepgramTtsModel;
       const bookResult = await connection.execute(
         `
           SELECT title AS "title"
@@ -818,10 +827,12 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
     const payload = ttsRequestSchema.parse(request.body);
-    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
+      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const deepgramApiKey = requireDeepgramApiKey(credentials);
+      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -881,13 +892,14 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           contentType: cachedParagraphAudio.contentType
         };
       } else {
-        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel);
+        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel, deepgramApiKey);
         resolvedParagraphAudio = await persistParagraphAudioBuffer(
           connection,
           paragraph,
           requestedVoiceModel,
           synthesizedAudio.audioBuffer,
-          synthesizedAudio.contentType
+          synthesizedAudio.contentType,
+          requestedVoiceModel === credentials.deepgramTtsModel
         );
       }
 
@@ -918,10 +930,12 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
     const payload = ttsBlockRequestSchema.parse(request.body);
-    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
+      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const deepgramApiKey = requireDeepgramApiKey(credentials);
+      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -985,7 +999,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           };
         }
 
-        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel);
+        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel, deepgramApiKey);
         return {
           audioBuffer: synthesizedAudio.audioBuffer,
           cacheSource: null,
@@ -1012,7 +1026,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             resolvedParagraphAudio.paragraph,
             requestedVoiceModel,
             resolvedParagraphAudio.audioBuffer,
-            resolvedParagraphAudio.contentType
+            resolvedParagraphAudio.contentType,
+            requestedVoiceModel === credentials.deepgramTtsModel
           );
         }
 
@@ -1064,10 +1079,12 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const payload = z.object({
       voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
     }).parse(request.body);
-    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
+      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const deepgramApiKey = requireDeepgramApiKey(credentials);
+      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -1093,7 +1110,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Summary not found." });
       }
 
-      const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel);
+      const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel, deepgramApiKey);
 
       return reply
         .header("Content-Type", synthesizedAudio.contentType)
@@ -1113,10 +1130,12 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const payload = z.object({
       voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
     }).parse(request.body);
-    const requestedVoiceModel = payload.voiceModel ?? appEnv.deepgramTtsModel;
     const connection = await getConnection();
 
     try {
+      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const deepgramApiKey = requireDeepgramApiKey(credentials);
+      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -1142,7 +1161,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "AI request not found." });
       }
 
-      const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel);
+      const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel, deepgramApiKey);
 
       return reply
         .header("Content-Type", synthesizedAudio.contentType)

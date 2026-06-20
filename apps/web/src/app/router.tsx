@@ -8,6 +8,7 @@ import { useAuthStore, type SessionUser } from "./auth-store";
 import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
+import { ProfilePage } from "../features/profile/ProfilePage";
 import { AiRequestsPage } from "../features/reader/AiRequestsPage";
 import { OutlineEditorPage } from "../features/reader/OutlineEditorPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
@@ -461,6 +462,9 @@ function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUs
             <strong>Perfil</strong>
             <span>{roleLabel}</span>
           </div>
+          <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/profile">
+            Editar perfil
+          </NavLink>
           <button className="danger-button" onClick={() => {
             setIsOpen(false);
             onLogout();
@@ -582,6 +586,7 @@ export function AppRouter() {
           <Route element={<ProtectedShell />}>
             <Route path="/" element={<ShelfPage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route path="/books/:bookId" element={<ReaderPage />} />
             <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
             <Route path="/books/:bookId/outline/edit" element={<OutlineEditorPage />} />

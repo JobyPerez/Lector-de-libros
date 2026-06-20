@@ -606,7 +606,8 @@ textarea {
   gap: 0.35rem;
 }
 
-.profile-panel .danger-button {
+.profile-panel .danger-button,
+.profile-panel-action {
   width: 100%;
 }
 
@@ -628,6 +629,43 @@ textarea {
 
 .profile-panel-row span {
   color: #1f2b23;
+}
+
+.profile-layout {
+  grid-template-columns: minmax(0, 860px);
+}
+
+.profile-form {
+  max-width: 760px;
+}
+
+.settings-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(42, 87, 66, 0.1);
+  border-radius: 22px;
+  background: rgba(42, 87, 66, 0.06);
+}
+
+.settings-section h3 {
+  margin: 0;
+}
+
+.inline-check {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  gap: 0.65rem !important;
+  color: #4d584f;
+}
+
+.inline-check input {
+  width: auto;
+  min-width: 1.05rem;
 }
 
 .user-chip {

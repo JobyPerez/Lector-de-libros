@@ -5,7 +5,17 @@ const refreshTokenKey = "lector.refreshToken";
 
 export type UserRole = "ADMIN" | "EDITOR";
 
+export type UserAiCredentialSummary = {
+  awsRegion: string | null;
+  deepgramTtsModel: string;
+  hasAwsAccessKeyId: boolean;
+  hasAwsCredentials: boolean;
+  hasAwsSecretAccessKey: boolean;
+  hasDeepgramApiKey: boolean;
+};
+
 export type SessionUser = {
+  aiCredentials?: UserAiCredentialSummary;
   displayName: string | null;
   email: string;
   role: UserRole;

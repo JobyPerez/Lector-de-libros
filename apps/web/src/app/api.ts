@@ -381,6 +381,29 @@ export type DeepgramBalanceSummary = {
   project_name: string;
 };
 
+export const deepgramTtsModels = [
+  "aura-2-nestor-es",
+  "aura-2-carina-es",
+  "aura-2-alvaro-es",
+  "aura-2-diana-es",
+  "aura-2-agustina-es",
+  "aura-2-silvia-es"
+] as const;
+
+export type DeepgramTtsModel = (typeof deepgramTtsModels)[number];
+
+export type UpdateProfilePayload = {
+  awsAccessKeyId?: string;
+  awsRegion?: string;
+  awsSecretAccessKey?: string;
+  clearAwsCredentials?: boolean;
+  clearDeepgramApiKey?: boolean;
+  deepgramApiKey?: string;
+  deepgramTtsModel?: DeepgramTtsModel;
+  displayName?: string;
+  email: string;
+};
+
 function decodeBase64Url(value: string): string {
   const normalizedValue = value.replace(/-/gu, "+").replace(/_/gu, "/");
   const paddingLength = (4 - (normalizedValue.length % 4)) % 4;
@@ -586,6 +609,14 @@ export function resetPassword(payload: { password: string; token: string }) {
 
 export function fetchCurrentUser(accessToken: string) {
   return request<{ user: SessionUser }>("/auth/me", { accessToken });
+}
+
+export function updateCurrentUserProfile(accessToken: string, payload: UpdateProfilePayload) {
+  return request<{ user: SessionUser }>("/auth/me/profile", {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
 }
 
 export function fetchBooks(accessToken: string) {

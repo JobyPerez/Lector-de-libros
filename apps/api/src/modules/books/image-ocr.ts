@@ -85,9 +85,22 @@ type VisionOcrPrompt = {
 };
 
 type RunOcrOnImageOptions = {
+  awsCredentials?: AwsTextractCredentials | null | undefined;
   ocrMode?: ImageOcrMode;
   promptOverride?: string;
   rotation?: ImageRotation;
+};
+
+export type AwsTextractCredentials = {
+  accessKeyId: string | null;
+  region: string | null;
+  secretAccessKey: string | null;
+};
+
+type CompleteAwsTextractCredentials = {
+  accessKeyId: string;
+  region: string;
+  secretAccessKey: string;
 };
 
 const ocrResponseSchema = z.object({
@@ -785,20 +798,20 @@ async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeTy
   }
 }
 
-function hasTextractConfiguration(): boolean {
-  return Boolean(appEnv.awsRegion && appEnv.awsAccessKeyId && appEnv.awsSecretAccessKey);
+function hasTextractConfiguration(credentials?: AwsTextractCredentials | null): credentials is CompleteAwsTextractCredentials {
+  return Boolean(credentials?.region && credentials.accessKeyId && credentials.secretAccessKey);
 }
 
-function ensureTextractConfiguration(): void {
-  if (!hasTextractConfiguration()) {
-    throw Object.assign(new Error("AWS Textract configuration no está disponible en este entorno."), {
+function ensureTextractConfiguration(credentials?: AwsTextractCredentials | null): asserts credentials is CompleteAwsTextractCredentials {
+  if (!hasTextractConfiguration(credentials)) {
+    throw Object.assign(new Error("Configura tus credenciales de AWS en tu perfil para usar Textract."), {
       statusCode: 503
     });
   }
 }
 
-async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
-  ensureTextractConfiguration();
+async function runTextractOcr(fileBuffer: Buffer, credentials?: AwsTextractCredentials | null): Promise<OcrPageResult> {
+  ensureTextractConfiguration(credentials);
 
   const optimizedBuffer = await sharp(fileBuffer).flatten({ background: "#ffffff" }).jpeg({ quality: 80 }).toBuffer();
   const imageMeta = await sharp(optimizedBuffer).metadata();
@@ -806,10 +819,10 @@ async function runTextractOcr(fileBuffer: Buffer): Promise<OcrPageResult> {
   const imgHeight = imageMeta.height || 1000;
 
   const client = new TextractClient({
-    region: appEnv.awsRegion!,
+    region: credentials.region,
     credentials: {
-      accessKeyId: appEnv.awsAccessKeyId!,
-      secretAccessKey: appEnv.awsSecretAccessKey!
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey
     }
   });
 
@@ -958,6 +971,7 @@ export async function runOcrOnImage(
   options: RunOcrOnImageOptions = {}
 ): Promise<OcrPageResult> {
   const ocrMode = options.ocrMode ?? "AUTO";
+  const awsCredentials = options.awsCredentials;
   const rotation = options.rotation ?? 0;
   const promptOverride = options.promptOverride?.trim();
   const normalizedMimeType = inferImageMimeType(fileName, mimeType);
@@ -979,11 +993,11 @@ export async function runOcrOnImage(
   }
 
   if (ocrMode === "TEXTRACT") {
-    return runTextractOcr(rotatedBuffer);
+    return runTextractOcr(rotatedBuffer, awsCredentials);
   }
 
   try {
-    return await runTextractOcr(rotatedBuffer);
+    return await runTextractOcr(rotatedBuffer, awsCredentials);
   } catch (textractError) {
     if (hasVisionOcrConfiguration()) {
       try {
