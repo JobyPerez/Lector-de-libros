@@ -61,6 +61,16 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeWhitespacePreservingLineBreaks(value: string): string {
+  return value
+    .replace(/\r/g, "")
+    .replace(/\u00a0/g, " ")
+    .split(/\n/u)
+    .map((line) => line.replace(/[^\S\n]+/gu, " ").trim())
+    .join("\n")
+    .trim();
+}
+
 function computePercentile(values: number[], percentile: number): number {
   if (values.length === 0) {
     return 0;
@@ -103,6 +113,31 @@ function startsWithLowercaseLetter(value: string): boolean {
   return /^\p{Ll}/u.test(value);
 }
 
+function isStandaloneQuotedLine(value: string): boolean {
+  const normalized = normalizeWhitespace(value);
+  return /^["“][^"”]{1,120}["”]$/u.test(normalized);
+}
+
+function startsNewDialogue(value: string): boolean {
+  return /^—\S/u.test(normalizeWhitespace(value));
+}
+
+function startsNewSentenceLike(value: string): boolean {
+  return /^["“¿¡A-ZÁÉÍÓÚÑ]/u.test(normalizeWhitespace(value));
+}
+
+function shouldPreserveLineBreak(previousLine: PdfLine, currentLine: PdfLine, bodyLineWidth: number): boolean {
+  const previousText = normalizeWhitespace(previousLine.text);
+  const currentText = normalizeWhitespace(currentLine.text);
+
+  if (startsNewDialogue(currentText) || isStandaloneQuotedLine(previousText) || isStandaloneQuotedLine(currentText)) {
+    return true;
+  }
+
+  const previousLineIsShort = bodyLineWidth > 0 && previousLine.width <= bodyLineWidth * 0.58;
+  return previousLineIsShort && endsWithSentencePunctuation(previousText) && startsNewSentenceLike(currentText);
+}
+
 function isHeadingLikeText(text: string, allowTitleCase = true): boolean {
   const normalized = normalizeWhitespace(text);
   if (!normalized) {
@@ -137,6 +172,8 @@ function isHeadingLikeText(text: string, allowTitleCase = true): boolean {
 
 function joinLines(lines: PdfLine[]): string {
   let mergedText = "";
+  let previousLine: PdfLine | null = null;
+  const bodyLineWidth = Math.max(computePercentile(lines.map((line) => line.width).filter((width) => width > 0), 0.85), 1);
 
   for (const line of lines) {
     const normalizedLine = normalizeWhitespace(line.text);
@@ -146,18 +183,24 @@ function joinLines(lines: PdfLine[]): string {
 
     if (!mergedText) {
       mergedText = normalizedLine;
+      previousLine = line;
       continue;
     }
 
-    if (/[\p{L}\p{N}]-$/u.test(mergedText) && startsWithLowercaseLetter(normalizedLine)) {
+    const previousText = previousLine ? normalizeWhitespace(previousLine.text) : mergedText.split("\n").at(-1) ?? mergedText;
+
+    if (/[\p{L}\p{N}]-$/u.test(previousText) && startsWithLowercaseLetter(normalizedLine)) {
       mergedText = `${mergedText.slice(0, -1)}${normalizedLine}`;
+      previousLine = line;
       continue;
     }
 
-    mergedText = `${mergedText} ${normalizedLine}`;
+    const separator = previousLine && shouldPreserveLineBreak(previousLine, line, bodyLineWidth) ? "\n" : " ";
+    mergedText = `${mergedText}${separator}${normalizedLine}`;
+    previousLine = line;
   }
 
-  return normalizeWhitespace(mergedText);
+  return normalizeWhitespacePreservingLineBreaks(mergedText);
 }
 
 function joinLinesPreservingLineBreaks(lines: PdfLine[]): string {
@@ -340,6 +383,26 @@ function isVerseLikeParagraph(lines: PdfLine[], metrics: PdfPageMetrics): boolea
   const nonTerminalLineCount = normalizedLines
     .slice(0, -1)
     .filter((line) => !endsWithSentencePunctuation(line)).length;
+  const wrappedProseLineCount = lines
+    .slice(0, -1)
+    .filter((line, index) => (widthRatios[index] ?? 0) >= 0.72 && !endsWithSentencePunctuation(normalizedLines[index] ?? ""))
+    .length;
+
+  if (
+    startsNewDialogue(normalizedLines[0] ?? "")
+    && normalizedLines.slice(1).every((line) => !startsNewDialogue(line))
+    && nonTerminalLineCount >= 2
+  ) {
+    return false;
+  }
+
+  if (wrappedProseLineCount >= lines.length - 1 && endsWithSentencePunctuation(normalizedLines[normalizedLines.length - 1] ?? "")) {
+    return false;
+  }
+
+  if (nearFullLineCount >= Math.max(2, lines.length - 1) && shortLineCount <= 1) {
+    return false;
+  }
 
   if (
     averageLineCharacters <= 42
@@ -354,10 +417,6 @@ function isVerseLikeParagraph(lines: PdfLine[], metrics: PdfPageMetrics): boolea
     && nonTerminalLineCount >= Math.max(2, normalizedLines.length - 2)
   ) {
     return true;
-  }
-
-  if (nearFullLineCount >= Math.max(2, lines.length - 1) && shortLineCount <= 1) {
-    return false;
   }
 
   if (shortLineCount >= Math.max(2, Math.ceil(lines.length * 0.5)) && nearFullLineCount <= Math.floor(lines.length / 2)) {
@@ -395,7 +454,23 @@ function buildLines(items: PositionedTextItem[]): PdfLine[] {
   return groupedLines
     .map((line) => {
       const sortedLineParts = [...line.parts].sort((left, right) => left.x - right.x);
-      const lineText = normalizeWhitespace(sortedLineParts.map((part) => part.text).join(" "));
+      let rawLineText = "";
+      let previousPartEnd: number | null = null;
+
+      for (const part of sortedLineParts) {
+        const estimatedPartWidth = Math.max(part.width, Math.max(part.height * 0.45, 4) * Math.max(part.text.length, 1));
+        const gapFromPreviousPart = previousPartEnd === null ? 0 : part.x - previousPartEnd;
+        const visualSpaceThreshold = Math.max(part.height * 0.2, 1.5);
+
+        if (rawLineText && gapFromPreviousPart > visualSpaceThreshold) {
+          rawLineText += " ";
+        }
+
+        rawLineText += part.text;
+        previousPartEnd = part.x + estimatedPartWidth;
+      }
+
+      const lineText = normalizeWhitespace(rawLineText);
       const xStart = Math.min(...sortedLineParts.map((part) => part.x));
       const xEnd = Math.max(...sortedLineParts.map((part) => part.x + Math.max(part.width, Math.max(part.height * 0.45, 4) * Math.max(part.text.length, 1))));
       const lineHeight = Math.max(computeMedian(sortedLineParts.map((part) => part.height).filter((height) => height > 0)), 0);
