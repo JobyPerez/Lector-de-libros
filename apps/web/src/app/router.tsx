@@ -36,6 +36,7 @@ type AnimatedOutletScreen = {
 
 type AppUpdateState = {
   errorMessage: string | null;
+  hasPendingUpdate: boolean;
   info: AppVersionResponse | null;
   isChecking: boolean;
   isUpdating: boolean;
@@ -265,6 +266,7 @@ function formatCommitList(commits: AppVersionCommit[]) {
 function AppUpdateGate() {
   const [updateState, setUpdateState] = useState<AppUpdateState>({
     errorMessage: null,
+    hasPendingUpdate: false,
     info: null,
     isChecking: false,
     isUpdating: false,
@@ -287,6 +289,7 @@ function AppUpdateGate() {
       setUpdateState((current) => ({
         ...current,
         errorMessage: null,
+        hasPendingUpdate: true,
         isChecking: true,
         updateSW: updateSWRef
       }));
@@ -301,6 +304,7 @@ function AppUpdateGate() {
         setUpdateState((current) => ({
           ...current,
           errorMessage: null,
+          hasPendingUpdate: true,
           info,
           isChecking: false,
           updateSW: updateSWRef
@@ -313,6 +317,7 @@ function AppUpdateGate() {
         setUpdateState((current) => ({
           ...current,
           errorMessage: error instanceof Error ? error.message : "No se pudieron cargar los cambios de la actualización.",
+          hasPendingUpdate: true,
           info: null,
           isChecking: false,
           updateSW: updateSWRef
@@ -323,6 +328,7 @@ function AppUpdateGate() {
     updateSWRef = registerSW({
       immediate: true,
       onNeedRefresh() {
+        setUpdateState((current) => ({ ...current, hasPendingUpdate: true, updateSW: updateSWRef }));
         void loadUpdateInfo();
       },
       onRegisteredSW(_swUrl, registration) {
@@ -341,7 +347,7 @@ function AppUpdateGate() {
     };
   }, []);
 
-  const hasMandatoryUpdate = updateState.isChecking || updateState.info?.hasUpdate === true || Boolean(updateState.errorMessage);
+  const hasMandatoryUpdate = updateState.hasPendingUpdate || updateState.isChecking || updateState.info?.hasUpdate === true || Boolean(updateState.errorMessage);
 
   if (!hasMandatoryUpdate) {
     return null;
@@ -349,7 +355,7 @@ function AppUpdateGate() {
 
   const commits = updateState.info?.commits ?? [];
   const currentVersionLabel = `v${__APP_VERSION__}`;
-  const nextVersionLabel = updateState.info ? `v${updateState.info.currentVersion}` : "nueva versión";
+  const nextVersionLabel = updateState.info?.hasUpdate === true ? `v${updateState.info.currentVersion}` : "la nueva versión descargada";
 
   async function handleUpdateClick() {
     if (!updateState.updateSW) {
