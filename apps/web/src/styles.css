@@ -1358,7 +1358,9 @@ textarea {
 }
 
 .shelf-book-cover-shell {
-  position: relative;
+  display: grid;
+  gap: 0.55rem;
+  justify-items: center;
 }
 
 .shelf-book-cover-frame {
@@ -1455,13 +1457,8 @@ textarea {
 }
 
 .shelf-book-source-badge {
-  position: absolute;
-  top: 0.85rem;
-  left: 0.95rem;
-  z-index: 3;
-  background: rgba(255, 250, 242, 0.84);
+  background: rgba(217, 137, 65, 0.12);
   color: var(--amber-700);
-  backdrop-filter: blur(10px);
 }
 
 .book-card-copy {

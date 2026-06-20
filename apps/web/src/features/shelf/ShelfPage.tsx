@@ -142,22 +142,23 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
   }, [coverQuery.data]);
 
   return (
-    <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
-      <span className="book-spine shelf-book-source-badge">{book.sourceType}</span>
-
-      {coverUrl ? (
-        <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
-      ) : (
-        <div className="shelf-book-cover-placeholder">
-          <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
-          <div className="shelf-book-cover-fallback-copy">
-            <span className="shelf-book-cover-kicker">{describeSourceType(book.sourceType)}</span>
-            <strong>{book.title}</strong>
-            <span>{book.authorName ?? "Autor pendiente"}</span>
+    <>
+      <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
+        {coverUrl ? (
+          <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
+        ) : (
+          <div className="shelf-book-cover-placeholder">
+            <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
+            <div className="shelf-book-cover-fallback-copy">
+              <span className="shelf-book-cover-kicker">{describeSourceType(book.sourceType)}</span>
+              <strong>{book.title}</strong>
+              <span>{book.authorName ?? "Autor pendiente"}</span>
+            </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+      <span className="book-spine shelf-book-source-badge">{book.sourceType}</span>
+    </>
   );
 }
 
