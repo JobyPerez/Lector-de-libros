@@ -17,10 +17,14 @@ type AudioVoiceOption = {
 };
 
 export type ReaderAudioReadingTimeStats = {
+  bookRemainingCostLabel: string | null;
   bookRemainingLabel: string;
+  bookTotalCostLabel: string | null;
   bookTotalLabel: string;
+  chapterRemainingCostLabel: string | null;
   chapterRemainingLabel: string | null;
   chapterTitle: string | null;
+  chapterTotalCostLabel: string | null;
   chapterTotalLabel: string | null;
 };
 
@@ -97,6 +101,10 @@ type NavigationTocCardProps = {
   onSummaryClick?: (() => void) | undefined;
   title: string;
 };
+
+function formatReadingTimeValue(timeLabel: string, costLabel: string | null) {
+  return costLabel ? `${timeLabel} / ${costLabel}` : timeLabel;
+}
 
 export type ReaderNavigationListItem =
   | {
@@ -410,21 +418,21 @@ export function ReaderAudioSettingsContent({
           <dl>
             <div>
               <dt>Libro</dt>
-              <dd>{readingTimeStats.bookTotalLabel}</dd>
+              <dd>{formatReadingTimeValue(readingTimeStats.bookTotalLabel, readingTimeStats.bookTotalCostLabel)}</dd>
             </div>
             <div>
               <dt>Te queda</dt>
-              <dd>{readingTimeStats.bookRemainingLabel}</dd>
+              <dd>{formatReadingTimeValue(readingTimeStats.bookRemainingLabel, readingTimeStats.bookRemainingCostLabel)}</dd>
             </div>
             {readingTimeStats.chapterTotalLabel && readingTimeStats.chapterRemainingLabel ? (
               <>
                 <div>
                   <dt>{readingTimeStats.chapterTitle ?? "Capítulo"}</dt>
-                  <dd>{readingTimeStats.chapterTotalLabel}</dd>
+                  <dd>{formatReadingTimeValue(readingTimeStats.chapterTotalLabel, readingTimeStats.chapterTotalCostLabel)}</dd>
                 </div>
                 <div>
                   <dt>Te queda del capítulo</dt>
-                  <dd>{readingTimeStats.chapterRemainingLabel}</dd>
+                  <dd>{formatReadingTimeValue(readingTimeStats.chapterRemainingLabel, readingTimeStats.chapterRemainingCostLabel)}</dd>
                 </div>
               </>
             ) : null}

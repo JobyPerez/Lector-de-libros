@@ -47,6 +47,12 @@ const USD_BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 2,
   style: "currency"
 });
+const USD_ESTIMATED_COST_FORMATTER = new Intl.NumberFormat("en-US", {
+  currency: "USD",
+  maximumFractionDigits: 4,
+  minimumFractionDigits: 2,
+  style: "currency"
+});
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
@@ -70,6 +76,8 @@ const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toF
 const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
 const ESTIMATED_WORDS_PER_MINUTE = 155;
 const FALLBACK_WORDS_PER_PARAGRAPH = 70;
+const FALLBACK_CHARACTERS_PER_PARAGRAPH = 420;
+const DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS = 0.03;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -335,6 +343,10 @@ function formatUsdBalance(amount: number) {
   return USD_BALANCE_FORMATTER.format(amount);
 }
 
+function formatEstimatedUsdCost(amount: number) {
+  return USD_ESTIMATED_COST_FORMATTER.format(Math.max(0, amount));
+}
+
 function countWords(value: string) {
   return value.trim().split(/\s+/u).filter(Boolean).length;
 }
@@ -369,6 +381,15 @@ function estimateReadingMinutes(paragraphCount: number, wordsPerParagraph: numbe
     : DEFAULT_PLAYBACK_RATE;
 
   return (safeParagraphCount * safeWordsPerParagraph) / ESTIMATED_WORDS_PER_MINUTE / safePlaybackRate;
+}
+
+function estimateDeepgramTtsCostUsd(paragraphCount: number, charactersPerParagraph: number) {
+  const safeParagraphCount = Math.max(0, paragraphCount);
+  const safeCharactersPerParagraph = Number.isFinite(charactersPerParagraph) && charactersPerParagraph > 0
+    ? charactersPerParagraph
+    : FALLBACK_CHARACTERS_PER_PARAGRAPH;
+
+  return (safeParagraphCount * safeCharactersPerParagraph / 1000) * DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS;
 }
 
 function sanitizeDownloadFileName(value: string) {
@@ -2002,12 +2023,25 @@ export function ReaderPage() {
     const wordsPerParagraph = currentParagraphs.length > 0
       ? currentPageWordCount / currentParagraphs.length
       : FALLBACK_WORDS_PER_PARAGRAPH;
+    const currentPageCharacterCount = currentParagraphs.reduce((total, paragraph) => total + paragraph.paragraphText.trim().length, 0);
+    const charactersPerParagraph = currentParagraphs.length > 0
+      ? currentPageCharacterCount / currentParagraphs.length
+      : FALLBACK_CHARACTERS_PER_PARAGRAPH;
+    const shouldShowCost = selectedTtsEngine === "deepgram";
     const bookRemainingParagraphs = Math.max(0, totalParagraphs - currentParagraph.sequenceNumber + 1);
     const stats: ReaderAudioReadingTimeStats = {
+      bookRemainingCostLabel: shouldShowCost
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(bookRemainingParagraphs, charactersPerParagraph))
+        : null,
       bookRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(bookRemainingParagraphs, wordsPerParagraph, playbackRate)),
+      bookTotalCostLabel: shouldShowCost
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(totalParagraphs, charactersPerParagraph))
+        : null,
       bookTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(totalParagraphs, wordsPerParagraph, playbackRate)),
+      chapterRemainingCostLabel: null,
       chapterRemainingLabel: null,
       chapterTitle: null,
+      chapterTotalCostLabel: null,
       chapterTotalLabel: null
     };
 
@@ -2036,11 +2070,17 @@ export function ReaderPage() {
 
     return {
       ...stats,
+      chapterRemainingCostLabel: shouldShowCost
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(chapterRemainingParagraphs, charactersPerParagraph))
+        : null,
       chapterRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterRemainingParagraphs, wordsPerParagraph, playbackRate)),
       chapterTitle: activeTocEntry.title,
+      chapterTotalCostLabel: shouldShowCost
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(chapterParagraphs, charactersPerParagraph))
+        : null,
       chapterTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterParagraphs, wordsPerParagraph, playbackRate))
     };
-  }, [activeTocEntry, currentParagraph, currentParagraphs, navigationQuery.data?.toc, playbackRate, totalParagraphs]);
+  }, [activeTocEntry, currentParagraph, currentParagraphs, navigationQuery.data?.toc, playbackRate, selectedTtsEngine, totalParagraphs]);
 
   useEffect(() => {
     let isMounted = true;
