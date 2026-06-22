@@ -57,6 +57,7 @@ type ChatCompletionResponse = {
     finish_reason?: string;
     message?: {
       content?: string | Array<{ text?: string; type?: string }>;
+      reasoning?: string | null;
     };
   }>;
   error?: {
@@ -140,9 +141,11 @@ const supportedImageMimeTypes = new Set([
 
 const contentTopCropRatio = 0.08;
 const contentBottomCropRatio = 0.06;
-const githubModelsImageByteLimit = 5 * 1024 * 1024;
+const opencodeVisionImageByteLimit = 5 * 1024 * 1024;
 const minimumHeightForMarginCrop = 900;
-const optimizedVisionImageTargetBytes = Math.floor(githubModelsImageByteLimit * 0.9);
+const optimizedVisionImageTargetBytes = Math.floor(opencodeVisionImageByteLimit * 0.9);
+const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
+const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 const optimizedVisionRetryVariants: readonly VisionImageOptimizationVariant[] = [
   { quality: 82 },
   { maxWidth: 2400, quality: 78 },
@@ -290,7 +293,15 @@ function extractAssistantText(content: ChatCompletionResponse["choices"]): strin
       .trim();
   }
 
-  return "";
+  return content?.[0]?.message?.reasoning?.trim() ?? "";
+}
+
+function getOpenCodeChatCompletionsEndpoint(model: string): string {
+  return model.endsWith("-free") ? OPENCODE_ZEN_ENDPOINT : OPENCODE_GO_ENDPOINT;
+}
+
+function getOpenCodeMaxTokens(model: string, requestedMaxTokens: number): number {
+  return model.endsWith("-free") ? Math.max(requestedMaxTokens, 4096) : requestedMaxTokens;
 }
 
 function extractJsonPayload(responseText: string): string {
@@ -310,8 +321,8 @@ function extractJsonPayload(responseText: string): string {
 
 function createVisionOcrParseError(responseText: string, reason?: string): Error {
   const message = reason === "length"
-    ? "GitHub Models devolvió un JSON incompleto durante el OCR de la imagen."
-    : "GitHub Models devolvió una respuesta no válida durante el OCR de la imagen.";
+    ? "OpenCode devolvió un JSON incompleto durante el OCR de la imagen."
+    : "OpenCode devolvió una respuesta no válida durante el OCR de la imagen.";
 
   return Object.assign(new Error(`${message} Respuesta recibida: ${responseText.slice(0, 400)}`), {
     statusCode: 502
@@ -377,7 +388,7 @@ function createVisionRateLimitError(providerMessage: string, retryAfterSeconds?:
   const normalizedRetryAfterSeconds = normalizeRetryAfterSeconds(retryAfterSeconds);
 
   return Object.assign(new Error(
-    `GitHub Models limitó temporalmente el OCR. Reintentando en ${normalizedRetryAfterSeconds} segundos. ${providerMessage}`.trim()
+    `OpenCode limitó temporalmente el OCR. Reintentando en ${normalizedRetryAfterSeconds} segundos. ${providerMessage}`.trim()
   ), {
     code: "OCR_RATE_LIMIT" as const,
     retryAfterSeconds: normalizedRetryAfterSeconds,
@@ -405,9 +416,9 @@ export function isRateLimitOcrError(error: unknown): error is OcrRateLimitError 
 function createVisionProviderError(
   details: { code?: string | null; message?: string | null },
   optimized: boolean,
-  fallbackPrefix = "Error OCR de GitHub Models"
+  fallbackPrefix = "Error OCR de OpenCode"
 ): Error {
-  const providerMessage = details.message?.trim() || "GitHub Models devolvió un error al procesar la imagen.";
+  const providerMessage = details.message?.trim() || "OpenCode devolvió un error al procesar la imagen.";
   const providerCode = details.code?.trim() || null;
   const normalizedProviderError = `${providerCode ?? ""} ${providerMessage}`.trim();
 
@@ -431,7 +442,7 @@ function extractVisionProviderErrorDetails(source: string | ChatCompletionRespon
   if (typeof source !== "string") {
     return {
       code: source?.code?.trim() || null,
-      message: source?.message?.trim() || "GitHub Models devolvió un error al procesar la imagen."
+      message: source?.message?.trim() || "OpenCode devolvió un error al procesar la imagen."
     };
   }
 
@@ -449,7 +460,7 @@ function extractVisionProviderErrorDetails(source: string | ChatCompletionRespon
 
   return {
     code: null,
-    message: source.trim() || "GitHub Models devolvió un error al procesar la imagen."
+    message: source.trim() || "OpenCode devolvió un error al procesar la imagen."
   };
 }
 
@@ -497,12 +508,12 @@ function buildParagraphsFromRawText(rawText: string): string[] {
 }
 
 function hasVisionOcrConfiguration(): boolean {
-  return Boolean(appEnv.githubModelsToken && appEnv.githubModelsEndpoint && appEnv.githubModelsVisionModel);
+  return Boolean(appEnv.opencodeGoApiKey);
 }
 
 function ensureVisionOcrConfiguration(): void {
   if (!hasVisionOcrConfiguration()) {
-    throw Object.assign(new Error("El OCR preciso con IA no está disponible en este entorno. Configura GitHub Models para usar este modo."), {
+    throw Object.assign(new Error("El OCR preciso con IA no está disponible en este entorno. Configura OpenCode para usar este modo."), {
       statusCode: 503
     });
   }
@@ -690,17 +701,18 @@ async function executeVisionOcrRequest(
   requestPayload: VisionImageRequestPayload,
   promptOverride?: string
 ): Promise<OcrPageResult> {
-  const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
+  const model = appEnv.opencodeModel;
+  const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const prompt = buildVisionOcrPrompt(promptOverride);
 
-  const response = await fetch(`${endpointBase}/chat/completions`, {
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${appEnv.githubModelsToken}`,
+      Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      max_tokens: prompt.maxTokens,
+      max_tokens: getOpenCodeMaxTokens(model, prompt.maxTokens),
       messages: [
         {
           role: "system",
@@ -722,8 +734,7 @@ async function executeVisionOcrRequest(
           ]
         }
       ],
-      model: appEnv.githubModelsVisionModel,
-      response_format: { type: "json_object" },
+      model,
       temperature: 0
     })
   });
@@ -772,7 +783,7 @@ async function executeVisionOcrRequest(
   const rawText = normalizeWhitespace(parsedPayload.rawText || paragraphs.join(" "));
 
   if (paragraphs.length === 0 && parsedPayload.blocks.length === 0) {
-    throw Object.assign(new Error("GitHub Models no ha podido extraer texto legible de la imagen."), {
+    throw Object.assign(new Error("OpenCode no ha podido extraer texto legible de la imagen."), {
       statusCode: 422
     });
   }
@@ -780,7 +791,7 @@ async function executeVisionOcrRequest(
   return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
 }
 
-async function runVisionOcrWithGitHubModels(fileBuffer: Buffer, normalizedMimeType: string, promptOverride?: string): Promise<OcrPageResult> {
+async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: string, promptOverride?: string): Promise<OcrPageResult> {
   const croppedBuffer = await cropImageBufferToContent(fileBuffer);
 
   try {
@@ -989,7 +1000,7 @@ export async function runOcrOnImage(
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
+    return runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, promptOverride);
   }
 
   if (ocrMode === "TEXTRACT") {
@@ -1001,7 +1012,7 @@ export async function runOcrOnImage(
   } catch (textractError) {
     if (hasVisionOcrConfiguration()) {
       try {
-        return await runVisionOcrWithGitHubModels(rotatedBuffer, normalizedMimeType, promptOverride);
+        return await runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, promptOverride);
       } catch {
         // fall through to local
       }

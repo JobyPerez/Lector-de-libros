@@ -7,6 +7,7 @@ type ChatCompletionResponse = {
     finish_reason?: string | null;
     message?: {
       content?: string | Array<{ text?: string; type?: string }> | null;
+      reasoning?: string | null;
     } | null;
   }>;
   error?: {
@@ -20,6 +21,8 @@ const summaryResponseSchema = z.object({
 });
 
 const SUMMARY_CHUNK_TARGET_CHARACTERS = 9000;
+const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
+const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 
 export const DEFAULT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume una sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 export const DEFAULT_SECTION_AI_REQUEST_PROMPT = DEFAULT_SECTION_SUMMARY_PROMPT;
@@ -30,11 +33,19 @@ const DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT = "Eres editor literario. Recibir
 const SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS = "Regla técnica obligatoria: responde únicamente con JSON válido con la forma exacta {\"summary\":\"texto del resumen\"}. El valor de summary debe ser una cadena de texto preparada para mostrarse en el cuadro de resumen, no un objeto, no una lista y no una estructura anidada.";
 
 function ensureSummaryConfiguration() {
-  if (!appEnv.githubModelsToken || !appEnv.githubModelsEndpoint || !appEnv.githubModelsVisionModel) {
-    throw Object.assign(new Error("El resumen con IA no está disponible en este entorno. Configura GitHub Models para reutilizar el modelo del OCR."), {
+  if (!appEnv.opencodeGoApiKey) {
+    throw Object.assign(new Error("El resumen con IA no está disponible en este entorno. Configura OpenCode para usar este modo."), {
       statusCode: 503
     });
   }
+}
+
+function getOpenCodeChatCompletionsEndpoint(model: string): string {
+  return model.endsWith("-free") ? OPENCODE_ZEN_ENDPOINT : OPENCODE_GO_ENDPOINT;
+}
+
+function getOpenCodeMaxTokens(model: string, requestedMaxTokens: number): number {
+  return model.endsWith("-free") ? Math.max(requestedMaxTokens, 4096) : requestedMaxTokens;
 }
 
 function extractAssistantText(content: ChatCompletionResponse["choices"]): string {
@@ -51,7 +62,7 @@ function extractAssistantText(content: ChatCompletionResponse["choices"]): strin
       .trim();
   }
 
-  return "";
+  return content?.[0]?.message?.reasoning?.trim() ?? "";
 }
 
 function extractJsonPayload(responseText: string): string {
@@ -73,7 +84,7 @@ function extractProviderErrorDetails(source: string | ChatCompletionResponse["er
   if (typeof source !== "string") {
     return {
       code: source?.code?.trim() || null,
-      message: source?.message?.trim() || "GitHub Models devolvió un error al generar el resumen."
+      message: source?.message?.trim() || "OpenCode devolvió un error al generar el resumen."
     };
   }
 
@@ -91,7 +102,7 @@ function extractProviderErrorDetails(source: string | ChatCompletionResponse["er
 
   return {
     code: null,
-    message: source.trim() || "GitHub Models devolvió un error al generar el resumen."
+    message: source.trim() || "OpenCode devolvió un error al generar el resumen."
   };
 }
 
@@ -136,7 +147,7 @@ function createSummaryRateLimitError(details: { code: string | null; message: st
     ? ` Espera ${retryAfterSeconds} segundos antes de intentarlo de nuevo.`
     : " Espera un momento antes de intentarlo de nuevo.";
 
-  return Object.assign(new Error(`GitHub Models ha alcanzado el límite temporal de peticiones.${waitMessage}`), {
+  return Object.assign(new Error(`OpenCode ha alcanzado el límite temporal de peticiones.${waitMessage}`), {
     code: "AI_RATE_LIMIT",
     providerCode: details.code,
     retryAfterSeconds: retryAfterSeconds ?? undefined,
@@ -146,7 +157,7 @@ function createSummaryRateLimitError(details: { code: string | null; message: st
 }
 
 function createSummaryProviderError(details: { code: string | null; message: string }) {
-  return Object.assign(new Error(`Error de GitHub Models al generar el resumen: ${details.message}`), {
+  return Object.assign(new Error(`Error de OpenCode al generar el resumen: ${details.message}`), {
     providerCode: details.code,
     statusCode: 502
   });
@@ -242,9 +253,10 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
     : DEFAULT_SECTION_SUMMARY_PROMPT);
   const systemPrompt = `${editablePrompt}\n\n${SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
 
-  const endpointBase = appEnv.githubModelsEndpoint!.replace(/\/$/u, "");
+  const model = appEnv.opencodeModel;
+  const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const requestBody = JSON.stringify({
-    max_tokens: prompt.condensed ? 900 : 1200,
+    max_tokens: getOpenCodeMaxTokens(model, prompt.condensed ? 900 : 1200),
     messages: [
       {
         role: "system",
@@ -257,8 +269,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
           : `${prompt.scopeLabel ?? "Sección"}: ${prompt.sectionTitle}\n\nTexto de referencia:\n\n${prompt.text}`
       }
     ],
-    model: appEnv.githubModelsVisionModel,
-    response_format: { type: "json_object" },
+    model,
     temperature: 0.15
   });
 
@@ -266,10 +277,10 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
   let retryAfterSeconds: number | null = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    response = await fetch(`${endpointBase}/chat/completions`, {
+    response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${appEnv.githubModelsToken}`,
+        Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
         "Content-Type": "application/json"
       },
       body: requestBody
@@ -285,7 +296,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
     retryAfterSeconds = parseRetryAfterSeconds(response.headers.get("retry-after")) ?? parseRetryWaitFromMessage(normalizedProviderError);
 
     if (isContentFilterError(normalizedProviderError)) {
-      throw Object.assign(new Error("GitHub Models bloqueó el resumen por sus políticas de contenido."), {
+      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
         statusCode: 422
       });
     }
@@ -305,7 +316,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
   if (!response?.ok) {
     throw createSummaryRateLimitError({
       code: null,
-      message: "GitHub Models no aceptó la petición por límite temporal."
+      message: "OpenCode no aceptó la petición por límite temporal."
     }, retryAfterSeconds);
   }
 
@@ -314,7 +325,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
     const details = extractProviderErrorDetails(payload.error);
     const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
     if (isContentFilterError(normalizedProviderError)) {
-      throw Object.assign(new Error("GitHub Models bloqueó el resumen por sus políticas de contenido."), {
+      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
         statusCode: 422
       });
     }
@@ -337,7 +348,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
 
     return summaryText;
   } catch {
-    throw Object.assign(new Error(`GitHub Models devolvió una respuesta inválida al generar el resumen. Respuesta: ${assistantText.slice(0, 400)}`), {
+    throw Object.assign(new Error(`OpenCode devolvió una respuesta inválida al generar el resumen. Respuesta: ${assistantText.slice(0, 400)}`), {
       statusCode: 502
     });
   }
