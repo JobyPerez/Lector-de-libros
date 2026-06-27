@@ -422,6 +422,28 @@ function getSpeechSynthesisApi() {
   return window.speechSynthesis;
 }
 
+let deviceSpeechPrimed = false;
+
+function primeDeviceSpeechSynthesis(): boolean {
+  const speechSynthesisApi = getSpeechSynthesisApi();
+  if (!speechSynthesisApi || deviceSpeechPrimed) {
+    return deviceSpeechPrimed;
+  }
+
+  try {
+    const warmup = new SpeechSynthesisUtterance(" ");
+    warmup.volume = 0;
+    warmup.rate = 1;
+    speechSynthesisApi.speak(warmup);
+    speechSynthesisApi.cancel();
+    deviceSpeechPrimed = true;
+  } catch {
+    // iOS puede lanzar si el motor no está listo; se reintentará en el siguiente gesto.
+  }
+
+  return deviceSpeechPrimed;
+}
+
 function getWakeLockApi() {
   if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
     return null;
@@ -1537,6 +1559,31 @@ export function ReaderPage() {
       setSelectedTtsEngine("deepgram");
     }
   }, [isDeviceTtsSupported, selectedTtsEngine]);
+
+  useEffect(() => {
+    if (!isDeviceTtsSupported || typeof window === "undefined") {
+      return;
+    }
+
+    if (deviceSpeechPrimed) {
+      return;
+    }
+
+    const handleFirstGesture = () => {
+      if (document.visibilityState === "hidden") {
+        return;
+      }
+      primeDeviceSpeechSynthesis();
+    };
+
+    window.addEventListener("pointerdown", handleFirstGesture, { once: true, passive: true });
+    window.addEventListener("keydown", handleFirstGesture, { once: true, passive: true });
+
+    return () => {
+      window.removeEventListener("pointerdown", handleFirstGesture);
+      window.removeEventListener("keydown", handleFirstGesture);
+    };
+  }, [isDeviceTtsSupported]);
 
   useEffect(() => {
     if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
@@ -3517,8 +3564,9 @@ export function ReaderPage() {
     }
     deviceUtteranceRef.current = utterance;
     setHasActivePlaybackSession(true);
-    await ensureScreenWakeLock();
+    primeDeviceSpeechSynthesis();
     speechSynthesisApi.speak(utterance);
+    void ensureScreenWakeLock();
     setIsAudioLoading(false);
   }
 
