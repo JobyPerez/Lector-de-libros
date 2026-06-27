@@ -3897,6 +3897,54 @@ textarea {
   padding: 1.15rem;
 }
 
+.ai-request-section-picker {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid rgba(42, 87, 66, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 253, 247, 0.62);
+}
+
+.ai-request-section-picker-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.85rem;
+}
+
+.ai-request-section-picker-header h3,
+.ai-request-section-picker-header p {
+  margin: 0;
+}
+
+.ai-request-section-picker-actions,
+.ai-request-section-picker-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ai-request-section-picker-option {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid rgba(42, 87, 66, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+  color: #24362b;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.ai-request-section-picker-option input {
+  width: auto;
+  margin: 0;
+}
+
 .ai-request-card {
   gap: 1rem;
 }

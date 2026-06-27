@@ -303,6 +303,8 @@ export function AiRequestsPage() {
   const initialPromptKeyRef = useRef<string | null>(null);
   const [promptText, setPromptText] = useState("");
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitStatus, setSubmitStatus] = useState<string | null>(null);
+  const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([]);
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -804,6 +806,57 @@ export function AiRequestsPage() {
   const previousSection = currentSectionIndex > 0 ? sectionEntries[currentSectionIndex - 1] ?? null : null;
   const nextSection = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex + 1] ?? null : null;
 
+  useEffect(() => {
+    if (!chapterId) {
+      setSelectedChapterIds([]);
+      return;
+    }
+
+    setSelectedChapterIds([chapterId]);
+  }, [chapterId]);
+
+  const selectedChapterIdSet = useMemo(() => new Set(selectedChapterIds), [selectedChapterIds]);
+  const selectedChapterCount = selectedChapterIds.length;
+
+  function selectCurrentChapterForAiRequest() {
+    if (chapterId) {
+      setSelectedChapterIds([chapterId]);
+      setSubmitError(null);
+      setSubmitStatus(null);
+    }
+  }
+
+  function selectPreviousAndCurrentChaptersForAiRequest() {
+    if (!chapterId) {
+      return;
+    }
+
+    if (currentSectionIndex < 0) {
+      setSelectedChapterIds([chapterId]);
+      setSubmitError(null);
+      setSubmitStatus(null);
+      return;
+    }
+
+    setSelectedChapterIds(sectionEntries.slice(0, currentSectionIndex + 1).map((entry) => entry.chapterId));
+    setSubmitError(null);
+    setSubmitStatus(null);
+  }
+
+  function selectAllChaptersForAiRequest() {
+    setSelectedChapterIds(sectionEntries.map((entry) => entry.chapterId));
+    setSubmitError(null);
+    setSubmitStatus(null);
+  }
+
+  function toggleChapterForAiRequest(targetChapterId: string) {
+    setSelectedChapterIds((currentChapterIds) => currentChapterIds.includes(targetChapterId)
+      ? currentChapterIds.filter((selectedChapterId) => selectedChapterId !== targetChapterId)
+      : [...currentChapterIds, targetChapterId]);
+    setSubmitError(null);
+    setSubmitStatus(null);
+  }
+
   function sectionAiRequestsHref(targetChapterId: string) {
     return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/ai-requests`;
   }
@@ -973,19 +1026,32 @@ export function AiRequestsPage() {
       return;
     }
 
+    if (isSectionScope && selectedChapterIds.length === 0) {
+      setSubmitError("Selecciona al menos un capítulo para enviar la petición.");
+      return;
+    }
+
     setIsSubmitting(true);
     setSubmitError(null);
+    setSubmitStatus("Enviando petición a OpenCode...");
 
     try {
-      await createAiRequest(accessToken, bookId, {
+      const result = await createAiRequest(accessToken, bookId, {
         ...(chapterId ? { chapterId } : {}),
+        ...(chapterId ? { chapterIds: selectedChapterIds } : {}),
         promptText: promptText.trim()
       });
+      if (!result.request) {
+        throw new Error("La IA respondió, pero no se pudo recuperar la petición creada.");
+      }
       await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
+      setSubmitStatus("Petición creada correctamente.");
     } catch (error) {
+      setSubmitStatus(null);
       if (isRetryableRateLimitError(error)) {
-        setRetryAfterSeconds(error.retryAfterSeconds);
-        setSubmitError(`GitHub Models está limitando temporalmente las peticiones. Espera ${error.retryAfterSeconds} segundos antes de volver a intentarlo.`);
+        const retryAfter = error.retryAfterSeconds ?? 15;
+        setRetryAfterSeconds(retryAfter);
+        setSubmitError(`OpenCode está limitando temporalmente las peticiones. Espera ${retryAfter} segundos antes de volver a intentarlo.`);
       } else {
         setSubmitError(error instanceof Error ? error.message : "No se pudo crear la petición IA.");
       }
@@ -1187,16 +1253,76 @@ export function AiRequestsPage() {
             onChange={(event) => {
               setPromptText(event.target.value);
               setSubmitError(null);
+              setSubmitStatus(null);
             }}
             rows={6}
             value={promptText}
           />
         </label>
-        {submitError ? <p className="error-text">{submitError}</p> : null}
+        {isSectionScope ? (
+          <div className="ai-request-section-picker">
+            <div className="ai-request-section-picker-header">
+              <div>
+                <p className="eyebrow">Texto enviado a la IA</p>
+                <h3>Capítulos seleccionados</h3>
+                <p className="subdued">
+                  {selectedChapterCount === 1
+                    ? "1 capítulo seleccionado"
+                    : `${selectedChapterCount} capítulos seleccionados`}
+                </p>
+              </div>
+              <div className="ai-request-section-picker-actions">
+                <button
+                  className="secondary-button"
+                  disabled={isSubmitting || !chapterId}
+                  onClick={selectCurrentChapterForAiRequest}
+                  type="button"
+                >
+                  Solo este
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={isSubmitting || !chapterId || sectionEntries.length === 0}
+                  onClick={selectPreviousAndCurrentChaptersForAiRequest}
+                  type="button"
+                >
+                  Anteriores y este
+                </button>
+                <button
+                  className="secondary-button"
+                  disabled={isSubmitting || sectionEntries.length === 0}
+                  onClick={selectAllChaptersForAiRequest}
+                  type="button"
+                >
+                  Todos
+                </button>
+              </div>
+            </div>
+            {sectionEntries.length > 0 ? (
+              <div className="ai-request-section-picker-list">
+                {sectionEntries.map((entry) => (
+                  <label className="ai-request-section-picker-option" key={entry.chapterId}>
+                    <input
+                      checked={selectedChapterIdSet.has(entry.chapterId)}
+                      disabled={isSubmitting}
+                      onChange={() => toggleChapterForAiRequest(entry.chapterId)}
+                      type="checkbox"
+                    />
+                    <span>{entry.title}</span>
+                  </label>
+                ))}
+              </div>
+            ) : (
+              <p className="subdued">Cargando capítulos...</p>
+            )}
+          </div>
+        ) : null}
+        {submitError ? <p className="error-text" role="alert">{submitError}</p> : null}
+        {submitStatus ? <p className="subdued" role="status">{submitStatus}</p> : null}
         <div className="reader-note-editor-actions">
           <button
             className="primary-button"
-            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading}
+            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading || (isSectionScope && selectedChapterIds.length === 0)}
             onClick={() => void handleCreateRequest()}
             type="button"
           >

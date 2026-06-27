@@ -146,6 +146,11 @@ export async function createStoredZip(files: ZipInputFile[]) {
   const centralParts = preparedFiles.map(createCentralDirectoryHeader);
   const centralDirectorySize = centralParts.reduce((sum, part) => sum + part.length, 0);
   const endRecord = createEndOfCentralDirectory(preparedFiles.length, centralDirectorySize, centralDirectoryOffset);
+  const blobParts = [...localParts, ...centralParts, endRecord].map((part) => {
+    const copy = new Uint8Array(part.length);
+    copy.set(part);
+    return copy.buffer;
+  });
 
-  return new Blob([...localParts, ...centralParts, endRecord], { type: "application/zip" });
+  return new Blob(blobParts, { type: "application/zip" });
 }

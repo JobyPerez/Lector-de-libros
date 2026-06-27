@@ -882,13 +882,16 @@ export function fetchAiRequests(accessToken: string, bookId: string, chapterId?:
   return request<AiRequestsResponse>(path, { accessToken });
 }
 
-export function createAiRequest(accessToken: string, bookId: string, payload: { promptText: string; chapterId?: string }) {
+export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; promptText: string }) {
   const path = payload.chapterId
     ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
     : `/books/${bookId}/ai-requests`;
   return request<{ request: AiRequestRecord | null }>(path, {
     accessToken,
-    body: { promptText: payload.promptText },
+    body: {
+      ...(payload.chapterIds ? { chapterIds: payload.chapterIds } : {}),
+      promptText: payload.promptText
+    },
     method: "POST"
   });
 }

@@ -95,6 +95,7 @@ const sectionSummaryGenerationSchema = z.object({
 });
 
 const aiRequestPayloadSchema = z.object({
+  chapterIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   promptText: z.string().trim().min(1).max(4000)
 });
 
@@ -1972,6 +1973,79 @@ async function listBookParagraphTexts(
   );
 
   return ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+}
+
+function normalizeSelectedSectionChapterIds(currentChapterId: string, selectedChapterIds?: string[]): string[] {
+  const normalizedIds = (selectedChapterIds?.length ? selectedChapterIds : [currentChapterId])
+    .map((chapterId) => chapterId.trim())
+    .filter(Boolean);
+  return [...new Set(normalizedIds)];
+}
+
+async function resolveSelectedSectionContexts(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  currentChapterId: string,
+  selectedChapterIds?: string[]
+): Promise<BookSectionContext[]> {
+  const normalizedChapterIds = normalizeSelectedSectionChapterIds(currentChapterId, selectedChapterIds);
+  if (normalizedChapterIds.length === 0) {
+    throw Object.assign(new Error("Selecciona al menos un capítulo para enviar la petición a la IA."), {
+      statusCode: 422
+    });
+  }
+
+  const requestedChapterIds = new Set(normalizedChapterIds);
+  const orderedChapterIds = (await resolveBookOutline(connection, bookId))
+    .map((entry) => entry.chapterId)
+    .filter((chapterId) => requestedChapterIds.has(chapterId));
+
+  if (orderedChapterIds.length !== requestedChapterIds.size) {
+    throw Object.assign(new Error("Alguno de los capítulos seleccionados no existe en este libro."), {
+      statusCode: 422
+    });
+  }
+
+  const sections: BookSectionContext[] = [];
+  for (const chapterId of orderedChapterIds) {
+    const section = await resolveBookSectionContext(connection, bookId, chapterId);
+    if (!section) {
+      throw Object.assign(new Error("Alguno de los capítulos seleccionados no se pudo resolver."), {
+        statusCode: 422
+      });
+    }
+    sections.push(section);
+  }
+
+  return sections;
+}
+
+async function listSelectedSectionParagraphTexts(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  sections: BookSectionContext[]
+): Promise<string[]> {
+  const paragraphs: string[] = [];
+  for (const section of sections) {
+    const sectionParagraphs = await listSectionParagraphTexts(connection, bookId, section);
+    if (sectionParagraphs.length > 0) {
+      paragraphs.push(`Capítulo: ${section.title}`, ...sectionParagraphs);
+    }
+  }
+  return paragraphs;
+}
+
+function createSelectedSectionsAiTitle(sections: BookSectionContext[]): string {
+  if (sections.length === 1) {
+    return sections[0]?.title ?? "Sección";
+  }
+
+  return `Capítulos seleccionados: ${sections.map((section) => section.title).join(", ")}`;
+}
+
+function formatSectionAiRequestPromptText(promptText: string, sections: BookSectionContext[]): string {
+  const selectedChapterList = sections.map((section) => `- ${section.title}`).join("\n");
+  return `Capítulos enviados:\n${selectedChapterList}\n\nPetición:\n${promptText}`;
 }
 
 async function listAiRequests(
@@ -4700,20 +4774,21 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Section not found." });
       }
 
-      const paragraphs = await listSectionParagraphTexts(connection, params.bookId, section);
+      const selectedSections = await resolveSelectedSectionContexts(connection, params.bookId, params.chapterId, body.chapterIds);
+      const paragraphs = await listSelectedSectionParagraphTexts(connection, params.bookId, selectedSections);
       if (paragraphs.length === 0) {
-        return reply.status(422).send({ message: "La sección no tiene texto suficiente para enviar una petición a la IA." });
+        return reply.status(422).send({ message: "Los capítulos seleccionados no tienen texto suficiente para enviar una petición a la IA." });
       }
 
       const responseText = await generateAiRequestResponse({
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Sección",
-        title: section.title
+        title: createSelectedSectionsAiTitle(selectedSections)
       });
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
-        promptText: body.promptText,
+        promptText: formatSectionAiRequestPromptText(body.promptText, selectedSections),
         responseText,
         scopeType: "SECTION",
         section,
