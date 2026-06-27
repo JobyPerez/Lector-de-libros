@@ -27,6 +27,7 @@ import {
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
+import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
@@ -703,7 +704,7 @@ const appendCancelHoldMilliseconds = 5000;
 
 function buildOcrRetryCountdownLabel(secondsRemaining: number) {
   const normalizedSeconds = Math.max(Math.ceil(secondsRemaining), 1);
-  return `GitHub Models limitó temporalmente el OCR. Reintentando automáticamente en ${normalizedSeconds} s.`;
+  return `OpenCode limitó temporalmente el OCR. Reintentando automáticamente en ${normalizedSeconds} s.`;
 }
 
 function getBuilderWakeLockApi() {
@@ -719,6 +720,7 @@ export function BookBuilderPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const accessToken = useAuthStore((state) => state.accessToken);
+  const hasAwsCredentials = useAuthStore((state) => state.user?.aiCredentials?.hasAwsCredentials === true);
   const [createForm, setCreateForm] = useState({ authorName: "", synopsis: "", title: "" });
   const [selectedCreateFiles, setSelectedCreateFiles] = useState<File[]>([]);
   const [selectedAppendFiles, setSelectedAppendFiles] = useState<File[]>([]);
@@ -2759,6 +2761,11 @@ export function BookBuilderPage() {
                           >
                             AWS Textract
                           </button>
+                          {createOcrMode === "TEXTRACT" ? (
+                            <div className="append-placement-cost-row">
+                              <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
+                            </div>
+                          ) : null}
                           <button
                             aria-checked={createOcrMode === "LOCAL"}
                             className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
@@ -2997,6 +3004,11 @@ export function BookBuilderPage() {
                           >
                             AWS Textract
                           </button>
+                          {appendOcrMode === "TEXTRACT" ? (
+                            <div className="append-placement-cost-row">
+                              <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
+                            </div>
+                          ) : null}
                           <button
                             aria-checked={appendOcrMode === "LOCAL"}
                             className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
@@ -3353,7 +3365,7 @@ export function BookBuilderPage() {
                         <div aria-live="polite" className="review-image-processing-overlay">
                           <span className="review-processing-spinner" />
                           <div className="review-processing-copy">
-                            <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de GitHub Models..." : "Reconociendo OCR..."}</strong>
+                            <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de OpenCode..." : "Reconociendo OCR..."}</strong>
                             {ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
                           </div>
                         </div>
@@ -3715,6 +3727,7 @@ export function BookBuilderPage() {
                   >
                     <strong>AWS Textract</strong>
                     <span>Extracción de maquetación fija con credenciales AWS.</span>
+                    <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
                   </button>
                   <button
                     className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}

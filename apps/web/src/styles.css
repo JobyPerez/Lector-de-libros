@@ -6024,3 +6024,44 @@ textarea {
     filter: none !important;
   }
 }
+
+.aws-cost-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--forest-700, #2a5742);
+  background: var(--forest-100, rgba(42, 87, 66, 0.12));
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.aws-cost-badge strong {
+  font-weight: 600;
+}
+
+.append-placement-cost-row {
+  margin-top: 0.4rem;
+  padding-left: 0.4rem;
+}
+
+.aws-cost-badge strong {
+  font-weight: 600;
+}
+
+.aws-cost-badge-loading {
+  color: var(--forest-500, #467256);
+  opacity: 0.7;
+}
+
+.aws-cost-badge-error {
+  color: var(--amber-700, #a95725);
+  background: rgba(217, 137, 65, 0.15);
+}
+
+.aws-cost-row {
+  margin: 0.5rem 0;
+  display: flex;
+  justify-content: flex-start;
+}

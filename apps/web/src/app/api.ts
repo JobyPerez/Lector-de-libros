@@ -611,6 +611,22 @@ export function fetchCurrentUser(accessToken: string) {
   return request<{ user: SessionUser }>("/auth/me", { accessToken });
 }
 
+export type AwsCostLineItem = {
+  amount: number;
+  service: string;
+};
+
+export type AwsCostMonthToDate = {
+  currency: string;
+  fetchedAt: string;
+  services: AwsCostLineItem[];
+  total: number;
+};
+
+export function fetchAwsCostMonthToDate(accessToken: string) {
+  return request<AwsCostMonthToDate>("/aws-cost/month-to-date", { accessToken });
+}
+
 export function updateCurrentUserProfile(accessToken: string, payload: UpdateProfilePayload) {
   return request<{ user: SessionUser }>("/auth/me/profile", {
     accessToken,

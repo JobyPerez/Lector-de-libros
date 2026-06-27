@@ -7,6 +7,7 @@ import { appEnv } from "./config/env.js";
 import { registerAppVersionRoutes } from "./modules/app-version/app-version.routes.js";
 import { registerAnnotationRoutes } from "./modules/annotations/annotations.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
+import { registerAwsCostRoutes } from "./modules/aws-cost/aws-cost.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
 import { registerProgressRoutes } from "./modules/progress/progress.routes.js";
 import { registerTtsRoutes } from "./modules/tts/tts.routes.js";
@@ -48,6 +49,7 @@ export function buildApp(): FastifyInstance {
   void app.register(registerAppVersionRoutes);
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });
+  void app.register(registerAwsCostRoutes, { prefix: "/aws-cost" });
   void app.register(registerProgressRoutes);
   void app.register(registerTtsRoutes);
   void app.register(registerUserRoutes, { prefix: "/users" });

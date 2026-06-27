@@ -4,6 +4,7 @@ import { Navigate } from "react-router-dom";
 
 import { deepgramTtsModels, fetchCurrentUser, updateCurrentUserProfile, type DeepgramTtsModel } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { AwsCostBadge } from "../../components/AwsCostBadge";
 
 type ProfileFormState = {
   awsAccessKeyId: string;
@@ -178,6 +179,12 @@ export function ProfilePage() {
             </div>
             <span className="tag-chip">{aiCredentials?.hasAwsCredentials ? "AWS configurado" : "AWS pendiente"}</span>
           </div>
+
+          {aiCredentials?.hasAwsCredentials ? (
+            <div className="aws-cost-row">
+              <AwsCostBadge accessToken={accessToken} hasAwsCredentials />
+            </div>
+          ) : null}
 
           <label>
             Región AWS
