@@ -1,7 +1,7 @@
 {
   "name": "lector-de-libros",
   "private": true,
-  "version": "0.1.166",
+  "version": "0.1.167",
   "workspaces": [
     "apps/*"
   ],
