@@ -444,6 +444,16 @@ function primeDeviceSpeechSynthesis(): boolean {
   return deviceSpeechPrimed;
 }
 
+function shouldCancelDeviceSpeechOnPause() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const userAgent = navigator.userAgent;
+  const isIos = /iPad|iPhone|iPod/.test(userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return isIos && /Safari/.test(userAgent) && !/CriOS|FxiOS|EdgiOS/.test(userAgent);
+}
+
 function getWakeLockApi() {
   if (typeof navigator === "undefined" || !("wakeLock" in navigator)) {
     return null;
@@ -4042,7 +4052,13 @@ export function ReaderPage() {
     if (selectedTtsEngine === "device") {
       const speechSynthesisApi = getSpeechSynthesisApi();
       if (speechSynthesisApi && (speechSynthesisApi.speaking || speechSynthesisApi.pending)) {
-        speechSynthesisApi.pause();
+        if (shouldCancelDeviceSpeechOnPause()) {
+          speechSynthesisApi.cancel();
+          deviceUtteranceRef.current = null;
+          setHasActivePlaybackSession(false);
+        } else {
+          speechSynthesisApi.pause();
+        }
       }
       setIsAudioPlaying(false);
       void releaseScreenWakeLock();
