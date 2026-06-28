@@ -23,6 +23,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { AiModelBadge } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
@@ -1242,6 +1243,9 @@ export function AiRequestsPage() {
               <span>Fin: pág. {requestsQuery.data.section.endPageNumber}</span>
             </div>
           ) : null}
+          <div className="reader-section-summary-ai-model">
+            <AiModelBadge feature="ai-requests" label="IA" />
+          </div>
         </div>
       </header>
 

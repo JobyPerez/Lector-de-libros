@@ -21,6 +21,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { AiModelBadge } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
@@ -1088,6 +1089,9 @@ export function SectionSummaryPage() {
               <span>Fin: pág. {section.endPageNumber}</span>
             </div>
           ) : null}
+          <div className="reader-section-summary-ai-model">
+            <AiModelBadge feature="section-summary" label="IA" />
+          </div>
         </div>
 
         <div className="reader-section-summary-actions">

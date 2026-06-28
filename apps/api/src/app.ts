@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 
 import { getDatabaseStatus } from "./config/database.js";
 import { appEnv } from "./config/env.js";
+import { registerAiConfigRoutes } from "./modules/ai-config/ai-config.routes.js";
 import { registerAppVersionRoutes } from "./modules/app-version/app-version.routes.js";
 import { registerAnnotationRoutes } from "./modules/annotations/annotations.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
@@ -47,6 +48,7 @@ export function buildApp(): FastifyInstance {
 
   void app.register(registerAnnotationRoutes);
   void app.register(registerAppVersionRoutes);
+  void app.register(registerAiConfigRoutes);
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });
   void app.register(registerAwsCostRoutes, { prefix: "/aws-cost" });

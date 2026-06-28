@@ -8,6 +8,7 @@ import {
   createImageBook,
   deleteBookPage,
   fetchAppendImagesImportProgress,
+  fetchAwsCostMonthToDate,
   fetchBookPage,
   fetchBookPageImage,
   fetchBooks,
@@ -28,6 +29,7 @@ import {
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
+import { useAiConfig } from "../../components/AiModelBadge";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
@@ -810,6 +812,19 @@ export function BookBuilderPage() {
       : null;
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
+  const aiConfigQuery = useAiConfig();
+  const reviewOcrModelLabel = aiConfigQuery.data?.model ?? "mimo-v2.5-free";
+  const awsCostQuery = useQuery({
+    enabled: Boolean(accessToken) && hasAwsCredentials,
+    queryFn: () => fetchAwsCostMonthToDate(accessToken as string),
+    queryKey: ["aws-cost-month-to-date"],
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 60 * 60 * 1000
+  });
+  const awsTextractCostLabel = awsCostQuery.data
+    ? `${awsCostQuery.data.total.toFixed(2)} ${awsCostQuery.data.currency}`
+    : "—";
   const booksQuery = useQuery({
     enabled: Boolean(accessToken),
     queryKey: ["builder-books"],
@@ -2744,28 +2759,23 @@ export function BookBuilderPage() {
                       <div className="ocr-prompt-trigger-group">
                         <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR para crear el libro">
                           <button
-                            aria-checked={createOcrMode === "VISION"}
-                            className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
-                            onClick={() => setCreateOcrMode("VISION")}
-                            role="radio"
-                            type="button"
-                          >
-                            Preciso con IA
-                          </button>
-                          <button
                             aria-checked={createOcrMode === "TEXTRACT"}
                             className={createOcrMode === "TEXTRACT" ? "append-placement-option active" : "append-placement-option"}
                             onClick={() => setCreateOcrMode("TEXTRACT")}
                             role="radio"
                             type="button"
                           >
-                            AWS Textract
+                            IA: AWS Textract
                           </button>
-                          {createOcrMode === "TEXTRACT" ? (
-                            <div className="append-placement-cost-row">
-                              <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
-                            </div>
-                          ) : null}
+                          <button
+                            aria-checked={createOcrMode === "VISION"}
+                            className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            onClick={() => setCreateOcrMode("VISION")}
+                            role="radio"
+                            type="button"
+                          >
+                            IA: {reviewOcrModelLabel}
+                          </button>
                           <button
                             aria-checked={createOcrMode === "LOCAL"}
                             className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
@@ -2773,7 +2783,7 @@ export function BookBuilderPage() {
                             role="radio"
                             type="button"
                           >
-                            Rápido local
+                            Sin IA: tesseract.js
                           </button>
                         </div>
                         {createOcrMode === "VISION" ? (
@@ -2790,6 +2800,11 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
+                      {createOcrMode === "TEXTRACT" ? (
+                        <div className="append-placement-cost-row">
+                          <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
+                        </div>
+                      ) : null}
                       {createOcrMode === "VISION" && isCreatePromptEditorOpen ? (
                         <OcrPromptEditor
                           disabled={isCreating}
@@ -2800,6 +2815,13 @@ export function BookBuilderPage() {
                         />
                       ) : null}
                     </div>
+                    {createOcrMode === "VISION" ? (
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. Gratuito.</span>
+                    ) : createOcrMode === "TEXTRACT" ? (
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
+                    ) : (
+                      <span className="ai-model-badge ai-model-badge-compact">Sin IA: tesseract.js. Gratuito.</span>
+                    )}
                   </div>
 
                   {selectedCreateFiles.length > 0 ? (
@@ -2985,16 +3007,6 @@ export function BookBuilderPage() {
                       <div className="ocr-prompt-trigger-group">
                         <div className="append-placement-picker" role="radiogroup" aria-label="Modo OCR">
                           <button
-                            aria-checked={appendOcrMode === "VISION"}
-                            className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
-                            disabled={isAppending}
-                            onClick={() => setAppendOcrMode("VISION")}
-                            role="radio"
-                            type="button"
-                          >
-                            Preciso con IA
-                          </button>
-                          <button
                             aria-checked={appendOcrMode === "TEXTRACT"}
                             className={appendOcrMode === "TEXTRACT" ? "append-placement-option active" : "append-placement-option"}
                             disabled={isAppending}
@@ -3002,13 +3014,18 @@ export function BookBuilderPage() {
                             role="radio"
                             type="button"
                           >
-                            AWS Textract
+                            IA: AWS Textract
                           </button>
-                          {appendOcrMode === "TEXTRACT" ? (
-                            <div className="append-placement-cost-row">
-                              <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
-                            </div>
-                          ) : null}
+                          <button
+                            aria-checked={appendOcrMode === "VISION"}
+                            className={appendOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isAppending}
+                            onClick={() => setAppendOcrMode("VISION")}
+                            role="radio"
+                            type="button"
+                          >
+                            IA: {reviewOcrModelLabel}
+                          </button>
                           <button
                             aria-checked={appendOcrMode === "LOCAL"}
                             className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
@@ -3017,7 +3034,7 @@ export function BookBuilderPage() {
                             role="radio"
                             type="button"
                           >
-                            Rápido local
+                            Sin IA: tesseract.js
                           </button>
                         </div>
                         {appendOcrMode === "VISION" ? (
@@ -3034,6 +3051,11 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
+                      {appendOcrMode === "TEXTRACT" ? (
+                        <div className="append-placement-cost-row">
+                          <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
+                        </div>
+                      ) : null}
                       {appendOcrMode === "VISION" && isAppendPromptEditorOpen ? (
                         <OcrPromptEditor
                           disabled={isAppending}
@@ -3044,6 +3066,13 @@ export function BookBuilderPage() {
                         />
                       ) : null}
                     </div>
+                    {appendOcrMode === "VISION" ? (
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. Gratuito.</span>
+                    ) : appendOcrMode === "TEXTRACT" ? (
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
+                    ) : (
+                      <span className="ai-model-badge ai-model-badge-compact">Sin IA: tesseract.js. Gratuito.</span>
+                    )}
                   </div>
 
                   {appendError ? <p className="error-text">{appendError}</p> : null}
@@ -3689,21 +3718,37 @@ export function BookBuilderPage() {
                   <div className="review-ocr-option-stack">
                     <div className="review-ocr-option-row">
                       <button
+                        className={reviewOcrMode === "TEXTRACT" ? "review-ocr-option active" : "review-ocr-option"}
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => void handleRerunOcr("TEXTRACT")}
+                        type="button"
+                      >
+                        <strong>IA: AWS Textract</strong>
+                        <ul className="review-ocr-option-list">
+                          <li>De pago.</li>
+                          <li>Gasto de este mes: {awsTextractCostLabel}</li>
+                        </ul>
+                      </button>
+                    </div>
+                    <div className="review-ocr-option-row">
+                      <button
                         className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         onClick={() => void handleRerunOcr("VISION", reviewPromptOverride)}
                         type="button"
                       >
-                        <strong>Preciso con IA</strong>
-                        <span>Mayor precisión para páginas difíciles.</span>
+                        <strong>IA: {reviewOcrModelLabel}</strong>
+                        <ul className="review-ocr-option-list">
+                          <li>Gratuito.</li>
+                        </ul>
                       </button>
                       <button
                         aria-expanded={isReviewPromptEditorOpen}
-                        aria-label="Editar prompt de Preciso con IA"
+                        aria-label={`Editar prompt de ${reviewOcrModelLabel}`}
                         className={isReviewPromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         onClick={() => setIsReviewPromptEditorOpen((current) => !current)}
-                        title="Editar prompt de Preciso con IA"
+                        title={`Editar prompt de ${reviewOcrModelLabel}`}
                         type="button"
                       >
                         <PromptIcon />
@@ -3718,26 +3763,18 @@ export function BookBuilderPage() {
                         value={reviewPromptOverride}
                       />
                     ) : null}
+                    <button
+                      className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
+                      disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                      onClick={() => void handleRerunOcr("LOCAL")}
+                      type="button"
+                    >
+                      <strong>Sin IA: tesseract.js</strong>
+                      <ul className="review-ocr-option-list">
+                        <li>Gratuito.</li>
+                      </ul>
+                    </button>
                   </div>
-                  <button
-                    className={reviewOcrMode === "TEXTRACT" ? "review-ocr-option active" : "review-ocr-option"}
-                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                    onClick={() => void handleRerunOcr("TEXTRACT")}
-                    type="button"
-                  >
-                    <strong>AWS Textract</strong>
-                    <span>Extracción de maquetación fija con credenciales AWS.</span>
-                    <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
-                  </button>
-                  <button
-                    className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
-                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                    onClick={() => void handleRerunOcr("LOCAL")}
-                    type="button"
-                  >
-                    <strong>Rápido local</strong>
-                    <span>Más veloz para páginas limpias.</span>
-                  </button>
                 </div>
               ) : null}
 

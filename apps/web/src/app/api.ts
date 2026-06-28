@@ -99,6 +99,19 @@ export function fetchAppVersion(fromCommit: string) {
   return request<AppVersionResponse>(`/app-version?${query.toString()}`);
 }
 
+export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests" | "outline-regenerate";
+
+export type AiConfigResponse = {
+  configured: boolean;
+  features: AiFeature[];
+  model: string;
+  provider: "opencode";
+};
+
+export function fetchAiConfig() {
+  return request<AiConfigResponse>("/ai-config");
+}
+
 async function refreshAccessToken(): Promise<string> {
   if (!refreshSessionPromise) {
     const { clearSession, refreshToken } = useAuthStore.getState();

@@ -5,6 +5,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { fetchBook, fetchBookOutline, regenerateBookOutline, updateBookOutline, type BookOutlineEntry, type BookOutlineSource } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
+import { AiModelBadge } from "../../components/AiModelBadge";
 
 type OutlineEditorEntry = Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title"> & {
   editorId: string;
@@ -161,6 +162,9 @@ export function OutlineEditorPage() {
           <div>
             <p className="eyebrow">Estructura editorial</p>
             <h2>{bookQuery.data?.title ?? "Índice del libro"}</h2>
+            <div className="outline-editor-ai-model">
+              <AiModelBadge feature="outline-regenerate" label="IA" />
+            </div>
           </div>
           <button
             aria-label="Volver al libro"
