@@ -3626,6 +3626,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      const derivedOutline = await buildDerivedBookOutline(connection, bookId);
+      if (derivedOutline.length > 0) {
+        await replaceBookOutline(connection, bookId, derivedOutline, "MANUAL");
+      }
+
       await connection.commit();
     } catch (error) {
       await connection.rollback();
@@ -3939,6 +3944,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           updatedAt: Date.now(),
           userId: currentUser.userId
         });
+      }
+
+      if (!wasCancelled) {
+        const derivedOutline = await buildDerivedBookOutline(connection, existingBook.bookId);
+        if (derivedOutline.length > 0) {
+          await replaceBookOutline(connection, existingBook.bookId, derivedOutline, "MANUAL");
+        }
       }
 
       return reply.status(wasCancelled ? 200 : 201).send({
