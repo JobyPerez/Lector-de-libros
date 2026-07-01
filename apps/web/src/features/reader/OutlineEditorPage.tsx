@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { fetchBook, fetchBookOutline, regenerateBookOutline, updateBookOutline, type BookOutlineEntry, type BookOutlineSource } from "../../app/api";
+import { fetchBook, fetchBookOutline, isBookEditor, regenerateBookOutline, updateBookOutline, type BookOutlineEntry, type BookOutlineSource } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
 import { AiModelBadge } from "../../components/AiModelBadge";
@@ -74,6 +74,14 @@ export function OutlineEditorPage() {
 
   const outlineSourceMeta = getOutlineSourceMeta(outlineQuery.data?.outlineSource ?? "NONE");
 
+  const canEdit = isBookEditor(bookQuery.data?.currentUserRole);
+
+  useEffect(() => {
+    if (bookQuery.data && !isBookEditor(bookQuery.data.currentUserRole)) {
+      navigate(`/books/${bookId}`);
+    }
+  }, [bookQuery.data, bookId, navigate]);
+
   useEffect(() => {
     setOutlineEntries(
       (outlineQuery.data?.outline ?? []).map((entry) => ({
@@ -98,7 +106,7 @@ export function OutlineEditorPage() {
   }
 
   async function handleSaveOutline() {
-    if (!accessToken || !bookId) {
+    if (!accessToken || !bookId || !canEdit) {
       return;
     }
 
@@ -131,7 +139,7 @@ export function OutlineEditorPage() {
   }
 
   async function handleRegenerateOutline() {
-    if (!accessToken || !bookId) {
+    if (!accessToken || !bookId || !canEdit) {
       return;
     }
 
@@ -184,10 +192,10 @@ export function OutlineEditorPage() {
               <h3>Editor de capítulos</h3>
             </div>
             <div className="reader-navigation-section-actions">
-              <button className="secondary-button" disabled={isRegeneratingOutline || isSavingOutline || outlineQuery.isLoading} onClick={() => void handleRegenerateOutline()} type="button">
+              <button className="secondary-button" disabled={!canEdit || isRegeneratingOutline || isSavingOutline || outlineQuery.isLoading} onClick={() => void handleRegenerateOutline()} type="button">
                 {isRegeneratingOutline ? "Regenerando..." : "Regenerar índice"}
               </button>
-              <button className="secondary-button" disabled={isRegeneratingOutline || isSavingOutline} onClick={addOutlineEntry} type="button">
+              <button className="secondary-button" disabled={!canEdit || isRegeneratingOutline || isSavingOutline} onClick={addOutlineEntry} type="button">
                 Añadir entrada
               </button>
             </div>
@@ -251,7 +259,7 @@ export function OutlineEditorPage() {
           </div>
 
           <div className="import-panel-actions">
-            <button className="primary-button" disabled={isSavingOutline || isRegeneratingOutline || outlineQuery.isLoading} onClick={() => void handleSaveOutline()} type="button">
+            <button className="primary-button" disabled={!canEdit || isSavingOutline || isRegeneratingOutline || outlineQuery.isLoading} onClick={() => void handleSaveOutline()} type="button">
               {isSavingOutline ? "Guardando índice..." : "Guardar índice"}
             </button>
             <button className="secondary-button" onClick={() => navigate(`/books/${bookId}`)} type="button">

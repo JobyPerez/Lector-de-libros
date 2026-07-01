@@ -265,12 +265,21 @@ export type AuthResponse = {
   user: SessionUser;
 };
 
+export type BookRole = "OWNER" | "EDITOR" | "COMMENTER" | "VIEWER";
+
+export type ShareRole = "viewer" | "commenter" | "editor";
+
 export type BookSummary = {
   authorName: string | null;
   bookId: string;
   createdAt?: string;
+  currentUserRole?: BookRole;
   lastOpenedAt?: string | null;
   notionBookUrl?: string | null;
+  ownerDisplayName?: string | null;
+  ownerUserId?: string;
+  ownerUsername?: string;
+  shareUserAnnotations?: boolean;
   synopsis?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
@@ -279,6 +288,26 @@ export type BookSummary = {
   totalParagraphs: number;
   updatedAt?: string;
 };
+
+export type BookShare = {
+  createdAt: string;
+  displayName: string | null;
+  email: string;
+  invitedByUsername: string | null;
+  role: ShareRole;
+  userId: string;
+  username: string;
+};
+
+export type BookScope = "mine" | "shared" | "all";
+
+export function isBookEditor(role: BookRole | undefined): boolean {
+  return role === "OWNER" || role === "EDITOR";
+}
+
+export function isBookCommenterOrAbove(role: BookRole | undefined): boolean {
+  return role === "OWNER" || role === "EDITOR" || role === "COMMENTER";
+}
 
 export type ImageOcrMode = "LOCAL" | "VISION" | "TEXTRACT";
 export type ImageRotation = 0 | 90 | 180 | 270;
@@ -458,7 +487,11 @@ export type ReaderNote = {
   paragraphId: string | null;
   paragraphNumber: number | null;
   sequenceNumber: number | null;
+  sharedWithUserIds?: string[];
   updatedAt: string;
+  userDisplayName?: string | null;
+  userId?: string;
+  username?: string;
 };
 
 
@@ -648,8 +681,9 @@ export function updateCurrentUserProfile(accessToken: string, payload: UpdatePro
   });
 }
 
-export function fetchBooks(accessToken: string) {
-  return request<{ books: BookSummary[] }>("/books", { accessToken });
+export function fetchBooks(accessToken: string, options?: { scope?: BookScope }) {
+  const params = options?.scope ? `?scope=${encodeURIComponent(options.scope)}` : "";
+  return request<{ books: BookSummary[] }>(`/books${params}`, { accessToken });
 }
 
 export function createBook(accessToken: string, payload: { authorName?: string; sourceType: "PDF" | "EPUB" | "IMAGES"; synopsis?: string; title: string }) {
@@ -680,8 +714,9 @@ export function updateBook(accessToken: string, bookId: string, payload: { autho
   });
 }
 
-export function deleteBook(accessToken: string, bookId: string) {
-  return request<void>(`/books/${bookId}`, {
+export function deleteBook(accessToken: string, bookId: string, options?: { force?: boolean }) {
+  const params = options?.force ? "?force=true" : "";
+  return request<void>(`/books/${bookId}${params}`, {
     accessToken,
     method: "DELETE"
   });
@@ -816,6 +851,68 @@ export function fetchBook(accessToken: string, bookId: string) {
   return request<{ book: BookSummary & { synopsis?: string | null } }>(`/books/${bookId}`, { accessToken });
 }
 
+export function fetchBookShares(accessToken: string, bookId: string) {
+  return request<{ shares: BookShare[] }>(`/books/${bookId}/shares`, { accessToken });
+}
+
+export type SharableUser = {
+  displayName: string | null;
+  email: string;
+  role: ShareRole | null;
+  userId: string;
+  username: string;
+};
+
+export function fetchSharabableUsers(accessToken: string, bookId: string) {
+  return request<{ users: SharableUser[] }>(`/books/${bookId}/sharable-users`, { accessToken });
+}
+
+export function addBookShare(accessToken: string, bookId: string, payload: { role: ShareRole; userId: string }) {
+  return request<{ role: ShareRole; userId: string; username: string }>(`/books/${bookId}/shares`, {
+    accessToken,
+    body: payload,
+    method: "POST"
+  });
+}
+
+export function updateBookShare(accessToken: string, bookId: string, userId: string, payload: { role: ShareRole }) {
+  return request<{ ok: true; role: ShareRole }>(`/books/${bookId}/shares/${userId}`, {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function removeBookShare(accessToken: string, bookId: string, userId: string) {
+  return request<{ ok: true }>(`/books/${bookId}/shares/${userId}`, {
+    accessToken,
+    method: "DELETE"
+  });
+}
+
+export function leaveBookShare(accessToken: string, bookId: string) {
+  return request<{ ok: true }>(`/books/${bookId}/shares/leave`, {
+    accessToken,
+    method: "POST"
+  });
+}
+
+export function transferBookOwnership(accessToken: string, bookId: string, username: string) {
+  return request<{ ok: true; newOwnerUserId: string }>(`/books/${bookId}/transfer`, {
+    accessToken,
+    body: { username },
+    method: "POST"
+  });
+}
+
+export function setShareUserAnnotations(accessToken: string, bookId: string, enabled: boolean) {
+  return request<{ shareUserAnnotations: boolean }>(`/books/${bookId}/share-user-annotations`, {
+    accessToken,
+    body: { enabled },
+    method: "PUT"
+  });
+}
+
 export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number) {
   return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
 }
@@ -932,7 +1029,7 @@ export function regenerateBookOutline(accessToken: string, bookId: string) {
   });
 }
 
-export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string }) {
+export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string; sharedWithUserIds?: string[] }) {
   return request<{ bookmark: ReaderBookmark }>(`/books/${bookId}/bookmarks`, {
     accessToken,
     body: payload,
@@ -950,7 +1047,7 @@ export function deleteBookmark(accessToken: string, bookId: string, bookmarkId: 
 export function createHighlight(
   accessToken: string,
   bookId: string,
-  payload: { charEnd: number; charStart: number; color: HighlightColor; highlightedText: string; paragraphId: string }
+  payload: { charEnd: number; charStart: number; color: HighlightColor; highlightedText: string; paragraphId: string; sharedWithUserIds?: string[] }
 ) {
   return request<{ highlight: ReaderHighlight }>(`/books/${bookId}/highlights`, {
     accessToken,
@@ -969,7 +1066,7 @@ export function deleteHighlight(accessToken: string, bookId: string, highlightId
 export function createNote(
   accessToken: string,
   bookId: string,
-  payload: { highlightId?: string; noteText: string; pageNumber?: number; paragraphId?: string }
+  payload: { highlightId?: string; noteText: string; pageNumber?: number; paragraphId?: string; sharedWithUserIds?: string[] }
 ) {
   return request<{ note: ReaderNote }>(`/books/${bookId}/notes`, {
     accessToken,
@@ -978,7 +1075,12 @@ export function createNote(
   });
 }
 
-export function updateNote(accessToken: string, bookId: string, noteId: string, payload: { highlightColor?: HighlightColor; noteText: string }) {
+export function updateNote(
+  accessToken: string,
+  bookId: string,
+  noteId: string,
+  payload: { highlightColor?: HighlightColor; noteText?: string; sharedWithUserIds?: string[] }
+) {
   return request<void>(`/books/${bookId}/notes/${noteId}`, {
     accessToken,
     body: payload,

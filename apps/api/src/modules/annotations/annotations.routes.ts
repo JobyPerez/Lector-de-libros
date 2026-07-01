@@ -4,6 +4,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
+import { requireBookRole } from "../../services/book-access.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutlineWithSource } from "../books/book-outline.js";
 
@@ -32,8 +33,11 @@ const annotationsQuerySchema = z.object({
   pageNumber: z.coerce.number().int().min(1)
 });
 
+const sharedWithSchema = z.array(z.string().uuid()).max(200).default([]);
+
 const createBookmarkSchema = z.object({
-  paragraphId: z.string().uuid()
+  paragraphId: z.string().uuid(),
+  sharedWithUserIds: sharedWithSchema.optional()
 });
 
 const createHighlightSchema = z.object({
@@ -41,19 +45,22 @@ const createHighlightSchema = z.object({
   charStart: z.number().int().min(0),
   color: z.enum(highlightColors),
   highlightedText: z.string().trim().min(1).max(4000),
-  paragraphId: z.string().uuid()
+  paragraphId: z.string().uuid(),
+  sharedWithUserIds: sharedWithSchema.optional()
 });
 
 const createNoteSchema = z.object({
   highlightId: z.string().uuid().optional(),
   noteText: z.string().trim().min(1).max(4000),
   pageNumber: z.number().int().min(1).optional(),
-  paragraphId: z.string().uuid().optional()
+  paragraphId: z.string().uuid().optional(),
+  sharedWithUserIds: sharedWithSchema.optional()
 });
 
 const updateNoteSchema = z.object({
   highlightColor: z.enum(highlightColors).optional(),
-  noteText: z.string().trim().min(1).max(4000)
+  noteText: z.string().trim().min(1).max(4000).optional(),
+  sharedWithUserIds: sharedWithSchema.optional()
 });
 
 type OwnedBookRecord = {
@@ -77,6 +84,9 @@ type BookmarkRecord = {
   paragraphId: string;
   paragraphNumber: number;
   sequenceNumber: number;
+  userDisplayName?: string | null;
+  userId?: string;
+  username?: string;
 };
 
 type HighlightRecord = {
@@ -91,6 +101,9 @@ type HighlightRecord = {
   paragraphNumber: number;
   sequenceNumber: number;
   updatedAt: string;
+  userDisplayName?: string | null;
+  userId?: string;
+  username?: string;
 };
 
 type NoteRecord = {
@@ -106,7 +119,11 @@ type NoteRecord = {
   paragraphId: string | null;
   paragraphNumber: number | null;
   sequenceNumber: number | null;
+  sharedWithUserIds?: string[];
   updatedAt: string;
+  userDisplayName?: string | null;
+  userId?: string;
+  username?: string;
 };
 
 type OwnedNoteRecord = {
@@ -114,25 +131,62 @@ type OwnedNoteRecord = {
   noteId: string;
 };
 
-async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, ownerUserId: string): Promise<OwnedBookRecord | null> {
+async function insertAnnotationShares(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  annotationId: string,
+  annotationType: "bookmark" | "note",
+  bookId: string,
+  sharedWithUserIds: string[]
+): Promise<void> {
+  if (sharedWithUserIds.length === 0) {
+    return;
+  }
+
+  const dedup = Array.from(new Set(sharedWithUserIds));
+  const placeholders = dedup.map((_, index) => `:u${index}`).join(",");
+  const bind = Object.fromEntries(dedup.map((id, index) => [`u${index}`, id]));
+
+  const accessCheck = await connection.execute(
+    `SELECT user_id AS "userId"
+       FROM book_shares
+      WHERE book_id = :bookId
+        AND user_id IN (${placeholders})`,
+    { bookId, ...bind }
+  );
+  const allowed = (accessCheck.rows ?? []).map((row: unknown) => (row as { userId: string }).userId);
+  if (allowed.length === 0) {
+    return;
+  }
+
+  await connection.execute(
+    `INSERT INTO annotation_shares (annotation_id, annotation_type, user_id)
+     VALUES ${allowed.map(() => "(?, ?, ?)").join(", ")}`,
+    allowed.flatMap((userId: string) => [annotationId, annotationType, userId]),
+    { autoCommit: true }
+  );
+}
+
+async function findAccessibleBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, userId: string): Promise<OwnedBookRecord & { shareUserAnnotations: boolean } | null> {
   const result = await connection.execute(
     `
       SELECT
-        book_id AS "bookId",
-        source_type AS "sourceType",
-        total_pages AS "totalPages"
-      FROM books
-      WHERE book_id = :bookId
-        AND owner_user_id = :ownerUserId
+        b.book_id AS "bookId",
+        b.source_type AS "sourceType",
+        b.total_pages AS "totalPages",
+        b.share_user_annotations AS "shareUserAnnotations"
+      FROM books b
+      LEFT JOIN book_shares s
+        ON s.book_id = b.book_id
+       AND s.user_id = :userId
+      WHERE b.book_id = :bookId
+        AND (b.owner_user_id = :userId OR s.user_id = :userId)
     `,
-    {
-      bookId,
-      ownerUserId
-    }
+    { bookId, userId }
   );
 
-  const [book] = (result.rows ?? []) as OwnedBookRecord[];
-  return book ?? null;
+  const [book] = (result.rows ?? []) as Array<OwnedBookRecord & { shareUserAnnotations: string }>;
+  if (!book) return null;
+  return { ...book, shareUserAnnotations: book.shareUserAnnotations === "Y" };
 }
 
 async function findParagraphLocation(
@@ -281,6 +335,70 @@ async function listBookmarks(
   return (result.rows ?? []) as BookmarkRecord[];
 }
 
+async function listBookmarksShared(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  userId: string,
+  bookId: string,
+  pageNumber: number | undefined,
+  shareUserAnnotations: boolean
+): Promise<BookmarkRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        b.bookmark_id AS "bookmarkId",
+        b.paragraph_id AS "paragraphId",
+        b.page_number AS "pageNumber",
+        b.paragraph_number AS "paragraphNumber",
+        b.sequence_number AS "sequenceNumber",
+        b.created_at AS "createdAt",
+        b.user_id AS "userId",
+        u.username AS "username",
+        u.display_name AS "userDisplayName",
+        (SELECT COUNT(*) FROM annotation_shares s
+          WHERE s.annotation_id = b.bookmark_id
+            AND s.annotation_type = 'bookmark') AS "shareCount"
+      FROM user_bookmarks b
+      JOIN users u ON u.user_id = b.user_id
+      WHERE b.book_id = :bookId
+        AND (:pageNumber IS NULL OR b.page_number = :pageNumber)
+        AND (
+          b.user_id = :userId
+          OR EXISTS (
+            SELECT 1 FROM annotation_shares s
+             WHERE s.annotation_id = b.bookmark_id
+               AND s.annotation_type = 'bookmark'
+               AND s.user_id = :userId
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM book_shares bs
+               WHERE bs.book_id = :bookId
+                 AND bs.user_id = :userId
+            )
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM books bk
+               WHERE bk.book_id = :bookId
+                 AND bk.owner_user_id = :userId
+            )
+          )
+        )
+      ORDER BY b.page_number ASC, b.paragraph_number ASC, b.created_at ASC
+    `,
+    {
+      bookId,
+      pageNumber: pageNumber ?? null,
+      shareAll: shareUserAnnotations ? 1 : 0,
+      userId
+    }
+  );
+
+  return (result.rows ?? []) as BookmarkRecord[];
+}
+
 async function listHighlights(
   connection: Awaited<ReturnType<typeof getConnection>>,
   userId: string,
@@ -310,6 +428,72 @@ async function listHighlights(
     {
       bookId,
       pageNumber: pageNumber ?? null,
+      userId
+    }
+  );
+
+  return (result.rows ?? []) as HighlightRecord[];
+}
+
+async function listHighlightsShared(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  userId: string,
+  bookId: string,
+  pageNumber: number | undefined,
+  shareUserAnnotations: boolean
+): Promise<HighlightRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        h.highlight_id AS "highlightId",
+        h.paragraph_id AS "paragraphId",
+        h.page_number AS "pageNumber",
+        h.paragraph_number AS "paragraphNumber",
+        h.sequence_number AS "sequenceNumber",
+        h.color AS "color",
+        h.char_start AS "charStart",
+        h.char_end AS "charEnd",
+        h.highlighted_text AS "highlightedText",
+        h.created_at AS "createdAt",
+        h.updated_at AS "updatedAt",
+        h.user_id AS "userId",
+        u.username AS "username",
+        u.display_name AS "userDisplayName"
+      FROM user_highlights h
+      JOIN users u ON u.user_id = h.user_id
+      WHERE h.book_id = :bookId
+        AND (:pageNumber IS NULL OR h.page_number = :pageNumber)
+        AND (
+          h.user_id = :userId
+          OR EXISTS (
+            SELECT 1 FROM annotation_shares s
+             WHERE s.annotation_id = h.highlight_id
+               AND s.annotation_type = 'bookmark'
+               AND s.user_id = :userId
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM book_shares bs
+               WHERE bs.book_id = :bookId
+                 AND bs.user_id = :userId
+            )
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM books bk
+               WHERE bk.book_id = :bookId
+                 AND bk.owner_user_id = :userId
+            )
+          )
+        )
+      ORDER BY h.paragraph_number ASC, h.char_start ASC, h.created_at ASC
+    `,
+    {
+      bookId,
+      pageNumber: pageNumber ?? null,
+      shareAll: shareUserAnnotations ? 1 : 0,
       userId
     }
   );
@@ -357,8 +541,87 @@ async function listNotes(
   return (result.rows ?? []) as NoteRecord[];
 }
 
+async function listNotesShared(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  userId: string,
+  bookId: string,
+  pageNumber: number | undefined,
+  shareUserAnnotations: boolean
+): Promise<NoteRecord[]> {
+  const result = await connection.execute(
+    `
+      SELECT
+        n.note_id AS "noteId",
+        n.page_number AS "pageNumber",
+        n.paragraph_id AS "paragraphId",
+        n.paragraph_number AS "paragraphNumber",
+        n.sequence_number AS "sequenceNumber",
+        n.highlight_id AS "highlightId",
+        n.note_text AS "noteText",
+        n.created_at AS "createdAt",
+        n.updated_at AS "updatedAt",
+        h.color AS "highlightColor",
+        h.char_start AS "highlightCharStart",
+        h.char_end AS "highlightCharEnd",
+        h.highlighted_text AS "highlightedText",
+        n.user_id AS "userId",
+        u.username AS "username",
+        u.display_name AS "userDisplayName",
+        (
+          SELECT LISTAGG(s.user_id, ',') WITHIN GROUP (ORDER BY s.user_id)
+            FROM annotation_shares s
+           WHERE s.annotation_id = n.note_id
+             AND s.annotation_type = 'note'
+        ) AS "sharedWithUserIds"
+      FROM user_notes n
+      JOIN users u ON u.user_id = n.user_id
+      LEFT JOIN user_highlights h
+        ON h.highlight_id = n.highlight_id
+      WHERE n.book_id = :bookId
+        AND (:pageNumber IS NULL OR n.page_number = :pageNumber)
+        AND (
+          n.user_id = :userId
+          OR EXISTS (
+            SELECT 1 FROM annotation_shares s
+             WHERE s.annotation_id = n.note_id
+               AND s.annotation_type = 'note'
+               AND s.user_id = :userId
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM book_shares bs
+               WHERE bs.book_id = :bookId
+                 AND bs.user_id = :userId
+            )
+          )
+          OR (
+            :shareAll = 1
+            AND EXISTS (
+              SELECT 1 FROM books bk
+               WHERE bk.book_id = :bookId
+                 AND bk.owner_user_id = :userId
+            )
+          )
+        )
+      ORDER BY n.page_number ASC, n.paragraph_number ASC NULLS LAST, n.updated_at DESC
+    `,
+    {
+      bookId,
+      pageNumber: pageNumber ?? null,
+      shareAll: shareUserAnnotations ? 1 : 0,
+      userId
+    }
+  );
+
+  return ((result.rows ?? []) as Array<NoteRecord & { sharedWithUserIds: string | null }>).map((row) => ({
+    ...row,
+    sharedWithUserIds: row.sharedWithUserIds ? row.sharedWithUserIds.split(",").filter(Boolean) : []
+  }));
+}
+
 export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/books/:bookId/annotations", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/books/:bookId/annotations", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -368,24 +631,28 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const access = request.bookAccess!;
+      const isAuthorish = access.role === "OWNER" || access.role === "EDITOR" || access.role === "COMMENTER";
+      const shareAll = isAuthorish && book.shareUserAnnotations;
+
       const [bookmarks, highlights, notes] = await Promise.all([
-        listBookmarks(connection, request.currentUser.userId, params.bookId, query.pageNumber),
-        listHighlights(connection, request.currentUser.userId, params.bookId, query.pageNumber),
-        listNotes(connection, request.currentUser.userId, params.bookId, query.pageNumber)
+        listBookmarksShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll),
+        listHighlightsShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll),
+        listNotesShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll)
       ]);
 
-      return reply.send({ bookmarks, highlights, notes });
+      return reply.send({ bookmarks, highlights, notes, shareUserAnnotations: book.shareUserAnnotations });
     } finally {
       await connection.close();
     }
   });
 
-  app.get("/books/:bookId/navigation", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/books/:bookId/navigation", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -394,7 +661,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -418,7 +685,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/bookmarks", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/bookmarks", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -428,7 +695,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -485,13 +752,17 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         { autoCommit: true }
       );
 
+      if (payload.sharedWithUserIds?.length) {
+        await insertAnnotationShares(connection, bookmark.bookmarkId, "bookmark", params.bookId, payload.sharedWithUserIds);
+      }
+
       return reply.status(201).send({ bookmark });
     } finally {
       await connection.close();
     }
   });
 
-  app.delete("/books/:bookId/bookmarks/:bookmarkId", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.delete("/books/:bookId/bookmarks/:bookmarkId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -525,7 +796,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/highlights", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/highlights", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -535,7 +806,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -617,7 +888,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete("/books/:bookId/highlights/:highlightId", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.delete("/books/:bookId/highlights/:highlightId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -651,7 +922,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/notes", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/notes", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -661,7 +932,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -740,6 +1011,10 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         { autoCommit: true }
       );
 
+      if (payload.sharedWithUserIds?.length) {
+        await insertAnnotationShares(connection, noteId, "note", params.bookId, payload.sharedWithUserIds);
+      }
+
       return reply.status(201).send({
         note: {
           createdAt: new Date().toISOString(),
@@ -762,7 +1037,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.put("/books/:bookId/notes/:noteId", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.put("/books/:bookId/notes/:noteId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -782,26 +1057,41 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       }
 
       try {
-        const result = await connection.execute(
-          `
-            UPDATE user_notes
-            SET note_text = :noteText,
-                updated_at = SYSTIMESTAMP
-            WHERE note_id = :noteId
-              AND book_id = :bookId
-              AND user_id = :userId
-          `,
-          {
-            bookId: params.bookId,
-            noteId: params.noteId,
-            noteText: payload.noteText,
-            userId: request.currentUser.userId
-          }
-        );
+        if (payload.noteText) {
+          const result = await connection.execute(
+            `
+              UPDATE user_notes
+              SET note_text = :noteText,
+                  updated_at = SYSTIMESTAMP
+              WHERE note_id = :noteId
+                AND book_id = :bookId
+                AND user_id = :userId
+            `,
+            {
+              bookId: params.bookId,
+              noteId: params.noteId,
+              noteText: payload.noteText,
+              userId: request.currentUser.userId
+            }
+          );
 
-        if ((result.rowsAffected ?? 0) === 0) {
-          await connection.rollback();
-          return reply.status(404).send({ message: "Note not found." });
+          if ((result.rowsAffected ?? 0) === 0) {
+            await connection.rollback();
+            return reply.status(404).send({ message: "Note not found." });
+          }
+        }
+
+        if (payload.sharedWithUserIds) {
+          await connection.execute(
+            `DELETE FROM annotation_shares
+              WHERE annotation_id = :noteId
+                AND annotation_type = 'note'`,
+            { noteId: params.noteId },
+            { autoCommit: true }
+          );
+          if (payload.sharedWithUserIds.length > 0) {
+            await insertAnnotationShares(connection, params.noteId, "note", params.bookId, payload.sharedWithUserIds);
+          }
         }
 
         if (payload.highlightColor && note.highlightId) {
@@ -840,7 +1130,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete("/books/:bookId/notes/:noteId", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.delete("/books/:bookId/notes/:noteId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }

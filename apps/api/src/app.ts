@@ -11,6 +11,7 @@ import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerAwsCostRoutes } from "./modules/aws-cost/aws-cost.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
 import { registerProgressRoutes } from "./modules/progress/progress.routes.js";
+import { registerSharingRoutes } from "./modules/sharing/sharing.routes.js";
 import { registerTtsRoutes } from "./modules/tts/tts.routes.js";
 import { registerUserRoutes } from "./modules/users/users.routes.js";
 
@@ -51,6 +52,7 @@ export function buildApp(): FastifyInstance {
   void app.register(registerAiConfigRoutes);
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });
+  void app.register(registerSharingRoutes, { prefix: "/books" });
   void app.register(registerAwsCostRoutes, { prefix: "/aws-cost" });
   void app.register(registerProgressRoutes);
   void app.register(registerTtsRoutes);

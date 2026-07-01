@@ -4,6 +4,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
+import { requireBookRole } from "../../services/book-access.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 
 const progressSchema = z.object({
@@ -15,7 +16,7 @@ const progressSchema = z.object({
 });
 
 export const registerProgressRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/books/:bookId/progress", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/books/:bookId/progress", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -52,7 +53,7 @@ export const registerProgressRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.put("/books/:bookId/progress", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.put("/books/:bookId/progress", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }

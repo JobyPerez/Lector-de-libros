@@ -833,13 +833,16 @@ export function BookBuilderPage() {
         throw new Error("Missing access token.");
       }
 
-      const response = await fetchBooks(accessToken);
+      const response = await fetchBooks(accessToken, { scope: "all" });
       return response.books;
     }
   });
 
-  const imageBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES");
-  const reviewableBooks = (booksQuery.data ?? []).filter((book) => book.sourceType === "IMAGES" || book.sourceType === "PDF" || book.sourceType === "EPUB");
+  const editableBooks = (booksQuery.data ?? []).filter((book) => book.currentUserRole === undefined
+    || book.currentUserRole === "OWNER"
+    || book.currentUserRole === "EDITOR");
+  const imageBooks = editableBooks.filter((book) => book.sourceType === "IMAGES");
+  const reviewableBooks = editableBooks.filter((book) => book.sourceType === "IMAGES" || book.sourceType === "PDF" || book.sourceType === "EPUB");
   const selectedReviewBook = reviewableBooks.find((book) => book.bookId === reviewBookId) ?? null;
   const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
   const requestedReviewPage = requestedReviewPageParam ? Number(requestedReviewPageParam) : Number.NaN;
@@ -1098,12 +1101,12 @@ export function BookBuilderPage() {
 
     if (!firstImageBook) {
       setSelectedBookId("");
-    } else if (!selectedBookId) {
-      if (hasRequestedAppendBook) {
+    } else if (hasRequestedAppendBook) {
+      if (selectedBookId !== requestedAppendBookId) {
         setSelectedBookId(requestedAppendBookId);
-      } else {
-        setSelectedBookId(firstImageBook.bookId);
       }
+    } else if (!selectedBookId) {
+      setSelectedBookId(firstImageBook.bookId);
     } else if (!imageBooks.some((book) => book.bookId === selectedBookId)) {
       setSelectedBookId(firstImageBook.bookId);
     }

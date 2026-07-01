@@ -160,7 +160,7 @@ type NavigationPanelContentProps = {
   items: ReaderNavigationListItem[];
   onOutlineEditClick?: () => void;
   outlineSource?: BookOutlineSource;
-  outlineEditHref?: string;
+  outlineEditHref?: string | undefined;
   onBeginHighlightEditing: (highlightId: string) => void;
   onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;

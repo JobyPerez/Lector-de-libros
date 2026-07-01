@@ -2,9 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, updateBook, type BookSummary } from "../../app/api";
+import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
+import { ShareBookModal } from "../sharing/ShareBookModal";
 
 type BookEditFormState = {
   authorName: string;
@@ -42,6 +43,18 @@ function DeleteIcon() {
       <path d="M7.5 7.5v10.7c0 .99.81 1.8 1.8 1.8h5.4c.99 0 1.8-.81 1.8-1.8V7.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M10 11v5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
       <path d="M14 11v5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <circle cx="6" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m8.2 10.9 7.6-3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="m8.2 13.1 7.6 3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
     </svg>
   );
 }
@@ -188,17 +201,35 @@ export function ShelfPage() {
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
+  const [scope, setScope] = useState<BookScope>("mine");
+  const [shareBook, setShareBook] = useState<BookSummary | null>(null);
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
 
-  const booksQuery = useQuery({
+  const sharedBooksQuery = useQuery({
     enabled: Boolean(accessToken),
-    queryKey: ["books"],
+    queryKey: ["books", "shared"],
     queryFn: async () => {
       if (!accessToken) {
         return [];
       }
 
-      const response = await fetchBooks(accessToken);
+      const response = await fetchBooks(accessToken, { scope: "shared" });
+      return response.books;
+    }
+  });
+
+  const hasSharedBooks = (sharedBooksQuery.data?.length ?? 0) > 0;
+  const effectiveScope: BookScope = hasSharedBooks ? scope : "mine";
+
+  const booksQuery = useQuery({
+    enabled: Boolean(accessToken),
+    queryKey: ["books", effectiveScope],
+    queryFn: async () => {
+      if (!accessToken) {
+        return [];
+      }
+
+      const response = await fetchBooks(accessToken, { scope: effectiveScope });
       return response.books;
     }
   });
@@ -400,6 +431,40 @@ export function ShelfPage() {
       return;
     }
 
+    const isOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
+
+    if (!isOwner) {
+      const ownerLabel = book.ownerUsername ? `@${book.ownerUsername}` : "el propietario";
+      const confirmed = window.confirm(
+        `Vas a salir del libro compartido "${book.title}" de ${ownerLabel}.\n\n` +
+          `Dejarás de tener acceso a este libro y se eliminarán tus notas, marcadores y progreso personales. ` +
+          `El libro y las notas de ${ownerLabel} no se verán afectados. ¿Continuar?`
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      setBookActionError(null);
+      setBookActionSuccess(null);
+      setDeletingBookId(book.bookId);
+
+      try {
+        await leaveBookShare(accessToken, book.bookId);
+        setRemovingBookId(book.bookId);
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, removalExitAnimationMs);
+        });
+        await booksQuery.refetch();
+        setBookActionSuccess(`Dejaste de tener acceso al libro "${book.title}".`);
+      } catch (error) {
+        setBookActionError(error instanceof Error ? error.message : "No se pudo salir del libro.");
+      } finally {
+        setRemovingBookId(null);
+        setDeletingBookId(null);
+      }
+      return;
+    }
+
     const confirmed = window.confirm(`Se borrará el libro ${book.title} y todo su contenido. ¿Continuar?`);
     if (!confirmed) {
       return;
@@ -410,7 +475,22 @@ export function ShelfPage() {
     setDeletingBookId(book.bookId);
 
     try {
-      await deleteBook(accessToken, book.bookId);
+      try {
+        await deleteBook(accessToken, book.bookId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "No se pudo eliminar el libro.";
+        const isShared = /compartido|share/i.test(message);
+        if (!isShared) {
+          throw error;
+        }
+        const forceConfirmed = window.confirm(
+          "Este libro está compartido con otros usuarios. Si lo borras también se eliminarán sus notas y progreso. ¿Continuar?"
+        );
+        if (!forceConfirmed) {
+          return;
+        }
+        await deleteBook(accessToken, book.bookId, { force: true });
+      }
 
       if (editingBook?.bookId === book.bookId) {
         setViewTransitionDirection("back");
@@ -476,6 +556,38 @@ export function ShelfPage() {
           </div>
         </div>
 
+        {hasSharedBooks || sharedBooksQuery.isLoading ? (
+          <div className="shelf-scope-tabs" role="tablist">
+            <button
+              aria-selected={effectiveScope === "mine"}
+              className={["shelf-scope-tab", effectiveScope === "mine" ? "is-active" : ""].filter(Boolean).join(" ")}
+              onClick={() => setScope("mine")}
+              role="tab"
+              type="button"
+            >
+              Mis libros
+            </button>
+            <button
+              aria-selected={effectiveScope === "shared"}
+              className={["shelf-scope-tab", effectiveScope === "shared" ? "is-active" : ""].filter(Boolean).join(" ")}
+              onClick={() => setScope("shared")}
+              role="tab"
+              type="button"
+            >
+              Compartidos conmigo
+            </button>
+            <button
+              aria-selected={effectiveScope === "all"}
+              className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
+              onClick={() => setScope("all")}
+              role="tab"
+              type="button"
+            >
+              Todos
+            </button>
+          </div>
+        ) : null}
+
         {booksQuery.isLoading ? <p>Cargando libros...</p> : null}
         {booksQuery.isError ? <p className="error-text">No se pudo cargar la estantería.</p> : null}
         {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
@@ -490,9 +602,42 @@ export function ShelfPage() {
                 ? "pending"
                 : undefined;
             const isBookRemoving = removalState !== undefined;
+            const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
 
             return (
             <article aria-busy={isBookRemoving} className="book-card shelf-book-card" data-removing={removalState} key={book.bookId}>
+              <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
+                <div className="shelf-book-cover-shell">
+                  <ShelfBookCover accessToken={accessToken} book={book} />
+                </div>
+
+                <div className="book-card-copy shelf-book-copy">
+                  <h3>{book.title}</h3>
+                  <p>{book.authorName ?? "Autor pendiente"}</p>
+                  {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
+                    <p className="shelf-book-shared-by">
+                      Compartido por <strong>@{book.ownerUsername}</strong>
+                    </p>
+                  ) : null}
+                </div>
+
+                <dl className="shelf-book-stats">
+                  <div>
+                    <dt>Páginas</dt>
+                    <dd>{book.totalPages}</dd>
+                  </div>
+                  <div>
+                    <dt>Párrafos</dt>
+                    <dd>{book.totalParagraphs}</dd>
+                  </div>
+                  {book.lastOpenedAt ? (
+                    <div>
+                      <dt>Última lectura</dt>
+                      <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
+                    </div>
+                  ) : null}
+                 </dl>
+              </Link>
               <div
                 className="book-card-actions"
                 onBlur={(event) => {
@@ -526,6 +671,22 @@ export function ShelfPage() {
                     <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
                   </a>
                 ) : null}
+                {book.currentUserRole === "OWNER" ? (
+                  <button
+                    aria-label={`Compartir ${book.title}`}
+                    className="book-card-icon-button book-card-share-button"
+                    disabled={isBookRemoving}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setShareBook(book);
+                    }}
+                    title="Compartir"
+                    type="button"
+                  >
+                    <ShareIcon />
+                  </button>
+                ) : null}
                 <button
                   aria-label={`Editar ${book.title}`}
                   className="book-card-icon-button book-card-edit-button"
@@ -541,7 +702,7 @@ export function ShelfPage() {
                   <EditIcon />
                 </button>
                 <button
-                  aria-label={`Eliminar ${book.title}`}
+                  aria-label={isBookOwner ? `Eliminar ${book.title}` : `Salir del libro ${book.title}`}
                   className="book-card-icon-button book-card-delete-button"
                   disabled={isBookRemoving}
                   onClick={(event) => {
@@ -549,7 +710,7 @@ export function ShelfPage() {
                     event.stopPropagation();
                     void handleDeleteBook(book);
                   }}
-                  title="Eliminar libro"
+                  title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
                   type="button"
                 >
                   <DeleteIcon />
@@ -587,34 +748,6 @@ export function ShelfPage() {
                   </div>
                 ) : null}
               </div>
-
-              <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
-                <div className="shelf-book-cover-shell">
-                  <ShelfBookCover accessToken={accessToken} book={book} />
-                </div>
-
-                <div className="book-card-copy shelf-book-copy">
-                  <h3>{book.title}</h3>
-                  <p>{book.authorName ?? "Autor pendiente"}</p>
-                </div>
-
-                <dl className="shelf-book-stats">
-                  <div>
-                    <dt>Páginas</dt>
-                    <dd>{book.totalPages}</dd>
-                  </div>
-                  <div>
-                    <dt>Párrafos</dt>
-                    <dd>{book.totalParagraphs}</dd>
-                  </div>
-                  {book.lastOpenedAt ? (
-                    <div>
-                      <dt>Última lectura</dt>
-                      <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </Link>
               <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
                 <span className="book-card-removing-dot" />
                 {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
@@ -772,6 +905,15 @@ export function ShelfPage() {
             </div>
           </form>
         </section>
+      ) : null}
+
+      {shareBook && accessToken ? (
+        <ShareBookModal
+          accessToken={accessToken}
+          book={shareBook}
+          currentUserRole={shareBook.currentUserRole ?? "OWNER"}
+          onClose={() => setShareBook(null)}
+        />
       ) : null}
     </div>
   );

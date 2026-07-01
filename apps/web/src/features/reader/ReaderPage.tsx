@@ -7,20 +7,24 @@ import {
   createBookmark,
   createHighlight,
   createNote,
-  deleteBookmark,
   deleteBookPage,
+  deleteBookmark,
   deleteHighlight,
   deleteNote,
+  fetchBook,
   fetchBookPage,
   fetchChapterAudioOfflinePlan,
   fetchDeepgramBalance,
   fetchPageAnnotations,
   fetchProgress,
   fetchReaderNavigation,
+  fetchSharabableUsers,
   requestParagraphAudio,
   requestParagraphAudioBlock,
   updateNote,
   updateProgress,
+  isBookEditor,
+  type BookRole,
   type HighlightColor,
   type ParagraphContent,
   type ReaderAudioBlockParagraph,
@@ -1287,6 +1291,8 @@ export function ReaderPage() {
   const [activeReaderNote, setActiveReaderNote] = useState<ReaderNotePopoverState | null>(null);
   const [activeReaderNoteText, setActiveReaderNoteText] = useState("");
   const [isUpdatingNote, setIsUpdatingNote] = useState(false);
+  const [selectionNoteSharedWith, setSelectionNoteSharedWith] = useState<string[]>([]);
+  const [activeReaderNoteSharedWith, setActiveReaderNoteSharedWith] = useState<string[] | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -1456,6 +1462,21 @@ export function ReaderPage() {
     }
   });
 
+  const bookQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["book", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        throw new Error("Missing access token.");
+      }
+
+      return fetchBook(accessToken, bookId);
+    }
+  });
+
+  const currentUserRole: BookRole | undefined = bookQuery.data?.book.currentUserRole;
+  const canEditBook = isBookEditor(currentUserRole);
+
   const pageQuery = useQuery({
     enabled: Boolean(accessToken && bookId),
     queryKey: ["book-page", bookId, currentPageNumber],
@@ -1491,6 +1512,21 @@ export function ReaderPage() {
       return fetchReaderNavigation(accessToken, bookId);
     }
   });
+
+  const sharableUsersQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["book-sharable-users", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        return [] as Awaited<ReturnType<typeof fetchSharabableUsers>>["users"];
+      }
+
+      const response = await fetchSharabableUsers(accessToken, bookId);
+      return response.users;
+    }
+  });
+
+  const sharableUsers = sharableUsersQuery.data ?? [];
 
   const deepgramBalanceQuery = useQuery({
     enabled: Boolean(accessToken && isAudioSettingsVisible && selectedTtsEngine === "deepgram"),
@@ -1914,16 +1950,20 @@ export function ReaderPage() {
       ?? null;
   }
 
-  const appendPagesLink = {
-    hash: "#append-pages",
-    pathname: "/builder",
-    search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
-  };
-  const reviewOcrLink = {
-    hash: "#review-ocr",
-    pathname: "/builder",
-    search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
-  };
+  const appendPagesLink = canEditBook
+    ? {
+        hash: "#append-pages",
+        pathname: "/builder",
+        search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
+      }
+    : null;
+  const reviewOcrLink = canEditBook
+    ? {
+        hash: "#review-ocr",
+        pathname: "/builder",
+        search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
+      }
+    : null;
 
   const readingPercentage = useMemo(() => {
     if (!totalParagraphs || !currentParagraph) {
@@ -2342,8 +2382,10 @@ export function ReaderPage() {
   useEffect(() => {
     setSelectionDraft(null);
     setSelectionNoteText("");
+    setSelectionNoteSharedWith([]);
     setActiveReaderNote(null);
     setActiveReaderNoteText("");
+    setActiveReaderNoteSharedWith(null);
     setEditingNavigationNoteId(null);
     setEditingNavigationNoteColor(null);
     setEditingNavigationNoteText("");
@@ -2762,6 +2804,7 @@ export function ReaderPage() {
         selectedText: note ? notePreview(note) : highlightPreview(highlight)
       });
       setActiveReaderNoteText(note?.noteText ?? "");
+      setActiveReaderNoteSharedWith(note?.sharedWithUserIds ? [...note.sharedWithUserIds] : null);
     }
 
     const livePageElement = livePageRef.current;
@@ -4249,7 +4292,7 @@ export function ReaderPage() {
   }
 
   async function handleDeleteCurrentPage() {
-    if (!accessToken || !pageQuery.data || isDeletingPage) {
+    if (!accessToken || !pageQuery.data || isDeletingPage || !canEditBook) {
       return;
     }
 
@@ -4268,11 +4311,15 @@ export function ReaderPage() {
       const response = await deleteBookPage(accessToken, bookId, currentPageNumber);
 
       if (response.nextPageNumber === null && response.book.sourceType === "IMAGES") {
-        navigate({
-          hash: "#append-pages",
-          pathname: "/builder",
-          search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=0`
-        });
+        if (canEditBook) {
+          navigate({
+            hash: "#append-pages",
+            pathname: "/builder",
+            search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=0`
+          });
+        } else {
+          navigate("/");
+        }
         return;
       }
 
@@ -4343,7 +4390,8 @@ export function ReaderPage() {
       if (selectionNoteText.trim()) {
         await createNote(accessToken, bookId, {
           highlightId: highlight.highlightId,
-          noteText: selectionNoteText.trim()
+          noteText: selectionNoteText.trim(),
+          sharedWithUserIds: selectionNoteSharedWith
         });
       }
 
@@ -4394,7 +4442,8 @@ export function ReaderPage() {
       const trimmedNoteText = noteText.trim();
       const { note } = await createNote(accessToken, bookId, {
         highlightId,
-        noteText: trimmedNoteText
+        noteText: trimmedNoteText,
+        ...(activeReaderNoteSharedWith ? { sharedWithUserIds: activeReaderNoteSharedWith } : {})
       });
       await refreshReaderMetadata();
 
@@ -4425,7 +4474,8 @@ export function ReaderPage() {
       const trimmedNoteText = noteText.trim();
       await updateNote(accessToken, bookId, noteId, {
         ...(highlightColor ? { highlightColor } : {}),
-        noteText: trimmedNoteText
+        noteText: trimmedNoteText,
+        ...(activeReaderNoteSharedWith ? { sharedWithUserIds: activeReaderNoteSharedWith } : {})
       });
       await refreshReaderMetadata();
 
@@ -4657,7 +4707,7 @@ export function ReaderPage() {
             <NotionIcon />
           </a>
         ) : null}
-        {pageQuery.data?.book.sourceType === "IMAGES" ? (
+        {pageQuery.data?.book.sourceType === "IMAGES" && appendPagesLink ? (
           <Link
             aria-label="Añadir páginas"
             className={buttonClassName}
@@ -4668,7 +4718,7 @@ export function ReaderPage() {
             <AddPagesIcon />
           </Link>
         ) : null}
-        {canEditImportedPage ? (
+        {canEditImportedPage && reviewOcrLink ? (
           <Link
             aria-label="Editar esta página"
             className={buttonClassName}
@@ -4826,12 +4876,22 @@ export function ReaderPage() {
               value={selectionNoteText}
             />
           </label>
+          {sharableUsers.length > 0 ? (
+            <ShareWithSelector
+              emptyLabel="Esta nota solo la verás tú."
+              label="Compartir nota con"
+              onChange={setSelectionNoteSharedWith}
+              options={sharableUsers}
+              selected={selectionNoteSharedWith}
+            />
+          ) : null}
           <div className="reader-selection-actions">
             <button
               className="secondary-button"
               onClick={() => {
                 setSelectionDraft(null);
                 setSelectionNoteText("");
+                setSelectionNoteSharedWith([]);
                 window.getSelection()?.removeAllRanges();
               }}
               type="button"
@@ -4889,6 +4949,15 @@ export function ReaderPage() {
               value={activeReaderNoteText}
             />
           </label>
+          {sharableUsers.length > 0 ? (
+            <ShareWithSelector
+              emptyLabel={activeReaderNote.noteId ? "Esta nota solo la verás tú." : "Esta nota solo la verás tú."}
+              label={activeReaderNote.noteId ? "Compartida con" : "Compartir nota con"}
+              onChange={setActiveReaderNoteSharedWith}
+              options={sharableUsers}
+              selected={activeReaderNoteSharedWith ?? []}
+            />
+          ) : null}
           <div className="reader-note-editor-actions">
             {activeReaderNote.noteId ? (
               <button
@@ -5052,7 +5121,7 @@ export function ReaderPage() {
             isUpdatingNote={isUpdatingNote}
             items={orderedNavigationItems}
             onOutlineEditClick={closeNavigationPanel}
-            outlineEditHref={`/books/${bookId}/outline/edit`}
+            outlineEditHref={canEditBook ? `/books/${bookId}/outline/edit` : undefined}
             outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
             onBeginHighlightEditing={beginNavigationHighlightEditing}
             onBeginNoteEditing={beginNavigationNoteEditing}
@@ -5143,6 +5212,48 @@ export function ReaderPage() {
           <PageNextIcon />
         </button>
       </div>
+    </div>
+  );
+}
+
+type ShareWithSelectorProps = {
+  emptyLabel: string;
+  label: string;
+  onChange: (userIds: string[]) => void;
+  options: { displayName: string | null; userId: string; username: string }[];
+  selected: string[];
+};
+
+function ShareWithSelector({ emptyLabel, label, onChange, options, selected }: ShareWithSelectorProps) {
+  function toggle(userId: string) {
+    if (selected.includes(userId)) {
+      onChange(selected.filter((id) => id !== userId));
+    } else {
+      onChange([...selected, userId]);
+    }
+  }
+
+  return (
+    <div className="reader-share-with">
+      <p className="reader-share-with-label">{label}</p>
+      <div className="reader-share-with-chips">
+        {options.map((option) => {
+          const isSelected = selected.includes(option.userId);
+          return (
+            <button
+              aria-pressed={isSelected}
+              className={["reader-share-with-chip", isSelected ? "is-selected" : ""].filter(Boolean).join(" ")}
+              key={option.userId}
+              onClick={() => toggle(option.userId)}
+              type="button"
+            >
+              @{option.username}
+              {isSelected ? " ✓" : ""}
+            </button>
+          );
+        })}
+      </div>
+      <p className="subdued">{selected.length === 0 ? emptyLabel : `${selected.length} usuario(s) además de ti.`}</p>
     </div>
   );
 }

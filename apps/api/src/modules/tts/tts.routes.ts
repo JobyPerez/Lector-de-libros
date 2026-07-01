@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
+import { requireBookRole } from "../../services/book-access.js";
 import { getUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutline } from "../books/book-outline.js";
@@ -693,7 +694,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.get("/books/:bookId/sections/:chapterId/tts/offline-plan", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/books/:bookId/sections/:chapterId/tts/offline-plan", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -710,11 +711,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           SELECT title AS "title"
           FROM books
           WHERE book_id = :bookId
-            AND owner_user_id = :ownerUserId
         `,
         {
-          bookId: params.bookId,
-          ownerUserId: request.currentUser.userId
+          bookId: params.bookId
         }
       );
       const [book] = (bookResult.rows ?? []) as Array<{ title: string }>;
@@ -820,7 +819,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/tts", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/tts", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -861,11 +860,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             ON legacy_bf.file_id = bp.audio_file_id
           WHERE bp.book_id = :bookId
             AND bp.paragraph_id = :paragraphId
-            AND b.owner_user_id = :ownerUserId
         `,
         {
           bookId: params.bookId,
-          ownerUserId: request.currentUser.userId,
           paragraphId: payload.paragraphId,
           voiceModel: requestedVoiceModel
         },
@@ -923,7 +920,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/tts/block", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/tts/block", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -964,13 +961,11 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             ON legacy_bf.file_id = bp.audio_file_id
           WHERE bp.book_id = :bookId
             AND bp.sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
-            AND b.owner_user_id = :ownerUserId
           ORDER BY bp.sequence_number ASC
         `,
         {
           bookId: params.bookId,
           endSequenceNumber: payload.startSequenceNumber + payload.paragraphCount - 1,
-          ownerUserId: request.currentUser.userId,
           startSequenceNumber: payload.startSequenceNumber,
           voiceModel: requestedVoiceModel
         },
@@ -1070,7 +1065,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/sections/:chapterId/summary/tts", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/sections/:chapterId/summary/tts", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -1095,12 +1090,10 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           WHERE uss.book_id = :bookId
             AND uss.chapter_id = :chapterId
             AND uss.user_id = :userId
-            AND b.owner_user_id = :ownerUserId
         `,
         {
           bookId: params.bookId,
           chapterId: params.chapterId,
-          ownerUserId: request.currentUser.userId,
           userId: request.currentUser.userId
         }
       );
@@ -1121,7 +1114,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/books/:bookId/ai-requests/:requestId/tts", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/books/:bookId/ai-requests/:requestId/tts", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -1146,11 +1139,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           WHERE ar.request_id = :requestId
             AND ar.book_id = :bookId
             AND ar.user_id = :userId
-            AND b.owner_user_id = :ownerUserId
         `,
         {
           bookId: params.bookId,
-          ownerUserId: request.currentUser.userId,
           requestId: params.requestId,
           userId: request.currentUser.userId
         }
