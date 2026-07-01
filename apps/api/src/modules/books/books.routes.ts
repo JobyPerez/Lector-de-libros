@@ -901,7 +901,6 @@ async function searchOwnedBookParagraphs(
     caseSensitive: boolean;
     limit: number;
     offset: number;
-    ownerUserId: string;
     query: string;
   }
 ): Promise<{ hasMore: boolean; results: BookSearchResultRecord[] }> {
@@ -935,7 +934,6 @@ async function searchOwnedBookParagraphs(
         INNER JOIN books b
           ON b.book_id = bp.book_id
         WHERE bp.book_id = :bookId
-          AND b.owner_user_id = :ownerUserId
           AND ${searchCondition}
       )
       WHERE row_number > :offset
@@ -946,7 +944,6 @@ async function searchOwnedBookParagraphs(
       bookId: options.bookId,
       fetchLimit,
       offset: options.offset,
-      ownerUserId: options.ownerUserId,
       query: options.caseSensitive ? options.query : options.query.toLocaleLowerCase("es")
     }
   );
@@ -3281,7 +3278,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         caseSensitive: query.caseSensitive,
         limit: query.limit,
         offset: query.offset,
-        ownerUserId: request.currentUser.userId,
         query: query.query
       });
 
@@ -3832,7 +3828,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     let latestBook: OwnedBookRecord | null = null;
 
     try {
-      const existingBook = await findOwnedBook(connection, params.bookId, currentUser.userId);
+      const existingBook = await findAccessibleBook(connection, params.bookId, currentUser.userId);
       if (!existingBook) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4149,7 +4145,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4467,7 +4463,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4580,7 +4576,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4664,7 +4660,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4719,7 +4715,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -5304,7 +5300,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/download-token", { preHandler: [authenticateRequest, requireBookRole("OWNER")] }, async (request, reply) => {
+  app.post("/:bookId/download-token", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -5340,8 +5336,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const download = tokenRecord.kind === "export"
-        ? await buildOwnedBookExportDownload(connection, tokenRecord.bookId, tokenRecord.userId, tokenRecord.format ?? "epub")
-        : await buildOwnedOriginalBookDownload(connection, tokenRecord.bookId, tokenRecord.userId);
+        ? await buildAccessibleBookExportDownload(connection, tokenRecord.bookId, tokenRecord.userId, tokenRecord.format ?? "epub")
+        : await buildAccessibleOriginalBookDownload(connection, tokenRecord.bookId, tokenRecord.userId);
 
       if (download === "IMAGES_SOURCE") {
         return reply.status(409).send({ message: "Los libros creados desde imágenes deben exportarse como EPUB o PDF." });

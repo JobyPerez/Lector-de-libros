@@ -50,7 +50,7 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
     try {
       const result = await connection.execute(
         `SELECT s.user_id          AS "userId",
-                UPPER(s.role)      AS "role",
+                LOWER(s.role)      AS "role",
                 s.created_at       AS "shareCreatedAt",
                 u.username         AS "userUsername",
                 u.email            AS "userEmail",
@@ -92,7 +92,7 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
                 u.username   AS "username",
                 u.display_name AS "displayName",
                 u.email      AS "email",
-                UPPER(s.role) AS "shareRole"
+                LOWER(s.role) AS "shareRole"
            FROM users u
            LEFT JOIN book_shares s
              ON s.book_id = :bookId
@@ -410,4 +410,3 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 };
-
