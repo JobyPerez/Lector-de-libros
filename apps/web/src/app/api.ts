@@ -706,7 +706,7 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; notionBookUrl?: string; synopsis?: string; title: string }) {
+export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; notionBookUrl?: string | null; synopsis?: string; title: string }) {
   return request<{ book: BookSummary }>(`/books/${bookId}`, {
     accessToken,
     body: payload,

@@ -109,7 +109,7 @@ const updateBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
-  notionBookUrl: z.string().trim().url().max(2000).optional()
+  notionBookUrl: z.string().trim().url().max(2000).nullable().optional()
 });
 
 const pageParamsSchema = z.object({
@@ -1719,18 +1719,21 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
   const result = await connection.execute(
     `
       SELECT
-        book_id AS "bookId",
-        title AS "title",
-        author_name AS "authorName",
-        notion_book_url AS "notionBookUrl",
-        synopsis AS "synopsis",
-        source_type AS "sourceType",
-        status AS "status",
-        total_pages AS "totalPages",
-        total_paragraphs AS "totalParagraphs"
-      FROM books
-      WHERE book_id = :bookId
-        AND owner_user_id = :ownerUserId
+        b.book_id AS "bookId",
+        b.title AS "title",
+        b.author_name AS "authorName",
+        us.notion_book_url AS "notionBookUrl",
+        b.synopsis AS "synopsis",
+        b.source_type AS "sourceType",
+        b.status AS "status",
+        b.total_pages AS "totalPages",
+        b.total_paragraphs AS "totalParagraphs"
+      FROM books b
+      LEFT JOIN user_book_settings us
+        ON us.book_id = b.book_id
+       AND us.user_id = :ownerUserId
+      WHERE b.book_id = :bookId
+        AND b.owner_user_id = :ownerUserId
     `,
     {
       bookId,
@@ -1753,13 +1756,16 @@ async function findAccessibleBook(
         b.book_id AS "bookId",
         b.title AS "title",
         b.author_name AS "authorName",
-        b.notion_book_url AS "notionBookUrl",
+        us.notion_book_url AS "notionBookUrl",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
         b.status AS "status",
         b.total_pages AS "totalPages",
         b.total_paragraphs AS "totalParagraphs"
       FROM books b
+      LEFT JOIN user_book_settings us
+        ON us.book_id = b.book_id
+       AND us.user_id = :userId
       LEFT JOIN book_shares s
         ON s.book_id = b.book_id
        AND s.user_id = :userId
@@ -1771,6 +1777,31 @@ async function findAccessibleBook(
 
   const [book] = (result.rows ?? []) as OwnedBookRecord[];
   return book ?? null;
+}
+
+async function upsertUserBookSettings(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  input: { bookId: string; notionBookUrl: string | null; userId: string }
+): Promise<void> {
+  await connection.execute(
+    `
+      MERGE INTO user_book_settings target
+      USING (
+        SELECT :userId AS user_id,
+               :bookId AS book_id,
+               :notionBookUrl AS notion_book_url
+        FROM dual
+      ) source
+      ON (target.user_id = source.user_id AND target.book_id = source.book_id)
+      WHEN MATCHED THEN
+        UPDATE SET notion_book_url = source.notion_book_url,
+                   updated_at = SYSTIMESTAMP
+      WHEN NOT MATCHED THEN
+        INSERT (user_id, book_id, notion_book_url)
+        VALUES (source.user_id, source.book_id, source.notion_book_url)
+    `,
+    input
+  );
 }
 
 async function findParagraphBoundary(
@@ -3160,7 +3191,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.book_id AS "bookId",
             b.title AS "title",
             b.author_name AS "authorName",
-            b.notion_book_url AS "notionBookUrl",
+            us.notion_book_url AS "notionBookUrl",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -3175,6 +3206,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             CASE WHEN b.owner_user_id = :userId THEN 'OWNER' ELSE UPPER(s.role) END AS "currentUserRole"
           FROM books b
           JOIN users owner ON owner.user_id = b.owner_user_id
+          LEFT JOIN user_book_settings us ON us.book_id = b.book_id AND us.user_id = :userId
           LEFT JOIN book_shares s ON s.book_id = b.book_id AND s.user_id = :userId
           LEFT JOIN user_book_progress p ON p.book_id = b.book_id AND p.user_id = :userId
           WHERE ${whereClause}
@@ -3271,7 +3303,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.put("/:bookId", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, async (request, reply) => {
+  app.put("/:bookId", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -3281,41 +3313,57 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const existingBook = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!existingBook) {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      await connection.execute(
-        `
-          UPDATE books
-          SET title = :title,
-              author_name = :authorName,
-              notion_book_url = :notionBookUrl,
-              synopsis = :synopsis
-          WHERE book_id = :bookId
-            AND owner_user_id = :ownerUserId
-        `,
-        {
-          authorName: payload.authorName ?? null,
-          bookId: params.bookId,
-          notionBookUrl: payload.notionBookUrl ?? null,
-          ownerUserId: request.currentUser.userId,
-          synopsis: payload.synopsis ?? null,
-          title: payload.title
-        },
-        {
-          autoCommit: true
-        }
-      );
+      const nextAuthorName = payload.authorName ?? null;
+      const nextSynopsis = payload.synopsis ?? null;
+      const nextNotionBookUrl = payload.notionBookUrl ?? null;
+      const hasMetadataChanges = payload.title !== existingBook.title
+        || nextAuthorName !== existingBook.authorName
+        || nextSynopsis !== existingBook.synopsis;
+
+      if (hasMetadataChanges && request.bookAccess?.role !== "OWNER") {
+        return reply.status(403).send({ message: "Solo el propietario puede actualizar los metadatos del libro." });
+      }
+
+      if (request.bookAccess?.role === "OWNER") {
+        await connection.execute(
+          `
+            UPDATE books
+            SET title = :title,
+                author_name = :authorName,
+                synopsis = :synopsis
+            WHERE book_id = :bookId
+              AND owner_user_id = :ownerUserId
+          `,
+          {
+            authorName: nextAuthorName,
+            bookId: params.bookId,
+            ownerUserId: request.currentUser.userId,
+            synopsis: nextSynopsis,
+            title: payload.title
+          }
+        );
+      }
+
+      await upsertUserBookSettings(connection, {
+        bookId: params.bookId,
+        notionBookUrl: nextNotionBookUrl,
+        userId: request.currentUser.userId
+      });
+
+      await connection.commit();
 
       return reply.send({
         book: {
           ...existingBook,
-          authorName: payload.authorName ?? null,
-          notionBookUrl: payload.notionBookUrl ?? null,
-          synopsis: payload.synopsis ?? null,
-          title: payload.title
+          authorName: request.bookAccess?.role === "OWNER" ? nextAuthorName : existingBook.authorName,
+          notionBookUrl: nextNotionBookUrl,
+          synopsis: request.bookAccess?.role === "OWNER" ? nextSynopsis : existingBook.synopsis,
+          title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title
         }
       });
     } finally {
@@ -4285,7 +4333,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.book_id AS "bookId",
             b.title AS "title",
             b.author_name AS "authorName",
-            b.notion_book_url AS "notionBookUrl",
+            us.notion_book_url AS "notionBookUrl",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -4300,6 +4348,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             CASE WHEN b.owner_user_id = :userId THEN 'OWNER' ELSE UPPER(s.role) END AS "currentUserRole"
           FROM books b
           JOIN users owner ON owner.user_id = b.owner_user_id
+          LEFT JOIN user_book_settings us ON us.book_id = b.book_id AND us.user_id = :userId
           LEFT JOIN book_shares s ON s.book_id = b.book_id AND s.user_id = :userId
           WHERE b.book_id = :bookId
             AND (b.owner_user_id = :userId OR s.user_id = :userId)
@@ -4333,20 +4382,24 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const bookResult = await connection.execute(
         `
           SELECT
-            book_id AS "bookId",
-            title AS "title",
-            author_name AS "authorName",
-            notion_book_url AS "notionBookUrl",
-            synopsis AS "synopsis",
-            source_type AS "sourceType",
-            status AS "status",
-            total_pages AS "totalPages",
-            total_paragraphs AS "totalParagraphs"
-          FROM books
-          WHERE book_id = :bookId
+            b.book_id AS "bookId",
+            b.title AS "title",
+            b.author_name AS "authorName",
+            us.notion_book_url AS "notionBookUrl",
+            b.synopsis AS "synopsis",
+            b.source_type AS "sourceType",
+            b.status AS "status",
+            b.total_pages AS "totalPages",
+            b.total_paragraphs AS "totalParagraphs"
+          FROM books b
+          LEFT JOIN user_book_settings us
+            ON us.book_id = b.book_id
+           AND us.user_id = :userId
+          WHERE b.book_id = :bookId
         `,
         {
-          bookId: params.bookId
+          bookId: params.bookId,
+          userId: request.currentUser.userId
         }
       );
 

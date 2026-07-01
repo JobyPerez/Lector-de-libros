@@ -204,6 +204,7 @@ export function ShelfPage() {
   const [scope, setScope] = useState<BookScope>("mine");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
+  const canEditBookMetadata = !editingBook?.currentUserRole || editingBook.currentUserRole === "OWNER";
 
   const sharedBooksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -411,7 +412,7 @@ export function ShelfPage() {
       await updateBook(accessToken, editingBook.bookId, {
         title: bookForm.title.trim(),
         ...(bookForm.authorName.trim() ? { authorName: bookForm.authorName.trim() } : {}),
-        ...(bookForm.notionBookUrl.trim() ? { notionBookUrl: bookForm.notionBookUrl.trim() } : {}),
+        notionBookUrl: bookForm.notionBookUrl.trim() || null,
         ...(bookForm.synopsis.trim() ? { synopsis: bookForm.synopsis.trim() } : {})
       });
 
@@ -781,6 +782,7 @@ export function ShelfPage() {
             <label>
               Título
               <input
+                disabled={!canEditBookMetadata}
                 onChange={(event) => setBookForm((current) => ({ ...current, title: event.target.value }))}
                 required
                 value={bookForm.title}
@@ -789,13 +791,14 @@ export function ShelfPage() {
             <label>
               Autor
               <input
+                disabled={!canEditBookMetadata}
                 onChange={(event) => setBookForm((current) => ({ ...current, authorName: event.target.value }))}
                 placeholder="Autor o autora"
                 value={bookForm.authorName}
               />
             </label>
             <label>
-              URL en Notion
+              URL en Notion personal
               <input
                 onChange={(event) => setBookForm((current) => ({ ...current, notionBookUrl: event.target.value }))}
                 placeholder="https://www.notion.so/..."
@@ -806,6 +809,7 @@ export function ShelfPage() {
             <label>
               Sinopsis
               <textarea
+                disabled={!canEditBookMetadata}
                 onChange={(event) => setBookForm((current) => ({ ...current, synopsis: event.target.value }))}
                 placeholder="Resumen opcional del libro"
                 rows={5}
