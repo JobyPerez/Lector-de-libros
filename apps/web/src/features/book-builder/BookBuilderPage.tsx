@@ -779,7 +779,8 @@ export function BookBuilderPage() {
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
   const [reviewSelectedAlignment, setReviewSelectedAlignment] = useState<ReviewTextAlignment | null>(null);
   const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
-  const [reviewImageSourceBlob, setReviewImageSourceBlob] = useState<Blob | null>(null);
+  const [reviewImageSourceBlob, setReviewImageSourceBlob] = useState<{ blob: Blob; key: string } | null>(null);
+  const [reviewImageLoadingKey, setReviewImageLoadingKey] = useState<string | null>(null);
   const [reviewImageStageUrl, setReviewImageStageUrl] = useState<string | null>(null);
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
   const reviewEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1090,6 +1091,9 @@ export function BookBuilderPage() {
       return fetchReaderNavigation(accessToken, reviewBookId);
     }
   });
+  const reviewSourceImageKey = reviewPageQuery.data?.page.hasSourceImage
+    ? `${reviewBookId}:${reviewPageNumber}:${reviewPageQuery.data.page.sourceFileId ?? ""}:${reviewPageQuery.data.page.updatedAt ?? ""}`
+    : null;
 
   useEffect(() => {
     const firstImageBook = imageBooks[0];
@@ -1175,10 +1179,11 @@ export function BookBuilderPage() {
   }, [isReviewPageJumpActive, reviewPageNumber]);
 
   usePageSwipe({
+    allowSelector: ".ocr-editor,.review-panel,.review-preview-panel,.review-image-frame,.preview-image,.reader-rich-content",
     canGoNext: reviewPageNumber < (selectedReviewBook?.totalPages ?? 0),
     canGoPrevious: reviewPageNumber > 1,
     enabled: isReviewOnlyMode && !isReviewCropMode && !isSavingReview && !isDeletingReviewPage && !isRerunningOcr,
-    ignoreSelector: ".ocr-editor,.review-format-toolbar,.review-floating-controls,.reader-navigation-panel,.review-floating-ocr-panel,.review-crop-workspace",
+    ignoreSelector: ".review-format-toolbar,.review-floating-controls,.reader-navigation-panel,.review-floating-ocr-panel,.review-crop-workspace",
     onNext: () => changeReviewPage(1),
     onPrevious: () => changeReviewPage(-1),
     ref: reviewSwipeSurfaceRef
@@ -1202,14 +1207,17 @@ export function BookBuilderPage() {
   useEffect(() => {
     let active = true;
 
-    if (!isReviewOnlyMode || !accessToken || !reviewBookId || !reviewPageQuery.data?.page.hasSourceImage) {
+    if (!isReviewOnlyMode || !accessToken || !reviewBookId || !reviewSourceImageKey) {
       setReviewImageSourceBlob(null);
       setReviewImageStageUrl(null);
       setReviewImageUrl(null);
+      setReviewImageLoadingKey(null);
       return () => {
         active = false;
       };
     }
+
+    setReviewImageLoadingKey(reviewSourceImageKey);
 
     void fetchBookPageImage(
       accessToken,
@@ -1222,32 +1230,34 @@ export function BookBuilderPage() {
           return;
         }
 
-        setReviewImageSourceBlob(imageBlob);
+        setReviewImageSourceBlob({ blob: imageBlob, key: reviewSourceImageKey });
       })
       .catch(() => {
         if (active) {
           setReviewImageSourceBlob(null);
           setReviewImageUrl(null);
+          setReviewImageLoadingKey((current) => current === reviewSourceImageKey ? null : current);
         }
       });
 
     return () => {
       active = false;
     };
-  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.hasSourceImage, reviewPageQuery.data?.page.sourceFileId, reviewPageQuery.data?.page.updatedAt]);
+  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.sourceFileId, reviewSourceImageKey]);
 
   useEffect(() => {
     let active = true;
     let stageObjectUrl: string | null = null;
+    const sourceBlob = reviewImageSourceBlob?.blob ?? null;
 
-    if (!reviewImageSourceBlob) {
+    if (!sourceBlob) {
       setReviewImageStageUrl(null);
       return () => {
         active = false;
       };
     }
 
-    void renderReviewImageBlob(reviewImageSourceBlob, {
+    void renderReviewImageBlob(sourceBlob, {
       crop: defaultReviewImageCrop,
       maxDimension: 1600,
       mimeType: "image/png",
@@ -1278,15 +1288,17 @@ export function BookBuilderPage() {
   useEffect(() => {
     let active = true;
     let previewObjectUrl: string | null = null;
+    const sourceBlob = reviewImageSourceBlob?.blob ?? null;
+    const sourceKey = reviewImageSourceBlob?.key ?? null;
 
-    if (!reviewImageSourceBlob) {
+    if (!sourceBlob) {
       setReviewImageUrl(null);
       return () => {
         active = false;
       };
     }
 
-    void renderReviewImageBlob(reviewImageSourceBlob, {
+    void renderReviewImageBlob(sourceBlob, {
       crop: reviewImageCrop,
       maxDimension: 1600,
       mimeType: "image/png",
@@ -1299,10 +1311,16 @@ export function BookBuilderPage() {
 
         previewObjectUrl = URL.createObjectURL(previewBlob);
         setReviewImageUrl(previewObjectUrl);
+        if (sourceKey === reviewSourceImageKey) {
+          setReviewImageLoadingKey((current) => current === sourceKey ? null : current);
+        }
       })
       .catch(() => {
         if (active) {
           setReviewImageUrl(null);
+          if (sourceKey === reviewSourceImageKey) {
+            setReviewImageLoadingKey((current) => current === sourceKey ? null : current);
+          }
         }
       });
 
@@ -1312,7 +1330,7 @@ export function BookBuilderPage() {
         URL.revokeObjectURL(previewObjectUrl);
       }
     };
-  }, [reviewImageCrop, reviewImageRotation, reviewImageSourceBlob]);
+  }, [reviewImageCrop, reviewImageRotation, reviewImageSourceBlob, reviewSourceImageKey]);
 
   useEffect(() => {
     if (!isReviewCropMode) {
@@ -2127,8 +2145,8 @@ export function BookBuilderPage() {
       throw new Error("La imagen original no está disponible para guardar los ajustes.");
     }
 
-    const outputMimeType = resolveReviewImageOutputMimeType(reviewImageSourceBlob.type);
-    const editedImageBlob = await renderReviewImageBlob(reviewImageSourceBlob, {
+    const outputMimeType = resolveReviewImageOutputMimeType(reviewImageSourceBlob.blob.type);
+    const editedImageBlob = await renderReviewImageBlob(reviewImageSourceBlob.blob, {
       crop: reviewImageCrop,
       mimeType: outputMimeType,
       rotation: reviewImageRotation,
@@ -2589,6 +2607,7 @@ export function BookBuilderPage() {
   const reviewImageRotationDirty = reviewImageRotation !== originalReviewImageRotation;
   const reviewImageCropDirty = !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
+  const isReviewImageLoading = Boolean(reviewImageLoadingKey);
   const canDeleteReviewPage = selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF";
   const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
   const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
@@ -3299,6 +3318,8 @@ export function BookBuilderPage() {
                       <p className={hasPendingReviewImageEdits ? "helper-text review-image-rotation-status is-pending" : "helper-text review-image-rotation-status"}>
                         {isReviewCropMode
                           ? "Ajusta el marco con el ratón o con el dedo y aplica el recorte."
+                          : isReviewImageLoading
+                            ? "Cargando imagen de la página..."
                           : hasPendingReviewImageEdits
                             ? "Ajustes pendientes por guardar."
                             : "Imagen guardada."}
@@ -3393,27 +3414,46 @@ export function BookBuilderPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="empty-state compact-state">
-                      <p>Preparando la imagen para recortarla...</p>
+                    <div className="review-image-frame is-processing review-image-loading-frame" aria-live="polite">
+                      <div className="review-image-loading-placeholder" />
+                      <div className="review-image-processing-overlay">
+                        <span className="review-processing-spinner" />
+                        <div className="review-processing-copy">
+                          <strong>Preparando imagen...</strong>
+                          <span>Generando vista para recorte.</span>
+                        </div>
+                      </div>
                     </div>
                   )
                 ) : (
                   reviewImageUrl ? (
-                    <div className={isRerunningOcr ? "review-image-frame is-processing" : "review-image-frame"}>
+                    <div className={isRerunningOcr || isReviewImageLoading ? "review-image-frame is-processing" : "review-image-frame"}>
                       <img
                         alt={`Página ${reviewPageNumber} para revisión OCR`}
                         className="preview-image"
                         src={reviewImageUrl}
                       />
-                      {isRerunningOcr ? (
+                      {isRerunningOcr || isReviewImageLoading ? (
                         <div aria-live="polite" className="review-image-processing-overlay">
                           <span className="review-processing-spinner" />
                           <div className="review-processing-copy">
-                            <strong>{ocrRetryState?.context === "review" ? "Esperando cupo de OpenCode..." : "Reconociendo OCR..."}</strong>
-                            {ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
+                            <strong>{isReviewImageLoading ? "Cargando imagen..." : (ocrRetryState?.context === "review" ? "Esperando cupo de OpenCode..." : "Reconociendo OCR...")}</strong>
+                            {isReviewImageLoading ? <span>Actualizando vista de la página.</span> : null}
+                            {!isReviewImageLoading && ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
                           </div>
                         </div>
                       ) : null}
+                    </div>
+                  ) : isReviewImageLoading ? (
+                    <div className="review-image-frame is-processing review-image-loading-frame" aria-live="polite">
+                      <div className="review-image-loading-placeholder" />
+                      <div className="review-image-processing-overlay">
+                        <span className="review-processing-spinner" />
+                        <div className="review-processing-copy">
+                          <strong>Cargando imagen...</strong>
+                          <span>Actualizando vista de la página.</span>
+                        </div>
+                      </div>
                     </div>
                   ) : (
                     <div className="empty-state compact-state">

@@ -87,6 +87,12 @@ export function usePageSwipe({
       sessionRef.current = null;
     }
 
+    function clearSessionFor(inputType: SwipeSession["inputType"]) {
+      if (sessionRef.current?.inputType === inputType) {
+        clearSession();
+      }
+    }
+
     function startSession(inputType: SwipeSession["inputType"], pointerId: number, clientX: number, clientY: number) {
       sessionRef.current = {
         inputType,
@@ -194,18 +200,21 @@ export function usePageSwipe({
 
     swipeSurface.addEventListener("pointerdown", handlePointerDown, { passive: true });
     swipeSurface.addEventListener("pointerup", handlePointerUp, { passive: true });
-    swipeSurface.addEventListener("pointercancel", clearSession, { passive: true });
+    const handlePointerCancel = () => clearSessionFor("pointer");
+    const handleTouchCancel = () => clearSessionFor("touch");
+
+    swipeSurface.addEventListener("pointercancel", handlePointerCancel, { passive: true });
     swipeSurface.addEventListener("touchstart", handleTouchStart, { passive: true });
     swipeSurface.addEventListener("touchend", handleTouchEnd, { passive: true });
-    swipeSurface.addEventListener("touchcancel", clearSession, { passive: true });
+    swipeSurface.addEventListener("touchcancel", handleTouchCancel, { passive: true });
 
     return () => {
       swipeSurface.removeEventListener("pointerdown", handlePointerDown);
       swipeSurface.removeEventListener("pointerup", handlePointerUp);
-      swipeSurface.removeEventListener("pointercancel", clearSession);
+      swipeSurface.removeEventListener("pointercancel", handlePointerCancel);
       swipeSurface.removeEventListener("touchstart", handleTouchStart);
       swipeSurface.removeEventListener("touchend", handleTouchEnd);
-      swipeSurface.removeEventListener("touchcancel", clearSession);
+      swipeSurface.removeEventListener("touchcancel", handleTouchCancel);
     };
-  }, [allowSelector, ignoreSelector, ref]);
+  }, [allowSelector, canGoNext, canGoPrevious, enabled, ignoreSelector, ref]);
 }
