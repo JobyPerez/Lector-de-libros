@@ -30,6 +30,7 @@ import { useAuthStore } from "../../app/auth-store";
 import { getOutlineSourceMeta } from "../../app/outline-source";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { useAiConfig } from "../../components/AiModelBadge";
+import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
@@ -784,6 +785,7 @@ export function BookBuilderPage() {
   const reviewEditorRef = useRef<HTMLTextAreaElement | null>(null);
   const reviewCropPointerSessionRef = useRef<ReviewCropPointerSession | null>(null);
   const reviewCropSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const reviewSwipeSurfaceRef = useRef<HTMLDivElement | null>(null);
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
@@ -1171,6 +1173,16 @@ export function BookBuilderPage() {
 
     setReviewPageJumpValue(String(reviewPageNumber));
   }, [isReviewPageJumpActive, reviewPageNumber]);
+
+  usePageSwipe({
+    canGoNext: reviewPageNumber < (selectedReviewBook?.totalPages ?? 0),
+    canGoPrevious: reviewPageNumber > 1,
+    enabled: isReviewOnlyMode && !isReviewCropMode && !isSavingReview && !isDeletingReviewPage && !isRerunningOcr,
+    ignoreSelector: ".ocr-editor,.review-format-toolbar,.review-floating-controls,.reader-navigation-panel,.review-floating-ocr-panel,.review-crop-workspace",
+    onNext: () => changeReviewPage(1),
+    onPrevious: () => changeReviewPage(-1),
+    ref: reviewSwipeSurfaceRef
+  });
 
   useEffect(() => {
     if (!isReviewPageJumpActive || typeof window === "undefined") {
@@ -3277,7 +3289,7 @@ export function BookBuilderPage() {
             {reviewPageQuery.isLoading ? <p className="subdued">Cargando página para revisión...</p> : null}
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
 
-            <div className={shouldShowReviewSourcePanel ? "builder-review-grid" : "builder-review-grid builder-review-grid-single"}>
+            <div className={shouldShowReviewSourcePanel ? "builder-review-grid page-swipe-surface" : "builder-review-grid builder-review-grid-single page-swipe-surface"} ref={reviewSwipeSurfaceRef}>
               {shouldShowReviewSourcePanel ? (
               <article className={isRerunningOcr ? "review-panel review-panel-processing" : "review-panel"}>
                 <div className="source-panel-header">

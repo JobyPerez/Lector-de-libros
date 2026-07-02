@@ -33,6 +33,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
 import { createStoredZip } from "./audio-zip";
 import { getOfflineChapterAudioStatus, loadOfflineAudioBlockContaining, loadOfflineChapterAudioExport, saveChapterAudioBlock } from "./offline-audio-cache";
@@ -1314,6 +1315,7 @@ export function ReaderPage() {
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
+  const pageSwipeSurfaceRef = useRef<HTMLDivElement | null>(null);
   const readerPanelRef = useRef<HTMLElement | null>(null);
   const headerActionsRef = useRef<HTMLDivElement | null>(null);
   const floatingHeaderActionsRef = useRef<HTMLDivElement | null>(null);
@@ -2426,6 +2428,17 @@ export function ReaderPage() {
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);
   const currentPageActiveParagraphNumber = currentParagraph?.paragraphNumber ?? null;
   const effectiveCurrentParagraphNumber = currentPageActiveParagraphNumber ?? currentParagraphNumber;
+
+  usePageSwipe({
+    allowSelector: ".reader-paragraph,[data-paragraph-number],.reader-rich-content",
+    canGoNext: Boolean(pageQuery.data?.hasNextPage),
+    canGoPrevious: Boolean(pageQuery.data?.hasPreviousPage),
+    enabled: !isScreenLockEnabled && !pageTurnDirection && !selectionDraft && !activeReaderNote && !isNavigationPanelVisible,
+    ignoreSelector: ".reader-floating-controls,.reader-header-floating-dock,.reader-navigation-panel,.reader-selection-popover,.reader-note-popover",
+    onNext: () => goToPage(currentPageNumber + 1),
+    onPrevious: () => goToPage(currentPageNumber - 1),
+    ref: pageSwipeSurfaceRef
+  });
 
   useEffect(() => {
     if (!hasRichPageContent || !richContentRef.current || !currentHtmlContent) {
@@ -4764,7 +4777,7 @@ export function ReaderPage() {
 
         <div className="reader-canvas">
           <div className="reader-split">
-            <div className={pageTurnDirection ? `reader-page-turn reader-page-turn-${pageTurnDirection}` : "reader-page-turn"}>
+            <div className={pageTurnDirection ? `reader-page-turn reader-page-turn-${pageTurnDirection} page-swipe-surface` : "reader-page-turn page-swipe-surface"} ref={pageSwipeSurfaceRef}>
               <div className={pageTurnDirection ? `reader-page reader-page-live reader-page-live-animating reader-page-live-animating-${pageTurnDirection}` : "reader-page reader-page-live"} ref={livePageRef}>
                 {shouldRenderPageCornerBookmark ? (
                   <div className="reader-page-corner-bookmark" data-animation={bookmarkAnimationState ?? undefined} title="Página marcada">

@@ -1987,6 +1987,10 @@ textarea {
   transform-style: preserve-3d;
 }
 
+.page-swipe-surface {
+  touch-action: pan-y;
+}
+
 .reader-page-live,
 .reader-page-overlay {
   min-height: 26rem;
