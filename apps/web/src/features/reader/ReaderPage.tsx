@@ -4365,6 +4365,10 @@ export function ReaderPage() {
       const removingBookmark = currentBookmarks.length > 0;
 
       if (currentBookmarks.length > 0) {
+        if (!window.confirm("¿Borrar este marcador? Esta acción no se puede deshacer.")) {
+          return;
+        }
+
         triggerBookmarkAnimation("removing");
         await Promise.all(currentBookmarks.map((bookmark) => deleteBookmark(accessToken, bookId, bookmark.bookmarkId)));
       } else {
@@ -4440,6 +4444,12 @@ export function ReaderPage() {
       setReaderError(error instanceof Error ? error.message : "No se pudo borrar la nota.");
     } finally {
       setIsUpdatingNote(false);
+    }
+  }
+
+  function handleDeleteReaderNote(noteId: string) {
+    if (window.confirm("¿Borrar esta nota? Esta acción no se puede deshacer.")) {
+      void handleDeleteSavedNote(noteId);
     }
   }
 
@@ -4977,7 +4987,7 @@ export function ReaderPage() {
                 aria-label="Borrar nota"
                 className="reader-note-icon-button danger-icon-button"
                 disabled={isUpdatingNote}
-                onClick={() => void handleDeleteSavedNote(activeReaderNote.noteId as string)}
+                onClick={() => handleDeleteReaderNote(activeReaderNote.noteId as string)}
                 title="Borrar nota"
                 type="button"
               >

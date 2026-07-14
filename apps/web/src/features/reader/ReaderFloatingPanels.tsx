@@ -574,6 +574,10 @@ export function ReaderNavigationPanelContent({
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
 
   async function handleDeleteBookmark(bookmarkId: string) {
+    if (!window.confirm("¿Borrar este marcador? Esta acción no se puede deshacer.")) {
+      return;
+    }
+
     setDeletingBookmarkIds((prev) => new Set(prev).add(bookmarkId));
     try {
       await onDeleteBookmark(bookmarkId);
@@ -583,6 +587,12 @@ export function ReaderNavigationPanelContent({
         next.delete(bookmarkId);
         return next;
       });
+    }
+  }
+
+  function handleDeleteNote(noteId: string) {
+    if (window.confirm("¿Borrar esta nota? Esta acción no se puede deshacer.")) {
+      onDeleteNote(noteId);
     }
   }
 
@@ -794,7 +804,7 @@ export function ReaderNavigationPanelContent({
                   <button
                     aria-label="Borrar nota"
                     className="reader-note-delete"
-                    onClick={() => onDeleteNote(item.noteId)}
+                    onClick={() => handleDeleteNote(item.noteId)}
                     title="Borrar nota"
                     type="button"
                   >
