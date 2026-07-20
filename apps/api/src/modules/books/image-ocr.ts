@@ -690,20 +690,24 @@ function buildVisionOcrPrompt(promptOverride?: string): VisionOcrPrompt {
   const normalizedPromptOverride = promptOverride?.trim();
 
   return {
-    maxTokens: 3600,
+    maxTokens: 8192,
     system: "Haz OCR estructurado de una página de libro en español. Devuelve solo JSON válido con las claves rawText, paragraphs y blocks. rawText debe contener el texto limpio global; paragraphs debe contener el texto limpio por párrafos; blocks debe contener elementos type=heading, paragraph o image en orden de lectura. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Detecta retratos, ilustraciones o imágenes relevantes del contenido y devuélvelas como blocks de tipo image. Los párrafos deben respetar el layout real, no los saltos de línea impresos. No inventes texto. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Las firmas, dedicatorias manuscritas, nombres firmados y fechas nunca deben clasificarse como heading; deben ir como paragraph. Una firma seguida de una fecha nunca es heading.",
     user: normalizedPromptOverride || "Sin instrucciones adicionales del usuario. Aplica únicamente las reglas del mensaje system."
   };
 }
 
+const visionOcrMaxTokensCeiling = 16384;
+
 async function executeVisionOcrRequest(
   croppedBuffer: Buffer,
   requestPayload: VisionImageRequestPayload,
-  promptOverride?: string
+  promptOverride?: string,
+  maxTokensOverride?: number
 ): Promise<OcrPageResult> {
   const model = appEnv.opencodeModel;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const prompt = buildVisionOcrPrompt(promptOverride);
+  const maxTokens = maxTokensOverride ?? prompt.maxTokens;
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -712,7 +716,7 @@ async function executeVisionOcrRequest(
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      max_tokens: getOpenCodeMaxTokens(model, prompt.maxTokens),
+      max_tokens: getOpenCodeMaxTokens(model, maxTokens),
       messages: [
         {
           role: "system",
@@ -776,6 +780,15 @@ async function executeVisionOcrRequest(
   try {
     parsedPayload = ocrResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
   } catch {
+    if (finishReason === "length" && maxTokens < visionOcrMaxTokensCeiling) {
+      return executeVisionOcrRequest(
+        croppedBuffer,
+        requestPayload,
+        promptOverride,
+        Math.min(maxTokens * 2, visionOcrMaxTokensCeiling)
+      );
+    }
+
     throw createVisionOcrParseError(assistantText, finishReason);
   }
 

@@ -2520,24 +2520,6 @@ async function shiftSubsequentRelatedReferences(
     return;
   }
 
-  const temporaryOffset = 100000;
-
-  if (sequenceDelta !== 0) {
-    await connection.execute(
-      `
-        UPDATE book_chapters
-        SET sequence_number = sequence_number + :temporaryOffset
-        WHERE book_id = :bookId
-          AND page_number > :pageNumber
-      `,
-      {
-        bookId,
-        pageNumber,
-        temporaryOffset
-      }
-    );
-  }
-
   await connection.execute(
     `
       UPDATE user_bookmarks
@@ -2604,27 +2586,6 @@ async function shiftSubsequentRelatedReferences(
       sequenceDelta
     }
   );
-
-  if (sequenceDelta !== 0) {
-    await connection.execute(
-      `
-        UPDATE book_chapters
-        SET page_number = page_number + :pageDelta,
-            sequence_number = sequence_number - :temporaryOffset + :sequenceDelta
-        WHERE book_id = :bookId
-          AND page_number > :pageNumber
-      `,
-      {
-        bookId,
-        pageDelta,
-        pageNumber,
-        sequenceDelta,
-        temporaryOffset
-      }
-    );
-
-    return;
-  }
 
   await connection.execute(
     `

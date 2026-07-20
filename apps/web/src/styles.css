@@ -3587,6 +3587,36 @@ textarea {
   color: var(--forest-900);
 }
 
+.reader-navigation-chip-bookmark-tone-0 {
+  background: rgba(25, 72, 53, 0.14);
+  color: #1f5138;
+}
+
+.reader-navigation-chip-bookmark-tone-1 {
+  background: rgba(169, 87, 37, 0.16);
+  color: #a95725;
+}
+
+.reader-navigation-chip-bookmark-tone-2 {
+  background: rgba(58, 108, 165, 0.16);
+  color: #2f5d91;
+}
+
+.reader-navigation-chip-bookmark-tone-3 {
+  background: rgba(178, 74, 122, 0.16);
+  color: #9c3f6c;
+}
+
+.reader-navigation-chip-bookmark-tone-4 {
+  background: rgba(143, 122, 36, 0.18);
+  color: #7a671e;
+}
+
+.reader-navigation-chip-bookmark-tone-5 {
+  background: rgba(46, 125, 116, 0.16);
+  color: #276b63;
+}
+
 .reader-navigation-chip-bookmark svg {
   width: 0.82rem;
   height: 0.82rem;
@@ -3657,6 +3687,48 @@ textarea {
   border-color: rgba(169, 87, 37, 0.2);
   background: linear-gradient(180deg, rgba(252, 241, 223, 0.7), rgba(255, 252, 247, 0.94));
   box-shadow: inset 3px 0 0 rgba(169, 87, 37, 0.26);
+}
+
+.reader-navigation-item-toc-card.with-toggle {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.reader-navigation-group {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.reader-navigation-group-children {
+  display: grid;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.reader-navigation-toggle {
+  width: auto;
+  min-width: 2.2rem;
+  gap: 0.2rem;
+  padding: 0 0.35rem;
+}
+
+.reader-navigation-toggle svg {
+  transition: transform 0.18s ease;
+}
+
+.reader-navigation-toggle[data-expanded] svg {
+  transform: rotate(90deg);
+}
+
+.reader-navigation-toggle-count {
+  color: #5d665d;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.reader-navigation-group-uncategorized .reader-navigation-group-title {
+  display: grid;
+  align-items: center;
 }
 
 .reader-navigation-summary-link {

@@ -707,6 +707,14 @@ export function AiRequestsPage() {
     };
   }, [isAudioSettingsVisible, isNavigationPanelVisible]);
 
+  useEffect(() => {
+    if (!isNavigationPanelVisible) {
+      return;
+    }
+
+    activeNavigationItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [chapterId, isNavigationPanelVisible]);
+
   const contextTitle = requestsQuery.data?.section?.title ?? requestsQuery.data?.book.title ?? "Peticiones IA";
   const isSectionScope = Boolean(chapterId);
   const backToReaderPath = requestsQuery.data?.section

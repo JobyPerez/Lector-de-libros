@@ -705,6 +705,14 @@ export function SectionSummaryPage() {
     };
   }, [isAudioSettingsVisible, isNavigationPanelVisible]);
 
+  useEffect(() => {
+    if (!isNavigationPanelVisible) {
+      return;
+    }
+
+    activeNavigationItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [chapterId, isNavigationPanelVisible]);
+
   const sectionEntries = useMemo(
     () => (navigationQuery.data?.toc ?? []).flatMap((entry) => entry.chapterId ? [{ ...entry, chapterId: entry.chapterId }] : []),
     [navigationQuery.data?.toc]

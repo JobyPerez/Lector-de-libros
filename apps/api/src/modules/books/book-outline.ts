@@ -298,6 +298,27 @@ export async function replaceBookOutline(
   );
 }
 
+function ensureUniqueOutlineChapterIds(entries: BookOutlineEntry[]): BookOutlineEntry[] {
+  const usedChapterIds = new Set<string>();
+
+  return entries.map((entry) => {
+    if (!usedChapterIds.has(entry.chapterId)) {
+      usedChapterIds.add(entry.chapterId);
+      return entry;
+    }
+
+    const slug = createGeneratedChapterSlug(entry.title);
+    let occurrence = 2;
+    let chapterId = `generated:${slug}:${occurrence}`;
+    while (usedChapterIds.has(chapterId)) {
+      occurrence += 1;
+      chapterId = `generated:${slug}:${occurrence}`;
+    }
+    usedChapterIds.add(chapterId);
+    return { ...entry, chapterId };
+  });
+}
+
 export async function syncBookOutlineForPage(
   connection: DatabaseConnection,
   bookId: string,
@@ -318,5 +339,5 @@ export async function syncBookOutlineForPage(
     ]
   );
 
-  await replaceBookOutline(connection, bookId, nextOutline, "MANUAL");
+  await replaceBookOutline(connection, bookId, ensureUniqueOutlineChapterIds(nextOutline), "MANUAL");
 }
