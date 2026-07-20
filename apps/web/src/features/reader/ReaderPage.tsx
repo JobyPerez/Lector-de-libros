@@ -74,6 +74,7 @@ const READER_POPOVER_GAP_PX = 14;
 const READER_SELECTION_DEBOUNCE_MS = 80;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
 const READER_BOOKMARK_ANIMATION_MS = 420;
+const READER_BOOKMARK_TOAST_MS = 2500;
 const READER_SCREEN_LOCK_HOLD_MS = 5000;
 const READER_SCREEN_LOCK_HOLD_INTERVAL_MS = 100;
 const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
@@ -1271,6 +1272,7 @@ export function ReaderPage() {
   const [pageTurnDirection, setPageTurnDirection] = useState<PageTurnDirection | null>(null);
   const [pageTurnSnapshot, setPageTurnSnapshot] = useState<PageTurnSnapshot | null>(null);
   const [bookmarkAnimationState, setBookmarkAnimationState] = useState<ReaderBookmarkAnimationState>(null);
+  const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
   const [isFloatingHeaderActionsVisible, setIsFloatingHeaderActionsVisible] = useState(false);
@@ -1310,6 +1312,7 @@ export function ReaderPage() {
   const pageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const pageTurnTimeoutRef = useRef<number | null>(null);
   const bookmarkAnimationTimeoutRef = useRef<number | null>(null);
+  const bookmarkToastTimeoutRef = useRef<number | null>(null);
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
   const selectionUpdateTimeoutRef = useRef<number | null>(null);
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
@@ -1368,6 +1371,10 @@ export function ReaderPage() {
     return () => {
       if (bookmarkAnimationTimeoutRef.current !== null) {
         window.clearTimeout(bookmarkAnimationTimeoutRef.current);
+      }
+
+      if (bookmarkToastTimeoutRef.current !== null) {
+        window.clearTimeout(bookmarkToastTimeoutRef.current);
       }
 
       if (navigationPanelCloseTimeoutRef.current !== null) {
@@ -2050,6 +2057,19 @@ export function ReaderPage() {
       setBookmarkAnimationState(null);
       bookmarkAnimationTimeoutRef.current = null;
     }, READER_BOOKMARK_ANIMATION_MS);
+  }
+
+  function showBookmarkToast(message: string) {
+    setBookmarkToast(message);
+
+    if (bookmarkToastTimeoutRef.current !== null) {
+      window.clearTimeout(bookmarkToastTimeoutRef.current);
+    }
+
+    bookmarkToastTimeoutRef.current = window.setTimeout(() => {
+      setBookmarkToast(null);
+      bookmarkToastTimeoutRef.current = null;
+    }, READER_BOOKMARK_TOAST_MS);
   }
 
   function openNavigationPanel() {
@@ -4369,8 +4389,10 @@ export function ReaderPage() {
           return;
         }
 
+        const removedPageNumber = currentBookmarks[0]?.pageNumber ?? currentPageNumber;
         triggerBookmarkAnimation("removing");
         await Promise.all(currentBookmarks.map((bookmark) => deleteBookmark(accessToken, bookId, bookmark.bookmarkId)));
+        showBookmarkToast(`Marcador de la pág. ${removedPageNumber} eliminado`);
       } else {
         const bookmarkParagraph = currentParagraph ?? currentParagraphs[0] ?? null;
         if (!bookmarkParagraph) {
@@ -4378,7 +4400,8 @@ export function ReaderPage() {
         }
 
         triggerBookmarkAnimation("adding");
-        await createBookmark(accessToken, bookId, { paragraphId: bookmarkParagraph.paragraphId });
+        const { bookmark } = await createBookmark(accessToken, bookId, { paragraphId: bookmarkParagraph.paragraphId });
+        showBookmarkToast(`Marcador añadido · Pág. ${bookmark.pageNumber}`);
       }
 
       await refreshReaderMetadata();
@@ -5118,6 +5141,11 @@ export function ReaderPage() {
           </form>
           <span>{readingPercentage.toFixed(1)}%</span>
         </div>
+        {bookmarkToast ? (
+          <div className="reader-toast" role="status">
+            {bookmarkToast}
+          </div>
+        ) : null}
         <ReaderNavigationPopover
           aiRequestsHref={`/books/${bookId}/ai-requests`}
           aiRequestsLabel="Peticiones IA del libro"
