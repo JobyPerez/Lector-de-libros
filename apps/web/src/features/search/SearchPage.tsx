@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { fetchBookSearch, fetchGlobalBookSearch, type BookSearchResult } from "../../app/api";
@@ -117,6 +117,7 @@ export function SearchPage() {
   const [searchOffset, setSearchOffset] = useState(0);
   const [searchResults, setSearchResults] = useState<BookSearchResult[]>([]);
   const [hasMoreSearchResults, setHasMoreSearchResults] = useState(false);
+  const pendingSearchUrlStateRef = useRef<string | null>(null);
   const navigationState = (location.state as { returnTo?: string } | null) ?? null;
 
   function updateSearchUrl(normalizedQuery: string, caseSensitive: boolean) {
@@ -138,6 +139,7 @@ export function SearchPage() {
       nextSearchParams.set("caseSensitive", "true");
     }
 
+    pendingSearchUrlStateRef.current = JSON.stringify([normalizedQuery, caseSensitive]);
     setSearchParams(nextSearchParams, { replace: true });
   }
 
@@ -156,6 +158,13 @@ export function SearchPage() {
   }
 
   useEffect(() => {
+    const currentSearchUrlState = JSON.stringify([urlQuery, urlCaseSensitive]);
+    if (pendingSearchUrlStateRef.current === currentSearchUrlState) {
+      pendingSearchUrlStateRef.current = null;
+      return;
+    }
+
+    pendingSearchUrlStateRef.current = null;
     setSearchQuery(urlQuery);
     setCaseSensitiveSearch(urlCaseSensitive);
     setExecutedSearchQuery(urlQuery);
