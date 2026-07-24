@@ -1957,8 +1957,8 @@ async function findStoredSectionSummary(
         end_sequence_number AS "endSequenceNumber",
         model_id AS "modelId",
         summary_text AS "summaryText",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
+        TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
       FROM user_book_section_summaries
       WHERE book_id = :bookId
         AND chapter_id = :chapterId
@@ -1995,8 +1995,8 @@ async function findGeneratedSectionSummaryFallback(
         end_sequence_number AS "endSequenceNumber",
         model_id AS "modelId",
         summary_text AS "summaryText",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
+        TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
       FROM user_book_section_summaries
       WHERE book_id = :bookId
         AND user_id = :userId
@@ -2181,8 +2181,8 @@ async function listAiRequests(
           model_id AS "modelId",
           prompt_text AS "promptText",
           response_text AS "responseText",
-          created_at AS "createdAt",
-          updated_at AS "updatedAt"
+          TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+          TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
         FROM user_book_ai_requests
         WHERE user_id = :userId
           AND book_id = :bookId
@@ -2238,8 +2238,8 @@ async function listAiRequests(
         model_id AS "modelId",
         prompt_text AS "promptText",
         response_text AS "responseText",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
+        TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
       FROM user_book_ai_requests
       WHERE user_id = :userId
         AND book_id = :bookId
