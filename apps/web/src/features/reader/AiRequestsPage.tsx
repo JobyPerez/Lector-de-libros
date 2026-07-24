@@ -9,21 +9,26 @@ import {
   deleteHighlight,
   deleteAiRequest,
   deleteNote,
+  fetchAnnotationShareUsers,
   fetchBook,
   fetchDeepgramBalance,
   fetchReaderNavigation,
   fetchAiRequests,
+  isBookCommenterOrAbove,
   isRetryableRateLimitError,
   requestAiResponseAudio,
+  updateAiRequestShares,
   updateNote,
   type HighlightColor,
   type AiRequestRecord,
+  type AiRequestsResponse,
   type ReaderHighlight,
   type ReaderNote,
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
+import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
@@ -301,6 +306,10 @@ function paragraphize(value: string) {
     .filter(Boolean);
 }
 
+function haveSameUserIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((userId) => right.includes(userId));
+}
+
 export function AiRequestsPage() {
   const { bookId = "", chapterId } = useParams();
   const accessToken = useAuthStore((state) => state.accessToken);
@@ -319,6 +328,7 @@ export function AiRequestsPage() {
   const wakeLockRef = useRef<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean } | null>(null);
   const initialPromptKeyRef = useRef<string | null>(null);
   const [promptText, setPromptText] = useState("");
+  const [shareDrafts, setShareDrafts] = useState<Record<string, string[]>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([]);
@@ -328,11 +338,13 @@ export function AiRequestsPage() {
   const [collapsedSectionIds, setCollapsedSectionIds] = useState<Set<string>>(() => new Set());
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [enteringRequestId, setEnteringRequestId] = useState<string | null>(null);
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const [updatingSharesRequestId, setUpdatingSharesRequestId] = useState<string | null>(null);
   const [removingRequestId, setRemovingRequestId] = useState<string | null>(null);
   const [loadingAudioRequestId, setLoadingAudioRequestId] = useState<string | null>(null);
   const [playingRequestId, setPlayingRequestId] = useState<string | null>(null);
@@ -379,7 +391,7 @@ export function AiRequestsPage() {
   });
 
   const bookQuery = useQuery({
-    enabled: Boolean(accessToken && bookId && chapterId),
+    enabled: Boolean(accessToken && bookId),
     queryKey: ["book", bookId],
     queryFn: async () => {
       if (!accessToken) {
@@ -387,6 +399,19 @@ export function AiRequestsPage() {
       }
 
       return fetchBook(accessToken, bookId);
+    }
+  });
+
+  const annotationShareUsersQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["annotation-share-users", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        return [] as Awaited<ReturnType<typeof fetchAnnotationShareUsers>>["users"];
+      }
+
+      const response = await fetchAnnotationShareUsers(accessToken, bookId);
+      return response.users;
     }
   });
 
@@ -411,6 +436,11 @@ export function AiRequestsPage() {
       setPromptText(requestsQuery.data.prompt);
     }
   }, [bookId, chapterId, requestsQuery.data?.prompt]);
+
+  useEffect(() => {
+    setShareDrafts({});
+    setShareError(null);
+  }, [bookId, chapterId]);
 
   useEffect(() => {
     if (retryAfterSeconds <= 0 || typeof window === "undefined") {
@@ -746,6 +776,9 @@ export function AiRequestsPage() {
     ? `/books/${bookId}?page=${requestsQuery.data.section.startPageNumber}`
     : `/books/${bookId}`;
   const requests = requestsQuery.data?.requests ?? [];
+  const currentUserRole = bookQuery.data?.book.currentUserRole ?? requestsQuery.data?.book.currentUserRole;
+  const canCreateRequest = isBookCommenterOrAbove(currentUserRole);
+  const sharableUsers = annotationShareUsersQuery.data ?? [];
   const bookTitle = bookQuery.data?.book.title ?? requestsQuery.data?.book.title ?? "Cargando libro...";
   const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
     ? deepgramBalanceQuery.error.message
@@ -1140,7 +1173,7 @@ export function AiRequestsPage() {
   }
 
   async function handleCreateRequest() {
-    if (!accessToken || retryAfterSeconds > 0) {
+    if (!accessToken || !canCreateRequest || retryAfterSeconds > 0) {
       return;
     }
 
@@ -1201,7 +1234,11 @@ export function AiRequestsPage() {
       return;
     }
 
-    if (!window.confirm("¿Borrar esta petición de IA? Esta acción no se puede deshacer.")) {
+    const deleteLabel = request.isOwnedByCurrentUser ? "Borrar petición" : "Quitar de mis peticiones";
+    const confirmation = request.isOwnedByCurrentUser
+      ? "¿Borrar esta petición de IA? Esta acción no se puede deshacer."
+      : "¿Quitar esta petición compartida de mis peticiones?";
+    if (!window.confirm(confirmation)) {
       return;
     }
 
@@ -1238,10 +1275,40 @@ export function AiRequestsPage() {
       await new Promise((resolve) => window.setTimeout(resolve, AI_REQUEST_REMOVAL_ANIMATION_MS));
       await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
     } catch (error) {
-      setDeleteError(error instanceof Error ? error.message : "No se pudo borrar la petición IA.");
+      setDeleteError(error instanceof Error ? error.message : `No se pudo ${deleteLabel.toLocaleLowerCase("es-ES")}.`);
     } finally {
       setDeletingRequestId(null);
       setRemovingRequestId(null);
+    }
+  }
+
+  async function handleUpdateRequestShares(request: AiRequestRecord) {
+    if (!accessToken || !request.isOwnedByCurrentUser || updatingSharesRequestId) {
+      return;
+    }
+
+    const sharedWithUserIds = shareDrafts[request.requestId] ?? request.sharedWithUserIds ?? [];
+    setUpdatingSharesRequestId(request.requestId);
+    setShareError(null);
+
+    try {
+      const result = await updateAiRequestShares(accessToken, bookId, request.requestId, sharedWithUserIds);
+      queryClient.setQueryData<AiRequestsResponse>(["ai-requests", bookId, chapterId ?? "book"], (current) => current ? {
+        ...current,
+        requests: current.requests.map((item) => item.requestId === request.requestId
+          ? { ...item, sharedWithUserIds: result.sharedWithUserIds }
+          : item)
+      } : current);
+      setShareDrafts((current) => {
+        const next = { ...current };
+        delete next[request.requestId];
+        return next;
+      });
+      await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : "No se pudo actualizar con quién se comparte la petición.");
+    } finally {
+      setUpdatingSharesRequestId(null);
     }
   }
 
@@ -1436,7 +1503,7 @@ export function AiRequestsPage() {
         </div>
       </header>
 
-      <section className="panel reader-section-summary-panel ai-request-form-panel">
+      {canCreateRequest ? <section className="panel reader-section-summary-panel ai-request-form-panel">
         {aiModelSelection.selectedModelId ? (
           <AiModelSelector
             disabled={isSubmitting || aiModelSelection.data?.configured !== true}
@@ -1602,7 +1669,11 @@ export function AiRequestsPage() {
             {isSubmitting ? "Enviando..." : retryAfterSeconds > 0 ? `Reintentar en ${retryAfterSeconds}s` : "Enviar petición"}
           </button>
         </div>
-      </section>
+      </section> : currentUserRole === "VIEWER" ? (
+        <section className="panel reader-section-summary-panel ai-request-read-only-notice">
+          <p className="subdued">Tu acceso es de solo lectura. Necesitas permiso para comentar para crear peticiones IA.</p>
+        </section>
+      ) : null}
 
       {requestsQuery.isLoading ? (
         <section className="panel reader-section-summary-panel">
@@ -1616,9 +1687,10 @@ export function AiRequestsPage() {
         </section>
       ) : null}
 
-      {deleteError || audioError || navigationError ? (
+      {deleteError || shareError || audioError || navigationError ? (
         <section className="panel reader-section-summary-panel">
           {deleteError ? <p className="error-text">{deleteError}</p> : null}
+          {shareError ? <p className="error-text">{shareError}</p> : null}
           {audioError ? <p className="error-text">{audioError}</p> : null}
           {navigationError ? <p className="error-text">{navigationError}</p> : null}
         </section>
@@ -1633,6 +1705,11 @@ export function AiRequestsPage() {
       {groupedRequests.map((request) => {
         const isAudioLoading = loadingAudioRequestId === request.requestId;
         const isPlaying = playingRequestId === request.requestId;
+        const deleteLabel = request.isOwnedByCurrentUser ? "Borrar petición" : "Quitar de mis peticiones";
+        const authorLabel = request.author.displayName?.trim() || (request.author.username ? `@${request.author.username}` : "otro usuario");
+        const savedSharedWithUserIds = request.sharedWithUserIds ?? [];
+        const sharedWithUserIds = shareDrafts[request.requestId] ?? savedSharedWithUserIds;
+        const sharesHaveChanges = !haveSameUserIds(sharedWithUserIds, savedSharedWithUserIds);
         return (
           <article
             aria-hidden={removingRequestId === request.requestId ? true : undefined}
@@ -1647,6 +1724,9 @@ export function AiRequestsPage() {
               <div>
                 <p className="eyebrow">{formatDate(request.createdAt)}</p>
                 <h3>{request.scopeType === "BOOK" ? "Petición al libro" : request.sectionTitle ?? "Petición a la sección"}</h3>
+                {!request.isOwnedByCurrentUser ? (
+                  <p className="ai-request-author">Compartida por {authorLabel} · Solo lectura</p>
+                ) : null}
               </div>
               <div className="reader-section-summary-card-badges">
                 <AiModelBadge feature="ai-requests" label="IA" modelId={request.modelId} size="compact" />
@@ -1661,17 +1741,43 @@ export function AiRequestsPage() {
                   {isAudioLoading ? <LoadingAudioIcon /> : isPlaying ? <PauseIcon /> : <PlayIcon />}
                 </button>
                 <button
-                  aria-label="Borrar petición"
+                  aria-label={deleteLabel}
                   className="reader-note-icon-button danger-icon-button"
                   disabled={deletingRequestId === request.requestId}
                   onClick={() => void handleDeleteRequest(request)}
-                  title="Borrar petición"
+                  title={deleteLabel}
                   type="button"
                 >
                   <DeleteIcon />
                 </button>
               </div>
             </div>
+
+            {request.isOwnedByCurrentUser && canCreateRequest && sharableUsers.length > 0 ? (
+              <div className="ai-request-share-editor">
+                <ShareWithSelector
+                  disabled={updatingSharesRequestId === request.requestId}
+                  emptyLabel="Esta petición solo la verás tú."
+                  label="Compartida con"
+                  onChange={(userIds) => {
+                    setShareDrafts((current) => ({ ...current, [request.requestId]: userIds }));
+                    setShareError(null);
+                  }}
+                  options={sharableUsers}
+                  selected={sharedWithUserIds}
+                />
+                {sharesHaveChanges ? (
+                  <button
+                    className="secondary-button ai-request-share-save"
+                    disabled={updatingSharesRequestId === request.requestId}
+                    onClick={() => void handleUpdateRequestShares(request)}
+                    type="button"
+                  >
+                    {updatingSharesRequestId === request.requestId ? "Guardando..." : "Guardar destinatarios"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
             <details className="ai-request-prompt-details">
               <summary>Ver petición enviada</summary>

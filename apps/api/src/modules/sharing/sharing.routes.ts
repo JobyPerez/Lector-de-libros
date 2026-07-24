@@ -274,18 +274,32 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
 
     const connection = await getConnection();
     try {
+      await connection.execute(
+        `DELETE FROM ai_request_shares ars
+          WHERE ars.user_id = :userId
+            AND EXISTS (
+              SELECT 1
+                FROM user_book_ai_requests ar
+               WHERE ar.request_id = ars.request_id
+                 AND ar.book_id = :bookId
+            )`,
+        { bookId, userId }
+      );
+
       const result = await connection.execute(
         `DELETE FROM book_shares
           WHERE book_id = :bookId
             AND user_id = :userId`,
-        { bookId, userId },
-        { autoCommit: true }
+        { bookId, userId }
       );
 
       if ((result.rowsAffected ?? 0) === 0) {
+        await connection.rollback();
         await reply.status(404).send({ message: "Compartición no encontrada." });
         return;
       }
+
+      await connection.commit();
 
       await logShareEvent({
         action: "share_removed",
@@ -310,18 +324,32 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
 
     const connection = await getConnection();
     try {
+      await connection.execute(
+        `DELETE FROM ai_request_shares ars
+          WHERE ars.user_id = :userId
+            AND EXISTS (
+              SELECT 1
+                FROM user_book_ai_requests ar
+               WHERE ar.request_id = ars.request_id
+                 AND ar.book_id = :bookId
+            )`,
+        { bookId, userId: request.currentUser!.userId }
+      );
+
       const result = await connection.execute(
         `DELETE FROM book_shares
           WHERE book_id = :bookId
             AND user_id = :userId`,
-        { bookId, userId: request.currentUser!.userId },
-        { autoCommit: true }
+        { bookId, userId: request.currentUser!.userId }
       );
 
       if ((result.rowsAffected ?? 0) === 0) {
+        await connection.rollback();
         await reply.status(404).send({ message: "No tienes acceso a este libro." });
         return;
       }
+
+      await connection.commit();
 
       await logShareEvent({
         action: "share_left",

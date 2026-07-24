@@ -572,6 +572,11 @@ export type SectionSummaryPromptResponse = {
 export type AiRequestScopeType = "BOOK" | "SECTION";
 
 export type AiRequestRecord = {
+  author: {
+    displayName: string | null;
+    userId: string;
+    username: string;
+  };
   bookId: string;
   chapterId: string | null;
   createdAt: string;
@@ -579,15 +584,18 @@ export type AiRequestRecord = {
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
   modelId: AiModelId | null;
+  isOwnedByCurrentUser: boolean;
   promptText: string;
   requestId: string;
   responseText: string;
+  sharedWithUserIds?: string[];
   scopeType: AiRequestScopeType;
   sectionTitle: string | null;
   startPageNumber: number | null;
   startParagraphNumber: number | null;
   startSequenceNumber: number | null;
   updatedAt: string;
+  visibilitySource: "OWN" | "DIRECT";
 };
 
 export type AiRequestsResponse = {
@@ -1028,6 +1036,14 @@ export function createAiRequest(accessToken: string, bookId: string, payload: { 
       promptText: payload.promptText
     },
     method: "POST"
+  });
+}
+
+export function updateAiRequestShares(accessToken: string, bookId: string, requestId: string, sharedWithUserIds: string[]) {
+  return request<{ sharedWithUserIds: string[] }>(`/books/${bookId}/ai-requests/${requestId}/shares`, {
+    accessToken,
+    body: { sharedWithUserIds },
+    method: "PUT"
   });
 }
 

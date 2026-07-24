@@ -1260,7 +1260,14 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             ON cached_bf.file_id = cache.file_id
           WHERE ar.request_id = :requestId
             AND ar.book_id = :bookId
-            AND ar.user_id = :userId
+            AND (
+              ar.user_id = :userId
+              OR EXISTS (
+                SELECT 1 FROM ai_request_shares ars
+                WHERE ars.request_id = ar.request_id
+                  AND ars.user_id = :userId
+              )
+            )
         `,
         {
           bookId: params.bookId,

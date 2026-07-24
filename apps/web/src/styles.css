@@ -4277,6 +4277,30 @@ textarea {
   transform-origin: top center;
 }
 
+.ai-request-author {
+  margin: 0.3rem 0 0;
+  color: #5d685f;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.ai-request-share-editor {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(42, 87, 66, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 253, 247, 0.52);
+}
+
+.ai-request-share-save {
+  justify-self: start;
+}
+
+.ai-request-read-only-notice {
+  padding: 1rem 1.15rem;
+}
+
 .ai-request-card.is-removing {
   pointer-events: none;
   animation: ai-request-card-remove 240ms ease-in forwards;

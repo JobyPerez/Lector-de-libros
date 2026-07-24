@@ -104,6 +104,10 @@ const aiRequestPayloadSchema = z.object({
   promptText: z.string().trim().min(1).max(4000)
 });
 
+const aiRequestSharesPayloadSchema = z.object({
+  sharedWithUserIds: z.array(z.string().uuid()).max(200)
+});
+
 const aiRequestParamsSchema = z.object({
   bookId: z.string().uuid(),
   requestId: z.string().uuid()
@@ -299,12 +303,18 @@ type StoredSectionSummaryRecord = {
 type AiRequestScopeType = "BOOK" | "SECTION";
 
 type StoredAiRequestRecord = {
+  author: {
+    displayName: string | null;
+    userId: string;
+    username: string;
+  };
   bookId: string;
   chapterId: string | null;
   createdAt: string;
   endPageNumber: number | null;
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
+  isOwnedByCurrentUser: boolean;
   modelId: string | null;
   promptText: string;
   requestId: string;
@@ -314,7 +324,15 @@ type StoredAiRequestRecord = {
   startPageNumber: number | null;
   startParagraphNumber: number | null;
   startSequenceNumber: number | null;
+  sharedWithUserIds?: string[];
   updatedAt: string;
+  visibilitySource: "OWN" | "DIRECT";
+};
+
+type StoredAiRequestRow = Omit<StoredAiRequestRecord, "author" | "isOwnedByCurrentUser" | "sharedWithUserIds" | "visibilitySource"> & {
+  authorDisplayName: string | null;
+  authorUserId: string;
+  authorUsername: string;
 };
 
 type PageParagraphRecord = {
@@ -2158,6 +2176,7 @@ async function listAiRequests(
   connection: Awaited<ReturnType<typeof getConnection>>,
   options: { bookId: string; scopeType: AiRequestScopeType; section?: BookSectionContext | null; userId: string }
 ): Promise<StoredAiRequestRecord[]> {
+  let rows: StoredAiRequestRow[];
   if (options.scopeType === "SECTION") {
     const section = options.section;
     if (!section) {
@@ -2167,46 +2186,56 @@ async function listAiRequests(
     const result = await connection.execute(
       `
         SELECT
-          request_id AS "requestId",
-          book_id AS "bookId",
-          scope_type AS "scopeType",
-          chapter_id AS "chapterId",
-          section_title AS "sectionTitle",
-          start_page_number AS "startPageNumber",
-          end_page_number AS "endPageNumber",
-          start_paragraph_number AS "startParagraphNumber",
-          end_paragraph_number AS "endParagraphNumber",
-          start_sequence_number AS "startSequenceNumber",
-          end_sequence_number AS "endSequenceNumber",
-          model_id AS "modelId",
-          prompt_text AS "promptText",
-          response_text AS "responseText",
-          TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
-          TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
-        FROM user_book_ai_requests
-        WHERE user_id = :userId
-          AND book_id = :bookId
-          AND scope_type = 'SECTION'
+          ar.request_id AS "requestId",
+          ar.book_id AS "bookId",
+          ar.scope_type AS "scopeType",
+          ar.chapter_id AS "chapterId",
+          ar.section_title AS "sectionTitle",
+          ar.start_page_number AS "startPageNumber",
+          ar.end_page_number AS "endPageNumber",
+          ar.start_paragraph_number AS "startParagraphNumber",
+          ar.end_paragraph_number AS "endParagraphNumber",
+          ar.start_sequence_number AS "startSequenceNumber",
+          ar.end_sequence_number AS "endSequenceNumber",
+          ar.model_id AS "modelId",
+          ar.prompt_text AS "promptText",
+          ar.response_text AS "responseText",
+          ar.user_id AS "authorUserId",
+          u.username AS "authorUsername",
+          u.display_name AS "authorDisplayName",
+          TO_CHAR(ar.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+          TO_CHAR(ar.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
+        FROM user_book_ai_requests ar
+        JOIN users u ON u.user_id = ar.user_id
+        WHERE ar.book_id = :bookId
+          AND ar.scope_type = 'SECTION'
           AND (
-            chapter_id = :chapterId
+            ar.user_id = :userId
+            OR EXISTS (
+              SELECT 1 FROM ai_request_shares ars
+              WHERE ars.request_id = ar.request_id AND ars.user_id = :userId
+            )
+          )
+          AND (
+            ar.chapter_id = :chapterId
             OR (
-              legacy_summary_id IS NOT NULL
-              AND section_title = :sectionTitle
-              AND start_sequence_number <= :endSequenceNumber
-              AND end_sequence_number >= :startSequenceNumber
+              ar.legacy_summary_id IS NOT NULL
+              AND ar.section_title = :sectionTitle
+              AND ar.start_sequence_number <= :endSequenceNumber
+              AND ar.end_sequence_number >= :startSequenceNumber
             )
             OR (
-              chapter_id LIKE 'generated:%'
-              AND section_title = :sectionTitle
-              AND start_sequence_number <= :endSequenceNumber
-              AND end_sequence_number >= :startSequenceNumber
+              ar.chapter_id LIKE 'generated:%'
+              AND ar.section_title = :sectionTitle
+              AND ar.start_sequence_number <= :endSequenceNumber
+              AND ar.end_sequence_number >= :startSequenceNumber
             )
           )
         ORDER BY
-          CASE WHEN chapter_id = :chapterId THEN 0 ELSE 1 END ASC,
-          ABS(NVL(start_sequence_number, :startSequenceNumber) - :startSequenceNumber) ASC,
-          ABS(NVL(end_sequence_number, :endSequenceNumber) - :endSequenceNumber) ASC,
-          created_at DESC
+          CASE WHEN ar.chapter_id = :chapterId THEN 0 ELSE 1 END ASC,
+          ABS(NVL(ar.start_sequence_number, :startSequenceNumber) - :startSequenceNumber) ASC,
+          ABS(NVL(ar.end_sequence_number, :endSequenceNumber) - :endSequenceNumber) ASC,
+          ar.created_at DESC
       `,
       {
         bookId: options.bookId,
@@ -2218,41 +2247,131 @@ async function listAiRequests(
       }
     );
 
-    return (result.rows ?? []) as StoredAiRequestRecord[];
+    rows = (result.rows ?? []) as StoredAiRequestRow[];
+  } else {
+    const result = await connection.execute(
+      `
+        SELECT
+          ar.request_id AS "requestId",
+          ar.book_id AS "bookId",
+          ar.scope_type AS "scopeType",
+          ar.chapter_id AS "chapterId",
+          ar.section_title AS "sectionTitle",
+          ar.start_page_number AS "startPageNumber",
+          ar.end_page_number AS "endPageNumber",
+          ar.start_paragraph_number AS "startParagraphNumber",
+          ar.end_paragraph_number AS "endParagraphNumber",
+          ar.start_sequence_number AS "startSequenceNumber",
+          ar.end_sequence_number AS "endSequenceNumber",
+          ar.model_id AS "modelId",
+          ar.prompt_text AS "promptText",
+          ar.response_text AS "responseText",
+          ar.user_id AS "authorUserId",
+          u.username AS "authorUsername",
+          u.display_name AS "authorDisplayName",
+          TO_CHAR(ar.created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
+          TO_CHAR(ar.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
+        FROM user_book_ai_requests ar
+        JOIN users u ON u.user_id = ar.user_id
+        WHERE ar.book_id = :bookId
+          AND ar.scope_type = 'BOOK'
+          AND (
+            ar.user_id = :userId
+            OR EXISTS (
+              SELECT 1 FROM ai_request_shares ars
+              WHERE ars.request_id = ar.request_id AND ars.user_id = :userId
+            )
+          )
+        ORDER BY ar.created_at DESC
+      `,
+      { bookId: options.bookId, userId: options.userId }
+    );
+    rows = (result.rows ?? []) as StoredAiRequestRow[];
   }
 
+  const ownedRequestIds = new Set(rows.filter((row) => row.authorUserId === options.userId).map((row) => row.requestId));
+  const sharesByRequestId = new Map<string, string[]>();
+  if (ownedRequestIds.size > 0) {
+    const sharesResult = await connection.execute(
+      `
+        SELECT ars.request_id AS "requestId", ars.user_id AS "userId"
+        FROM ai_request_shares ars
+        JOIN user_book_ai_requests ar ON ar.request_id = ars.request_id
+        WHERE ar.book_id = :bookId
+          AND ar.scope_type = :scopeType
+          AND ar.user_id = :userId
+        ORDER BY ars.request_id, ars.user_id
+      `,
+      { bookId: options.bookId, scopeType: options.scopeType, userId: options.userId }
+    );
+    for (const share of (sharesResult.rows ?? []) as Array<{ requestId: string; userId: string }>) {
+      if (ownedRequestIds.has(share.requestId)) {
+        sharesByRequestId.set(share.requestId, [...(sharesByRequestId.get(share.requestId) ?? []), share.userId]);
+      }
+    }
+  }
+
+  return rows.map(({ authorDisplayName, authorUserId, authorUsername, ...row }) => {
+    const isOwnedByCurrentUser = authorUserId === options.userId;
+    return {
+      ...row,
+      author: { displayName: authorDisplayName, userId: authorUserId, username: authorUsername },
+      isOwnedByCurrentUser,
+      ...(isOwnedByCurrentUser ? { sharedWithUserIds: sharesByRequestId.get(row.requestId) ?? [] } : {}),
+      visibilitySource: isOwnedByCurrentUser ? "OWN" : "DIRECT"
+    };
+  });
+}
+
+async function validateAiRequestShareRecipients(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  creatorUserId: string,
+  sharedWithUserIds: string[]
+): Promise<string[]> {
+  const recipientIds = [...new Set(sharedWithUserIds)].filter((userId) => userId !== creatorUserId);
+  if (recipientIds.length === 0) {
+    return [];
+  }
+
+  const binds: Record<string, string> = { bookId };
+  const placeholders = recipientIds.map((userId, index) => {
+    const bindName = `recipient${index}`;
+    binds[bindName] = userId;
+    return `:${bindName}`;
+  });
   const result = await connection.execute(
     `
-      SELECT
-        request_id AS "requestId",
-        book_id AS "bookId",
-        scope_type AS "scopeType",
-        chapter_id AS "chapterId",
-        section_title AS "sectionTitle",
-        start_page_number AS "startPageNumber",
-        end_page_number AS "endPageNumber",
-        start_paragraph_number AS "startParagraphNumber",
-        end_paragraph_number AS "endParagraphNumber",
-        start_sequence_number AS "startSequenceNumber",
-        end_sequence_number AS "endSequenceNumber",
-        model_id AS "modelId",
-        prompt_text AS "promptText",
-        response_text AS "responseText",
-        TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
-        TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
-      FROM user_book_ai_requests
-      WHERE user_id = :userId
-        AND book_id = :bookId
-        AND scope_type = 'BOOK'
-      ORDER BY created_at DESC
+      SELECT accessible.user_id AS "userId"
+      FROM (
+        SELECT b.owner_user_id AS user_id FROM books b WHERE b.book_id = :bookId
+        UNION
+        SELECT bs.user_id FROM book_shares bs WHERE bs.book_id = :bookId
+      ) accessible
+      WHERE accessible.user_id IN (${placeholders.join(", ")})
     `,
-    {
-      bookId: options.bookId,
-      userId: options.userId
-    }
+    binds
   );
+  const accessibleUserIds = new Set(((result.rows ?? []) as Array<{ userId: string }>).map((row) => row.userId));
+  if (recipientIds.some((userId) => !accessibleUserIds.has(userId))) {
+    throw Object.assign(new Error("Todos los destinatarios deben tener acceso actual al libro."), { statusCode: 422 });
+  }
 
-  return (result.rows ?? []) as StoredAiRequestRecord[];
+  return recipientIds;
+}
+
+async function replaceAiRequestShares(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  requestId: string,
+  sharedWithUserIds: string[]
+): Promise<void> {
+  await connection.execute(`DELETE FROM ai_request_shares WHERE request_id = :requestId`, { requestId });
+  for (const userId of sharedWithUserIds) {
+    await connection.execute(
+      `INSERT INTO ai_request_shares (request_id, user_id) VALUES (:requestId, :userId)`,
+      { requestId, userId }
+    );
+  }
 }
 
 async function createAiRequest(
@@ -4774,7 +4893,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/:bookId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/:bookId/ai-requests", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4783,7 +4902,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4795,7 +4914,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return reply.send({
-        book,
+        book: { ...book, currentUserRole: request.bookAccess?.role },
         prompt: DEFAULT_BOOK_AI_REQUEST_PROMPT,
         requests
       });
@@ -4804,7 +4923,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/:bookId/ai-requests", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4814,7 +4933,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4859,7 +4978,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/:bookId/sections/:chapterId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/:bookId/sections/:chapterId/ai-requests", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4868,7 +4987,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4886,7 +5005,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
 
       return reply.send({
-        book,
+        book: { ...book, currentUserRole: request.bookAccess?.role },
         prompt: DEFAULT_SECTION_AI_REQUEST_PROMPT,
         requests,
         section
@@ -4896,7 +5015,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/sections/:chapterId/ai-requests", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/:bookId/sections/:chapterId/ai-requests", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4906,7 +5025,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -4959,7 +5078,37 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete("/:bookId/ai-requests/:requestId", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.put("/:bookId/ai-requests/:requestId/shares", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = aiRequestParamsSchema.parse(request.params);
+    const body = aiRequestSharesPayloadSchema.parse(request.body ?? {});
+    const connection = await getConnection();
+    try {
+      const ownerResult = await connection.execute(
+        `SELECT request_id AS "requestId" FROM user_book_ai_requests
+         WHERE request_id = :requestId AND book_id = :bookId AND user_id = :userId`,
+        { bookId: params.bookId, requestId: params.requestId, userId: request.currentUser.userId }
+      );
+      if (!(ownerResult.rows ?? []).length) {
+        return reply.status(404).send({ message: "AI request not found." });
+      }
+
+      const sharedWithUserIds = await validateAiRequestShareRecipients(connection, params.bookId, request.currentUser.userId, body.sharedWithUserIds);
+      await replaceAiRequestShares(connection, params.requestId, sharedWithUserIds);
+      await connection.commit();
+      return reply.send({ sharedWithUserIds });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.delete("/:bookId/ai-requests/:requestId", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -4968,6 +5117,34 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      const visibilityResult = await connection.execute(
+        `
+          SELECT ar.user_id AS "ownerUserId",
+                 CASE WHEN ars.user_id IS NULL THEN 0 ELSE 1 END AS "isDirectRecipient"
+          FROM user_book_ai_requests ar
+          LEFT JOIN ai_request_shares ars
+            ON ars.request_id = ar.request_id
+           AND ars.user_id = :userId
+          WHERE ar.request_id = :requestId
+            AND ar.book_id = :bookId
+            AND (ar.user_id = :userId OR ars.user_id = :userId)
+        `,
+        { bookId: params.bookId, requestId: params.requestId, userId: request.currentUser.userId }
+      );
+      const [visibleRequest] = (visibilityResult.rows ?? []) as Array<{ isDirectRecipient: number; ownerUserId: string }>;
+      if (!visibleRequest) {
+        return reply.status(404).send({ message: "AI request not found." });
+      }
+
+      if (visibleRequest.ownerUserId !== request.currentUser.userId) {
+        await connection.execute(
+          `DELETE FROM ai_request_shares WHERE request_id = :requestId AND user_id = :userId`,
+          { requestId: params.requestId, userId: request.currentUser.userId }
+        );
+        await connection.commit();
+        return reply.status(204).send();
+      }
+
       await connection.execute(
         `
           DELETE FROM book_files bf
@@ -4976,17 +5153,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             FROM user_book_ai_request_tts_audio_cache cache
             JOIN user_book_ai_requests ar
               ON ar.request_id = cache.request_id
-            JOIN books b
-              ON b.book_id = ar.book_id
             WHERE ar.request_id = :requestId
               AND ar.book_id = :bookId
               AND ar.user_id = :userId
-              AND b.owner_user_id = :ownerUserId
           )
         `,
         {
           bookId: params.bookId,
-          ownerUserId: request.currentUser.userId,
           requestId: params.requestId,
           userId: request.currentUser.userId
         }
@@ -4998,16 +5171,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           WHERE ar.request_id = :requestId
             AND ar.book_id = :bookId
             AND ar.user_id = :userId
-            AND EXISTS (
-              SELECT 1
-              FROM books b
-              WHERE b.book_id = ar.book_id
-                AND b.owner_user_id = :ownerUserId
-            )
         `,
         {
           bookId: params.bookId,
-          ownerUserId: request.currentUser.userId,
           requestId: params.requestId,
           userId: request.currentUser.userId
         }
@@ -5028,7 +5194,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/:bookId/sections/:chapterId/summary", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -5037,7 +5203,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -5072,7 +5238,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/:bookId/sections/:chapterId/summary/prompt", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.get("/:bookId/sections/:chapterId/summary/prompt", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -5081,7 +5247,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -5100,7 +5266,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/sections/:chapterId/summary", { preHandler: authenticateRequest }, async (request, reply) => {
+  app.post("/:bookId/sections/:chapterId/summary", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -5110,7 +5276,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const book = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
