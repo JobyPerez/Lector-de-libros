@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
@@ -23,7 +23,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { AiModelBadge } from "../../components/AiModelBadge";
+import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
@@ -38,6 +38,11 @@ const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
 const PLAYBACK_RATE_STEP = 0.05;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
+const AI_REQUEST_REMOVAL_ANIMATION_MS = 240;
+const AI_REQUEST_CREATION_ANIMATION_MS = 520;
+const CURRENT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
+const MULTIPLE_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume estas secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
+const ALL_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume las secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 const USD_BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 2,
@@ -258,6 +263,14 @@ function DeleteIcon() {
   );
 }
 
+function ChevronIcon() {
+  return (
+    <RequestIcon>
+      <path d="M8 10L12 14L16 10" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </RequestIcon>
+  );
+}
+
 function LoadingAudioIcon() {
   return (
     <span aria-hidden="true" className="reader-loading-bars">
@@ -276,7 +289,8 @@ function formatDate(value: string) {
 
   return date.toLocaleString("es-ES", {
     dateStyle: "medium",
-    timeStyle: "short"
+    timeStyle: "short",
+    timeZone: "Europe/Madrid"
   });
 }
 
@@ -292,6 +306,7 @@ export function AiRequestsPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const aiModelSelection = useAiModelSelection();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -306,12 +321,18 @@ export function AiRequestsPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
   const [selectedChapterIds, setSelectedChapterIds] = useState<string[]>([]);
+  const [isSectionPickerOpen, setIsSectionPickerOpen] = useState(false);
+  const [sectionSearchText, setSectionSearchText] = useState("");
+  const [showOnlySelectedSections, setShowOnlySelectedSections] = useState(false);
+  const [collapsedSectionIds, setCollapsedSectionIds] = useState<Set<string>>(() => new Set());
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [enteringRequestId, setEnteringRequestId] = useState<string | null>(null);
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
+  const [removingRequestId, setRemovingRequestId] = useState<string | null>(null);
   const [loadingAudioRequestId, setLoadingAudioRequestId] = useState<string | null>(null);
   const [playingRequestId, setPlayingRequestId] = useState<string | null>(null);
   const [hasActivePlaybackSession, setHasActivePlaybackSession] = useState(false);
@@ -805,6 +826,21 @@ export function AiRequestsPage() {
     () => (navigationQuery.data?.toc ?? []).flatMap((entry) => entry.chapterId ? [{ ...entry, chapterId: entry.chapterId }] : []),
     [navigationQuery.data?.toc]
   );
+  const hierarchicalSectionEntries = useMemo(() => {
+    const ancestors: Array<{ chapterId: string; level: number }> = [];
+
+    return sectionEntries.map((entry, index) => {
+      while (ancestors.length > 0 && (ancestors[ancestors.length - 1]?.level ?? entry.level) >= entry.level) {
+        ancestors.pop();
+      }
+
+      const ancestorChapterIds = ancestors.map((ancestor) => ancestor.chapterId);
+      const hasChildren = (sectionEntries[index + 1]?.level ?? entry.level) > entry.level;
+      ancestors.push({ chapterId: entry.chapterId, level: entry.level });
+
+      return { ...entry, ancestorChapterIds, hasChildren };
+    });
+  }, [sectionEntries]);
   const currentSectionIndex = useMemo(
     () => sectionEntries.findIndex((entry) => entry.chapterId === chapterId),
     [chapterId, sectionEntries]
@@ -826,12 +862,80 @@ export function AiRequestsPage() {
 
   const selectedChapterIdSet = useMemo(() => new Set(selectedChapterIds), [selectedChapterIds]);
   const selectedChapterCount = selectedChapterIds.length;
+  const currentSectionEntry = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex] ?? null : null;
+  const rootSectionLevel = sectionEntries.length > 0
+    ? sectionEntries.reduce((minimumLevel, entry) => Math.min(minimumLevel, entry.level), sectionEntries[0]?.level ?? 0)
+    : 0;
+  const selectedSectionSummary = useMemo(() => {
+    const selectedTitles = sectionEntries
+      .filter((entry) => selectedChapterIdSet.has(entry.chapterId))
+      .map((entry) => entry.title);
+
+    if (selectedTitles.length === 0) {
+      return "Ningún capítulo seleccionado";
+    }
+    if (selectedTitles.length <= 2) {
+      return selectedTitles.join(", ");
+    }
+    return `${selectedTitles.slice(0, 2).join(", ")} y ${selectedTitles.length - 2} más`;
+  }, [sectionEntries, selectedChapterIdSet]);
+  const sectionListHasActiveFilter = sectionSearchText.trim().length > 0 || showOnlySelectedSections;
+  const visibleSectionEntries = useMemo(() => {
+    const normalizedSearch = sectionSearchText.trim().toLocaleLowerCase("es-ES");
+    const isFiltering = normalizedSearch.length > 0 || showOnlySelectedSections;
+
+    if (!isFiltering) {
+      return hierarchicalSectionEntries.filter((entry) => !entry.ancestorChapterIds.some((ancestorId) => collapsedSectionIds.has(ancestorId)));
+    }
+
+    const visibleChapterIds = new Set<string>();
+    for (const entry of hierarchicalSectionEntries) {
+      const matchesSearch = !normalizedSearch || entry.title.toLocaleLowerCase("es-ES").includes(normalizedSearch);
+      const matchesSelection = !showOnlySelectedSections || selectedChapterIdSet.has(entry.chapterId);
+      if (!matchesSearch || !matchesSelection) {
+        continue;
+      }
+
+      visibleChapterIds.add(entry.chapterId);
+      entry.ancestorChapterIds.forEach((ancestorId) => visibleChapterIds.add(ancestorId));
+    }
+
+    return hierarchicalSectionEntries.filter((entry) => visibleChapterIds.has(entry.chapterId));
+  }, [collapsedSectionIds, hierarchicalSectionEntries, sectionSearchText, selectedChapterIdSet, showOnlySelectedSections]);
+
+  function selectSameLevelPreviousAndCurrentChapterIds() {
+    if (!currentSectionEntry || currentSectionIndex < 0) {
+      return chapterId ? [chapterId] : [];
+    }
+
+    return sectionEntries
+      .slice(0, currentSectionIndex + 1)
+      .filter((entry) => entry.level === currentSectionEntry.level)
+      .map((entry) => entry.chapterId);
+  }
+
+  function resetAiRequestFeedback() {
+    setSubmitError(null);
+    setSubmitStatus(null);
+  }
+
+  function toggleSectionBranch(targetChapterId: string) {
+    setCollapsedSectionIds((current) => {
+      const next = new Set(current);
+      if (next.has(targetChapterId)) {
+        next.delete(targetChapterId);
+      } else {
+        next.add(targetChapterId);
+      }
+      return next;
+    });
+  }
 
   function selectCurrentChapterForAiRequest() {
     if (chapterId) {
       setSelectedChapterIds([chapterId]);
-      setSubmitError(null);
-      setSubmitStatus(null);
+      setPromptText(CURRENT_SECTION_SUMMARY_PROMPT);
+      resetAiRequestFeedback();
     }
   }
 
@@ -840,22 +944,26 @@ export function AiRequestsPage() {
       return;
     }
 
-    if (currentSectionIndex < 0) {
-      setSelectedChapterIds([chapterId]);
-      setSubmitError(null);
-      setSubmitStatus(null);
+    setSelectedChapterIds(selectSameLevelPreviousAndCurrentChapterIds());
+    setPromptText(MULTIPLE_SECTIONS_SUMMARY_PROMPT);
+    resetAiRequestFeedback();
+  }
+
+  function selectCurrentWithPreviousContextForAiRequest() {
+    if (!chapterId) {
       return;
     }
 
-    setSelectedChapterIds(sectionEntries.slice(0, currentSectionIndex + 1).map((entry) => entry.chapterId));
-    setSubmitError(null);
-    setSubmitStatus(null);
+    const currentSectionTitle = currentSectionEntry?.title ?? requestsQuery.data?.section?.title ?? "actual";
+    setSelectedChapterIds(selectSameLevelPreviousAndCurrentChapterIds());
+    setPromptText(`Eres editor literario. Resume el capítulo o sección «${currentSectionTitle}», teniendo en cuenta los capítulos anteriores solo para las referencias, si las hubiera, o el contexto. Es un libro en español; resume de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`);
+    resetAiRequestFeedback();
   }
 
   function selectAllChaptersForAiRequest() {
-    setSelectedChapterIds(sectionEntries.map((entry) => entry.chapterId));
-    setSubmitError(null);
-    setSubmitStatus(null);
+    setSelectedChapterIds(sectionEntries.filter((entry) => entry.level === rootSectionLevel).map((entry) => entry.chapterId));
+    setPromptText(ALL_SECTIONS_SUMMARY_PROMPT);
+    resetAiRequestFeedback();
   }
 
   function toggleChapterForAiRequest(targetChapterId: string) {
@@ -1040,6 +1148,11 @@ export function AiRequestsPage() {
       return;
     }
 
+    if (!aiModelSelection.selectedModelId || aiModelSelection.data?.configured !== true) {
+      setSubmitError("No se pudo cargar la configuración de modelos de IA.");
+      return;
+    }
+
     setIsSubmitting(true);
     setSubmitError(null);
     setSubmitStatus("Enviando petición a OpenCode...");
@@ -1048,19 +1161,27 @@ export function AiRequestsPage() {
       const result = await createAiRequest(accessToken, bookId, {
         ...(chapterId ? { chapterId } : {}),
         ...(chapterId ? { chapterIds: selectedChapterIds } : {}),
+        model: aiModelSelection.selectedModelId,
         promptText: promptText.trim()
       });
       if (!result.request) {
         throw new Error("La IA respondió, pero no se pudo recuperar la petición creada.");
       }
+      setEnteringRequestId(result.request.requestId);
       await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
+      window.setTimeout(() => {
+        setEnteringRequestId((current) => current === result.request?.requestId ? null : current);
+      }, AI_REQUEST_CREATION_ANIMATION_MS);
       setSubmitStatus("Petición creada correctamente.");
     } catch (error) {
+      setEnteringRequestId(null);
       setSubmitStatus(null);
       if (isRetryableRateLimitError(error)) {
         const retryAfter = error.retryAfterSeconds ?? 15;
         setRetryAfterSeconds(retryAfter);
         setSubmitError(`OpenCode está limitando temporalmente las peticiones. Espera ${retryAfter} segundos antes de volver a intentarlo.`);
+      } else if (error instanceof TypeError && /fetch|networkerror|network request/iu.test(error.message)) {
+        setSubmitError("Se interrumpió la conexión con la API. Revisa el historial antes de reintentar: la petición podría haber terminado en segundo plano.");
       } else {
         setSubmitError(error instanceof Error ? error.message : "No se pudo crear la petición IA.");
       }
@@ -1071,6 +1192,10 @@ export function AiRequestsPage() {
 
   async function handleDeleteRequest(request: AiRequestRecord) {
     if (!accessToken || deletingRequestId) {
+      return;
+    }
+
+    if (!window.confirm("¿Borrar esta petición de IA? Esta acción no se puede deshacer.")) {
       return;
     }
 
@@ -1090,11 +1215,14 @@ export function AiRequestsPage() {
       }
 
       await deleteAiRequest(accessToken, bookId, request.requestId);
+      setRemovingRequestId(request.requestId);
+      await new Promise((resolve) => window.setTimeout(resolve, AI_REQUEST_REMOVAL_ANIMATION_MS));
       await queryClient.invalidateQueries({ queryKey: ["ai-requests", bookId, chapterId ?? "book"] });
     } catch (error) {
       setDeleteError(error instanceof Error ? error.message : "No se pudo borrar la petición IA.");
     } finally {
       setDeletingRequestId(null);
+      setRemovingRequestId(null);
     }
   }
 
@@ -1252,12 +1380,20 @@ export function AiRequestsPage() {
             </div>
           ) : null}
           <div className="reader-section-summary-ai-model">
-            <AiModelBadge feature="ai-requests" label="IA" />
+            <AiModelBadge feature="ai-requests" label="IA" modelId={aiModelSelection.selectedModelId} />
           </div>
         </div>
       </header>
 
       <section className="panel reader-section-summary-panel ai-request-form-panel">
+        {aiModelSelection.selectedModelId ? (
+          <AiModelSelector
+            disabled={isSubmitting || aiModelSelection.data?.configured !== true}
+            models={aiModelSelection.models}
+            onChange={aiModelSelection.setSelectedModelId}
+            value={aiModelSelection.selectedModelId}
+          />
+        ) : null}
         <label className="reader-note-composer">
           <span>Petición</span>
           <textarea
@@ -1282,51 +1418,125 @@ export function AiRequestsPage() {
                     ? "1 capítulo seleccionado"
                     : `${selectedChapterCount} capítulos seleccionados`}
                 </p>
+                <p className="ai-request-section-selection-summary">{selectedSectionSummary}</p>
               </div>
-              <div className="ai-request-section-picker-actions">
-                <button
-                  className="secondary-button"
-                  disabled={isSubmitting || !chapterId}
-                  onClick={selectCurrentChapterForAiRequest}
-                  type="button"
-                >
-                  Solo este
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={isSubmitting || !chapterId || sectionEntries.length === 0}
-                  onClick={selectPreviousAndCurrentChaptersForAiRequest}
-                  type="button"
-                >
-                  Anteriores y este
-                </button>
-                <button
-                  className="secondary-button"
-                  disabled={isSubmitting || sectionEntries.length === 0}
-                  onClick={selectAllChaptersForAiRequest}
-                  type="button"
-                >
-                  Todos
-                </button>
-              </div>
+              <button
+                aria-expanded={isSectionPickerOpen}
+                className="secondary-button ai-request-section-picker-toggle"
+                disabled={isSubmitting}
+                onClick={() => setIsSectionPickerOpen((current) => !current)}
+                type="button"
+              >
+                <span>{isSectionPickerOpen ? "Ocultar" : "Cambiar"}</span>
+                <span className="ai-request-section-picker-toggle-icon" data-expanded={isSectionPickerOpen ? "" : undefined}>
+                  <ChevronIcon />
+                </span>
+              </button>
             </div>
-            {sectionEntries.length > 0 ? (
-              <div className="ai-request-section-picker-list">
-                {sectionEntries.map((entry) => (
-                  <label className="ai-request-section-picker-option" key={entry.chapterId}>
+            <div className="ai-request-section-picker-actions">
+              <button
+                className="secondary-button"
+                disabled={isSubmitting || !chapterId}
+                onClick={selectCurrentChapterForAiRequest}
+                type="button"
+              >
+                Solo este
+              </button>
+              <button
+                className="secondary-button"
+                disabled={isSubmitting || !chapterId || sectionEntries.length === 0}
+                onClick={selectPreviousAndCurrentChaptersForAiRequest}
+                type="button"
+              >
+                Anteriores y este
+              </button>
+              <button
+                className="secondary-button"
+                disabled={isSubmitting || !chapterId || sectionEntries.length === 0}
+                onClick={selectCurrentWithPreviousContextForAiRequest}
+                type="button"
+              >
+                Este con contexto anterior
+              </button>
+              <button
+                className="secondary-button"
+                disabled={isSubmitting || sectionEntries.length === 0}
+                onClick={selectAllChaptersForAiRequest}
+                type="button"
+              >
+                Todos
+              </button>
+            </div>
+            {isSectionPickerOpen ? (
+              <div className="ai-request-section-picker-body">
+                <div className="ai-request-section-picker-filters">
+                  <label className="ai-request-section-search">
+                    <span>Buscar sección</span>
                     <input
-                      checked={selectedChapterIdSet.has(entry.chapterId)}
                       disabled={isSubmitting}
-                      onChange={() => toggleChapterForAiRequest(entry.chapterId)}
+                      onChange={(event) => setSectionSearchText(event.target.value)}
+                      placeholder="Escribe parte del título..."
+                      type="search"
+                      value={sectionSearchText}
+                    />
+                  </label>
+                  <label className="ai-request-section-selected-filter">
+                    <input
+                      checked={showOnlySelectedSections}
+                      disabled={isSubmitting}
+                      onChange={(event) => setShowOnlySelectedSections(event.target.checked)}
                       type="checkbox"
                     />
-                    <span>{entry.title}</span>
+                    <span>Mostrar solo seleccionados</span>
                   </label>
-                ))}
+                </div>
+                {sectionEntries.length > 0 ? (
+                  visibleSectionEntries.length > 0 ? (
+                    <div className="ai-request-section-picker-list">
+                      {visibleSectionEntries.map((entry) => {
+                        const isBranchExpanded = !collapsedSectionIds.has(entry.chapterId);
+                        return (
+                          <div
+                            className="ai-request-section-picker-option"
+                            key={entry.chapterId}
+                            style={{ "--ai-section-depth": Math.max(0, entry.level - rootSectionLevel) } as CSSProperties}
+                          >
+                            {entry.hasChildren && !sectionListHasActiveFilter ? (
+                              <button
+                                aria-expanded={isBranchExpanded}
+                                aria-label={isBranchExpanded ? `Contraer ${entry.title}` : `Expandir ${entry.title}`}
+                                className="ai-request-section-branch-toggle"
+                                disabled={isSubmitting}
+                                onClick={() => toggleSectionBranch(entry.chapterId)}
+                                title={isBranchExpanded ? "Contraer subsecciones" : "Expandir subsecciones"}
+                                type="button"
+                              >
+                                <span data-expanded={isBranchExpanded ? "" : undefined}><ChevronIcon /></span>
+                              </button>
+                            ) : (
+                              <span className="ai-request-section-branch-spacer" />
+                            )}
+                            <label className="ai-request-section-picker-option-label">
+                              <input
+                                checked={selectedChapterIdSet.has(entry.chapterId)}
+                                disabled={isSubmitting}
+                                onChange={() => toggleChapterForAiRequest(entry.chapterId)}
+                                type="checkbox"
+                              />
+                              <span className="ai-request-section-picker-title">{entry.title}</span>
+                            </label>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="subdued">No hay secciones que coincidan con los filtros.</p>
+                  )
+                ) : (
+                  <p className="subdued">Cargando capítulos...</p>
+                )}
               </div>
-            ) : (
-              <p className="subdued">Cargando capítulos...</p>
-            )}
+            ) : null}
           </div>
         ) : null}
         {submitError ? <p className="error-text" role="alert">{submitError}</p> : null}
@@ -1334,7 +1544,7 @@ export function AiRequestsPage() {
         <div className="reader-note-editor-actions">
           <button
             className="primary-button"
-            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading || (isSectionScope && selectedChapterIds.length === 0)}
+            disabled={isSubmitting || retryAfterSeconds > 0 || requestsQuery.isLoading || aiModelSelection.data?.configured !== true || !aiModelSelection.selectedModelId || (isSectionScope && selectedChapterIds.length === 0)}
             onClick={() => void handleCreateRequest()}
             type="button"
           >
@@ -1373,13 +1583,22 @@ export function AiRequestsPage() {
         const isAudioLoading = loadingAudioRequestId === request.requestId;
         const isPlaying = playingRequestId === request.requestId;
         return (
-          <article className="panel reader-section-summary-panel reader-section-summary-card ai-request-card" key={request.requestId}>
+          <article
+            aria-hidden={removingRequestId === request.requestId ? true : undefined}
+            className={removingRequestId === request.requestId
+              ? "panel reader-section-summary-panel reader-section-summary-card ai-request-card is-removing"
+              : enteringRequestId === request.requestId
+                ? "panel reader-section-summary-panel reader-section-summary-card ai-request-card is-entering"
+                : "panel reader-section-summary-panel reader-section-summary-card ai-request-card"}
+            key={request.requestId}
+          >
             <div className="reader-section-summary-card-header">
               <div>
                 <p className="eyebrow">{formatDate(request.createdAt)}</p>
                 <h3>{request.scopeType === "BOOK" ? "Petición al libro" : request.sectionTitle ?? "Petición a la sección"}</h3>
               </div>
               <div className="reader-section-summary-card-badges">
+                <AiModelBadge feature="ai-requests" label="IA" modelId={request.modelId} size="compact" />
                 <button
                   aria-label={isPlaying ? "Pausar respuesta" : "Reproducir respuesta"}
                   className="reader-note-icon-button"

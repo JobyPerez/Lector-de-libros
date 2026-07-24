@@ -7,7 +7,9 @@ import type { FastifyPluginAsync } from "fastify";
 import oracledb from "oracledb";
 import { z } from "zod";
 
+import { summaryAiModelIdSchema } from "../../config/ai-models.js";
 import { getConnection } from "../../config/database.js";
+import { appEnv } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
@@ -92,11 +94,13 @@ const sectionParamsSchema = z.object({
 });
 
 const sectionSummaryGenerationSchema = z.object({
+  model: summaryAiModelIdSchema.optional(),
   promptOverride: z.string().trim().min(1).max(4000).optional()
 });
 
 const aiRequestPayloadSchema = z.object({
   chapterIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+  model: summaryAiModelIdSchema.optional(),
   promptText: z.string().trim().min(1).max(4000)
 });
 
@@ -282,6 +286,7 @@ type StoredSectionSummaryRecord = {
   endPageNumber: number;
   endParagraphNumber: number;
   endSequenceNumber: number;
+  modelId: string | null;
   sectionTitle: string;
   startPageNumber: number;
   startParagraphNumber: number;
@@ -300,6 +305,7 @@ type StoredAiRequestRecord = {
   endPageNumber: number | null;
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
+  modelId: string | null;
   promptText: string;
   requestId: string;
   responseText: string;
@@ -1949,6 +1955,7 @@ async function findStoredSectionSummary(
         end_paragraph_number AS "endParagraphNumber",
         start_sequence_number AS "startSequenceNumber",
         end_sequence_number AS "endSequenceNumber",
+        model_id AS "modelId",
         summary_text AS "summaryText",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
@@ -1986,6 +1993,7 @@ async function findGeneratedSectionSummaryFallback(
         end_paragraph_number AS "endParagraphNumber",
         start_sequence_number AS "startSequenceNumber",
         end_sequence_number AS "endSequenceNumber",
+        model_id AS "modelId",
         summary_text AS "summaryText",
         created_at AS "createdAt",
         updated_at AS "updatedAt"
@@ -2170,6 +2178,7 @@ async function listAiRequests(
           end_paragraph_number AS "endParagraphNumber",
           start_sequence_number AS "startSequenceNumber",
           end_sequence_number AS "endSequenceNumber",
+          model_id AS "modelId",
           prompt_text AS "promptText",
           response_text AS "responseText",
           created_at AS "createdAt",
@@ -2226,6 +2235,7 @@ async function listAiRequests(
         end_paragraph_number AS "endParagraphNumber",
         start_sequence_number AS "startSequenceNumber",
         end_sequence_number AS "endSequenceNumber",
+        model_id AS "modelId",
         prompt_text AS "promptText",
         response_text AS "responseText",
         created_at AS "createdAt",
@@ -2249,6 +2259,7 @@ async function createAiRequest(
   connection: Awaited<ReturnType<typeof getConnection>>,
   options: {
     bookId: string;
+    modelId: string;
     promptText: string;
     responseText: string;
     scopeType: AiRequestScopeType;
@@ -2274,6 +2285,7 @@ async function createAiRequest(
         end_paragraph_number,
         start_sequence_number,
         end_sequence_number,
+        model_id,
         prompt_text,
         response_text
       ) VALUES (
@@ -2289,6 +2301,7 @@ async function createAiRequest(
         :endParagraphNumber,
         :startSequenceNumber,
         :endSequenceNumber,
+        :modelId,
         :promptText,
         :responseText
       )
@@ -2299,6 +2312,7 @@ async function createAiRequest(
       endPageNumber: section?.endPageNumber ?? null,
       endParagraphNumber: section?.endParagraphNumber ?? null,
       endSequenceNumber: section?.endSequenceNumber ?? null,
+      modelId: options.modelId,
       promptText: options.promptText,
       requestId,
       responseText: options.responseText,
@@ -4811,6 +4825,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const responseText = await generateAiRequestResponse({
+        model: body.model,
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Libro",
@@ -4818,6 +4833,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
+        modelId: body.model ?? appEnv.opencodeModel,
         promptText: body.promptText,
         responseText,
         scopeType: "BOOK",
@@ -4907,6 +4923,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const responseText = await generateAiRequestResponse({
+        model: body.model,
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Sección",
@@ -4914,6 +4931,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
+        modelId: body.model ?? appEnv.opencodeModel,
         promptText: formatSectionAiRequestPromptText(body.promptText, selectedSections),
         responseText,
         scopeType: "SECTION",
@@ -5018,6 +5036,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           ? {
               createdAt: storedSummary.createdAt,
               isStale,
+              modelId: storedSummary.modelId,
               summaryId: storedSummary.summaryId,
               summaryText: storedSummary.summaryText,
               updatedAt: storedSummary.updatedAt
@@ -5082,7 +5101,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(422).send({ message: "La sección no tiene texto suficiente para resumirse." });
       }
 
-      const summaryText = await generateSectionSummary(section.title, paragraphs, { promptOverride: body.promptOverride });
+      const modelId = body.model ?? appEnv.opencodeModel;
+      const summaryText = await generateSectionSummary(section.title, paragraphs, { model: modelId, promptOverride: body.promptOverride });
       const existingSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       if (existingSummary) {
@@ -5098,6 +5118,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               end_paragraph_number = :endParagraphNumber,
               start_sequence_number = :startSequenceNumber,
               end_sequence_number = :endSequenceNumber,
+              model_id = :modelId,
               summary_text = :summaryText
             WHERE summary_id = :summaryId
           `,
@@ -5106,6 +5127,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             endPageNumber: section.endPageNumber,
             endParagraphNumber: section.endParagraphNumber,
             endSequenceNumber: section.endSequenceNumber,
+            modelId,
             sectionTitle: section.title,
             startPageNumber: section.startPageNumber,
             startParagraphNumber: section.startParagraphNumber,
@@ -5129,6 +5151,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               end_paragraph_number,
               start_sequence_number,
               end_sequence_number,
+              model_id,
               summary_text
             ) VALUES (
               :summaryId,
@@ -5142,6 +5165,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               :endParagraphNumber,
               :startSequenceNumber,
               :endSequenceNumber,
+              :modelId,
               :summaryText
             )
           `,
@@ -5151,6 +5175,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             endPageNumber: section.endPageNumber,
             endParagraphNumber: section.endParagraphNumber,
             endSequenceNumber: section.endSequenceNumber,
+            modelId,
             sectionTitle: section.title,
             startPageNumber: section.startPageNumber,
             startParagraphNumber: section.startParagraphNumber,
@@ -5172,6 +5197,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           ? {
               createdAt: storedSummary.createdAt,
               isStale: false,
+              modelId: storedSummary.modelId,
               summaryId: storedSummary.summaryId,
               summaryText: storedSummary.summaryText,
               updatedAt: storedSummary.updatedAt

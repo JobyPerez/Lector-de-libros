@@ -5,6 +5,8 @@ import process from "node:process";
 import dotenv from "dotenv";
 import { z } from "zod";
 
+import { DEFAULT_AI_MODEL_ID, DEFAULT_OCR_MODEL_ID, ocrModelIdSchema, summaryAiModelIdSchema } from "./ai-models.js";
+
 const allowedDeepgramTtsModels = [
   "aura-2-nestor-es",
   "aura-2-carina-es",
@@ -60,7 +62,8 @@ const environmentSchema = z.object({
   DEEPGRAM_API_KEY: z.string().min(1).optional(),
   DEEPGRAM_TTS_MODEL: z.enum(allowedDeepgramTtsModels).default("aura-2-nestor-es"),
   OPENCODE_GO_API_KEY: z.string().min(1).optional(),
-  OPENCODE_MODEL: z.string().min(1).default("mimo-v2.5-free"),
+  OPENCODE_MODEL: summaryAiModelIdSchema.default(DEFAULT_AI_MODEL_ID),
+  OPENCODE_OCR_MODEL: ocrModelIdSchema.default(DEFAULT_OCR_MODEL_ID),
   AWS_REGION: z.string().min(1).optional(),
   AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
   AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
@@ -99,6 +102,7 @@ export const appEnv = {
   deepgramTtsModel: parsedEnvironment.data.DEEPGRAM_TTS_MODEL,
   opencodeGoApiKey: parsedEnvironment.data.OPENCODE_GO_API_KEY,
   opencodeModel: parsedEnvironment.data.OPENCODE_MODEL,
+  opencodeOcrModel: parsedEnvironment.data.OPENCODE_OCR_MODEL,
   awsRegion: parsedEnvironment.data.AWS_REGION,
   awsAccessKeyId: parsedEnvironment.data.AWS_ACCESS_KEY_ID,
   awsSecretAccessKey: parsedEnvironment.data.AWS_SECRET_ACCESS_KEY,

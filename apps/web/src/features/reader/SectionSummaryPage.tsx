@@ -21,7 +21,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { AiModelBadge } from "../../components/AiModelBadge";
+import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
@@ -281,6 +281,7 @@ export function SectionSummaryPage() {
   const navigate = useNavigate();
   const accessToken = useAuthStore((state) => state.accessToken);
   const queryClient = useQueryClient();
+  const aiModelSelection = useAiModelSelection();
   const [isGenerating, setIsGenerating] = useState(false);
   const [isLoadingSummaryPrompt, setIsLoadingSummaryPrompt] = useState(false);
   const [isSummaryPromptEditorOpen, setIsSummaryPromptEditorOpen] = useState(false);
@@ -930,12 +931,20 @@ export function SectionSummaryPage() {
       return;
     }
 
+    if (!aiModelSelection.selectedModelId || aiModelSelection.data?.configured !== true) {
+      setSummaryPromptError("No se pudo cargar la configuración de modelos de IA.");
+      return;
+    }
+
     setIsGenerating(true);
     setGenerationError(null);
     setSummaryPromptError(null);
 
     try {
-      const response = await generateSectionSummary(accessToken, bookId, chapterId, { promptOverride: summaryPromptText });
+      const response = await generateSectionSummary(accessToken, bookId, chapterId, {
+        model: aiModelSelection.selectedModelId,
+        promptOverride: summaryPromptText
+      });
       queryClient.setQueryData(["section-summary", bookId, chapterId], response);
       setIsSummaryPromptEditorOpen(false);
     } catch (error) {
@@ -1098,7 +1107,7 @@ export function SectionSummaryPage() {
             </div>
           ) : null}
           <div className="reader-section-summary-ai-model">
-            <AiModelBadge feature="section-summary" label="IA" />
+            <AiModelBadge feature="section-summary" label="IA" modelId={aiModelSelection.selectedModelId} />
           </div>
         </div>
 
@@ -1125,7 +1134,7 @@ export function SectionSummaryPage() {
               </div>
               <button
                 className="secondary-button"
-                disabled={isGenerating}
+                disabled={isGenerating || aiModelSelection.data?.configured !== true}
                 onClick={() => setIsSummaryPromptEditorOpen(false)}
                 type="button"
               >
@@ -1140,6 +1149,15 @@ export function SectionSummaryPage() {
               rows={10}
               value={summaryPromptText}
             />
+
+            {aiModelSelection.selectedModelId ? (
+              <AiModelSelector
+                disabled={isGenerating}
+                models={aiModelSelection.models}
+                onChange={aiModelSelection.setSelectedModelId}
+                value={aiModelSelection.selectedModelId}
+              />
+            ) : null}
 
             {summaryPromptError ? <p className="error-text">{summaryPromptError}</p> : null}
 
@@ -1156,7 +1174,7 @@ export function SectionSummaryPage() {
                 </button>
                 <button
                   className="primary-button"
-                  disabled={isGenerating || !summaryPromptText.trim()}
+                  disabled={isGenerating || !summaryPromptText.trim() || aiModelSelection.data?.configured !== true || !aiModelSelection.selectedModelId}
                   onClick={() => void handleGenerateSummary()}
                   type="button"
                 >
@@ -1194,6 +1212,11 @@ export function SectionSummaryPage() {
 
       {summaryQuery.data?.summary ? (
         <article className="panel reader-section-summary-panel reader-section-summary-card">
+          <div className="reader-section-summary-card-header">
+            <div className="reader-section-summary-card-badges">
+              <AiModelBadge feature="section-summary" label="Generado con" modelId={summaryQuery.data.summary.modelId} size="compact" />
+            </div>
+          </div>
           {summaryQuery.data.summary.isStale ? (
             <div className="reader-section-summary-card-header">
               <div className="reader-section-summary-card-badges">

@@ -101,11 +101,26 @@ export function fetchAppVersion(fromCommit: string) {
 
 export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests" | "outline-regenerate";
 
+export type AiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free" | "mimo-v2.5-free";
+export type SummaryAiModelId = Exclude<AiModelId, "mimo-v2.5-free">;
+
+export type AiModelOption = {
+  contextWindowTokens: number;
+  description: string;
+  id: AiModelId;
+  name: string;
+  privacyNotice: string;
+  supportsVision: boolean;
+};
+
 export type AiConfigResponse = {
   configured: boolean;
+  defaultModel: SummaryAiModelId;
   features: AiFeature[];
-  model: string;
+  models: AiModelOption[];
+  ocrModel: AiModelId;
   provider: "opencode";
+  summaryModelIds: SummaryAiModelId[];
 };
 
 export function fetchAiConfig() {
@@ -537,6 +552,7 @@ export type SectionSummarySection = {
 export type SectionSummaryRecord = {
   createdAt: string;
   isStale: boolean;
+  modelId: AiModelId | null;
   summaryId: string;
   summaryText: string;
   updatedAt: string;
@@ -561,6 +577,7 @@ export type AiRequestRecord = {
   endPageNumber: number | null;
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
+  modelId: AiModelId | null;
   promptText: string;
   requestId: string;
   responseText: string;
@@ -977,7 +994,7 @@ export function fetchSectionSummaryPrompt(accessToken: string, bookId: string, c
   return request<SectionSummaryPromptResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary/prompt`, { accessToken });
 }
 
-export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string, payload: { promptOverride?: string } = {}) {
+export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string, payload: { model?: SummaryAiModelId; promptOverride?: string } = {}) {
   return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, {
     accessToken,
     body: payload,
@@ -992,7 +1009,7 @@ export function fetchAiRequests(accessToken: string, bookId: string, chapterId?:
   return request<AiRequestsResponse>(path, { accessToken });
 }
 
-export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; promptText: string }) {
+export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; model?: SummaryAiModelId; promptText: string }) {
   const path = payload.chapterId
     ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
     : `/books/${bookId}/ai-requests`;
@@ -1000,6 +1017,7 @@ export function createAiRequest(accessToken: string, bookId: string, payload: { 
     accessToken,
     body: {
       ...(payload.chapterIds ? { chapterIds: payload.chapterIds } : {}),
+      ...(payload.model ? { model: payload.model } : {}),
       promptText: payload.promptText
     },
     method: "POST"

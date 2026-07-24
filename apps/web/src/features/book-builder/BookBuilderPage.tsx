@@ -841,7 +841,7 @@ export function BookBuilderPage() {
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
   const aiConfigQuery = useAiConfig();
-  const reviewOcrModelLabel = aiConfigQuery.data?.model ?? "mimo-v2.5-free";
+  const reviewOcrModelLabel = aiConfigQuery.data?.ocrModel ?? "mimo-v2.5-free";
   const awsCostQuery = useQuery({
     enabled: Boolean(accessToken) && hasAwsCredentials,
     queryFn: () => fetchAwsCostMonthToDate(accessToken as string),

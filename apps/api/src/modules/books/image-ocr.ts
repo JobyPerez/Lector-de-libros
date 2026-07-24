@@ -704,7 +704,7 @@ async function executeVisionOcrRequest(
   promptOverride?: string,
   maxTokensOverride?: number
 ): Promise<OcrPageResult> {
-  const model = appEnv.opencodeModel;
+  const model = appEnv.opencodeOcrModel;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const prompt = buildVisionOcrPrompt(promptOverride);
   const maxTokens = maxTokensOverride ?? prompt.maxTokens;

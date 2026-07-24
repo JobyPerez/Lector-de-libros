@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 
 type ChatCompletionResponse = {
@@ -20,12 +21,11 @@ const summaryResponseSchema = z.object({
   summary: z.unknown()
 });
 
-const SUMMARY_CHUNK_TARGET_CHARACTERS = 9000;
 const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 
 export const DEFAULT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume una sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-export const DEFAULT_SECTION_AI_REQUEST_PROMPT = DEFAULT_SECTION_SUMMARY_PROMPT;
+export const DEFAULT_SECTION_AI_REQUEST_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 export const DEFAULT_BOOK_AI_REQUEST_PROMPT = "Eres editor literario. Resume el libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales y los personajes principales.";
 
 const DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT = "Eres editor literario. Recibirás varios resúmenes parciales de una misma sección. Devuelve un único resumen fiel, claro y breve. No inventes detalles y no repitas ideas.";
@@ -201,7 +201,7 @@ function formatStructuredSummaryValue(value: unknown): string {
   return "";
 }
 
-function chunkParagraphs(paragraphs: string[]): string[] {
+function chunkParagraphs(paragraphs: string[], targetCharacters: number): string[] {
   const chunks: string[] = [];
   let currentChunk = "";
 
@@ -212,21 +212,20 @@ function chunkParagraphs(paragraphs: string[]): string[] {
     }
 
     const candidate = currentChunk ? `${currentChunk}\n\n${trimmedParagraph}` : trimmedParagraph;
-    if (candidate.length <= SUMMARY_CHUNK_TARGET_CHARACTERS) {
+    if (candidate.length <= targetCharacters) {
       currentChunk = candidate;
       continue;
     }
 
     if (currentChunk) {
       chunks.push(currentChunk);
-      currentChunk = trimmedParagraph;
-      continue;
+      currentChunk = "";
     }
 
     let remainingText = trimmedParagraph;
-    while (remainingText.length > SUMMARY_CHUNK_TARGET_CHARACTERS) {
-      chunks.push(remainingText.slice(0, SUMMARY_CHUNK_TARGET_CHARACTERS));
-      remainingText = remainingText.slice(SUMMARY_CHUNK_TARGET_CHARACTERS);
+    while (remainingText.length > targetCharacters) {
+      chunks.push(remainingText.slice(0, targetCharacters));
+      remainingText = remainingText.slice(targetCharacters);
     }
     currentChunk = remainingText;
   }
@@ -244,7 +243,7 @@ function wait(ms: number) {
   });
 }
 
-async function requestSummaryChunk(prompt: { promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; condensed?: boolean }) {
+async function requestSummaryChunk(prompt: { condensed?: boolean; model: SummaryAiModelId; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string }) {
   ensureSummaryConfiguration();
 
   const promptOverride = prompt.promptOverride?.trim();
@@ -253,7 +252,7 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
     : DEFAULT_SECTION_SUMMARY_PROMPT);
   const systemPrompt = `${editablePrompt}\n\n${SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
 
-  const model = appEnv.opencodeModel;
+  const model = prompt.model;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const requestBody = JSON.stringify({
     max_tokens: getOpenCodeMaxTokens(model, prompt.condensed ? 900 : 1200),
@@ -277,14 +276,21 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
   let retryAfterSeconds: number | null = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: requestBody
-    });
+    try {
+      response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: requestBody
+      });
+    } catch {
+      throw Object.assign(new Error("Se interrumpió la conexión entre la API y OpenCode al generar la respuesta."), {
+        code: "AI_PROVIDER_NETWORK",
+        statusCode: 502
+      });
+    }
 
     if (response.ok) {
       break;
@@ -354,8 +360,9 @@ async function requestSummaryChunk(prompt: { promptOverride?: string | undefined
   }
 }
 
-export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { promptOverride?: string | undefined } = {}): Promise<string> {
+export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { model?: SummaryAiModelId | undefined; promptOverride?: string | undefined } = {}): Promise<string> {
   return generateAiRequestResponse({
+    model: options.model,
     paragraphs,
     promptOverride: options.promptOverride,
     scopeLabel: "Sección",
@@ -364,12 +371,15 @@ export async function generateSectionSummary(sectionTitle: string, paragraphs: s
 }
 
 export async function generateAiRequestResponse(options: {
+  model?: SummaryAiModelId | undefined;
   paragraphs: string[];
   promptOverride?: string | undefined;
   scopeLabel: "Libro" | "Sección";
   title: string;
 }): Promise<string> {
   const { paragraphs, promptOverride, scopeLabel, title } = options;
+  const model = options.model ?? appEnv.opencodeModel;
+  const modelConfiguration = getAiModel(model);
   const normalizedParagraphs = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean);
   if (normalizedParagraphs.length === 0) {
     throw Object.assign(new Error("No hay texto suficiente para generar una respuesta."), {
@@ -377,14 +387,15 @@ export async function generateAiRequestResponse(options: {
     });
   }
 
-  const chunks = chunkParagraphs(normalizedParagraphs);
+  const chunks = chunkParagraphs(normalizedParagraphs, modelConfiguration.summaryChunkTargetCharacters);
   if (chunks.length === 1) {
-    return requestSummaryChunk({ promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n") });
+    return requestSummaryChunk({ model, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n") });
   }
 
   const partialSummaries: string[] = [];
   for (const [index, chunk] of chunks.entries()) {
     partialSummaries.push(await requestSummaryChunk({
+      model,
       promptOverride,
       scopeLabel,
       sectionTitle: `${title} · fragmento ${index + 1}`,
@@ -394,6 +405,7 @@ export async function generateAiRequestResponse(options: {
 
   return requestSummaryChunk({
     condensed: true,
+    model,
     promptOverride,
     scopeLabel,
     sectionTitle: title,
