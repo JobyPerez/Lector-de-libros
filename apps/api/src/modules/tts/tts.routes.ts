@@ -34,6 +34,16 @@ type TtsParagraphRow = {
 
 type TtsOfflineParagraphRow = Pick<TtsParagraphRow, "cachedTextChecksum" | "paragraphId" | "paragraphText" | "sequenceNumber">;
 
+type TtsAiRequestRow = {
+  bookId: string;
+  cachedAudioBlob?: Buffer;
+  cachedAudioFileId?: string | null;
+  cachedAudioMimeType?: string | null;
+  cachedTextChecksum?: string | null;
+  requestId: string;
+  responseText: string;
+};
+
 type DeepgramProjectInfo = {
   projectId: string;
   projectName: string;
@@ -675,6 +685,108 @@ async function persistParagraphAudioBuffer(
   };
 }
 
+async function persistAiRequestAudioBuffer(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  aiRequest: TtsAiRequestRow,
+  voiceModel: string,
+  audioBuffer: Buffer,
+  contentType: string
+) {
+  const audioFileId = randomUUID();
+
+  await connection.execute(
+    `
+      INSERT INTO book_files (
+        file_id,
+        book_id,
+        file_kind,
+        file_name,
+        mime_type,
+        byte_size,
+        checksum_sha256,
+        content_blob
+      ) VALUES (
+        :fileId,
+        :bookId,
+        'TTS_AUDIO',
+        :fileName,
+        :mimeType,
+        :byteSize,
+        :checksumSha256,
+        :contentBlob
+      )
+    `,
+    {
+      bookId: aiRequest.bookId,
+      byteSize: audioBuffer.length,
+      checksumSha256: computeChecksum(audioBuffer),
+      contentBlob: audioBuffer,
+      fileId: audioFileId,
+      fileName: `ai-request-${aiRequest.requestId}-${voiceModel}.mp3`,
+      mimeType: contentType
+    }
+  );
+
+  await connection.execute(
+    `
+      MERGE INTO user_book_ai_request_tts_audio_cache cache
+      USING (
+        SELECT
+          :requestId AS request_id,
+          :voiceModel AS voice_model,
+          :textChecksumSha256 AS text_checksum_sha256,
+          :fileId AS file_id
+        FROM dual
+      ) incoming
+      ON (
+        cache.request_id = incoming.request_id
+        AND cache.voice_model = incoming.voice_model
+      )
+      WHEN MATCHED THEN
+        UPDATE SET
+          cache.text_checksum_sha256 = incoming.text_checksum_sha256,
+          cache.file_id = incoming.file_id,
+          cache.updated_at = SYSTIMESTAMP
+      WHEN NOT MATCHED THEN
+        INSERT (
+          request_id,
+          voice_model,
+          text_checksum_sha256,
+          file_id
+        )
+        VALUES (
+          incoming.request_id,
+          incoming.voice_model,
+          incoming.text_checksum_sha256,
+          incoming.file_id
+        )
+    `,
+    {
+      fileId: audioFileId,
+      requestId: aiRequest.requestId,
+      textChecksumSha256: computeTextChecksum(normalizeTextForDeepgram(aiRequest.responseText)),
+      voiceModel
+    }
+  );
+
+  if (aiRequest.cachedAudioFileId && aiRequest.cachedAudioFileId !== audioFileId) {
+    await connection.execute(
+      `
+        DELETE FROM book_files
+        WHERE file_id = :fileId
+      `,
+      {
+        fileId: aiRequest.cachedAudioFileId
+      }
+    );
+  }
+
+  return {
+    audioBuffer,
+    contentType
+  };
+}
+
 export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
   app.get("/tts/deepgram/balance", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
@@ -1127,15 +1239,25 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
-      const deepgramApiKey = requireDeepgramApiKey(credentials);
       const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
-            ar.response_text AS "responseText"
+            ar.book_id AS "bookId",
+            ar.request_id AS "requestId",
+            ar.response_text AS "responseText",
+            cache.file_id AS "cachedAudioFileId",
+            cache.text_checksum_sha256 AS "cachedTextChecksum",
+            cached_bf.mime_type AS "cachedAudioMimeType",
+            cached_bf.content_blob AS "cachedAudioBlob"
           FROM user_book_ai_requests ar
           JOIN books b
             ON b.book_id = ar.book_id
+          LEFT JOIN user_book_ai_request_tts_audio_cache cache
+            ON cache.request_id = ar.request_id
+            AND cache.voice_model = :voiceModel
+          LEFT JOIN book_files cached_bf
+            ON cached_bf.file_id = cache.file_id
           WHERE ar.request_id = :requestId
             AND ar.book_id = :bookId
             AND ar.user_id = :userId
@@ -1143,21 +1265,52 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         {
           bookId: params.bookId,
           requestId: params.requestId,
-          userId: request.currentUser.userId
+          userId: request.currentUser.userId,
+          voiceModel: requestedVoiceModel
+        },
+        {
+          fetchInfo: {
+            cachedAudioBlob: { type: oracledb.BUFFER }
+          }
         }
       );
 
-      const [aiRequest] = (result.rows ?? []) as Array<{ responseText: string }>;
+      const [aiRequest] = (result.rows ?? []) as TtsAiRequestRow[];
       if (!aiRequest?.responseText?.trim()) {
         return reply.status(404).send({ message: "AI request not found." });
       }
 
-      const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel, deepgramApiKey);
+      const textChecksum = computeTextChecksum(normalizeTextForDeepgram(aiRequest.responseText));
+      const cachedAudio = aiRequest.cachedAudioBlob
+        && aiRequest.cachedAudioMimeType
+        && aiRequest.cachedTextChecksum === textChecksum
+        ? {
+            audioBuffer: aiRequest.cachedAudioBlob,
+            contentType: aiRequest.cachedAudioMimeType
+          }
+        : null;
+      let resolvedAudio = cachedAudio;
+
+      if (!resolvedAudio) {
+        const deepgramApiKey = requireDeepgramApiKey(credentials);
+        const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel, deepgramApiKey);
+        resolvedAudio = await persistAiRequestAudioBuffer(
+          connection,
+          aiRequest,
+          requestedVoiceModel,
+          synthesizedAudio.audioBuffer,
+          synthesizedAudio.contentType
+        );
+        await connection.commit();
+      }
 
       return reply
-        .header("Content-Type", synthesizedAudio.contentType)
-        .header("Cache-Control", "private, max-age=3600")
-        .send(synthesizedAudio.audioBuffer);
+        .header("Content-Type", resolvedAudio.contentType)
+        .header("Cache-Control", "private, max-age=31536000")
+        .send(resolvedAudio.audioBuffer);
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }

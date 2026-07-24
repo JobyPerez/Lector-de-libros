@@ -309,6 +309,7 @@ export function AiRequestsPage() {
   const aiModelSelection = useAiModelSelection();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const loadedAudioRef = useRef<{ requestId: string; voiceModel: string } | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
   const deviceUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const audioSettingsRef = useRef<HTMLDivElement | null>(null);
@@ -445,6 +446,7 @@ export function AiRequestsPage() {
       setLoadingAudioRequestId(null);
       setPlayingRequestId(null);
       setHasActivePlaybackSession(false);
+      loadedAudioRef.current = null;
       setAudioError("No se pudo reproducir el audio de la respuesta.");
     };
 
@@ -467,6 +469,7 @@ export function AiRequestsPage() {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
       }
+      loadedAudioRef.current = null;
       if (navigationPanelCloseTimeoutRef.current !== null) {
         window.clearTimeout(navigationPanelCloseTimeoutRef.current);
       }
@@ -677,7 +680,8 @@ export function AiRequestsPage() {
       URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = null;
     }
-  }, [chapterId, selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
+    loadedAudioRef.current = null;
+  }, [bookId, chapterId, selectedDeviceVoiceUri, selectedTtsEngine, selectedVoiceModel]);
 
   useEffect(() => {
     if (navigationPanelCloseTimeoutRef.current !== null) {
@@ -1203,7 +1207,11 @@ export function AiRequestsPage() {
     setDeleteError(null);
 
     try {
-      if (playingRequestId === request.requestId || loadingAudioRequestId === request.requestId) {
+      if (
+        playingRequestId === request.requestId
+        || loadingAudioRequestId === request.requestId
+        || loadedAudioRef.current?.requestId === request.requestId
+      ) {
         audioRef.current?.pause();
         activeAudioRequestRef.current?.abort();
         getSpeechSynthesisApi()?.cancel();
@@ -1212,6 +1220,15 @@ export function AiRequestsPage() {
         setLoadingAudioRequestId(null);
         setHasActivePlaybackSession(false);
         setIsDevicePaused(false);
+        loadedAudioRef.current = null;
+        if (audioRef.current) {
+          audioRef.current.removeAttribute("src");
+          audioRef.current.load();
+        }
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+          audioUrlRef.current = null;
+        }
       }
 
       await deleteAiRequest(accessToken, bookId, request.requestId);
@@ -1238,8 +1255,37 @@ export function AiRequestsPage() {
       return;
     }
 
+    if (
+      selectedTtsEngine === "deepgram"
+      && loadedAudioRef.current?.requestId === request.requestId
+      && loadedAudioRef.current.voiceModel === selectedVoiceModel
+      && audioElement.src
+    ) {
+      setAudioError(null);
+      if (audioElement.ended) {
+        audioElement.currentTime = 0;
+      }
+      audioElement.playbackRate = playbackRate;
+
+      try {
+        await audioElement.play();
+        setPlayingRequestId(request.requestId);
+        setHasActivePlaybackSession(true);
+      } catch (error) {
+        setAudioError(error instanceof Error ? error.message : "No se pudo reanudar la respuesta.");
+      }
+      return;
+    }
+
     activeAudioRequestRef.current?.abort();
     audioElement.pause();
+    loadedAudioRef.current = null;
+    audioElement.removeAttribute("src");
+    audioElement.load();
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
     getSpeechSynthesisApi()?.cancel();
     deviceUtteranceRef.current = null;
     setAudioError(null);
@@ -1309,12 +1355,12 @@ export function AiRequestsPage() {
         return;
       }
 
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-      }
-
       const audioUrl = URL.createObjectURL(blob);
       audioUrlRef.current = audioUrl;
+      loadedAudioRef.current = {
+        requestId: request.requestId,
+        voiceModel: selectedVoiceModel
+      };
       audioElement.src = audioUrl;
       audioElement.playbackRate = playbackRate;
       await audioElement.play();
@@ -1324,6 +1370,9 @@ export function AiRequestsPage() {
         setAudioError(error instanceof Error ? error.message : "No se pudo reproducir la respuesta.");
       }
     } finally {
+      if (activeAudioRequestRef.current === controller) {
+        activeAudioRequestRef.current = null;
+      }
       if (!controller.signal.aborted) {
         setLoadingAudioRequestId(null);
       }

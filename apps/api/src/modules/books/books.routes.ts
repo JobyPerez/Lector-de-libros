@@ -4968,6 +4968,30 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      await connection.execute(
+        `
+          DELETE FROM book_files bf
+          WHERE bf.file_id IN (
+            SELECT cache.file_id
+            FROM user_book_ai_request_tts_audio_cache cache
+            JOIN user_book_ai_requests ar
+              ON ar.request_id = cache.request_id
+            JOIN books b
+              ON b.book_id = ar.book_id
+            WHERE ar.request_id = :requestId
+              AND ar.book_id = :bookId
+              AND ar.user_id = :userId
+              AND b.owner_user_id = :ownerUserId
+          )
+        `,
+        {
+          bookId: params.bookId,
+          ownerUserId: request.currentUser.userId,
+          requestId: params.requestId,
+          userId: request.currentUser.userId
+        }
+      );
+
       const result = await connection.execute(
         `
           DELETE FROM user_book_ai_requests ar
