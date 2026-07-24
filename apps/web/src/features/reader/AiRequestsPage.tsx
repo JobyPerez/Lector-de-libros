@@ -782,9 +782,11 @@ export function AiRequestsPage() {
     }));
 
     const noteItems: ReaderNavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
+      authorLabel: note.userDisplayName?.trim() || (note.username ? `@${note.username}` : null),
       color: note.highlightColor,
       excerpt: notePreview(note),
       isActive: false,
+      isReadOnly: note.isOwnedByCurrentUser === false,
       key: `note:${note.noteId}`,
       noteId: note.noteId,
       noteText: note.noteText,

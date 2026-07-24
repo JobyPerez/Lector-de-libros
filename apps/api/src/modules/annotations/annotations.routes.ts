@@ -113,6 +113,7 @@ type NoteRecord = {
   highlightColor: typeof highlightColors[number] | null;
   highlightId: string | null;
   highlightedText: string | null;
+  isOwnedByCurrentUser?: boolean;
   noteId: string;
   noteText: string;
   pageNumber: number;
@@ -147,10 +148,23 @@ async function insertAnnotationShares(
   const bind = Object.fromEntries(dedup.map((id, index) => [`u${index}`, id]));
 
   const accessCheck = await connection.execute(
-    `SELECT user_id AS "userId"
-       FROM book_shares
-      WHERE book_id = :bookId
-        AND user_id IN (${placeholders})`,
+    `SELECT u.user_id AS "userId"
+       FROM users u
+      WHERE u.user_id IN (${placeholders})
+        AND (
+          EXISTS (
+            SELECT 1
+              FROM books b
+             WHERE b.book_id = :bookId
+               AND b.owner_user_id = u.user_id
+          )
+          OR EXISTS (
+            SELECT 1
+              FROM book_shares s
+             WHERE s.book_id = :bookId
+               AND s.user_id = u.user_id
+          )
+        )`,
     { bookId, ...bind }
   );
   const allowed = (accessCheck.rows ?? []).map((row: unknown) => (row as { userId: string }).userId);
@@ -158,10 +172,10 @@ async function insertAnnotationShares(
     return;
   }
 
-  await connection.execute(
+  await connection.executeMany(
     `INSERT INTO annotation_shares (annotation_id, annotation_type, user_id)
-     VALUES ${allowed.map(() => "(?, ?, ?)").join(", ")}`,
-    allowed.flatMap((userId: string) => [annotationId, annotationType, userId]),
+     VALUES (:annotationId, :annotationType, :userId)`,
+    allowed.map((userId: string) => ({ annotationId, annotationType, userId })),
     { autoCommit: true }
   );
 }
@@ -466,9 +480,12 @@ async function listHighlightsShared(
         AND (
           h.user_id = :userId
           OR EXISTS (
-            SELECT 1 FROM annotation_shares s
-             WHERE s.annotation_id = h.highlight_id
-               AND s.annotation_type = 'bookmark'
+            SELECT 1
+              FROM user_notes n
+              JOIN annotation_shares s
+                ON s.annotation_id = n.note_id
+               AND s.annotation_type = 'note'
+             WHERE n.highlight_id = h.highlight_id
                AND s.user_id = :userId
           )
           OR (
@@ -616,6 +633,7 @@ async function listNotesShared(
 
   return ((result.rows ?? []) as Array<NoteRecord & { sharedWithUserIds: string | null }>).map((row) => ({
     ...row,
+    isOwnedByCurrentUser: row.userId === userId,
     sharedWithUserIds: row.sharedWithUserIds ? row.sharedWithUserIds.split(",").filter(Boolean) : []
   }));
 }
@@ -666,10 +684,14 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const access = request.bookAccess!;
+      const isAuthorish = access.role === "OWNER" || access.role === "EDITOR" || access.role === "COMMENTER";
+      const shareAll = isAuthorish && book.shareUserAnnotations;
+
       const [bookmarks, highlights, notes, resolvedOutline] = await Promise.all([
-        listBookmarks(connection, request.currentUser.userId, params.bookId),
-        listHighlights(connection, request.currentUser.userId, params.bookId),
-        listNotes(connection, request.currentUser.userId, params.bookId),
+        listBookmarksShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
+        listHighlightsShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
+        listNotesShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
         resolveBookOutlineWithSource(connection, params.bookId)
       ]);
 
@@ -1130,7 +1152,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.delete("/books/:bookId/notes/:noteId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
+  app.delete("/books/:bookId/notes/:noteId", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -1141,7 +1163,30 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     try {
       const note = await findOwnedNote(connection, params.bookId, params.noteId, request.currentUser.userId);
       if (!note) {
-        return reply.status(404).send({ message: "Note not found." });
+        const result = await connection.execute(
+          `DELETE FROM annotation_shares s
+            WHERE s.annotation_id = :noteId
+              AND s.annotation_type = 'note'
+              AND s.user_id = :userId
+              AND EXISTS (
+                SELECT 1
+                  FROM user_notes n
+                 WHERE n.note_id = s.annotation_id
+                   AND n.book_id = :bookId
+              )`,
+          {
+            bookId: params.bookId,
+            noteId: params.noteId,
+            userId: request.currentUser.userId
+          },
+          { autoCommit: true }
+        );
+
+        if ((result.rowsAffected ?? 0) === 0) {
+          return reply.status(404).send({ message: "Note not found." });
+        }
+
+        return reply.status(204).send();
       }
 
       try {

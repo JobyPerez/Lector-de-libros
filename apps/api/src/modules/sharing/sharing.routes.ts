@@ -129,6 +129,40 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/:bookId/annotation-share-users", { preHandler: viewerOrAbove }, async (request, reply) => {
+    const { bookId } = request.params as { bookId: string };
+    const connection = await getConnection();
+    try {
+      const result = await connection.execute(
+        `SELECT u.user_id      AS "userId",
+                u.username     AS "username",
+                u.display_name AS "displayName"
+           FROM users u
+          WHERE u.user_id <> :currentUserId
+            AND (
+              EXISTS (
+                SELECT 1
+                  FROM books b
+                 WHERE b.book_id = :bookId
+                   AND b.owner_user_id = u.user_id
+              )
+              OR EXISTS (
+                SELECT 1
+                  FROM book_shares s
+                 WHERE s.book_id = :bookId
+                   AND s.user_id = u.user_id
+              )
+            )
+          ORDER BY u.username ASC`,
+        { bookId, currentUserId: request.currentUser!.userId }
+      );
+
+      return reply.send({ users: result.rows ?? [] });
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.post("/:bookId/shares", { preHandler: ownerOnly }, async (request, reply) => {
     const { bookId } = request.params as { bookId: string };
     const body = addShareSchema.parse(request.body);

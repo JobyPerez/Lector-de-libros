@@ -11,6 +11,7 @@ import {
   deleteBookmark,
   deleteHighlight,
   deleteNote,
+  fetchAnnotationShareUsers,
   fetchBook,
   fetchBookPage,
   fetchChapterAudioOfflinePlan,
@@ -18,7 +19,6 @@ import {
   fetchPageAnnotations,
   fetchProgress,
   fetchReaderNavigation,
-  fetchSharabableUsers,
   requestParagraphAudio,
   requestParagraphAudioBlock,
   updateNote,
@@ -195,9 +195,11 @@ type NavigationListItem =
       type: "highlight";
     }
   | {
+      authorLabel: string | null;
       color: HighlightColor | null;
       excerpt: string;
       isActive: boolean;
+      isReadOnly: boolean;
       key: string;
       noteId: string;
       noteText: string;
@@ -259,8 +261,10 @@ type ReaderWakeLockApi = {
 };
 
 type ReaderNotePopoverState = {
+  authorLabel: string | null;
   color: HighlightColor | null;
   highlightId: string;
+  isReadOnly: boolean;
   noteId: string | null;
   rect: {
     left: number;
@@ -1522,20 +1526,20 @@ export function ReaderPage() {
     }
   });
 
-  const sharableUsersQuery = useQuery({
+  const annotationShareUsersQuery = useQuery({
     enabled: Boolean(accessToken && bookId),
-    queryKey: ["book-sharable-users", bookId],
+    queryKey: ["annotation-share-users", bookId],
     queryFn: async () => {
       if (!accessToken) {
-        return [] as Awaited<ReturnType<typeof fetchSharabableUsers>>["users"];
+        return [] as Awaited<ReturnType<typeof fetchAnnotationShareUsers>>["users"];
       }
 
-      const response = await fetchSharabableUsers(accessToken, bookId);
+      const response = await fetchAnnotationShareUsers(accessToken, bookId);
       return response.users;
     }
   });
 
-  const sharableUsers = sharableUsersQuery.data ?? [];
+  const sharableUsers = annotationShareUsersQuery.data ?? [];
 
   const deepgramBalanceQuery = useQuery({
     enabled: Boolean(accessToken && isAudioSettingsVisible && selectedTtsEngine === "deepgram"),
@@ -2356,9 +2360,11 @@ export function ReaderPage() {
     }));
 
     const noteItems: NavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
+      authorLabel: note.userDisplayName?.trim() || (note.username ? `@${note.username}` : null),
       color: note.highlightColor,
       excerpt: notePreview(note),
       isActive: note.pageNumber === currentPageNumber && (note.paragraphNumber ?? currentParagraphNumber) === currentParagraphNumber,
+      isReadOnly: note.isOwnedByCurrentUser === false,
       key: `note:${note.noteId}`,
       noteId: note.noteId,
       noteText: note.noteText,
@@ -2825,8 +2831,10 @@ export function ReaderPage() {
       setSelectionDraft(null);
       setSelectionNoteText("");
       setActiveReaderNote({
+        authorLabel: note?.userDisplayName?.trim() || (note?.username ? `@${note.username}` : null),
         color: note?.highlightColor ?? highlight.color,
         highlightId,
+        isReadOnly: note?.isOwnedByCurrentUser === false,
         noteId: note?.noteId ?? null,
         rect: {
           left: popoverLayout.left,
@@ -4470,8 +4478,11 @@ export function ReaderPage() {
     }
   }
 
-  function handleDeleteReaderNote(noteId: string) {
-    if (window.confirm("¿Borrar esta nota? Esta acción no se puede deshacer.")) {
+  function handleDeleteReaderNote(noteId: string, isReadOnly: boolean) {
+    const message = isReadOnly
+      ? "¿Quitar esta nota compartida de tus notas? La nota original no se borrará."
+      : "¿Borrar esta nota? Esta acción no se puede deshacer.";
+    if (window.confirm(message)) {
       void handleDeleteSavedNote(noteId);
     }
   }
@@ -4960,9 +4971,10 @@ export function ReaderPage() {
         >
           <div className="reader-existing-note-header">
             <span className={activeReaderNote.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(activeReaderNote.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-            {activeReaderNote.noteId ? <strong>Nota vinculada</strong> : null}
+            {activeReaderNote.noteId ? <strong>{activeReaderNote.isReadOnly ? "Nota compartida" : "Nota vinculada"}</strong> : null}
+            {activeReaderNote.isReadOnly && activeReaderNote.authorLabel ? <span>por {activeReaderNote.authorLabel}</span> : null}
           </div>
-          {activeReaderNote.noteId && activeReaderNote.color ? (
+          {activeReaderNote.noteId && activeReaderNote.color && !activeReaderNote.isReadOnly ? (
             <div aria-label="Color del resaltado" className="reader-selection-swatches" role="radiogroup">
               {HIGHLIGHT_OPTIONS.map((option) => (
                 <button
@@ -4991,11 +5003,12 @@ export function ReaderPage() {
             <textarea
               onChange={(event) => setActiveReaderNoteText(event.target.value)}
               placeholder={activeReaderNote.noteId ? "Escribe para actualizar esta nota." : "Nota opcional: añade un apunte sobre este fragmento."}
+              readOnly={activeReaderNote.isReadOnly}
               rows={4}
               value={activeReaderNoteText}
             />
           </label>
-          {sharableUsers.length > 0 ? (
+          {sharableUsers.length > 0 && !activeReaderNote.isReadOnly ? (
             <ShareWithSelector
               emptyLabel={activeReaderNote.noteId ? "Esta nota solo la verás tú." : "Esta nota solo la verás tú."}
               label={activeReaderNote.noteId ? "Compartida con" : "Compartir nota con"}
@@ -5007,11 +5020,11 @@ export function ReaderPage() {
           <div className="reader-note-editor-actions">
             {activeReaderNote.noteId ? (
               <button
-                aria-label="Borrar nota"
+                aria-label={activeReaderNote.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
                 className="reader-note-icon-button danger-icon-button"
                 disabled={isUpdatingNote}
-                onClick={() => handleDeleteReaderNote(activeReaderNote.noteId as string)}
-                title="Borrar nota"
+                onClick={() => handleDeleteReaderNote(activeReaderNote.noteId as string, activeReaderNote.isReadOnly)}
+                title={activeReaderNote.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
                 type="button"
               >
                 <DeletePageIcon />
@@ -5030,7 +5043,7 @@ export function ReaderPage() {
             >
               <CloseIcon />
             </button>
-            <button
+            {!activeReaderNote.isReadOnly ? <button
               aria-label={activeReaderNote.noteId ? "Guardar nota editada" : "Guardar nueva nota"}
               className="reader-note-icon-button primary"
               disabled={isUpdatingNote || !activeReaderNoteText.trim()}
@@ -5041,7 +5054,7 @@ export function ReaderPage() {
               type="button"
             >
               <SaveIcon />
-            </button>
+            </button> : null}
           </div>
         </div>
       ) : null}

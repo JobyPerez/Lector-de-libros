@@ -3607,6 +3607,29 @@ textarea {
   white-space: nowrap;
 }
 
+.reader-navigation-note-meta {
+  display: flex;
+  min-width: 0;
+  padding-left: 1.45rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+  flex-wrap: wrap;
+  color: #5d665d;
+  font-size: 0.82rem;
+}
+
+.reader-navigation-note-meta span {
+  min-width: 0;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.reader-navigation-note-meta span:last-child {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .reader-navigation-chip {
   flex: 0 0 auto;
   display: inline-flex;

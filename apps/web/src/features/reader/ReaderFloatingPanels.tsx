@@ -140,9 +140,11 @@ export type ReaderNavigationListItem =
       type: "highlight";
     }
   | {
+      authorLabel: string | null;
       color: ReaderHighlightColor | null;
       excerpt: string;
       isActive: boolean;
+      isReadOnly: boolean;
       key: string;
       noteId: string;
       noteText: string;
@@ -647,9 +649,12 @@ export function ReaderNavigationPanelContent({
     }
   }
 
-  function handleDeleteNote(noteId: string) {
-    if (window.confirm("¿Borrar esta nota? Esta acción no se puede deshacer.")) {
-      onDeleteNote(noteId);
+  function handleDeleteNote(item: Extract<ReaderNavigationListItem, { type: "note" }>) {
+    const message = item.isReadOnly
+      ? "¿Quitar esta nota compartida de tus notas? La nota original no se borrará."
+      : "¿Borrar esta nota? Esta acción no se puede deshacer.";
+    if (window.confirm(message)) {
+      onDeleteNote(item.noteId);
     }
   }
 
@@ -860,7 +865,10 @@ export function ReaderNavigationPanelContent({
           <div className="reader-navigation-item-topline">
             <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
             <strong>{item.excerpt}</strong>
-            <span className="reader-navigation-inline-meta">Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
+          </div>
+          <div className="reader-navigation-note-meta">
+            {item.isReadOnly && item.authorLabel ? <span>Compartida por {item.authorLabel}</span> : null}
+            <span>Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
           </div>
         </button>
         <div className="reader-note-actions">
@@ -876,20 +884,22 @@ export function ReaderNavigationPanelContent({
               <EyeIcon />
             </button>
           ) : null}
+          {!item.isReadOnly ? (
+            <button
+              aria-label="Editar nota"
+              className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+              onClick={() => onBeginNoteEditing({ color: item.color, noteId: item.noteId, noteText: item.noteText })}
+              title="Editar nota"
+              type="button"
+            >
+              <EditIcon />
+            </button>
+          ) : null}
           <button
-            aria-label="Editar nota"
-            className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-            onClick={() => onBeginNoteEditing({ color: item.color, noteId: item.noteId, noteText: item.noteText })}
-            title="Editar nota"
-            type="button"
-          >
-            <EditIcon />
-          </button>
-          <button
-            aria-label="Borrar nota"
+            aria-label={item.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
             className="reader-note-delete"
-            onClick={() => handleDeleteNote(item.noteId)}
-            title="Borrar nota"
+            onClick={() => handleDeleteNote(item)}
+            title={item.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
             type="button"
           >
             <DeletePageIcon />

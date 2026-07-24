@@ -496,6 +496,7 @@ export type ReaderNote = {
   highlightColor: HighlightColor | null;
   highlightId: string | null;
   highlightedText: string | null;
+  isOwnedByCurrentUser?: boolean;
   noteId: string;
   noteText: string;
   pageNumber: number;
@@ -882,6 +883,12 @@ export type SharableUser = {
 
 export function fetchSharabableUsers(accessToken: string, bookId: string) {
   return request<{ users: SharableUser[] }>(`/books/${bookId}/sharable-users`, { accessToken });
+}
+
+export type AnnotationShareUser = Pick<SharableUser, "displayName" | "userId" | "username">;
+
+export function fetchAnnotationShareUsers(accessToken: string, bookId: string) {
+  return request<{ users: AnnotationShareUser[] }>(`/books/${bookId}/annotation-share-users`, { accessToken });
 }
 
 export function addBookShare(accessToken: string, bookId: string, payload: { role: ShareRole; userId: string }) {
