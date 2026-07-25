@@ -380,10 +380,16 @@ export type HighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
 export type ReaderBookmark = {
   bookmarkId: string;
   createdAt: string;
+  isOwnedByCurrentUser?: boolean;
   pageNumber: number;
   paragraphId: string;
   paragraphNumber: number;
   sequenceNumber: number;
+  sharedWithUserIds?: string[];
+  userDisplayName?: string | null;
+  userId?: string;
+  username?: string;
+  visibilitySource?: "OWN" | "DIRECT" | "BOOK";
 };
 
 export type ReaderHighlight = {
@@ -1070,11 +1076,19 @@ export function regenerateBookOutline(accessToken: string, bookId: string) {
   });
 }
 
-export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string; sharedWithUserIds?: string[] }) {
+export function createBookmark(accessToken: string, bookId: string, payload: { paragraphId: string }) {
   return request<{ bookmark: ReaderBookmark }>(`/books/${bookId}/bookmarks`, {
     accessToken,
     body: payload,
     method: "POST"
+  });
+}
+
+export function updateBookmarkShares(accessToken: string, bookId: string, bookmarkId: string, sharedWithUserIds: string[]) {
+  return request<{ sharedWithUserIds: string[] }>(`/books/${bookId}/bookmarks/${bookmarkId}/shares`, {
+    accessToken,
+    body: { sharedWithUserIds },
+    method: "PUT"
   });
 }
 

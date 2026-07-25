@@ -4301,6 +4301,10 @@ textarea {
   padding: 1rem 1.15rem;
 }
 
+.reader-bookmark-share-editor {
+  margin-top: 0.55rem;
+}
+
 .ai-request-card.is-removing {
   pointer-events: none;
   animation: ai-request-card-remove 240ms ease-in forwards;

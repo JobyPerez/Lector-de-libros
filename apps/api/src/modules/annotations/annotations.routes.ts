@@ -36,8 +36,11 @@ const annotationsQuerySchema = z.object({
 const sharedWithSchema = z.array(z.string().uuid()).max(200).default([]);
 
 const createBookmarkSchema = z.object({
-  paragraphId: z.string().uuid(),
-  sharedWithUserIds: sharedWithSchema.optional()
+  paragraphId: z.string().uuid()
+});
+
+const updateBookmarkSharesSchema = z.object({
+  sharedWithUserIds: sharedWithSchema
 });
 
 const createHighlightSchema = z.object({
@@ -80,13 +83,16 @@ type ParagraphLocationRecord = {
 type BookmarkRecord = {
   bookmarkId: string;
   createdAt: string;
+  isOwnedByCurrentUser?: boolean;
   pageNumber: number;
   paragraphId: string;
   paragraphNumber: number;
   sequenceNumber: number;
+  sharedWithUserIds?: string[];
   userDisplayName?: string | null;
   userId?: string;
   username?: string;
+  visibilitySource?: "OWN" | "DIRECT" | "BOOK";
 };
 
 type HighlightRecord = {
@@ -178,6 +184,64 @@ async function insertAnnotationShares(
     allowed.map((userId: string) => ({ annotationId, annotationType, userId })),
     { autoCommit: true }
   );
+}
+
+async function validateAnnotationShareRecipients(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  creatorUserId: string,
+  sharedWithUserIds: string[]
+): Promise<string[]> {
+  const recipientIds = [...new Set(sharedWithUserIds)].filter((userId) => userId !== creatorUserId);
+  if (recipientIds.length === 0) {
+    return [];
+  }
+
+  const binds: Record<string, string> = { bookId };
+  const placeholders = recipientIds.map((userId, index) => {
+    const bindName = `recipient${index}`;
+    binds[bindName] = userId;
+    return `:${bindName}`;
+  });
+  const result = await connection.execute(
+    `
+      SELECT accessible.user_id AS "userId"
+      FROM (
+        SELECT b.owner_user_id AS user_id FROM books b WHERE b.book_id = :bookId
+        UNION
+        SELECT bs.user_id FROM book_shares bs WHERE bs.book_id = :bookId
+      ) accessible
+      WHERE accessible.user_id IN (${placeholders.join(", ")})
+    `,
+    binds
+  );
+  const accessibleUserIds = new Set(((result.rows ?? []) as Array<{ userId: string }>).map((row) => row.userId));
+  if (recipientIds.some((userId) => !accessibleUserIds.has(userId))) {
+    throw Object.assign(new Error("Todos los destinatarios deben tener acceso actual al libro."), { statusCode: 422 });
+  }
+
+  return recipientIds;
+}
+
+async function replaceBookmarkShares(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookmarkId: string,
+  sharedWithUserIds: string[]
+): Promise<void> {
+  await connection.execute(
+    `DELETE FROM annotation_shares
+      WHERE annotation_id = :bookmarkId
+        AND annotation_type = 'bookmark'`,
+    { bookmarkId }
+  );
+
+  if (sharedWithUserIds.length > 0) {
+    await connection.executeMany(
+      `INSERT INTO annotation_shares (annotation_id, annotation_type, user_id)
+       VALUES (:bookmarkId, 'bookmark', :userId)`,
+      sharedWithUserIds.map((userId) => ({ bookmarkId, userId }))
+    );
+  }
 }
 
 async function findAccessibleBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, userId: string): Promise<OwnedBookRecord & { shareUserAnnotations: boolean } | null> {
@@ -368,9 +432,12 @@ async function listBookmarksShared(
         b.user_id AS "userId",
         u.username AS "username",
         u.display_name AS "userDisplayName",
-        (SELECT COUNT(*) FROM annotation_shares s
-          WHERE s.annotation_id = b.bookmark_id
-            AND s.annotation_type = 'bookmark') AS "shareCount"
+        CASE WHEN EXISTS (
+          SELECT 1 FROM annotation_shares ds
+           WHERE ds.annotation_id = b.bookmark_id
+             AND ds.annotation_type = 'bookmark'
+             AND ds.user_id = :userId
+        ) THEN 1 ELSE 0 END AS "isDirectRecipient"
       FROM user_bookmarks b
       JOIN users u ON u.user_id = b.user_id
       WHERE b.book_id = :bookId
@@ -410,7 +477,39 @@ async function listBookmarksShared(
     }
   );
 
-  return (result.rows ?? []) as BookmarkRecord[];
+  const rows = (result.rows ?? []) as Array<BookmarkRecord & { isDirectRecipient: number }>;
+  const ownedBookmarkIds = new Set(rows.filter((row) => row.userId === userId).map((row) => row.bookmarkId));
+  const sharesByBookmarkId = new Map<string, string[]>();
+  if (ownedBookmarkIds.size > 0) {
+    const sharesResult = await connection.execute(
+      `
+        SELECT s.annotation_id AS "bookmarkId", s.user_id AS "userId"
+        FROM annotation_shares s
+        JOIN user_bookmarks b ON b.bookmark_id = s.annotation_id
+        WHERE s.annotation_type = 'bookmark'
+          AND b.book_id = :bookId
+          AND b.user_id = :userId
+        ORDER BY s.annotation_id, s.user_id
+      `,
+      { bookId, userId }
+    );
+    for (const share of (sharesResult.rows ?? []) as Array<{ bookmarkId: string; userId: string }>) {
+      if (ownedBookmarkIds.has(share.bookmarkId)) {
+        sharesByBookmarkId.set(share.bookmarkId, [...(sharesByBookmarkId.get(share.bookmarkId) ?? []), share.userId]);
+      }
+    }
+  }
+
+  return rows.map((row) => {
+    const { isDirectRecipient, ...bookmark } = row;
+    const isOwnedByCurrentUser = bookmark.userId === userId;
+    return {
+      ...bookmark,
+      isOwnedByCurrentUser,
+      ...(isOwnedByCurrentUser ? { sharedWithUserIds: sharesByBookmarkId.get(bookmark.bookmarkId) ?? [] } : {}),
+      visibilitySource: isOwnedByCurrentUser ? "OWN" as const : isDirectRecipient ? "DIRECT" as const : "BOOK" as const
+    };
+  });
 }
 
 async function listHighlights(
@@ -774,17 +873,48 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         { autoCommit: true }
       );
 
-      if (payload.sharedWithUserIds?.length) {
-        await insertAnnotationShares(connection, bookmark.bookmarkId, "bookmark", params.bookId, payload.sharedWithUserIds);
-      }
-
       return reply.status(201).send({ bookmark });
     } finally {
       await connection.close();
     }
   });
 
-  app.delete("/books/:bookId/bookmarks/:bookmarkId", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
+  app.put("/books/:bookId/bookmarks/:bookmarkId/shares", { preHandler: [authenticateRequest, requireBookRole("COMMENTER")] }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = bookmarkParamsSchema.parse(request.params);
+    const payload = updateBookmarkSharesSchema.parse(request.body ?? {});
+    const connection = await getConnection();
+
+    try {
+      const ownerResult = await connection.execute(
+        `SELECT bookmark_id AS "bookmarkId"
+           FROM user_bookmarks
+          WHERE bookmark_id = :bookmarkId
+            AND book_id = :bookId
+            AND user_id = :userId`,
+        { bookId: params.bookId, bookmarkId: params.bookmarkId, userId: request.currentUser.userId }
+      );
+      if (!(ownerResult.rows ?? []).length) {
+        return reply.status(404).send({ message: "Bookmark not found." });
+      }
+
+      const sharedWithUserIds = await validateAnnotationShareRecipients(connection, params.bookId, request.currentUser.userId, payload.sharedWithUserIds);
+      await replaceBookmarkShares(connection, params.bookmarkId, sharedWithUserIds);
+      await connection.commit();
+
+      return reply.send({ sharedWithUserIds });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.delete("/books/:bookId/bookmarks/:bookmarkId", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -793,6 +923,37 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      const visibilityResult = await connection.execute(
+        `
+          SELECT b.user_id AS "ownerUserId"
+          FROM user_bookmarks b
+          LEFT JOIN annotation_shares s
+            ON s.annotation_id = b.bookmark_id
+           AND s.annotation_type = 'bookmark'
+           AND s.user_id = :userId
+          WHERE b.bookmark_id = :bookmarkId
+            AND b.book_id = :bookId
+            AND (b.user_id = :userId OR s.user_id = :userId)
+        `,
+        { bookId: params.bookId, bookmarkId: params.bookmarkId, userId: request.currentUser.userId }
+      );
+      const [visibleBookmark] = (visibilityResult.rows ?? []) as Array<{ ownerUserId: string }>;
+      if (!visibleBookmark) {
+        return reply.status(404).send({ message: "Bookmark not found." });
+      }
+
+      if (visibleBookmark.ownerUserId !== request.currentUser.userId) {
+        await connection.execute(
+          `DELETE FROM annotation_shares
+            WHERE annotation_id = :bookmarkId
+              AND annotation_type = 'bookmark'
+              AND user_id = :userId`,
+          { bookmarkId: params.bookmarkId, userId: request.currentUser.userId }
+        );
+        await connection.commit();
+        return reply.status(204).send();
+      }
+
       const result = await connection.execute(
         `
           DELETE FROM user_bookmarks
@@ -804,15 +965,19 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
           bookId: params.bookId,
           bookmarkId: params.bookmarkId,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
 
       if ((result.rowsAffected ?? 0) === 0) {
+        await connection.rollback();
         return reply.status(404).send({ message: "Bookmark not found." });
       }
 
+      await connection.commit();
       return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }

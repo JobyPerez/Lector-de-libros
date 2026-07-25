@@ -7,6 +7,7 @@ import {
   deleteBookmark,
   deleteHighlight,
   deleteNote,
+  fetchAnnotationShareUsers,
   fetchBook,
   fetchDeepgramBalance,
   fetchReaderNavigation,
@@ -14,6 +15,7 @@ import {
   fetchSectionSummaryPrompt,
   generateSectionSummary,
   requestSectionSummaryAudio,
+  updateBookmarkShares,
   updateNote,
   type HighlightColor,
   type ReaderHighlight,
@@ -368,6 +370,19 @@ export function SectionSummaryPage() {
     }
   });
 
+  const annotationShareUsersQuery = useQuery({
+    enabled: Boolean(accessToken && bookId),
+    queryKey: ["annotation-share-users", bookId],
+    queryFn: async () => {
+      if (!accessToken) {
+        return [] as Awaited<ReturnType<typeof fetchAnnotationShareUsers>>["users"];
+      }
+
+      const response = await fetchAnnotationShareUsers(accessToken, bookId);
+      return response.users;
+    }
+  });
+
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
   const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
   const selectedDeviceVoice = useMemo(
@@ -377,6 +392,7 @@ export function SectionSummaryPage() {
   const summaryText = summaryQuery.data?.summary?.summaryText?.trim() ?? "";
   const summaryParagraphs = useMemo(() => paragraphizeSummary(summaryText), [summaryText]);
   const summaryPromptCharacterCount = summaryPromptText.trim().length.toLocaleString("es-ES");
+  const sharableUsers = annotationShareUsersQuery.data ?? [];
   const bookTitle = bookQuery.data?.book.title ?? "Cargando libro...";
   const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
     ? deepgramBalanceQuery.error.message
@@ -395,13 +411,17 @@ export function SectionSummaryPage() {
     }));
 
     const bookmarkItems: ReaderNavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
       bookmarkId: bookmark.bookmarkId,
       isActive: false,
+      isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
       key: `bookmark:${bookmark.bookmarkId}`,
       pageNumber: bookmark.pageNumber,
       paragraphNumber: bookmark.paragraphNumber,
+      sharedWithUserIds: bookmark.sharedWithUserIds ?? [],
       title: "Marcador guardado",
-      type: "bookmark"
+      type: "bookmark",
+      visibilitySource: bookmark.visibilitySource ?? (bookmark.isOwnedByCurrentUser === false ? "DIRECT" : "OWN")
     }));
 
     const noteItems: ReaderNavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
@@ -805,6 +825,15 @@ export function SectionSummaryPage() {
     } catch (error) {
       setNavigationError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
     }
+  }
+
+  async function handleUpdateBookmarkShares(bookmarkId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateBookmarkShares(accessToken, bookId, bookmarkId, sharedWithUserIds);
+    await refreshNavigationMetadata();
   }
 
   async function handleDeleteSavedHighlight(highlightId: string) {
@@ -1335,6 +1364,8 @@ export function SectionSummaryPage() {
               onSelectToc={(item) => goToReaderLocation(item.pageNumber)}
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+              onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+              sharableUsers={sharableUsers}
               summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
             />
           </ReaderNavigationPopover>

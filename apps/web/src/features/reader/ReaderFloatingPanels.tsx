@@ -3,6 +3,7 @@ import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, us
 
 import type { BookOutlineSource } from "../../app/api";
 import { getOutlineSourceMeta } from "../../app/outline-source";
+import { ShareWithSelector } from "../../components/ShareWithSelector";
 
 type AudioEngineOption = {
   description: string;
@@ -121,13 +122,17 @@ export type ReaderNavigationListItem =
       type: "toc";
     }
   | {
+      authorLabel: string | null;
       bookmarkId: string;
       isActive: boolean;
+      isOwnedByCurrentUser: boolean;
       key: string;
       pageNumber: number;
       paragraphNumber: number;
+      sharedWithUserIds: string[];
       title: string;
       type: "bookmark";
+      visibilitySource: "OWN" | "DIRECT" | "BOOK";
     }
   | {
       color: ReaderHighlightColor;
@@ -199,8 +204,72 @@ type NavigationPanelContentProps = {
   onSelectToc: (item: Extract<ReaderNavigationListItem, { type: "toc" }>) => void;
   onSummaryClick?: () => void;
   onToggleNoteExpansion: (noteId: string) => void;
+  onUpdateBookmarkShares: (bookmarkId: string, sharedWithUserIds: string[]) => Promise<void>;
+  sharableUsers: { displayName: string | null; userId: string; username: string }[];
   summaryHrefBuilder?: (chapterId: string) => string;
 };
+
+type BookmarkNavigationItem = Extract<ReaderNavigationListItem, { type: "bookmark" }>;
+
+function haveSameUserIds(left: string[], right: string[]) {
+  return left.length === right.length && left.every((userId) => right.includes(userId));
+}
+
+function BookmarkShareEditor({ item, onUpdateShares, sharableUsers }: {
+  item: BookmarkNavigationItem;
+  onUpdateShares: (bookmarkId: string, sharedWithUserIds: string[]) => Promise<void>;
+  sharableUsers: { displayName: string | null; userId: string; username: string }[];
+}) {
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const selected = draft ?? item.sharedWithUserIds;
+  const hasChanges = draft !== null && !haveSameUserIds(draft, item.sharedWithUserIds);
+
+  async function handleSave() {
+    if (isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onUpdateShares(item.bookmarkId, selected);
+      setDraft(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "No se pudo actualizar con quién se comparte el marcador.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="ai-request-share-editor reader-bookmark-share-editor">
+      <ShareWithSelector
+        disabled={isSaving}
+        emptyLabel="Este marcador solo lo verás tú."
+        label="Compartido con"
+        onChange={(userIds) => {
+          setDraft(userIds);
+          setError(null);
+        }}
+        options={sharableUsers}
+        selected={selected}
+      />
+      {error ? <p className="error-text" role="alert">{error}</p> : null}
+      {hasChanges ? (
+        <button
+          className="secondary-button ai-request-share-save"
+          disabled={isSaving}
+          onClick={() => void handleSave()}
+          type="button"
+        >
+          {isSaving ? "Guardando..." : "Guardar destinatarios"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 function ReaderControlIcon({ children }: { children: ReactNode }) {
   return (
@@ -624,26 +693,31 @@ export function ReaderNavigationPanelContent({
   onSelectToc,
   onSummaryClick,
   onToggleNoteExpansion,
+  onUpdateBookmarkShares,
   outlineEditHref,
   outlineSource,
+  sharableUsers,
   summaryHrefBuilder
 }: NavigationPanelContentProps) {
   const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
   const tocItemCount = items.filter((item) => item.type === "toc").length;
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
 
-  async function handleDeleteBookmark(bookmarkId: string) {
-    if (!window.confirm("¿Borrar este marcador? Esta acción no se puede deshacer.")) {
+  async function handleDeleteBookmark(item: BookmarkNavigationItem) {
+    const confirmation = item.isOwnedByCurrentUser
+      ? "¿Borrar este marcador? Esta acción no se puede deshacer."
+      : "¿Quitar este marcador compartido de tus marcadores? El marcador original no se borrará.";
+    if (!window.confirm(confirmation)) {
       return;
     }
 
-    setDeletingBookmarkIds((prev) => new Set(prev).add(bookmarkId));
+    setDeletingBookmarkIds((prev) => new Set(prev).add(item.bookmarkId));
     try {
-      await onDeleteBookmark(bookmarkId);
+      await onDeleteBookmark(item.bookmarkId);
     } finally {
       setDeletingBookmarkIds((prev) => {
         const next = new Set(prev);
-        next.delete(bookmarkId);
+        next.delete(item.bookmarkId);
         return next;
       });
     }
@@ -731,8 +805,10 @@ export function ReaderNavigationPanelContent({
     });
   }
 
-  function renderBookmarkCard(item: Extract<ReaderNavigationListItem, { type: "bookmark" }>) {
+  function renderBookmarkCard(item: BookmarkNavigationItem) {
     const isDeleting = deletingBookmarkIds.has(item.bookmarkId);
+    const canRemove = item.isOwnedByCurrentUser || item.visibilitySource === "DIRECT";
+    const deleteLabel = item.isOwnedByCurrentUser ? "Borrar marcador" : "Quitar de mis marcadores";
     return (
       <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} data-deleting={isDeleting ? "" : undefined} key={item.key}>
         <button
@@ -750,19 +826,31 @@ export function ReaderNavigationPanelContent({
             <strong>{item.title}</strong>
             <span className="reader-navigation-inline-meta">Pág. {item.pageNumber}</span>
           </div>
+          {!item.isOwnedByCurrentUser && item.authorLabel ? (
+            <span className="reader-navigation-inline-meta">Compartido por {item.authorLabel} · Solo lectura</span>
+          ) : null}
         </button>
         <div className="reader-note-actions">
-          <button
-            aria-label="Borrar marcador"
-            className="reader-note-delete"
-            disabled={isDeleting}
-            onClick={() => void handleDeleteBookmark(item.bookmarkId)}
-            title="Borrar marcador"
-            type="button"
-          >
-            {isDeleting ? <span className="reader-bookmark-delete-spinner" /> : <DeletePageIcon />}
-          </button>
+          {canRemove ? (
+            <button
+              aria-label={deleteLabel}
+              className="reader-note-delete"
+              disabled={isDeleting}
+              onClick={() => void handleDeleteBookmark(item)}
+              title={deleteLabel}
+              type="button"
+            >
+              {isDeleting ? <span className="reader-bookmark-delete-spinner" /> : <DeletePageIcon />}
+            </button>
+          ) : null}
         </div>
+        {item.isOwnedByCurrentUser && sharableUsers.length > 0 ? (
+          <BookmarkShareEditor
+            item={item}
+            onUpdateShares={onUpdateBookmarkShares}
+            sharableUsers={sharableUsers}
+          />
+        ) : null}
       </article>
     );
   }

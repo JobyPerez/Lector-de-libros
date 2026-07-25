@@ -18,6 +18,7 @@ import {
   isRetryableRateLimitError,
   requestAiResponseAudio,
   updateAiRequestShares,
+  updateBookmarkShares,
   updateNote,
   type HighlightColor,
   type AiRequestRecord,
@@ -805,13 +806,17 @@ export function AiRequestsPage() {
     }));
 
     const bookmarkItems: ReaderNavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
       bookmarkId: bookmark.bookmarkId,
       isActive: false,
+      isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
       key: `bookmark:${bookmark.bookmarkId}`,
       pageNumber: bookmark.pageNumber,
       paragraphNumber: bookmark.paragraphNumber,
+      sharedWithUserIds: bookmark.sharedWithUserIds ?? [],
       title: "Marcador guardado",
-      type: "bookmark"
+      type: "bookmark",
+      visibilitySource: bookmark.visibilitySource ?? (bookmark.isOwnedByCurrentUser === false ? "DIRECT" : "OWN")
     }));
 
     const noteItems: ReaderNavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
@@ -1087,6 +1092,15 @@ export function AiRequestsPage() {
     } catch (error) {
       setNavigationError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
     }
+  }
+
+  async function handleUpdateBookmarkShares(bookmarkId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateBookmarkShares(accessToken, bookId, bookmarkId, sharedWithUserIds);
+    await refreshNavigationMetadata();
   }
 
   async function handleDeleteSavedHighlight(highlightId: string) {
@@ -1884,6 +1898,8 @@ export function AiRequestsPage() {
               onSelectToc={(item) => goToReaderLocation(item.pageNumber)}
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+              onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+              sharableUsers={sharableUsers}
               summaryHrefBuilder={(targetChapterId) => sectionAiRequestsHref(targetChapterId)}
             />
           </ReaderNavigationPopover>

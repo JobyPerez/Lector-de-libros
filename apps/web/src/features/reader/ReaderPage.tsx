@@ -21,6 +21,7 @@ import {
   fetchReaderNavigation,
   requestParagraphAudio,
   requestParagraphAudioBlock,
+  updateBookmarkShares,
   updateNote,
   updateProgress,
   isBookEditor,
@@ -177,13 +178,17 @@ type NavigationListItem =
       type: "toc";
     }
   | {
+      authorLabel: string | null;
       bookmarkId: string;
       isActive: boolean;
+      isOwnedByCurrentUser: boolean;
       key: string;
       pageNumber: number;
       paragraphNumber: number;
+      sharedWithUserIds: string[];
       title: string;
       type: "bookmark";
+      visibilitySource: "OWN" | "DIRECT" | "BOOK";
     }
   | {
       color: HighlightColor;
@@ -2047,8 +2052,11 @@ export function ReaderPage() {
     return nextMap;
   }, [currentHighlights]);
 
-  const currentPageBookmark = useMemo(() => currentBookmarks[0] ?? null, [currentBookmarks]);
-  const isCurrentPageBookmarked = currentBookmarks.length > 0;
+  const currentPageOwnBookmarks = useMemo(
+    () => currentBookmarks.filter((bookmark) => bookmark.isOwnedByCurrentUser !== false),
+    [currentBookmarks]
+  );
+  const isCurrentPageBookmarked = currentPageOwnBookmarks.length > 0;
   const shouldRenderPageCornerBookmark = isCurrentPageBookmarked || bookmarkAnimationState === "adding" || bookmarkAnimationState === "removing";
 
   function triggerBookmarkAnimation(nextState: Exclude<ReaderBookmarkAnimationState, null>) {
@@ -2351,13 +2359,17 @@ export function ReaderPage() {
     }));
 
     const bookmarkItems: NavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
+      authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
       bookmarkId: bookmark.bookmarkId,
       isActive: bookmark.pageNumber === currentPageNumber && bookmark.paragraphNumber === currentParagraphNumber,
+      isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
       key: `bookmark:${bookmark.bookmarkId}`,
       pageNumber: bookmark.pageNumber,
       paragraphNumber: bookmark.paragraphNumber,
+      sharedWithUserIds: bookmark.sharedWithUserIds ?? [],
       title: "Marcador guardado",
-      type: "bookmark"
+      type: "bookmark",
+      visibilitySource: bookmark.visibilitySource ?? (bookmark.isOwnedByCurrentUser === false ? "DIRECT" : "OWN")
     }));
 
     const noteItems: NavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
@@ -4391,16 +4403,14 @@ export function ReaderPage() {
     setReaderError(null);
 
     try {
-      const removingBookmark = currentBookmarks.length > 0;
-
-      if (currentBookmarks.length > 0) {
+      if (currentPageOwnBookmarks.length > 0) {
         if (!window.confirm("¿Borrar este marcador? Esta acción no se puede deshacer.")) {
           return;
         }
 
-        const removedPageNumber = currentBookmarks[0]?.pageNumber ?? currentPageNumber;
+        const removedPageNumber = currentPageOwnBookmarks[0]?.pageNumber ?? currentPageNumber;
         triggerBookmarkAnimation("removing");
-        await Promise.all(currentBookmarks.map((bookmark) => deleteBookmark(accessToken, bookId, bookmark.bookmarkId)));
+        await Promise.all(currentPageOwnBookmarks.map((bookmark) => deleteBookmark(accessToken, bookId, bookmark.bookmarkId)));
         showBookmarkToast(`Marcador de la pág. ${removedPageNumber} eliminado`);
       } else {
         const bookmarkParagraph = currentParagraph ?? currentParagraphs[0] ?? null;
@@ -4604,6 +4614,15 @@ export function ReaderPage() {
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
     }
+  }
+
+  async function handleUpdateBookmarkShares(bookmarkId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateBookmarkShares(accessToken, bookId, bookmarkId, sharedWithUserIds);
+    await refreshReaderMetadata();
   }
 
   function renderParagraphText(paragraph: ParagraphContent) {
@@ -5213,6 +5232,8 @@ export function ReaderPage() {
             onSelectToc={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
             onSummaryClick={closeNavigationPanel}
             onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+            onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+            sharableUsers={sharableUsers}
             summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
           />
         </ReaderNavigationPopover>

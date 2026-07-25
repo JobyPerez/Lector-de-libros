@@ -286,6 +286,32 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
         { bookId, userId }
       );
 
+      await connection.execute(
+        `DELETE FROM annotation_shares s
+          WHERE s.user_id = :userId
+            AND (
+              (
+                s.annotation_type = 'bookmark'
+                AND EXISTS (
+                  SELECT 1
+                    FROM user_bookmarks b
+                   WHERE b.bookmark_id = s.annotation_id
+                     AND b.book_id = :bookId
+                )
+              )
+              OR (
+                s.annotation_type = 'note'
+                AND EXISTS (
+                  SELECT 1
+                    FROM user_notes n
+                   WHERE n.note_id = s.annotation_id
+                     AND n.book_id = :bookId
+                )
+              )
+            )`,
+        { bookId, userId }
+      );
+
       const result = await connection.execute(
         `DELETE FROM book_shares
           WHERE book_id = :bookId
@@ -332,6 +358,32 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
                 FROM user_book_ai_requests ar
                WHERE ar.request_id = ars.request_id
                  AND ar.book_id = :bookId
+            )`,
+        { bookId, userId: request.currentUser!.userId }
+      );
+
+      await connection.execute(
+        `DELETE FROM annotation_shares s
+          WHERE s.user_id = :userId
+            AND (
+              (
+                s.annotation_type = 'bookmark'
+                AND EXISTS (
+                  SELECT 1
+                    FROM user_bookmarks b
+                   WHERE b.bookmark_id = s.annotation_id
+                     AND b.book_id = :bookId
+                )
+              )
+              OR (
+                s.annotation_type = 'note'
+                AND EXISTS (
+                  SELECT 1
+                    FROM user_notes n
+                   WHERE n.note_id = s.annotation_id
+                     AND n.book_id = :bookId
+                )
+              )
             )`,
         { bookId, userId: request.currentUser!.userId }
       );
