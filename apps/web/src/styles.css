@@ -1338,6 +1338,10 @@ textarea {
   box-shadow: 0 26px 56px rgba(70, 44, 20, 0.14);
 }
 
+.shelf-book-card[data-download-menu-open="true"] {
+  z-index: 10;
+}
+
 .shelf-book-card[data-removing] {
   pointer-events: none;
 }

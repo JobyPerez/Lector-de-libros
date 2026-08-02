@@ -606,7 +606,13 @@ export function ShelfPage() {
             const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
 
             return (
-            <article aria-busy={isBookRemoving} className="book-card shelf-book-card" data-removing={removalState} key={book.bookId}>
+            <article
+              aria-busy={isBookRemoving}
+              className="book-card shelf-book-card"
+              data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
+              data-removing={removalState}
+              key={book.bookId}
+            >
               <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
                 <div className="shelf-book-cover-shell">
                   <ShelfBookCover accessToken={accessToken} book={book} />
