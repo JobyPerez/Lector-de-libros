@@ -8,6 +8,110 @@ import { requireBookRole } from "../../services/book-access.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutlineWithSource } from "../books/book-outline.js";
 
+type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
+
+type ParagraphReadingMetricRow = {
+  characterCount: number;
+  pageNumber: number;
+  sequenceNumber: number;
+  wordCount: number;
+};
+
+async function buildReaderReadingMetrics(
+  connection: DatabaseConnection,
+  bookId: string,
+  outline: Awaited<ReturnType<typeof resolveBookOutlineWithSource>>["outline"]
+) {
+  const result = await connection.execute(
+    `
+      SELECT
+        page_number AS "pageNumber",
+        sequence_number AS "sequenceNumber",
+        word_count AS "wordCount",
+        tts_character_count AS "characterCount"
+      FROM book_paragraphs
+      WHERE book_id = :bookId
+      ORDER BY sequence_number ASC
+    `,
+    { bookId }
+  );
+  const paragraphMetrics = (result.rows ?? []) as ParagraphReadingMetricRow[];
+  const totalsBeforeSequence = new Map<number, { characterCount: number; wordCount: number }>();
+  let characterCount = 0;
+  let wordCount = 0;
+
+  for (const paragraph of paragraphMetrics) {
+    totalsBeforeSequence.set(paragraph.sequenceNumber, { characterCount, wordCount });
+    characterCount += Number(paragraph.characterCount ?? 0);
+    wordCount += Number(paragraph.wordCount ?? 0);
+  }
+
+  const bookMetrics = { characterCount, wordCount };
+  const sequenceAfterBook = (paragraphMetrics.at(-1)?.sequenceNumber ?? 0) + 1;
+  totalsBeforeSequence.set(sequenceAfterBook, bookMetrics);
+  const getTotalsBeforeSequence = (sequenceNumber: number) => {
+    const exactTotals = totalsBeforeSequence.get(sequenceNumber);
+    if (exactTotals) {
+      return exactTotals;
+    }
+
+    const nextParagraph = paragraphMetrics.find((paragraph) => paragraph.sequenceNumber > sequenceNumber);
+    return nextParagraph
+      ? totalsBeforeSequence.get(nextParagraph.sequenceNumber) ?? { characterCount: 0, wordCount: 0 }
+      : bookMetrics;
+  };
+  const getParagraphAtOrAfterSequence = (sequenceNumber: number) => (
+    paragraphMetrics.find((paragraph) => paragraph.sequenceNumber >= sequenceNumber) ?? null
+  );
+  const getParagraphBeforeSequence = (sequenceNumber: number) => {
+    for (let index = paragraphMetrics.length - 1; index >= 0; index -= 1) {
+      const paragraph = paragraphMetrics[index];
+      if (paragraph && paragraph.sequenceNumber < sequenceNumber) {
+        return paragraph;
+      }
+    }
+
+    return null;
+  };
+  const sections = outline.map((entry, entryIndex) => {
+    const nextSiblingOrParent = outline
+      .slice(entryIndex + 1)
+      .find((candidate) => candidate.level <= entry.level);
+    const endSequenceNumber = nextSiblingOrParent?.sequenceNumber ?? sequenceAfterBook;
+    const beforeSection = getTotalsBeforeSequence(entry.sequenceNumber);
+    const beforeEnd = getTotalsBeforeSequence(endSequenceNumber);
+    const startParagraphCandidate = getParagraphAtOrAfterSequence(entry.sequenceNumber);
+    const startParagraph = startParagraphCandidate && startParagraphCandidate.sequenceNumber < endSequenceNumber
+      ? startParagraphCandidate
+      : null;
+    const endParagraph = getParagraphBeforeSequence(endSequenceNumber);
+    const sectionEndParagraph = endParagraph && endParagraph.sequenceNumber >= entry.sequenceNumber
+      ? endParagraph
+      : startParagraph;
+    const nextStartParagraph = nextSiblingOrParent
+      ? getParagraphAtOrAfterSequence(nextSiblingOrParent.sequenceNumber)
+      : null;
+
+    return {
+      chapterId: entry.chapterId,
+      characterCount: Math.max(0, beforeEnd.characterCount - beforeSection.characterCount),
+      charactersBeforeSection: beforeSection.characterCount,
+      endPageNumber: sectionEndParagraph?.pageNumber ?? entry.pageNumber,
+      endSequenceNumber,
+      nextStartPageNumber: nextStartParagraph?.pageNumber ?? nextSiblingOrParent?.pageNumber ?? null,
+      startPageNumber: startParagraph?.pageNumber ?? entry.pageNumber,
+      startSequenceNumber: entry.sequenceNumber,
+      wordCount: Math.max(0, beforeEnd.wordCount - beforeSection.wordCount),
+      wordsBeforeSection: beforeSection.wordCount
+    };
+  });
+
+  return {
+    book: bookMetrics,
+    sections
+  };
+}
+
 const highlightColors = ["YELLOW", "GREEN", "BLUE", "PINK"] as const;
 
 const bookParamsSchema = z.object({
@@ -793,11 +897,13 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         listNotesShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
         resolveBookOutlineWithSource(connection, params.bookId)
       ]);
+      const readingMetrics = await buildReaderReadingMetrics(connection, params.bookId, resolvedOutline.outline);
 
       return reply.send({
         bookmarks,
         highlights,
         notes,
+        readingMetrics,
         toc: resolvedOutline.outline,
         tocSource: resolvedOutline.source
       });

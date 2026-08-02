@@ -12,6 +12,7 @@ import { z } from "zod";
 import { getConnection } from "../../config/database.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
+import { normalizeTextForDeepgram } from "../../services/paragraph-metrics.js";
 import { getUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutline } from "../books/book-outline.js";
@@ -94,10 +95,6 @@ function computeChecksum(buffer: Buffer): string {
 
 function computeTextChecksum(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function normalizeTextForDeepgram(text: string) {
-  return text.trim();
 }
 
 function getParagraphTextChecksum(paragraphText: string) {

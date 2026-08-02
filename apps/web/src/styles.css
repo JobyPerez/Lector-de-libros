@@ -2414,12 +2414,35 @@ textarea {
 }
 
 .reader-audio-reading-time-card dt {
+  display: flex;
+  align-items: center;
+  gap: 0.42rem;
   min-width: 0;
   overflow: hidden;
   color: #5f675f;
   font-size: 0.84rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reader-audio-reading-time-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reader-audio-reading-time-pages {
+  flex: 0 0 auto;
+  padding: 0.12rem 0.42rem;
+  border: 1px solid rgba(42, 87, 66, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 252, 242, 0.72);
+  color: var(--forest-700);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
 }
 
 .reader-audio-reading-time-card dd {
@@ -3203,7 +3226,7 @@ textarea {
 
 .reader-page-jump-label {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: center;
   gap: 0.12rem;
   white-space: nowrap;
@@ -3228,6 +3251,11 @@ textarea {
   outline: none;
 }
 
+.reader-page-jump-input:focus-visible {
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px rgba(42, 87, 66, 0.2);
+}
+
 .reader-floating-status strong {
   font-family: "Constantia", "Georgia", serif;
   font-size: 0.98rem;
@@ -3235,7 +3263,32 @@ textarea {
   color: var(--forest-900);
 }
 
-.reader-floating-status span:last-child {
+.reader-next-chapter-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.16rem;
+  margin-inline: 0.12rem;
+  color: #a35e20;
+  font-family: "Constantia", "Georgia", serif;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.reader-next-chapter-page > span {
+  font-size: 0.92rem;
+  transform: translateY(-0.02rem);
+}
+
+.reader-next-chapter-page > strong {
+  color: #8b4d17;
+  font-size: 0.9rem;
+}
+
+.reader-total-page-count {
+  margin-left: 0.04rem;
+}
+
+.reader-reading-percentage {
   font-size: 0.82rem;
   color: #5d665d;
 }

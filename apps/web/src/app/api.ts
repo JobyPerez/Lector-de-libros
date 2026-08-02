@@ -334,10 +334,12 @@ type ImageOcrRequestOptions = {
 };
 
 export type ParagraphContent = {
+  characterCount: number;
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
   sequenceNumber: number;
+  wordCount: number;
 };
 
 export type BookSearchResult = {
@@ -539,6 +541,24 @@ export type ReaderNavigationSummary = {
   bookmarks: ReaderBookmark[];
   highlights: ReaderHighlight[];
   notes: ReaderNote[];
+  readingMetrics: {
+    book: {
+      characterCount: number;
+      wordCount: number;
+    };
+    sections: Array<{
+      chapterId: string;
+      characterCount: number;
+      charactersBeforeSection: number;
+      endPageNumber: number;
+      endSequenceNumber: number;
+      nextStartPageNumber: number | null;
+      startPageNumber: number;
+      startSequenceNumber: number;
+      wordCount: number;
+      wordsBeforeSection: number;
+    }>;
+  };
   toc: ReaderTocEntry[];
   tocSource: BookOutlineSource;
 };
@@ -625,6 +645,10 @@ export type BookPageResponse = {
     pageType?: string;
     paragraphs: ParagraphContent[];
     rawText: string | null;
+    readingOffset: {
+      charactersBeforePage: number;
+      wordsBeforePage: number;
+    };
     sourceImageRotation: ImageRotation;
     sourceFileId: string | null;
     updatedAt: string;

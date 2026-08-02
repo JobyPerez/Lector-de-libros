@@ -20,13 +20,17 @@ type AudioVoiceOption = {
 export type ReaderAudioReadingTimeStats = {
   bookRemainingCostLabel: string | null;
   bookRemainingLabel: string;
+  bookRemainingPageCount: number;
   bookTotalCostLabel: string | null;
   bookTotalLabel: string;
+  bookTotalPageCount: number;
   chapterRemainingCostLabel: string | null;
   chapterRemainingLabel: string | null;
+  chapterRemainingPageCount: number | null;
   chapterTitle: string | null;
   chapterTotalCostLabel: string | null;
   chapterTotalLabel: string | null;
+  chapterTotalPageCount: number | null;
 };
 
 type ReaderHighlightColor = "YELLOW" | "GREEN" | "BLUE" | "PINK";
@@ -108,6 +112,19 @@ type NavigationTocCardProps = {
 
 function formatReadingTimeValue(timeLabel: string, costLabel: string | null) {
   return costLabel ? `${timeLabel} / ${costLabel}` : timeLabel;
+}
+
+function formatPageCount(pageCount: number) {
+  return `${pageCount} ${pageCount === 1 ? "pág." : "págs."}`;
+}
+
+function ReadingTimeLabel({ label, pageCount }: { label: string; pageCount: number }) {
+  return (
+    <dt title={label}>
+      <span className="reader-audio-reading-time-label">{label}</span>
+      <span className="reader-audio-reading-time-pages">{formatPageCount(pageCount)}</span>
+    </dt>
+  );
 }
 
 export type ReaderNavigationListItem =
@@ -524,21 +541,22 @@ export function ReaderAudioSettingsContent({
           </div>
           <dl>
             <div>
-              <dt>Libro</dt>
+              <ReadingTimeLabel label="Libro" pageCount={readingTimeStats.bookTotalPageCount} />
               <dd>{formatReadingTimeValue(readingTimeStats.bookTotalLabel, readingTimeStats.bookTotalCostLabel)}</dd>
             </div>
             <div>
-              <dt>Te queda</dt>
+              <ReadingTimeLabel label="Te queda" pageCount={readingTimeStats.bookRemainingPageCount} />
               <dd>{formatReadingTimeValue(readingTimeStats.bookRemainingLabel, readingTimeStats.bookRemainingCostLabel)}</dd>
             </div>
-            {readingTimeStats.chapterTotalLabel && readingTimeStats.chapterRemainingLabel ? (
+            {readingTimeStats.chapterTotalLabel && readingTimeStats.chapterRemainingLabel
+              && readingTimeStats.chapterTotalPageCount !== null && readingTimeStats.chapterRemainingPageCount !== null ? (
               <>
                 <div>
-                  <dt>{readingTimeStats.chapterTitle ?? "Capítulo"}</dt>
+                  <ReadingTimeLabel label={readingTimeStats.chapterTitle ?? "Capítulo"} pageCount={readingTimeStats.chapterTotalPageCount} />
                   <dd>{formatReadingTimeValue(readingTimeStats.chapterTotalLabel, readingTimeStats.chapterTotalCostLabel)}</dd>
                 </div>
                 <div>
-                  <dt>Te queda del capítulo</dt>
+                  <ReadingTimeLabel label="Te queda del capítulo" pageCount={readingTimeStats.chapterRemainingPageCount} />
                   <dd>{formatReadingTimeValue(readingTimeStats.chapterRemainingLabel, readingTimeStats.chapterRemainingCostLabel)}</dd>
                 </div>
               </>

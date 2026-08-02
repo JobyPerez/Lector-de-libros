@@ -11,6 +11,7 @@ import { summaryAiModelIdSchema } from "../../config/ai-models.js";
 import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
+import { calculateParagraphReadingMetrics } from "../../services/paragraph-metrics.js";
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
@@ -389,10 +390,12 @@ type StoredPageHighlightRecord = {
 };
 
 type ReplacementParagraphRecord = {
+  characterCount: number;
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
   sequenceNumber: number;
+  wordCount: number;
 };
 
 type ResolvedReplacementParagraphSource = {
@@ -2793,12 +2796,17 @@ async function replaceBookPageParagraphs(
 
   const currentParagraphCount = existingParagraphs.length;
   const previousParagraphCount = Number(((previousCountResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
-  const replacementParagraphs = options.paragraphs.map((paragraphText, paragraphIndex) => ({
-    paragraphId: randomUUID(),
-    paragraphNumber: paragraphIndex + 1,
-    paragraphText,
-    sequenceNumber: previousParagraphCount + paragraphIndex + 1
-  })) satisfies ReplacementParagraphRecord[];
+  const replacementParagraphs = options.paragraphs.map((paragraphText, paragraphIndex) => {
+    const metrics = calculateParagraphReadingMetrics(paragraphText);
+    return {
+      characterCount: metrics.characterCount,
+      paragraphId: randomUUID(),
+      paragraphNumber: paragraphIndex + 1,
+      paragraphText,
+      sequenceNumber: previousParagraphCount + paragraphIndex + 1,
+      wordCount: metrics.wordCount
+    };
+  }) satisfies ReplacementParagraphRecord[];
   const paragraphMatches = matchReplacementParagraphs(existingParagraphs, replacementParagraphs);
   for (const [existingParagraphId, replacementParagraph] of paragraphMatches) {
     replacementParagraph.paragraphId = existingParagraphId;
@@ -2844,7 +2852,9 @@ async function replaceBookPageParagraphs(
           page_number,
           paragraph_number,
           sequence_number,
-          paragraph_text
+          paragraph_text,
+          word_count,
+          tts_character_count
         ) VALUES (
           :paragraphId,
           :bookId,
@@ -2852,17 +2862,21 @@ async function replaceBookPageParagraphs(
           :pageNumber,
           :paragraphNumber,
           :sequenceNumber,
-          :paragraphText
+          :paragraphText,
+          :wordCount,
+          :characterCount
         )
       `,
       {
         bookId: options.bookId,
+        characterCount: replacementParagraph.characterCount,
         pageId: options.page.pageId,
         pageNumber: options.pageNumber,
         paragraphId: replacementParagraph.paragraphId,
         paragraphNumber: replacementParagraph.paragraphNumber,
         paragraphText: replacementParagraph.paragraphText,
-        sequenceNumber: replacementParagraph.sequenceNumber
+        sequenceNumber: replacementParagraph.sequenceNumber,
+        wordCount: replacementParagraph.wordCount
       }
     );
   }
@@ -3072,6 +3086,7 @@ async function insertProcessedImagePages(
     );
 
     for (const [paragraphIndex, paragraphText] of processedPage.paragraphs.entries()) {
+      const metrics = calculateParagraphReadingMetrics(paragraphText);
       await connection.execute(
         `
           INSERT INTO book_paragraphs (
@@ -3081,7 +3096,9 @@ async function insertProcessedImagePages(
             page_number,
             paragraph_number,
             sequence_number,
-            paragraph_text
+            paragraph_text,
+            word_count,
+            tts_character_count
           ) VALUES (
             :paragraphId,
             :bookId,
@@ -3089,17 +3106,21 @@ async function insertProcessedImagePages(
             :pageNumber,
             :paragraphNumber,
             :sequenceNumber,
-            :paragraphText
+            :paragraphText,
+            :wordCount,
+            :characterCount
           )
         `,
         {
           bookId,
+          characterCount: metrics.characterCount,
           pageId,
           pageNumber,
           paragraphId: randomUUID(),
           paragraphNumber: paragraphIndex + 1,
           paragraphText,
-          sequenceNumber
+          sequenceNumber,
+          wordCount: metrics.wordCount
         }
       );
 
@@ -3736,6 +3757,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         );
 
         for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
+          const metrics = calculateParagraphReadingMetrics(paragraphText);
           await connection.execute(
             `
               INSERT INTO book_paragraphs (
@@ -3745,7 +3767,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 page_number,
                 paragraph_number,
                 sequence_number,
-                paragraph_text
+                paragraph_text,
+                word_count,
+                tts_character_count
               ) VALUES (
                 :paragraphId,
                 :bookId,
@@ -3753,17 +3777,21 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 :pageNumber,
                 :paragraphNumber,
                 :sequenceNumber,
-                :paragraphText
+                :paragraphText,
+                :wordCount,
+                :characterCount
               )
             `,
             {
               bookId,
+              characterCount: metrics.characterCount,
               pageId,
               pageNumber: page.pageNumber,
               paragraphId: randomUUID(),
               paragraphNumber: paragraphIndex + 1,
               paragraphText,
-              sequenceNumber
+              sequenceNumber,
+              wordCount: metrics.wordCount
             }
           );
 
@@ -4509,7 +4537,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             paragraph_id AS "paragraphId",
             paragraph_number AS "paragraphNumber",
             sequence_number AS "sequenceNumber",
-            paragraph_text AS "paragraphText"
+            paragraph_text AS "paragraphText",
+            word_count AS "wordCount",
+            tts_character_count AS "characterCount"
           FROM book_paragraphs
           WHERE book_id = :bookId
             AND page_number = :pageNumber
@@ -4522,6 +4552,24 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       );
 
       const paragraphs = (pageResult.rows ?? []) as Array<Record<string, unknown>>;
+      const readingOffsetResult = await connection.execute(
+        `
+          SELECT
+            NVL(SUM(word_count), 0) AS "wordsBeforePage",
+            NVL(SUM(tts_character_count), 0) AS "charactersBeforePage"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND page_number < :pageNumber
+        `,
+        {
+          bookId: params.bookId,
+          pageNumber: params.pageNumber
+        }
+      );
+      const [readingOffset = { charactersBeforePage: 0, wordsBeforePage: 0 }] = (readingOffsetResult.rows ?? []) as Array<{
+        charactersBeforePage: number;
+        wordsBeforePage: number;
+      }>;
 
       return reply.send({
         book,
@@ -4535,6 +4583,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           pageLabel: pageRecord.pageLabel,
           pageType: pageRecord.pageType,
           pageNumber: params.pageNumber,
+          readingOffset,
           sourceFileId: pageRecord.sourceFileId,
           sourceImageRotation: pageRecord.sourceImageRotation,
           updatedAt: pageRecord.updatedAt,

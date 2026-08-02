@@ -83,8 +83,6 @@ const READER_SCREEN_LOCK_HOLD_SECONDS = READER_SCREEN_LOCK_HOLD_MS / 1000;
 const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toFixed(0);
 const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
 const ESTIMATED_WORDS_PER_MINUTE = 155;
-const FALLBACK_WORDS_PER_PARAGRAPH = 70;
-const FALLBACK_CHARACTERS_PER_PARAGRAPH = 420;
 const DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS = 0.03;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
@@ -363,10 +361,6 @@ function formatEstimatedUsdCost(amount: number) {
   return USD_ESTIMATED_COST_FORMATTER.format(Math.max(0, amount));
 }
 
-function countWords(value: string) {
-  return value.trim().split(/\s+/u).filter(Boolean).length;
-}
-
 function formatEstimatedReadingTime(totalMinutes: number) {
   if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
     return "menos de 1 min";
@@ -387,25 +381,17 @@ function formatEstimatedReadingTime(totalMinutes: number) {
   return `${hours} h ${minutes} min`;
 }
 
-function estimateReadingMinutes(paragraphCount: number, wordsPerParagraph: number, playbackRate: number) {
-  const safeParagraphCount = Math.max(0, paragraphCount);
-  const safeWordsPerParagraph = Number.isFinite(wordsPerParagraph) && wordsPerParagraph > 0
-    ? wordsPerParagraph
-    : FALLBACK_WORDS_PER_PARAGRAPH;
+function estimateReadingMinutes(wordCount: number, playbackRate: number) {
+  const safeWordCount = Math.max(0, wordCount);
   const safePlaybackRate = Number.isFinite(playbackRate) && playbackRate > 0
     ? playbackRate
     : DEFAULT_PLAYBACK_RATE;
 
-  return (safeParagraphCount * safeWordsPerParagraph) / ESTIMATED_WORDS_PER_MINUTE / safePlaybackRate;
+  return safeWordCount / ESTIMATED_WORDS_PER_MINUTE / safePlaybackRate;
 }
 
-function estimateDeepgramTtsCostUsd(paragraphCount: number, charactersPerParagraph: number) {
-  const safeParagraphCount = Math.max(0, paragraphCount);
-  const safeCharactersPerParagraph = Number.isFinite(charactersPerParagraph) && charactersPerParagraph > 0
-    ? charactersPerParagraph
-    : FALLBACK_CHARACTERS_PER_PARAGRAPH;
-
-  return (safeParagraphCount * safeCharactersPerParagraph / 1000) * DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS;
+function estimateDeepgramTtsCostUsd(characterCount: number) {
+  return (Math.max(0, characterCount) / 1000) * DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS;
 }
 
 function sanitizeDownloadFileName(value: string) {
@@ -2136,73 +2122,85 @@ export function ReaderPage() {
   const activeChapterTitle = activeTocEntry?.title ?? null;
   const activeOfflineChapterId = activeTocEntry?.chapterId ?? null;
   const activeOfflineChapterTitle = activeTocEntry?.title ?? null;
-  const readingTimeStats = useMemo<ReaderAudioReadingTimeStats | null>(() => {
-    if (!currentParagraph || totalParagraphs <= 0) {
+  const activeReadingSection = useMemo(() => {
+    if (!activeTocEntry || activeTocEntry.sequenceNumber === null) {
       return null;
     }
 
-    const currentPageWordCount = currentParagraphs.reduce((total, paragraph) => total + countWords(paragraph.paragraphText), 0);
-    const wordsPerParagraph = currentParagraphs.length > 0
-      ? currentPageWordCount / currentParagraphs.length
-      : FALLBACK_WORDS_PER_PARAGRAPH;
-    const currentPageCharacterCount = currentParagraphs.reduce((total, paragraph) => total + paragraph.paragraphText.trim().length, 0);
-    const charactersPerParagraph = currentParagraphs.length > 0
-      ? currentPageCharacterCount / currentParagraphs.length
-      : FALLBACK_CHARACTERS_PER_PARAGRAPH;
+    return navigationQuery.data?.readingMetrics.sections.find((section) => (
+      activeTocEntry.chapterId
+        ? section.chapterId === activeTocEntry.chapterId
+        : section.startSequenceNumber === activeTocEntry.sequenceNumber
+    )) ?? null;
+  }, [activeTocEntry, navigationQuery.data?.readingMetrics.sections]);
+  const nextChapterPageNumber = activeTocEntry
+    ? activeReadingSection?.nextStartPageNumber ?? null
+    : navigationQuery.data?.toc[0]?.pageNumber ?? null;
+  const readingTimeStats = useMemo<ReaderAudioReadingTimeStats | null>(() => {
+    const readingMetrics = navigationQuery.data?.readingMetrics;
+    const readingOffset = pageQuery.data?.page.readingOffset;
+    if (!readingMetrics || !readingOffset) {
+      return null;
+    }
+
+    const precedingPageParagraphs = currentParagraphIndex > 0
+      ? currentParagraphs.slice(0, currentParagraphIndex)
+      : [];
+    const wordsBeforeCurrent = readingOffset.wordsBeforePage
+      + precedingPageParagraphs.reduce((total, paragraph) => total + paragraph.wordCount, 0);
+    const charactersBeforeCurrent = readingOffset.charactersBeforePage
+      + precedingPageParagraphs.reduce((total, paragraph) => total + paragraph.characterCount, 0);
+    const bookRemainingWords = Math.max(0, readingMetrics.book.wordCount - wordsBeforeCurrent);
+    const bookRemainingCharacters = Math.max(0, readingMetrics.book.characterCount - charactersBeforeCurrent);
     const shouldShowCost = selectedTtsEngine === "deepgram";
-    const bookRemainingParagraphs = Math.max(0, totalParagraphs - currentParagraph.sequenceNumber + 1);
     const stats: ReaderAudioReadingTimeStats = {
       bookRemainingCostLabel: shouldShowCost
-        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(bookRemainingParagraphs, charactersPerParagraph))
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(bookRemainingCharacters))
         : null,
-      bookRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(bookRemainingParagraphs, wordsPerParagraph, playbackRate)),
+      bookRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(bookRemainingWords, playbackRate)),
+      bookRemainingPageCount: Math.max(0, totalPages - currentPageNumber + 1),
       bookTotalCostLabel: shouldShowCost
-        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(totalParagraphs, charactersPerParagraph))
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(readingMetrics.book.characterCount))
         : null,
-      bookTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(totalParagraphs, wordsPerParagraph, playbackRate)),
+      bookTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(readingMetrics.book.wordCount, playbackRate)),
+      bookTotalPageCount: totalPages,
       chapterRemainingCostLabel: null,
       chapterRemainingLabel: null,
+      chapterRemainingPageCount: null,
       chapterTitle: null,
       chapterTotalCostLabel: null,
-      chapterTotalLabel: null
+      chapterTotalLabel: null,
+      chapterTotalPageCount: null
     };
 
-    if (!activeTocEntry || activeTocEntry.sequenceNumber === null) {
+    if (!activeTocEntry || !activeReadingSection) {
       return stats;
     }
 
-    const tocEntries = navigationQuery.data?.toc ?? [];
-    const activeEntryIndex = tocEntries.findIndex((entry) => tocEntryKey(entry) === tocEntryKey(activeTocEntry));
-    const nextSiblingOrParentEntry = activeEntryIndex >= 0
-      ? tocEntries.slice(activeEntryIndex + 1).find((entry) => entry.level <= activeTocEntry.level) ?? null
-      : null;
-    const chapterStartSequence = activeTocEntry.sequenceNumber;
-    const chapterEndExclusiveSequence = nextSiblingOrParentEntry?.sequenceNumber ?? totalParagraphs + 1;
-    const chapterParagraphs = Math.max(0, chapterEndExclusiveSequence - chapterStartSequence);
-
-    if (chapterParagraphs <= 0) {
-      return stats;
-    }
-
-    const currentSequenceInChapter = Math.min(
-      Math.max(currentParagraph.sequenceNumber, chapterStartSequence),
-      chapterEndExclusiveSequence
+    const chapterConsumedWords = Math.max(0, wordsBeforeCurrent - activeReadingSection.wordsBeforeSection);
+    const chapterConsumedCharacters = Math.max(0, charactersBeforeCurrent - activeReadingSection.charactersBeforeSection);
+    const chapterRemainingWords = Math.max(0, activeReadingSection.wordCount - chapterConsumedWords);
+    const chapterRemainingCharacters = Math.max(0, activeReadingSection.characterCount - chapterConsumedCharacters);
+    const currentChapterPage = Math.min(
+      Math.max(currentPageNumber, activeReadingSection.startPageNumber),
+      activeReadingSection.endPageNumber
     );
-    const chapterRemainingParagraphs = Math.max(0, chapterEndExclusiveSequence - currentSequenceInChapter);
 
     return {
       ...stats,
       chapterRemainingCostLabel: shouldShowCost
-        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(chapterRemainingParagraphs, charactersPerParagraph))
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(chapterRemainingCharacters))
         : null,
-      chapterRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterRemainingParagraphs, wordsPerParagraph, playbackRate)),
+      chapterRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterRemainingWords, playbackRate)),
+      chapterRemainingPageCount: Math.max(0, activeReadingSection.endPageNumber - currentChapterPage + 1),
       chapterTitle: activeTocEntry.title,
       chapterTotalCostLabel: shouldShowCost
-        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(chapterParagraphs, charactersPerParagraph))
+        ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(activeReadingSection.characterCount))
         : null,
-      chapterTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterParagraphs, wordsPerParagraph, playbackRate))
+      chapterTotalLabel: formatEstimatedReadingTime(estimateReadingMinutes(activeReadingSection.wordCount, playbackRate)),
+      chapterTotalPageCount: Math.max(0, activeReadingSection.endPageNumber - activeReadingSection.startPageNumber + 1)
     };
-  }, [activeTocEntry, currentParagraph, currentParagraphs, navigationQuery.data?.toc, playbackRate, selectedTtsEngine, totalParagraphs]);
+  }, [activeReadingSection, activeTocEntry, currentPageNumber, currentParagraphIndex, currentParagraphs, navigationQuery.data?.readingMetrics, pageQuery.data?.page.readingOffset, playbackRate, selectedTtsEngine, totalPages]);
 
   useEffect(() => {
     let isMounted = true;
@@ -5169,10 +5167,23 @@ export function ReaderPage() {
                 type="text"
                 value={isPageJumpActive ? pageJumpValue : String(currentPageNumber)}
               />
-              <strong>/ {totalPages}</strong>
+              {nextChapterPageNumber !== null ? (
+                <span
+                  aria-label={`Siguiente capítulo en la página ${nextChapterPageNumber}`}
+                  className="reader-next-chapter-page"
+                  role="img"
+                  title={`Siguiente capítulo · página ${nextChapterPageNumber}`}
+                >
+                  <span aria-hidden="true">→</span>
+                  <strong aria-hidden="true">{nextChapterPageNumber}</strong>
+                </span>
+              ) : null}
+              <strong aria-label={`Total del libro: ${totalPages} páginas`} className="reader-total-page-count">
+                <span aria-hidden="true">/ {totalPages}</span>
+              </strong>
             </label>
           </form>
-          <span>{readingPercentage.toFixed(1)}%</span>
+          <span className="reader-reading-percentage">{readingPercentage.toFixed(1)}%</span>
         </div>
         {bookmarkToast ? (
           <div className="reader-toast" role="status">

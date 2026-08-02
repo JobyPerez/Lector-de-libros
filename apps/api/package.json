@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "backfill:ai-credentials": "tsx src/scripts/backfill-ai-credentials.ts",
+    "backfill:paragraph-reading-metrics": "tsx src/scripts/backfill-paragraph-reading-metrics.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
