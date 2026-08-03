@@ -71,6 +71,14 @@ function CloseIcon() {
   );
 }
 
+function CheckIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M5.5 12.5L10 17L18.5 7.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
 function ChevronIcon() {
   return (
     <ToolbarIcon>
@@ -122,6 +130,17 @@ function CropIcon() {
     <ToolbarIcon>
       <path d="M7 4.75V15.5C7 16.7426 8.00736 17.75 9.25 17.75H20" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M17 19.25V8.5C17 7.25736 15.9926 6.25 14.75 6.25H4" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </ToolbarIcon>
+  );
+}
+
+function ResetIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M18.7 9.3C17.65 6.64 15.04 4.75 12 4.75C7.99694 4.75 4.75 7.99694 4.75 12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M19.25 5.5V9.5H15.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M5.3 14.7C6.35 17.36 8.96 19.25 12 19.25C16.0031 19.25 19.25 16.0031 19.25 12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M4.75 18.5V14.5H8.75" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ToolbarIcon>
   );
 }
@@ -3434,6 +3453,7 @@ export function BookBuilderPage() {
                   {hasReviewImage ? (
                     <div aria-label="Controles de imagen" className="review-image-rotation-controls" role="toolbar">
                       <button
+                        aria-label="Girar 90° a la izquierda"
                         className="review-image-rotation-button"
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         onClick={() => rotateReviewImage(-1)}
@@ -3443,6 +3463,7 @@ export function BookBuilderPage() {
                         <RotateLeftIcon />
                       </button>
                       <button
+                        aria-label="Girar 90° a la derecha"
                         className="review-image-rotation-button"
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         onClick={() => rotateReviewImage(1)}
@@ -3452,7 +3473,8 @@ export function BookBuilderPage() {
                         <RotateRightIcon />
                       </button>
                       <button
-                        className={isReviewCropMode ? "review-image-mode-button active" : "review-image-mode-button"}
+                        aria-label={isReviewCropMode ? "Cancelar recorte" : "Recortar"}
+                        className={isReviewCropMode ? "review-image-rotation-button active" : "review-image-rotation-button"}
                         disabled={isSavingReview || !reviewBookId}
                         onClick={() => {
                           if (isReviewCropMode) {
@@ -3462,19 +3484,45 @@ export function BookBuilderPage() {
 
                           beginReviewCropMode();
                         }}
+                        title={isReviewCropMode ? "Cancelar recorte" : "Recortar"}
                         type="button"
                       >
                         <CropIcon />
-                        <span>{isReviewCropMode ? "Cancelar recorte" : "Recortar"}</span>
                       </button>
                       <button
-                        className="secondary-button review-image-reset-button"
+                        aria-label="Restablecer ajustes de la imagen"
+                        className="review-image-rotation-button"
                         disabled={isSavingReview || (!hasPendingReviewImageEdits && !isReviewCropMode)}
                         onClick={resetReviewImageAdjustments}
+                        title="Restablecer"
                         type="button"
                       >
-                        Restablecer
+                        <ResetIcon />
                       </button>
+                      {isReviewCropMode ? (
+                        <>
+                          <button
+                            aria-label="Cancelar recorte"
+                            className="review-crop-action-button"
+                            disabled={isSavingReview}
+                            onClick={cancelReviewCropMode}
+                            title="Cancelar recorte"
+                            type="button"
+                          >
+                            <CloseIcon />
+                          </button>
+                          <button
+                            aria-label="Aplicar recorte"
+                            className="review-crop-action-button review-crop-action-button-primary"
+                            disabled={isSavingReview}
+                            onClick={applyReviewCropDraft}
+                            title="Aplicar recorte"
+                            type="button"
+                          >
+                            <CheckIcon />
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>
@@ -3506,15 +3554,6 @@ export function BookBuilderPage() {
                             <button aria-label="Ajustar esquina inferior izquierda" className="review-crop-handle review-crop-handle-sw" onPointerDown={(event) => startReviewCropDrag("sw", event)} type="button" />
                           </div>
                         </div>
-                      </div>
-
-                      <div className="review-crop-actions">
-                        <button className="secondary-button" disabled={isSavingReview} onClick={cancelReviewCropMode} type="button">
-                          Cancelar
-                        </button>
-                        <button className="primary-button" disabled={isSavingReview} onClick={applyReviewCropDraft} type="button">
-                          Aplicar recorte
-                        </button>
                       </div>
                     </div>
                   ) : (

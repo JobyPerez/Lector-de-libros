@@ -1742,9 +1742,12 @@ textarea {
   grid-template-columns: 1fr;
 }
 
-.reader-split-expanded,
-.builder-review-grid {
+.reader-split-expanded {
   grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+}
+
+.builder-review-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr);
 }
 
 .builder-review-grid-single {
@@ -5417,39 +5420,14 @@ textarea {
   justify-content: flex-end;
 }
 
-.review-image-mode-button {
-  min-height: 2.8rem;
-  padding: 0.55rem 0.9rem;
-  border: 1px solid rgba(31, 43, 35, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 249, 240, 0.94);
-  color: var(--forest-700);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
-  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
-}
+@media (min-width: 861px) {
+  .review-image-rotation-controls {
+    flex-wrap: nowrap;
+  }
 
-.review-image-mode-button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  background: rgba(42, 87, 66, 0.12);
-  box-shadow: 0 10px 22px rgba(52, 32, 16, 0.08);
-}
-
-.review-image-mode-button.active {
-  background: rgba(42, 87, 66, 0.16);
-  border-color: rgba(42, 87, 66, 0.28);
-}
-
-.review-image-mode-button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.review-image-mode-button svg {
-  width: 1.15rem;
-  height: 1.15rem;
+  .source-panel-header {
+    gap: 0.75rem;
+  }
 }
 
 .review-image-rotation-button {
@@ -5473,6 +5451,11 @@ textarea {
   box-shadow: 0 10px 22px rgba(52, 32, 16, 0.08);
 }
 
+.review-image-rotation-button.active {
+  background: rgba(42, 87, 66, 0.16);
+  border-color: rgba(42, 87, 66, 0.28);
+}
+
 .review-image-rotation-button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
@@ -5492,10 +5475,6 @@ textarea {
   background: #f0e6d3;
   transform-origin: center center;
   transition: transform 180ms ease;
-}
-
-.review-image-reset-button {
-  min-width: 8.5rem;
 }
 
 .review-crop-workspace {
@@ -5614,10 +5593,46 @@ textarea {
   cursor: nesw-resize;
 }
 
-.review-crop-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.75rem;
+.review-crop-action-button {
+  width: 2.8rem;
+  min-width: 2.8rem;
+  min-height: 2.8rem;
+  padding: 0;
+  border: 1px solid rgba(31, 43, 35, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 249, 240, 0.94);
+  color: var(--forest-700);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.review-crop-action-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: rgba(42, 87, 66, 0.12);
+  box-shadow: 0 10px 22px rgba(52, 32, 16, 0.08);
+}
+
+.review-crop-action-button-primary,
+.review-crop-action-button-primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--forest-900), var(--forest-500));
+  color: #fcf8ef;
+}
+
+.review-crop-action-button-primary:hover:not(:disabled) {
+  box-shadow: 0 12px 26px rgba(25, 52, 40, 0.24);
+}
+
+.review-crop-action-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.review-crop-action-button svg {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 
 .review-panel-processing {
