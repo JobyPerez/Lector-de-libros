@@ -6369,25 +6369,9 @@ textarea {
   }
 
   .reader-selection-popover {
-    left: 0.5rem !important;
-    right: 0.5rem;
-    top: auto !important;
-    bottom: calc(5.9rem + env(safe-area-inset-bottom, 0px));
-    width: auto;
-    max-width: none;
-    max-height: calc(100dvh - 6.7rem - env(safe-area-inset-bottom, 0px)) !important;
-    transform: none;
-    animation-name: reader-popover-enter-mobile;
-    transform-origin: center bottom;
-  }
-
-  .reader-selection-popover::after {
-    display: none;
-  }
-
-  .reader-selection-popover[data-placement="below"] {
-    transform: none;
-    animation-name: reader-popover-enter-mobile;
+    gap: 0.65rem;
+    padding: 0.75rem;
+    border-radius: 18px;
   }
 
   .reader-existing-note-popover {
@@ -6412,17 +6396,24 @@ textarea {
     animation-name: reader-popover-enter-mobile;
   }
 
-  .reader-selection-swatches {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .reader-selection-popover .reader-selection-swatches {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.35rem;
+  }
+
+  .reader-selection-popover .reader-swatch {
+    min-height: 2.45rem;
+    padding: 0.55rem 0.25rem;
+    font-size: 0.75rem;
   }
 
   .reader-selection-actions {
-    flex-direction: column-reverse;
+    flex-direction: row;
   }
 
   .reader-selection-actions .primary-button,
   .reader-selection-actions .secondary-button {
-    width: 100%;
+    width: auto;
   }
 
   .reader-layout .reader-floating-audio-panel {

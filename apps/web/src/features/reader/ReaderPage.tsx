@@ -1202,7 +1202,10 @@ function resolveReaderPopoverLayout(anchorRect: DOMRect) {
   const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
   const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
   const anchorCenter = anchorRect.left + (anchorRect.width / 2);
-  const minLeft = (READER_POPOVER_WIDTH_ESTIMATE_PX / 2) + READER_POPOVER_VIEWPORT_MARGIN_PX;
+  const popoverWidth = viewportWidth > 0
+    ? Math.min(READER_POPOVER_WIDTH_ESTIMATE_PX, viewportWidth - (READER_POPOVER_VIEWPORT_MARGIN_PX * 2))
+    : READER_POPOVER_WIDTH_ESTIMATE_PX;
+  const minLeft = (popoverWidth / 2) + READER_POPOVER_VIEWPORT_MARGIN_PX;
   const maxLeft = viewportWidth > 0
     ? Math.max(minLeft, viewportWidth - minLeft)
     : anchorCenter;
@@ -1311,6 +1314,7 @@ export function ReaderPage() {
   const bookmarkToastTimeoutRef = useRef<number | null>(null);
   const navigationPanelCloseTimeoutRef = useRef<number | null>(null);
   const selectionUpdateTimeoutRef = useRef<number | null>(null);
+  const isTouchSelectionGestureRef = useRef(false);
   const paragraphRefs = useRef(new Map<number, HTMLParagraphElement>());
   const richContentRef = useRef<HTMLDivElement | null>(null);
   const livePageRef = useRef<HTMLDivElement | null>(null);
@@ -2658,6 +2662,10 @@ export function ReaderPage() {
     }
 
     function updateSelectionDraftFromDocument() {
+      if (isTouchSelectionGestureRef.current) {
+        return;
+      }
+
       const selection = window.getSelection();
       const activeElement = document.activeElement;
       const isInteractingWithPopover = Boolean(
@@ -2705,10 +2713,34 @@ export function ReaderPage() {
       scheduleSelectionDraftUpdate();
     }
 
+    function handleTouchStart(event: TouchEvent) {
+      if (!livePageRef.current?.contains(event.target as Node)) {
+        return;
+      }
+
+      isTouchSelectionGestureRef.current = true;
+      if (selectionUpdateTimeoutRef.current !== null) {
+        window.clearTimeout(selectionUpdateTimeoutRef.current);
+        selectionUpdateTimeoutRef.current = null;
+      }
+      setSelectionDraft(null);
+    }
+
+    function handleTouchEnd() {
+      if (!isTouchSelectionGestureRef.current) {
+        return;
+      }
+
+      isTouchSelectionGestureRef.current = false;
+      scheduleSelectionDraftUpdate();
+    }
+
     document.addEventListener("selectionchange", handleSelectionChange);
     document.addEventListener("mouseup", handleSelectionEvent);
     document.addEventListener("keyup", handleSelectionEvent);
-    document.addEventListener("touchend", handleSelectionEvent);
+    document.addEventListener("touchstart", handleTouchStart, { passive: true });
+    document.addEventListener("touchend", handleTouchEnd);
+    document.addEventListener("touchcancel", handleTouchEnd);
 
     return () => {
       if (selectionUpdateTimeoutRef.current !== null) {
@@ -2719,7 +2751,10 @@ export function ReaderPage() {
       document.removeEventListener("selectionchange", handleSelectionChange);
       document.removeEventListener("mouseup", handleSelectionEvent);
       document.removeEventListener("keyup", handleSelectionEvent);
-      document.removeEventListener("touchend", handleSelectionEvent);
+      document.removeEventListener("touchstart", handleTouchStart);
+      document.removeEventListener("touchend", handleTouchEnd);
+      document.removeEventListener("touchcancel", handleTouchEnd);
+      isTouchSelectionGestureRef.current = false;
     };
   }, [paragraphsById]);
 
