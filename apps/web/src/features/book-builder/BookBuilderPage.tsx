@@ -2666,7 +2666,7 @@ export function BookBuilderPage() {
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
     [editedText, reviewPageQuery.data?.page.htmlContent]
   );
-  const activeTocEntryKey = useMemo(() => {
+  const reviewActiveTocEntry = useMemo(() => {
     const tocEntries = reviewNavigationQuery.data?.toc ?? [];
     let activeEntry: ReaderTocEntry | null = null;
 
@@ -2676,8 +2676,23 @@ export function BookBuilderPage() {
       }
     }
 
-    return activeEntry ? tocEntryKey(activeEntry) : null;
+    return activeEntry;
   }, [reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  const activeTocEntryKey = reviewActiveTocEntry ? tocEntryKey(reviewActiveTocEntry) : null;
+  const reviewActiveReadingSection = useMemo(() => {
+    if (!reviewActiveTocEntry || reviewActiveTocEntry.sequenceNumber === null) {
+      return null;
+    }
+
+    return reviewNavigationQuery.data?.readingMetrics.sections.find((section) => (
+      reviewActiveTocEntry.chapterId
+        ? section.chapterId === reviewActiveTocEntry.chapterId
+        : section.startSequenceNumber === reviewActiveTocEntry.sequenceNumber
+    )) ?? null;
+  }, [reviewActiveTocEntry, reviewNavigationQuery.data?.readingMetrics.sections]);
+  const reviewNextChapterPageNumber = reviewActiveTocEntry
+    ? reviewActiveReadingSection?.nextStartPageNumber ?? null
+    : reviewNavigationQuery.data?.toc[0]?.pageNumber ?? null;
   const orderedNavigationItems = useMemo<ReviewNavigationItem[]>(() => {
     const tocItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.toc ?? []).map((entry) => ({
       isActive: activeTocEntryKey === tocEntryKey(entry),
@@ -3908,6 +3923,17 @@ export function BookBuilderPage() {
                     type="text"
                     value={isReviewPageJumpActive ? reviewPageJumpValue : String(reviewPageNumber)}
                   />
+                  {reviewNextChapterPageNumber !== null ? (
+                    <span
+                      aria-label={`Siguiente capítulo en la página ${reviewNextChapterPageNumber}`}
+                      className="reader-next-chapter-page"
+                      role="img"
+                      title={`Siguiente capítulo · página ${reviewNextChapterPageNumber}`}
+                    >
+                      <span aria-hidden="true">→</span>
+                      <strong aria-hidden="true">{reviewNextChapterPageNumber}</strong>
+                    </span>
+                  ) : null}
                   <strong>/ {selectedReviewBook?.totalPages ?? 0}</strong>
                 </label>
               </form>
