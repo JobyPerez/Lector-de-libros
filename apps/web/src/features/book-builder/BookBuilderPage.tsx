@@ -23,6 +23,7 @@ import {
   type ImageOcrMode,
   type OcrWaitReason,
   type ReaderBookmark,
+  type ReaderHighlight,
   type ReaderNote,
   type ReaderTocEntry,
   type HighlightColor
@@ -84,14 +85,6 @@ function BookmarkIcon() {
   return (
     <ToolbarIcon>
       <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" fill="currentColor" />
-    </ToolbarIcon>
-  );
-}
-
-function ChevronIcon() {
-  return (
-    <ToolbarIcon>
-      <path d="M9 6.5L14.5 12L9 17.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
     </ToolbarIcon>
   );
 }
@@ -328,6 +321,16 @@ type ReviewNavigationItem =
       type: "bookmark";
     }
   | {
+      color: HighlightColor;
+      excerpt: string;
+      highlightId: string;
+      isActive: boolean;
+      key: string;
+      pageNumber: number;
+      paragraphNumber: number;
+      type: "highlight";
+    }
+  | {
       color: HighlightColor | null;
       excerpt: string;
       isActive: boolean;
@@ -338,21 +341,6 @@ type ReviewNavigationItem =
       paragraphNumber: number;
       type: "note";
     };
-
-type ReviewNavChildItem = Extract<ReviewNavigationItem, { type: "note" }>;
-
-type ReviewNavGroupNode = {
-  children: ReviewNavChildItem[];
-  key: string;
-  kind: "group";
-  tocItem: Extract<ReviewNavigationItem, { type: "toc" }> | null;
-};
-
-type ReviewNavRenderNode =
-  | ReviewNavGroupNode
-  | { item: Extract<ReviewNavigationItem, { type: "bookmark" }>; kind: "bookmark" };
-
-const UNCATEGORIZED_REVIEW_GROUP_KEY = "group:uncategorized";
 
 function formatRelativeAnchor(pageNumber: number, paragraphNumber: number | null | undefined) {
   return paragraphNumber ? `Pág. ${pageNumber} · párr. ${paragraphNumber}` : `Pág. ${pageNumber}`;
@@ -369,6 +357,10 @@ function notePreview(note: ReaderNote) {
   }
 
   return note.noteText;
+}
+
+function highlightPreview(highlight: ReaderHighlight) {
+  return highlight.highlightedText.trim() || "Resaltado sin texto";
 }
 
 function tocEntryKey(entry: ReaderTocEntry) {
@@ -838,6 +830,7 @@ export function BookBuilderPage() {
   const [isRerunningOcr, setIsRerunningOcr] = useState(false);
   const [ocrRetryState, setOcrRetryState] = useState<OcrRetryState | null>(null);
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
+  const [reviewNavigationTab, setReviewNavigationTab] = useState<"index" | "notes">("index");
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
   const [reviewSelectedAlignment, setReviewSelectedAlignment] = useState<ReviewTextAlignment | null>(null);
@@ -2780,9 +2773,27 @@ export function BookBuilderPage() {
       type: "note"
     }));
 
-    const sortWeight = { bookmark: 1, note: 2, toc: 0 } as const;
+    const notedHighlightIds = new Set(
+      (reviewNavigationQuery.data?.notes ?? [])
+        .map((note) => note.highlightId)
+        .filter((highlightId): highlightId is string => Boolean(highlightId))
+    );
+    const highlightItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.highlights ?? [])
+      .filter((highlight) => !notedHighlightIds.has(highlight.highlightId))
+      .map((highlight: ReaderHighlight) => ({
+        color: highlight.color,
+        excerpt: highlightPreview(highlight),
+        highlightId: highlight.highlightId,
+        isActive: highlight.pageNumber === reviewPageNumber,
+        key: `highlight:${highlight.highlightId}`,
+        pageNumber: highlight.pageNumber,
+        paragraphNumber: highlight.paragraphNumber,
+        type: "highlight"
+      }));
 
-    return [...tocItems, ...bookmarkItems, ...noteItems].sort((left, right) => {
+    const sortWeight = { bookmark: 1, highlight: 2, note: 3, toc: 0 } as const;
+
+    return [...tocItems, ...bookmarkItems, ...highlightItems, ...noteItems].sort((left, right) => {
       if (left.pageNumber !== right.pageNumber) {
         return left.pageNumber - right.pageNumber;
       }
@@ -2793,77 +2804,13 @@ export function BookBuilderPage() {
 
       return sortWeight[left.type] - sortWeight[right.type];
     });
-  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
-  const reviewNavRenderNodes = useMemo<ReviewNavRenderNode[]>(() => {
-    const nodes: ReviewNavRenderNode[] = [];
-    let currentGroup: ReviewNavGroupNode | null = null;
-
-    for (const item of orderedNavigationItems) {
-      if (item.type === "toc") {
-        currentGroup = { children: [], key: item.key, kind: "group", tocItem: item };
-        nodes.push(currentGroup);
-        continue;
-      }
-
-      if (item.type === "bookmark") {
-        nodes.push({ item, kind: "bookmark" });
-        continue;
-      }
-
-      if (!currentGroup) {
-        currentGroup = { children: [], key: UNCATEGORIZED_REVIEW_GROUP_KEY, kind: "group", tocItem: null };
-        nodes.push(currentGroup);
-      }
-
-      currentGroup.children.push(item);
-    }
-
-    return nodes;
-  }, [orderedNavigationItems]);
-  const activeReviewNavGroupKey = useMemo(() => {
-    for (const node of reviewNavRenderNodes) {
-      if (node.kind !== "group") {
-        continue;
-      }
-
-      if (node.tocItem?.isActive || node.children.some((child) => child.isActive)) {
-        return node.key;
-      }
-    }
-
-    return null;
-  }, [reviewNavRenderNodes]);
-  const [expandedReviewNavGroupKeys, setExpandedReviewNavGroupKeys] = useState<Set<string>>(
-    () => activeReviewNavGroupKey ? new Set([activeReviewNavGroupKey]) : new Set()
+  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.highlights, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  const reviewIndexItems = orderedNavigationItems.filter(
+    (item): item is Extract<ReviewNavigationItem, { type: "bookmark" | "toc" }> => item.type === "toc" || item.type === "bookmark"
   );
-
-  useEffect(() => {
-    if (!activeReviewNavGroupKey) {
-      return;
-    }
-
-    setExpandedReviewNavGroupKeys((current) => {
-      if (current.has(activeReviewNavGroupKey)) {
-        return current;
-      }
-
-      const next = new Set(current);
-      next.add(activeReviewNavGroupKey);
-      return next;
-    });
-  }, [activeReviewNavGroupKey]);
-
-  function toggleReviewNavGroup(groupKey: string) {
-    setExpandedReviewNavGroupKeys((current) => {
-      const next = new Set(current);
-      if (next.has(groupKey)) {
-        next.delete(groupKey);
-      } else {
-        next.add(groupKey);
-      }
-      return next;
-    });
-  }
+  const reviewNoteItems = orderedNavigationItems.filter(
+    (item): item is Extract<ReviewNavigationItem, { type: "highlight" | "note" }> => item.type === "note" || item.type === "highlight"
+  );
 
   const reviewOutlineSourceMeta = getOutlineSourceMeta(reviewNavigationQuery.data?.tocSource ?? "NONE");
 
@@ -2873,7 +2820,7 @@ export function BookBuilderPage() {
     }
 
     activeReviewNavItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeTocEntryKey, isReviewIndexVisible, reviewPageNumber]);
+  }, [activeTocEntryKey, isReviewIndexVisible, reviewNavigationTab, reviewPageNumber]);
 
   return (
     <div className="page-stack builder-layout">
@@ -3829,19 +3776,45 @@ export function BookBuilderPage() {
               </div>
 
               <section className="reader-navigation-section">
-                <div className="reader-navigation-section-heading">
-                  <div className="reader-navigation-section-heading-copy">
-                    <strong>Índice del libro</strong>
-                    {reviewOutlineSourceMeta ? <span className="reader-navigation-source-badge" title={reviewOutlineSourceMeta.description}>{reviewOutlineSourceMeta.badgeLabel}</span> : null}
-                  </div>
-                  <span>{orderedNavigationItems.filter((item) => item.type === "toc").length}</span>
+                <div aria-label="Contenido de navegación" className="reader-navigation-tabs" role="tablist">
+                  <button
+                    aria-controls="review-navigation-index-panel"
+                    aria-selected={reviewNavigationTab === "index"}
+                    className={reviewNavigationTab === "index" ? "reader-navigation-tab active" : "reader-navigation-tab"}
+                    id="review-navigation-index-tab"
+                    onClick={() => setReviewNavigationTab("index")}
+                    role="tab"
+                    type="button"
+                  >
+                    <span>Índice</span>
+                    <span className="reader-navigation-tab-count">{reviewIndexItems.length}</span>
+                  </button>
+                  <button
+                    aria-controls="review-navigation-notes-panel"
+                    aria-selected={reviewNavigationTab === "notes"}
+                    className={reviewNavigationTab === "notes" ? "reader-navigation-tab active" : "reader-navigation-tab"}
+                    id="review-navigation-notes-tab"
+                    onClick={() => setReviewNavigationTab("notes")}
+                    role="tab"
+                    type="button"
+                  >
+                    <span>Notas</span>
+                    <span className="reader-navigation-tab-count">{reviewNoteItems.length}</span>
+                  </button>
                 </div>
-                {orderedNavigationItems.length ? (
-                  <div className="reader-navigation-list">
-                    {reviewNavRenderNodes.map((node) => {
-                      if (node.kind === "bookmark") {
-                        const item = node.item;
-                        return (
+
+                {reviewNavigationTab === "index" ? (
+                  <div aria-labelledby="review-navigation-index-tab" className="reader-navigation-tab-panel" id="review-navigation-index-panel" role="tabpanel">
+                    <div className="reader-navigation-section-heading">
+                      <div className="reader-navigation-section-heading-copy">
+                        <strong>Índice del libro</strong>
+                        {reviewOutlineSourceMeta ? <span className="reader-navigation-source-badge" title={reviewOutlineSourceMeta.description}>{reviewOutlineSourceMeta.badgeLabel}</span> : null}
+                      </div>
+                      <span>{orderedNavigationItems.filter((item) => item.type === "toc").length}</span>
+                    </div>
+                    {reviewIndexItems.length ? (
+                      <div className="reader-navigation-list">
+                        {reviewIndexItems.map((item) => item.type === "bookmark" ? (
                           <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
                             <button
                               className="reader-navigation-item reader-navigation-item-bookmark"
@@ -3856,105 +3829,61 @@ export function BookBuilderPage() {
                               </div>
                             </button>
                           </article>
-                        );
-                      }
-
-                      const tocItem = node.tocItem;
-                      const childCount = node.children.length;
-                      const isGroupExpanded = expandedReviewNavGroupKeys.has(node.key);
-
-                      return (
-                        <div className="reader-navigation-group" key={node.key}>
-                          {tocItem ? (
-                            <article className={tocItem.isActive
-                              ? `reader-note-card reader-navigation-item-toc-card active${childCount ? " with-toggle" : ""}`
-                              : `reader-note-card reader-navigation-item-toc-card${childCount ? " with-toggle" : ""}`}
+                        ) : (
+                          <article className={item.isActive ? "reader-note-card reader-navigation-item-toc-card active" : "reader-note-card reader-navigation-item-toc-card"} key={item.key}>
+                            <button
+                              className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
+                              onClick={() => jumpToReviewPage(item.pageNumber)}
+                              ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
+                              style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as React.CSSProperties}
+                              type="button"
                             >
-                              <button
-                                className={tocItem.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
-                                onClick={() => jumpToReviewPage(tocItem.pageNumber)}
-                                ref={tocItem.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                                style={{ "--toc-level": String(Math.max(0, tocItem.level - 1)) } as React.CSSProperties}
-                                type="button"
-                              >
-                                <div className="reader-navigation-item-topline">
-                                  <strong>{tocItem.title}</strong>
-                                  <span className="reader-navigation-inline-meta">{formatPageAnchor(tocItem.pageNumber)}</span>
-                                </div>
-                              </button>
-                              {childCount ? (
-                                <button
-                                  aria-expanded={isGroupExpanded}
-                                  aria-label={isGroupExpanded ? `Ocultar notas de ${tocItem.title}` : `Mostrar notas de ${tocItem.title}`}
-                                  className="reader-note-icon-button reader-navigation-toggle"
-                                  data-expanded={isGroupExpanded ? "" : undefined}
-                                  onClick={() => toggleReviewNavGroup(node.key)}
-                                  title={isGroupExpanded ? "Ocultar notas del capítulo" : "Mostrar notas del capítulo"}
-                                  type="button"
-                                >
-                                  <ChevronIcon />
-                                  <span className="reader-navigation-toggle-count">{childCount}</span>
-                                </button>
-                              ) : null}
-                            </article>
-                          ) : (
-                            <article className="reader-note-card reader-navigation-item-toc-card with-toggle reader-navigation-group-uncategorized">
-                              <div className="reader-navigation-item reader-navigation-group-title">
-                                <div className="reader-navigation-item-topline">
-                                  <strong>Sin capítulo</strong>
-                                </div>
+                              <div className="reader-navigation-item-topline">
+                                <strong>{item.title}</strong>
+                                <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
                               </div>
-                              <button
-                                aria-expanded={isGroupExpanded}
-                                aria-label={isGroupExpanded ? "Ocultar notas sin capítulo" : "Mostrar notas sin capítulo"}
-                                className="reader-note-icon-button reader-navigation-toggle"
-                                data-expanded={isGroupExpanded ? "" : undefined}
-                                onClick={() => toggleReviewNavGroup(node.key)}
-                                title={isGroupExpanded ? "Ocultar notas sin capítulo" : "Mostrar notas sin capítulo"}
-                                type="button"
-                              >
-                                <ChevronIcon />
-                                <span className="reader-navigation-toggle-count">{childCount}</span>
-                              </button>
-                            </article>
-                          )}
-
-                          {isGroupExpanded && childCount ? (
-                            <div className="reader-navigation-group-children">
-                              {node.children.map((child) => (
-                                <article className={child.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={child.key}>
-                                  <button
-                                    className="reader-note-jump"
-                                    onClick={() => jumpToReviewPage(child.pageNumber)}
-                                    ref={child.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                                    type="button"
-                                  >
-                                    <div className="reader-navigation-item-topline">
-                                      <span className={child.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(child.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                                      <strong>{child.excerpt}</strong>
-                                      <span className="reader-navigation-inline-meta">{formatRelativeAnchor(child.pageNumber, child.paragraphNumber)}</span>
-                                    </div>
-                                  </button>
-                                  <p>{child.noteText}</p>
-                                </article>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="reader-navigation-empty">Este libro no tiene capítulos ni marcadores.</p>
+                    )}
                   </div>
                 ) : (
-                  <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+                  <div aria-labelledby="review-navigation-notes-tab" className="reader-navigation-tab-panel" id="review-navigation-notes-panel" role="tabpanel">
+                    <div className="reader-navigation-section-heading">
+                      <strong>Notas y resaltados</strong>
+                      <span>{reviewNoteItems.length}</span>
+                    </div>
+                    {reviewNoteItems.length ? (
+                      <div className="reader-navigation-list reader-navigation-notes-list">
+                        {reviewNoteItems.map((item) => (
+                          <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
+                            <button
+                              className="reader-note-jump"
+                              onClick={() => jumpToReviewPage(item.pageNumber)}
+                              ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
+                              type="button"
+                            >
+                              <div className="reader-navigation-item-topline">
+                                <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                                <strong>{item.excerpt}</strong>
+                              </div>
+                              <div className="reader-navigation-note-meta">
+                                <span>{item.type === "highlight" ? "Resaltado" : "Nota"}</span>
+                                <span>{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                              </div>
+                            </button>
+                            {item.type === "note" ? <p>{item.noteText}</p> : null}
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="reader-navigation-empty">Todavía no hay notas ni resaltados en este libro.</p>
+                    )}
+                  </div>
                 )}
-              </section>
-
-              <section className="reader-navigation-section">
-                <div className="reader-navigation-section-heading">
-                  <strong>Notas</strong>
-                  <span>{reviewNavigationQuery.data?.notes.length ?? 0}</span>
-                </div>
-                <p className="reader-navigation-empty">Las notas y marcadores aparecen integrados dentro del índice según su posición en el libro.</p>
               </section>
             </aside>
           ) : null}

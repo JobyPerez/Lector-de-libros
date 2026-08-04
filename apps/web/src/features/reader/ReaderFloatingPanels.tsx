@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useEffect, useId, useState } from "react";
 
 import type { BookOutlineSource } from "../../app/api";
 import { getOutlineSourceMeta } from "../../app/outline-source";
@@ -174,21 +174,6 @@ export type ReaderNavigationListItem =
       paragraphNumber: number;
       type: "note";
     };
-
-type NavigationChildItem = Extract<ReaderNavigationListItem, { type: "highlight" | "note" }>;
-
-type NavigationGroupNode = {
-  children: NavigationChildItem[];
-  key: string;
-  kind: "group";
-  tocItem: Extract<ReaderNavigationListItem, { type: "toc" }> | null;
-};
-
-type NavigationRenderNode =
-  | NavigationGroupNode
-  | { item: Extract<ReaderNavigationListItem, { type: "bookmark" }>; kind: "bookmark" };
-
-const UNCATEGORIZED_GROUP_KEY = "group:uncategorized";
 
 type NavigationPanelContentProps = {
   activeItemRef?: MutableRefObject<HTMLButtonElement | null>;
@@ -718,8 +703,16 @@ export function ReaderNavigationPanelContent({
   summaryHrefBuilder
 }: NavigationPanelContentProps) {
   const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
-  const tocItemCount = items.filter((item) => item.type === "toc").length;
+  const indexItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "bookmark" | "toc" }> => item.type === "bookmark" || item.type === "toc");
+  const noteItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "highlight" | "note" }> => item.type === "highlight" || item.type === "note");
+  const tocItemCount = indexItems.filter((item) => item.type === "toc").length;
+  const tabsId = useId();
+  const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    activeItemRef?.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeItemRef, activeTab]);
 
   async function handleDeleteBookmark(item: BookmarkNavigationItem) {
     const confirmation = item.isOwnedByCurrentUser
@@ -748,79 +741,6 @@ export function ReaderNavigationPanelContent({
     if (window.confirm(message)) {
       onDeleteNote(item.noteId);
     }
-  }
-
-  const renderNodes = useMemo<NavigationRenderNode[]>(() => {
-    const nodes: NavigationRenderNode[] = [];
-    let currentGroup: NavigationGroupNode | null = null;
-
-    for (const item of items) {
-      if (item.type === "toc") {
-        currentGroup = { children: [], key: item.key, kind: "group", tocItem: item };
-        nodes.push(currentGroup);
-        continue;
-      }
-
-      if (item.type === "bookmark") {
-        nodes.push({ item, kind: "bookmark" });
-        continue;
-      }
-
-      if (!currentGroup) {
-        currentGroup = { children: [], key: UNCATEGORIZED_GROUP_KEY, kind: "group", tocItem: null };
-        nodes.push(currentGroup);
-      }
-
-      currentGroup.children.push(item);
-    }
-
-    return nodes;
-  }, [items]);
-
-  const activeGroupKey = useMemo(() => {
-    for (const node of renderNodes) {
-      if (node.kind !== "group") {
-        continue;
-      }
-
-      if (node.tocItem?.isActive || node.children.some((child) => child.isActive)) {
-        return node.key;
-      }
-    }
-
-    return null;
-  }, [renderNodes]);
-
-  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(
-    () => activeGroupKey ? new Set([activeGroupKey]) : new Set()
-  );
-
-  useEffect(() => {
-    if (!activeGroupKey) {
-      return;
-    }
-
-    setExpandedGroupKeys((current) => {
-      if (current.has(activeGroupKey)) {
-        return current;
-      }
-
-      const next = new Set(current);
-      next.add(activeGroupKey);
-      return next;
-    });
-  }, [activeGroupKey]);
-
-  function toggleGroupExpansion(groupKey: string) {
-    setExpandedGroupKeys((current) => {
-      const next = new Set(current);
-      if (next.has(groupKey)) {
-        next.delete(groupKey);
-      } else {
-        next.add(groupKey);
-      }
-      return next;
-    });
   }
 
   function renderBookmarkCard(item: BookmarkNavigationItem) {
@@ -1072,92 +992,95 @@ export function ReaderNavigationPanelContent({
 
   return (
     <section className="reader-navigation-section">
-      <div className="reader-navigation-section-heading">
-        <div className="reader-navigation-section-heading-copy">
-          <strong>Índice del libro</strong>
-          {outlineSourceMeta ? <span className="reader-navigation-source-badge" title={outlineSourceMeta.description}>{outlineSourceMeta.badgeLabel}</span> : null}
-        </div>
-        <div className="reader-navigation-section-actions">
-          <span>{tocItemCount}</span>
-          {outlineEditHref ? (
-            <Link
-              aria-label="Editar índice"
-              className="reader-note-icon-button reader-navigation-edit-link"
-              onClick={onOutlineEditClick}
-              title="Editar índice"
-              to={outlineEditHref}
-            >
-              <EditIcon />
-            </Link>
-          ) : null}
-        </div>
+      <div aria-label="Contenido de navegación" className="reader-navigation-tabs" role="tablist">
+        <button
+          aria-controls={`${tabsId}-index-panel`}
+          aria-selected={activeTab === "index"}
+          className={activeTab === "index" ? "reader-navigation-tab active" : "reader-navigation-tab"}
+          id={`${tabsId}-index-tab`}
+          onClick={() => setActiveTab("index")}
+          role="tab"
+          type="button"
+        >
+          <span>Índice</span>
+          <span className="reader-navigation-tab-count">{indexItems.length}</span>
+        </button>
+        <button
+          aria-controls={`${tabsId}-notes-panel`}
+          aria-selected={activeTab === "notes"}
+          className={activeTab === "notes" ? "reader-navigation-tab active" : "reader-navigation-tab"}
+          id={`${tabsId}-notes-tab`}
+          onClick={() => setActiveTab("notes")}
+          role="tab"
+          type="button"
+        >
+          <span>Notas</span>
+          <span className="reader-navigation-tab-count">{noteItems.length}</span>
+        </button>
       </div>
 
-      {items.length ? (
-        <div className="reader-navigation-list">
-          {renderNodes.map((node) => {
-            if (node.kind === "bookmark") {
-              return renderBookmarkCard(node.item);
-            }
+      {activeTab === "index" ? (
+        <div aria-labelledby={`${tabsId}-index-tab`} className="reader-navigation-tab-panel" id={`${tabsId}-index-panel`} role="tabpanel">
+          <div className="reader-navigation-section-heading">
+            <div className="reader-navigation-section-heading-copy">
+              <strong>Índice del libro</strong>
+              {outlineSourceMeta ? <span className="reader-navigation-source-badge" title={outlineSourceMeta.description}>{outlineSourceMeta.badgeLabel}</span> : null}
+            </div>
+            <div className="reader-navigation-section-actions">
+              <span>{tocItemCount}</span>
+              {outlineEditHref ? (
+                <Link
+                  aria-label="Editar índice"
+                  className="reader-note-icon-button reader-navigation-edit-link"
+                  onClick={onOutlineEditClick}
+                  title="Editar índice"
+                  to={outlineEditHref}
+                >
+                  <EditIcon />
+                </Link>
+              ) : null}
+            </div>
+          </div>
 
-            const tocItem = node.tocItem;
-            const childCount = node.children.length;
-            const isGroupExpanded = expandedGroupKeys.has(node.key);
-
-            return (
-              <div className="reader-navigation-group" key={node.key}>
-                {tocItem ? (
-                  <ReaderNavigationTocCard
-                    buttonRef={tocItem.isActive && activeItemRef
-                      ? (element) => {
-                          activeItemRef.current = element;
-                        }
-                      : undefined}
-                    isActive={tocItem.isActive}
-                    isExpanded={isGroupExpanded}
-                    level={tocItem.level}
-                    nestedCount={childCount}
-                    onSelect={() => onSelectToc(tocItem)}
-                    onSummaryClick={onSummaryClick}
-                    onToggle={childCount ? () => toggleGroupExpansion(node.key) : undefined}
-                    pageNumber={tocItem.pageNumber}
-                    summaryHref={tocItem.chapterId && summaryHrefBuilder ? summaryHrefBuilder(tocItem.chapterId) : undefined}
-                    summaryLabel={`Abrir resumen de ${tocItem.title}`}
-                    title={tocItem.title}
-                  />
-                ) : (
-                  <article className="reader-note-card reader-navigation-item-toc-card with-toggle reader-navigation-group-uncategorized">
-                    <div className="reader-navigation-item reader-navigation-group-title">
-                      <div className="reader-navigation-item-topline">
-                        <strong>Sin capítulo</strong>
-                      </div>
-                    </div>
-                    <button
-                      aria-expanded={isGroupExpanded}
-                      aria-label={isGroupExpanded ? "Ocultar notas sin capítulo" : "Mostrar notas sin capítulo"}
-                      className="reader-note-icon-button reader-navigation-toggle"
-                      data-expanded={isGroupExpanded ? "" : undefined}
-                      onClick={() => toggleGroupExpansion(node.key)}
-                      title={isGroupExpanded ? "Ocultar notas sin capítulo" : "Mostrar notas sin capítulo"}
-                      type="button"
-                    >
-                      <ChevronIcon />
-                      <span className="reader-navigation-toggle-count">{childCount}</span>
-                    </button>
-                  </article>
-                )}
-
-                {isGroupExpanded && childCount ? (
-                  <div className="reader-navigation-group-children">
-                    {node.children.map((child) => child.type === "highlight" ? renderHighlightCard(child) : renderNoteCard(child))}
-                  </div>
-                ) : null}
-              </div>
-            );
-          })}
+          {indexItems.length ? (
+            <div className="reader-navigation-list">
+              {indexItems.map((item) => item.type === "bookmark" ? renderBookmarkCard(item) : (
+                <ReaderNavigationTocCard
+                  buttonRef={item.isActive && activeItemRef
+                    ? (element) => {
+                        activeItemRef.current = element;
+                      }
+                    : undefined}
+                  isActive={item.isActive}
+                  key={item.key}
+                  level={item.level}
+                  onSelect={() => onSelectToc(item)}
+                  onSummaryClick={onSummaryClick}
+                  pageNumber={item.pageNumber}
+                  summaryHref={item.chapterId && summaryHrefBuilder ? summaryHrefBuilder(item.chapterId) : undefined}
+                  summaryLabel={`Abrir resumen de ${item.title}`}
+                  title={item.title}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="reader-navigation-empty">Este libro no tiene capítulos ni marcadores.</p>
+          )}
         </div>
       ) : (
-        <p className="reader-navigation-empty">Este libro no trae índice estructurado. Aquí seguirás viendo marcadores y notas.</p>
+        <div aria-labelledby={`${tabsId}-notes-tab`} className="reader-navigation-tab-panel" id={`${tabsId}-notes-panel`} role="tabpanel">
+          <div className="reader-navigation-section-heading">
+            <strong>Notas y resaltados</strong>
+            <span>{noteItems.length}</span>
+          </div>
+          {noteItems.length ? (
+            <div className="reader-navigation-list reader-navigation-notes-list">
+              {noteItems.map((item) => item.type === "highlight" ? renderHighlightCard(item) : renderNoteCard(item))}
+            </div>
+          ) : (
+            <p className="reader-navigation-empty">Todavía no hay notas ni resaltados en este libro.</p>
+          )}
+        </div>
       )}
     </section>
   );
