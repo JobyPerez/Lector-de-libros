@@ -21,6 +21,7 @@ import {
   type AppendImagesImportProgress,
   type ImageRotation,
   type ImageOcrMode,
+  type OcrWaitReason,
   type ReaderBookmark,
   type ReaderNote,
   type ReaderTocEntry,
@@ -717,8 +718,11 @@ type OcrRetryContext = "create" | "review";
 
 type OcrRetryState = {
   context: OcrRetryContext;
+  reason: OcrWaitReason;
   secondsRemaining: number;
 };
+
+type ReviewOcrToastState = string;
 
 type AppendResumeState = {
   completedFiles: number;
@@ -745,11 +749,18 @@ type BuilderWakeLockApi = {
   request: (type: "screen") => Promise<BuilderWakeLockSentinel>;
 };
 
-const maximumClientOcrRateLimitRetries = 3;
+const maximumClientOcrTransientRetries = 3;
 const appendCancelHoldMilliseconds = 5000;
+const reviewOcrToastSuccessMilliseconds = 3000;
 
-function buildOcrRetryCountdownLabel(secondsRemaining: number) {
+function buildOcrRetryCountdownLabel(secondsRemaining: number, reason: OcrWaitReason = "rate-limit") {
   const normalizedSeconds = Math.max(Math.ceil(secondsRemaining), 1);
+  if (reason === "unavailable") {
+    return `El servicio de OCR de OpenCode no está disponible temporalmente. Reintentando automáticamente en ${normalizedSeconds} s.`;
+  }
+  if (reason === "invalid-response") {
+    return `OpenCode devolvió una respuesta no válida. Reintentando automáticamente en ${normalizedSeconds} s.`;
+  }
   return `OpenCode limitó temporalmente el OCR. Reintentando automáticamente en ${normalizedSeconds} s.`;
 }
 
@@ -811,6 +822,7 @@ export function BookBuilderPage() {
   const [appendError, setAppendError] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
+  const [reviewOcrToast, setReviewOcrToast] = useState<ReviewOcrToastState | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
@@ -842,6 +854,7 @@ export function BookBuilderPage() {
   const appendCameraCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isMountedRef = useRef(true);
   const ocrRetryIntervalRef = useRef<number | null>(null);
+  const reviewOcrToastTimeoutRef = useRef<number | null>(null);
   const appendWakeLockRef = useRef<BuilderWakeLockSentinel | null>(null);
   const appendOcrFailureResolverRef = useRef<((choice: AppendOcrFailureChoice) => void) | null>(null);
   const appendCancelHoldTimeoutRef = useRef<number | null>(null);
@@ -928,6 +941,10 @@ export function BookBuilderPage() {
       if (ocrRetryIntervalRef.current !== null) {
         window.clearInterval(ocrRetryIntervalRef.current);
         ocrRetryIntervalRef.current = null;
+      }
+      if (reviewOcrToastTimeoutRef.current !== null) {
+        window.clearTimeout(reviewOcrToastTimeoutRef.current);
+        reviewOcrToastTimeoutRef.current = null;
       }
       clearAppendCancelHold();
       void releaseAppendScreenWakeLock();
@@ -1211,8 +1228,12 @@ export function BookBuilderPage() {
     setReviewImageRotation(page.sourceImageRotation);
     setOriginalReviewImageRotation(page.sourceImageRotation);
     setReviewSelectedAlignment(null);
-    setReviewError(null);
   }, [reviewBookId, reviewPageNumber, reviewPageQuery.data?.page]);
+
+  useEffect(() => {
+    setReviewError(null);
+    setReviewMessage(null);
+  }, [reviewBookId, reviewPageNumber]);
 
   useEffect(() => {
     if (isReviewPageJumpActive) {
@@ -1845,13 +1866,13 @@ export function BookBuilderPage() {
     }, appendCancelHoldMilliseconds);
   }
 
-  async function waitForOcrRetry(context: OcrRetryContext, retryAfterSeconds: number) {
+  async function waitForOcrRetry(context: OcrRetryContext, retryAfterSeconds: number, reason: OcrWaitReason) {
     if (typeof window === "undefined") {
       return;
     }
 
     let remainingSeconds = Math.max(Math.ceil(retryAfterSeconds), 1);
-    setOcrRetryState({ context, secondsRemaining: remainingSeconds });
+    setOcrRetryState({ context, reason, secondsRemaining: remainingSeconds });
 
     await new Promise<void>((resolve) => {
       if (ocrRetryIntervalRef.current !== null) {
@@ -1872,7 +1893,7 @@ export function BookBuilderPage() {
         }
 
         if (isMountedRef.current) {
-          setOcrRetryState({ context, secondsRemaining: remainingSeconds });
+          setOcrRetryState({ context, reason, secondsRemaining: remainingSeconds });
         }
       }, 1000);
     });
@@ -1893,7 +1914,7 @@ export function BookBuilderPage() {
         }
         return result;
       } catch (error) {
-        if (!isRetryableRateLimitError(error) || retryCount >= maximumClientOcrRateLimitRetries) {
+        if (!isRetryableRateLimitError(error) || retryCount >= maximumClientOcrTransientRetries) {
           if (isMountedRef.current) {
             setOcrRetryState((currentState) => currentState?.context === context ? null : currentState);
           }
@@ -1901,7 +1922,12 @@ export function BookBuilderPage() {
         }
 
         retryCount += 1;
-        await waitForOcrRetry(context, error.retryAfterSeconds ?? 15);
+        const retryReason: OcrWaitReason = error.code === "OCR_PROVIDER_UNAVAILABLE"
+          ? "unavailable"
+          : error.code === "OCR_INVALID_RESPONSE"
+            ? "invalid-response"
+            : "rate-limit";
+        await waitForOcrRetry(context, error.retryAfterSeconds ?? 15, retryReason);
       }
     }
   }
@@ -2013,6 +2039,7 @@ export function BookBuilderPage() {
       stage: "ocr",
       totalFiles: pendingAppendFiles.length,
       waitMessage: null,
+      waitReason: null,
       waitSecondsRemaining: null
     });
 
@@ -2047,6 +2074,7 @@ export function BookBuilderPage() {
             stage: "ocr",
             totalFiles: 1,
             waitMessage: null,
+            waitReason: null,
             waitSecondsRemaining: null
           });
 
@@ -2136,6 +2164,7 @@ export function BookBuilderPage() {
               stage: "saving",
               totalFiles: 1,
               waitMessage: null,
+              waitReason: null,
               waitSecondsRemaining: null
             });
             const skipResponse = await appendImagesToBook(accessToken, selectedBookId, skipFormData, {
@@ -2269,6 +2298,19 @@ export function BookBuilderPage() {
     }
   }
 
+  function showReviewOcrToast(message: string) {
+    setReviewOcrToast(message);
+
+    if (reviewOcrToastTimeoutRef.current !== null) {
+      window.clearTimeout(reviewOcrToastTimeoutRef.current);
+    }
+
+    reviewOcrToastTimeoutRef.current = window.setTimeout(() => {
+      setReviewOcrToast(null);
+      reviewOcrToastTimeoutRef.current = null;
+    }, reviewOcrToastSuccessMilliseconds);
+  }
+
   async function handleRerunOcr(modeOverride?: ImageOcrMode, promptOverride?: string) {
     if (!accessToken || !reviewBookId) {
       return;
@@ -2300,12 +2342,15 @@ export function BookBuilderPage() {
       }));
       setReviewPromptOverride(defaultVisionOcrEditablePrompt);
       setIsReviewPromptEditorOpen(false);
-      setReviewMessage(reviewPageAnnotationCount > 0
+      const rerunOcrMessage = reviewPageAnnotationCount > 0
         ? "El OCR de la página se volvió a reconocer y se intentó conservar las anotaciones existentes."
-        : "El OCR de la página se volvió a reconocer correctamente.");
+        : "El OCR de la página se volvió a reconocer correctamente.";
+      setReviewMessage(rerunOcrMessage);
+      showReviewOcrToast(rerunOcrMessage);
       await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
     } catch (error) {
-      setReviewError(error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.");
+      const rerunOcrErrorMessage = error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.";
+      setReviewError(rerunOcrErrorMessage);
     } finally {
       setIsRerunningOcr(false);
       setIsSavingReview(false);
@@ -3023,7 +3068,7 @@ export function BookBuilderPage() {
 
                   {createError ? <p className="error-text">{createError}</p> : null}
                   {isCreating && ocrRetryState?.context === "create" ? (
-                    <p aria-live="polite" className="helper-text ocr-waiting-text">{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</p>
+                    <p aria-live="polite" className="helper-text ocr-waiting-text">{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining, ocrRetryState.reason)}</p>
                   ) : null}
 
                   <button className="primary-button" disabled={isCreating} type="submit">
@@ -3166,7 +3211,7 @@ export function BookBuilderPage() {
                   ) : null}
                   {isAppending && appendImportProgress?.stage === "waiting" ? (
                     <p aria-live="polite" className="helper-text ocr-waiting-text">
-                      {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)}
+                      {buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1, appendImportProgress.waitReason ?? "rate-limit")}
                     </p>
                   ) : null}
                   {isAppending && appendImportProgress?.stage === "cancelling" ? (
@@ -3272,7 +3317,7 @@ export function BookBuilderPage() {
                 </div>
                 <p aria-live="polite" className="append-ocr-lock-status">
                   {appendImportProgress?.stage === "waiting"
-                    ? buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1)
+                    ? buildOcrRetryCountdownLabel(appendImportProgress.waitSecondsRemaining ?? 1, appendImportProgress.waitReason ?? "rate-limit")
                     : appendImportProgress?.stage === "saving"
                       ? "Guardando la página reconocida..."
                       : appendImportProgress?.stage === "cancelling"
@@ -3585,23 +3630,25 @@ export function BookBuilderPage() {
                   )
                 ) : (
                   reviewImageUrl ? (
-                    <div className={isRerunningOcr || isReviewImageLoading ? "review-image-frame is-processing" : "review-image-frame"}>
-                      <img
-                        alt={`Página ${reviewPageNumber} para revisión OCR`}
-                        className="preview-image"
-                        src={reviewImageUrl}
-                      />
+                    <>
+                      <div className={isRerunningOcr || isReviewImageLoading ? "review-image-frame is-processing" : "review-image-frame"}>
+                        <img
+                          alt={`Página ${reviewPageNumber} para revisión OCR`}
+                          className="preview-image"
+                          src={reviewImageUrl}
+                        />
+                      </div>
                       {isRerunningOcr || isReviewImageLoading ? (
-                        <div aria-live="polite" className="review-image-processing-overlay">
+                        <div aria-live="polite" className="review-image-processing-banner">
                           <span className="review-processing-spinner" />
                           <div className="review-processing-copy">
-                            <strong>{isReviewImageLoading ? "Cargando imagen..." : (ocrRetryState?.context === "review" ? "Esperando cupo de OpenCode..." : "Reconociendo OCR...")}</strong>
+                            <strong>{isReviewImageLoading ? "Cargando imagen..." : (ocrRetryState?.context === "review" ? (ocrRetryState.reason === "rate-limit" ? "Esperando cupo de OpenCode..." : "Esperando a OpenCode...") : "Reconociendo OCR...")}</strong>
                             {isReviewImageLoading ? <span>Actualizando vista de la página.</span> : null}
-                            {!isReviewImageLoading && ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining)}</span> : null}
+                            {!isReviewImageLoading && ocrRetryState?.context === "review" ? <span>{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining, ocrRetryState.reason)}</span> : null}
                           </div>
                         </div>
                       ) : null}
-                    </div>
+                    </>
                   ) : isReviewImageLoading ? (
                     <div className="review-image-frame is-processing review-image-loading-frame" aria-live="polite">
                       <div className="review-image-loading-placeholder" />
@@ -3619,6 +3666,7 @@ export function BookBuilderPage() {
                     </div>
                   )
                 )}
+                {reviewError ? <p aria-live="assertive" className="error-text review-image-error">{reviewError}</p> : null}
               </article>
               ) : null}
 
@@ -3652,6 +3700,8 @@ export function BookBuilderPage() {
                       value={editedText}
                     />
                   </label>
+
+                  {!shouldShowReviewSourcePanel && reviewError ? <p aria-live="assertive" className="error-text">{reviewError}</p> : null}
 
                   <div aria-label={`Barra de formato del editor ${reviewEditorKindLabel}`} className="review-format-toolbar" role="toolbar">
                     <button
@@ -3738,7 +3788,6 @@ export function BookBuilderPage() {
 
                   <p className="helper-text">Separa párrafos dejando una línea en blanco entre ellos. También puedes usar # y ## para títulos, **texto** para negrita, *texto* para cursiva, ::left::, ::center:: o ::right:: para alinear un bloque y ![alt](url) para incrustar una imagen.</p>
 
-                  {reviewError ? <p className="error-text">{reviewError}</p> : null}
                   {reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
                 </form>
               </article>
@@ -4081,6 +4130,11 @@ export function BookBuilderPage() {
               <SaveOcrIcon />
             </button>
           </div>
+          {reviewOcrToast ? (
+            <div className="reader-toast review-ocr-toast" role="status">
+              {reviewOcrToast}
+            </div>
+          ) : null}
         </>
       ) : null}
       </>

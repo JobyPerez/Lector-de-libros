@@ -18,7 +18,7 @@ import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
 import { buildDerivedBookOutline, replaceBookOutline, resolveBookOutline, resolveBookOutlineWithSource, syncBookOutlineForPage, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
-import { isRateLimitOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
+import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
 import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary } from "./section-summary.js";
 
@@ -249,6 +249,8 @@ type BookBinaryFileRecord = {
   mimeType?: string | null;
 };
 
+type OcrWaitReason = "invalid-response" | "rate-limit" | "unavailable";
+
 type ImportImagesProgressRecord = {
   bookId: string;
   completedFiles: number;
@@ -261,6 +263,7 @@ type ImportImagesProgressRecord = {
   stage: "ocr" | "waiting" | "saving" | "cancelling" | "cancelled" | "completed" | "failed";
   totalFiles: number;
   waitMessage: string | null;
+  waitReason: OcrWaitReason | null;
   waitUntil: number | null;
   updatedAt: number;
   userId: string;
@@ -419,7 +422,7 @@ const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
 const importImagesCancellationRequests = new Set<string>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
 const maximumUploadedImageBytes = 32 * 1024 * 1024;
-const maximumOcrRateLimitRetriesPerFile = 3;
+const maximumOcrTransientErrorRetriesPerFile = 3;
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
@@ -1671,6 +1674,7 @@ async function ocrImageFiles(
     retryAfterSeconds: number;
     totalFiles: number;
     waitMessage: string;
+    waitReason: OcrWaitReason;
   }) => void
 ): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
@@ -1683,7 +1687,7 @@ async function ocrImageFiles(
       totalFiles: files.length
     });
 
-    let rateLimitRetries = 0;
+    let transientErrorRetries = 0;
     let ocrResult;
 
     while (true) {
@@ -1695,7 +1699,7 @@ async function ocrImageFiles(
         });
         break;
       } catch (error) {
-        if (!isRateLimitOcrError(error) || rateLimitRetries >= maximumOcrRateLimitRetriesPerFile) {
+        if (!isRetryableOcrError(error) || transientErrorRetries >= maximumOcrTransientErrorRetriesPerFile) {
           throw error;
         }
 
@@ -1705,11 +1709,16 @@ async function ocrImageFiles(
           currentFileName: file.fileName,
           retryAfterSeconds: error.retryAfterSeconds,
           totalFiles: files.length,
-          waitMessage: error.message
+          waitMessage: error.message,
+          waitReason: error.code === "OCR_PROVIDER_UNAVAILABLE"
+            ? "unavailable"
+            : error.code === "OCR_INVALID_RESPONSE"
+              ? "invalid-response"
+              : "rate-limit"
         });
 
         await delay(error.retryAfterSeconds * 1000);
-        rateLimitRetries += 1;
+        transientErrorRetries += 1;
 
         onProgress?.({
           completedFiles: index,
@@ -3214,6 +3223,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         stage: progress.stage,
         totalFiles: progress.totalFiles,
         waitMessage: progress.waitMessage,
+        waitReason: progress.waitReason,
         waitSecondsRemaining: progress.waitUntil ? Math.max(Math.ceil((progress.waitUntil - Date.now()) / 1000), 0) : null
       }
     });
@@ -3246,6 +3256,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           stage: progress.stage,
           totalFiles: progress.totalFiles,
           waitMessage: progress.waitMessage,
+          waitReason: progress.waitReason,
           waitSecondsRemaining: progress.waitUntil ? Math.max(Math.ceil((progress.waitUntil - Date.now()) / 1000), 0) : null
         }
       });
@@ -3257,6 +3268,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       errorMessage: null,
       stage: "cancelling",
       waitMessage: null,
+      waitReason: null,
       waitUntil: null
     });
     importImagesCancellationRequests.add(params.progressId);
@@ -3275,6 +3287,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         stage: nextProgress.stage,
         totalFiles: nextProgress.totalFiles,
         waitMessage: nextProgress.waitMessage,
+        waitReason: nextProgress.waitReason,
         waitSecondsRemaining: nextProgress.waitUntil ? Math.max(Math.ceil((nextProgress.waitUntil - Date.now()) / 1000), 0) : null
       } : null
     });
@@ -3988,6 +4001,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           stage: "ocr",
           totalFiles: imageFiles.length,
           waitMessage: null,
+          waitReason: null,
           waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
@@ -4012,6 +4026,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             stage: "ocr",
             totalFiles: imageFiles.length,
             waitMessage: null,
+            waitReason: null,
             waitUntil: null,
             updatedAt: Date.now(),
             userId: currentUser.userId
@@ -4049,6 +4064,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 stage: "ocr",
                 totalFiles: imageFiles.length,
                 waitMessage: null,
+                waitReason: null,
                 waitUntil: null,
                 updatedAt: Date.now(),
                 userId: currentUser.userId
@@ -4071,6 +4087,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 stage: "waiting",
                 totalFiles: imageFiles.length,
                 waitMessage: progress.waitMessage,
+                waitReason: progress.waitReason,
                 waitUntil: Date.now() + (progress.retryAfterSeconds * 1000),
                 updatedAt: Date.now(),
                 userId: currentUser.userId
@@ -4096,6 +4113,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             stage: "saving",
             totalFiles: imageFiles.length,
             waitMessage: null,
+            waitReason: null,
             waitUntil: null,
             updatedAt: Date.now(),
             userId: currentUser.userId
@@ -4190,6 +4208,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             stage: "ocr",
             totalFiles: imageFiles.length,
             waitMessage: null,
+            waitReason: null,
             waitUntil: null,
             updatedAt: Date.now(),
             userId: currentUser.userId
@@ -4214,6 +4233,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           stage: wasCancelled ? "cancelled" : "completed",
           totalFiles: imageFiles.length,
           waitMessage: null,
+          waitReason: null,
           waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId
@@ -4245,6 +4265,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           stage: "failed",
           totalFiles: imageFiles.length,
           waitMessage: null,
+          waitReason: null,
           waitUntil: null,
           updatedAt: Date.now(),
           userId: currentUser.userId

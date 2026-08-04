@@ -23,6 +23,22 @@ export type OcrRateLimitError = Error & {
   statusCode: 429;
 };
 
+export type OcrProviderUnavailableError = Error & {
+  code: "OCR_PROVIDER_UNAVAILABLE";
+  retryAfterSeconds: number;
+  retryable: true;
+  statusCode: 503;
+};
+
+export type OcrInvalidResponseError = Error & {
+  code: "OCR_INVALID_RESPONSE";
+  retryAfterSeconds: number;
+  retryable: true;
+  statusCode: 502;
+};
+
+export type RetryableOcrError = OcrInvalidResponseError | OcrProviderUnavailableError | OcrRateLimitError;
+
 type VisionTextAlignment = "center" | "left" | "right";
 
 type VisionBoundingBox = {
@@ -319,13 +335,82 @@ function extractJsonPayload(responseText: string): string {
   return responseText.trim();
 }
 
-function createVisionOcrParseError(responseText: string, reason?: string): Error {
+function escapeControlCharsInsideJsonStrings(jsonText: string): string {
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+
+  for (const char of jsonText) {
+    if (!inString) {
+      if (char === "\"") {
+        inString = true;
+      }
+      repaired += char;
+      continue;
+    }
+
+    if (escaped) {
+      repaired += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      repaired += char;
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = false;
+      repaired += char;
+      continue;
+    }
+
+    if (char === "\n") {
+      repaired += "\\n";
+      continue;
+    }
+
+    if (char === "\r") {
+      repaired += "\\r";
+      continue;
+    }
+
+    if (char === "\t") {
+      repaired += "\\t";
+      continue;
+    }
+
+    repaired += char;
+  }
+
+  return repaired;
+}
+
+function parseOcrJsonPayload(jsonText: string): z.infer<typeof ocrResponseSchema> {
+  try {
+    return ocrResponseSchema.parse(JSON.parse(jsonText));
+  } catch (error) {
+    const repairedJsonText = escapeControlCharsInsideJsonStrings(jsonText);
+    if (repairedJsonText === jsonText) {
+      throw error;
+    }
+
+    return ocrResponseSchema.parse(JSON.parse(repairedJsonText));
+  }
+}
+
+function createVisionOcrParseError(responseText: string, reason?: string): OcrInvalidResponseError {
   const message = reason === "length"
     ? "OpenCode devolvió un JSON incompleto durante el OCR de la imagen."
     : "OpenCode devolvió una respuesta no válida durante el OCR de la imagen.";
 
   return Object.assign(new Error(`${message} Respuesta recibida: ${responseText.slice(0, 400)}`), {
-    statusCode: 502
+    code: "OCR_INVALID_RESPONSE" as const,
+    retryAfterSeconds: 5,
+    retryable: true as const,
+    statusCode: 502 as const
   });
 }
 
@@ -397,6 +482,23 @@ function createVisionRateLimitError(providerMessage: string, retryAfterSeconds?:
   });
 }
 
+function createVisionProviderUnavailableError(providerMessage: string, retryAfterSeconds?: number | null): OcrProviderUnavailableError {
+  const normalizedRetryAfterSeconds = normalizeRetryAfterSeconds(retryAfterSeconds ?? 10);
+
+  return Object.assign(new Error(
+    `El servicio de OCR de OpenCode no está disponible temporalmente. Reintentando en ${normalizedRetryAfterSeconds} segundos. ${providerMessage}`.trim()
+  ), {
+    code: "OCR_PROVIDER_UNAVAILABLE" as const,
+    retryAfterSeconds: normalizedRetryAfterSeconds,
+    retryable: true as const,
+    statusCode: 503 as const
+  });
+}
+
+function isVisionProviderUnavailableError(code: string | null, message: string): boolean {
+  return /router\.unavailable/iu.test(`${code ?? ""} ${message}`);
+}
+
 function extractRetryAfterSeconds(response: Response | null, errorMessage: string): number | null {
   const headerRetryAfter = parseRetryAfterHeader(response?.headers.get("retry-after") ?? null);
   if (headerRetryAfter) {
@@ -406,11 +508,11 @@ function extractRetryAfterSeconds(response: Response | null, errorMessage: strin
   return extractRetryAfterSecondsFromMessage(errorMessage);
 }
 
-export function isRateLimitOcrError(error: unknown): error is OcrRateLimitError {
+export function isRetryableOcrError(error: unknown): error is RetryableOcrError {
   return error instanceof Error
-    && (error as Partial<OcrRateLimitError>).code === "OCR_RATE_LIMIT"
-    && (error as Partial<OcrRateLimitError>).retryable === true
-    && typeof (error as Partial<OcrRateLimitError>).retryAfterSeconds === "number";
+    && ((error as Partial<RetryableOcrError>).code === "OCR_RATE_LIMIT" || (error as Partial<RetryableOcrError>).code === "OCR_PROVIDER_UNAVAILABLE" || (error as Partial<RetryableOcrError>).code === "OCR_INVALID_RESPONSE")
+    && (error as Partial<RetryableOcrError>).retryable === true
+    && typeof (error as Partial<RetryableOcrError>).retryAfterSeconds === "number";
 }
 
 function createVisionProviderError(
@@ -447,11 +549,17 @@ function extractVisionProviderErrorDetails(source: string | ChatCompletionRespon
   }
 
   try {
-    const payload = JSON.parse(source) as ChatCompletionResponse;
+    const payload = JSON.parse(source) as ChatCompletionResponse & { type?: string };
     if (payload.error?.message) {
       return {
         code: payload.error.code?.trim() || null,
         message: payload.error.message.trim()
+      };
+    }
+    if (typeof payload.type === "string" && payload.type.trim()) {
+      return {
+        code: payload.type.trim(),
+        message: source.trim()
       };
     }
   } catch {
@@ -755,6 +863,13 @@ async function executeVisionOcrRequest(
       );
     }
 
+    if (isVisionProviderUnavailableError(errorDetails.code, errorDetails.message)) {
+      throw createVisionProviderUnavailableError(
+        errorDetails.message,
+        extractRetryAfterSeconds(response, normalizedProviderError)
+      );
+    }
+
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
@@ -770,6 +885,13 @@ async function executeVisionOcrRequest(
       );
     }
 
+    if (isVisionProviderUnavailableError(errorDetails.code, errorDetails.message)) {
+      throw createVisionProviderUnavailableError(
+        errorDetails.message,
+        extractRetryAfterSeconds(null, normalizedProviderError)
+      );
+    }
+
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
@@ -778,7 +900,7 @@ async function executeVisionOcrRequest(
 
   let parsedPayload: z.infer<typeof ocrResponseSchema>;
   try {
-    parsedPayload = ocrResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
+    parsedPayload = parseOcrJsonPayload(extractJsonPayload(assistantText));
   } catch {
     if (finishReason === "length" && maxTokens < visionOcrMaxTokensCeiling) {
       return executeVisionOcrRequest(

@@ -91,7 +91,7 @@ export function isRetryableRateLimitError(error: unknown): error is ApiRequestEr
   return error instanceof Error
     && (error as Partial<ApiRequestError>).retryable === true
     && typeof (error as Partial<ApiRequestError>).retryAfterSeconds === "number"
-    && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT" || (error as Partial<ApiRequestError>).code === "AI_RATE_LIMIT");
+    && ((error as Partial<ApiRequestError>).statusCode === 429 || (error as Partial<ApiRequestError>).code === "OCR_RATE_LIMIT" || (error as Partial<ApiRequestError>).code === "OCR_PROVIDER_UNAVAILABLE" || (error as Partial<ApiRequestError>).code === "OCR_INVALID_RESPONSE" || (error as Partial<ApiRequestError>).code === "AI_RATE_LIMIT");
 }
 
 export function fetchAppVersion(fromCommit: string) {
@@ -863,6 +863,8 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
   }>;
 }
 
+export type OcrWaitReason = "invalid-response" | "rate-limit" | "unavailable";
+
 export type AppendImagesImportProgress = {
   bookId: string;
   completedFiles: number;
@@ -875,6 +877,7 @@ export type AppendImagesImportProgress = {
   stage: "ocr" | "waiting" | "saving" | "cancelling" | "cancelled" | "completed" | "failed";
   totalFiles: number;
   waitMessage: string | null;
+  waitReason: OcrWaitReason | null;
   waitSecondsRemaining: number | null;
 };
 

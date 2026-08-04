@@ -3214,6 +3214,10 @@ textarea {
   }
 }
 
+.review-ocr-toast {
+  white-space: normal;
+}
+
 .reader-floating-status {
   display: grid;
   gap: 0.12rem;
@@ -5695,6 +5699,19 @@ textarea {
   border-radius: 18px;
   background: rgba(255, 249, 240, 0.9);
   backdrop-filter: blur(12px);
+  color: var(--forest-900);
+  box-shadow: 0 14px 34px rgba(52, 32, 16, 0.14);
+}
+
+.review-image-processing-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.7rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 249, 240, 0.9);
   color: var(--forest-900);
   box-shadow: 0 14px 34px rgba(52, 32, 16, 0.14);
 }
