@@ -2549,6 +2549,7 @@ textarea {
 }
 
 .review-preview-panel {
+  position: relative;
   margin-top: 0;
 }
 

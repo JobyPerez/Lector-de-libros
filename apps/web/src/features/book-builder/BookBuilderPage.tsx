@@ -80,6 +80,14 @@ function CheckIcon() {
   );
 }
 
+function BookmarkIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" fill="currentColor" />
+    </ToolbarIcon>
+  );
+}
+
 function ChevronIcon() {
   return (
     <ToolbarIcon>
@@ -2707,6 +2715,7 @@ export function BookBuilderPage() {
   const reviewPageHighlightCount = reviewAnnotationsQuery.data?.highlights.length ?? 0;
   const reviewPageNoteCount = reviewAnnotationsQuery.data?.notes.length ?? 0;
   const reviewPageAnnotationCount = reviewPageBookmarkCount + reviewPageHighlightCount + reviewPageNoteCount;
+  const isReviewPageBookmarked = (reviewAnnotationsQuery.data?.bookmarks ?? []).some((bookmark) => bookmark.isOwnedByCurrentUser !== false);
   const reviewPreviewHtml = useMemo(
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
     [editedText, reviewPageQuery.data?.page.htmlContent]
@@ -3676,6 +3685,11 @@ export function BookBuilderPage() {
                     <div>
                       <p className="page-label">Previsualización de la página guardada</p>
                       <article className="reader-prose reader-prose-rich review-preview-panel">
+                        {isReviewPageBookmarked ? (
+                          <div className="reader-page-corner-bookmark" title="Página marcada">
+                            <BookmarkIcon />
+                          </div>
+                        ) : null}
                         <div
                           className="reader-rich-content"
                           dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
