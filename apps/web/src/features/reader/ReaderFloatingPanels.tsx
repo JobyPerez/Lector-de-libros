@@ -217,7 +217,8 @@ function haveSameUserIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((userId) => right.includes(userId));
 }
 
-function BookmarkShareEditor({ item, onUpdateShares, sharableUsers }: {
+function BookmarkShareEditor({ id, item, onUpdateShares, sharableUsers }: {
+  id: string;
   item: BookmarkNavigationItem;
   onUpdateShares: (bookmarkId: string, sharedWithUserIds: string[]) => Promise<void>;
   sharableUsers: { displayName: string | null; userId: string; username: string }[];
@@ -246,7 +247,7 @@ function BookmarkShareEditor({ item, onUpdateShares, sharableUsers }: {
   }
 
   return (
-    <div className="ai-request-share-editor reader-bookmark-share-editor">
+    <div className="ai-request-share-editor reader-bookmark-share-editor" id={id}>
       <ShareWithSelector
         disabled={isSaving}
         emptyLabel="Este marcador solo lo verás tú."
@@ -329,6 +330,18 @@ function BookmarkIcon() {
   return (
     <ReaderControlIcon>
       <path d="M7 5.5H17C17.5523 5.5 18 5.94772 18 6.5V19L12 15.25L6 19V6.5C6 5.94772 6.44772 5.5 7 5.5Z" fill="currentColor" />
+    </ReaderControlIcon>
+  );
+}
+
+function ShareIcon() {
+  return (
+    <ReaderControlIcon>
+      <circle cx="6" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m8.2 10.9 7.6-3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="m8.2 13.1 7.6 3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
     </ReaderControlIcon>
   );
 }
@@ -709,6 +722,7 @@ export function ReaderNavigationPanelContent({
   const tabsId = useId();
   const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
+  const [openBookmarkShareId, setOpenBookmarkShareId] = useState<string | null>(null);
 
   useEffect(() => {
     activeItemRef?.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -745,6 +759,8 @@ export function ReaderNavigationPanelContent({
 
   function renderBookmarkCard(item: BookmarkNavigationItem) {
     const isDeleting = deletingBookmarkIds.has(item.bookmarkId);
+    const isShareEditorOpen = openBookmarkShareId === item.bookmarkId;
+    const shareEditorId = `${tabsId}-bookmark-share-${item.bookmarkId}`;
     const canRemove = item.isOwnedByCurrentUser || item.visibilitySource === "DIRECT";
     const deleteLabel = item.isOwnedByCurrentUser ? "Borrar marcador" : "Quitar de mis marcadores";
     return (
@@ -769,6 +785,19 @@ export function ReaderNavigationPanelContent({
           ) : null}
         </button>
         <div className="reader-note-actions">
+          {item.isOwnedByCurrentUser && sharableUsers.length > 0 ? (
+            <button
+              aria-controls={shareEditorId}
+              aria-expanded={isShareEditorOpen}
+              aria-label={isShareEditorOpen ? "Cerrar opciones para compartir" : "Compartir marcador"}
+              className={isShareEditorOpen ? "reader-note-icon-button active" : "reader-note-icon-button"}
+              onClick={() => setOpenBookmarkShareId((currentId) => currentId === item.bookmarkId ? null : item.bookmarkId)}
+              title={isShareEditorOpen ? "Cerrar opciones para compartir" : "Compartir marcador"}
+              type="button"
+            >
+              <ShareIcon />
+            </button>
+          ) : null}
           {canRemove ? (
             <button
               aria-label={deleteLabel}
@@ -782,8 +811,9 @@ export function ReaderNavigationPanelContent({
             </button>
           ) : null}
         </div>
-        {item.isOwnedByCurrentUser && sharableUsers.length > 0 ? (
+        {item.isOwnedByCurrentUser && sharableUsers.length > 0 && isShareEditorOpen ? (
           <BookmarkShareEditor
+            id={shareEditorId}
             item={item}
             onUpdateShares={onUpdateBookmarkShares}
             sharableUsers={sharableUsers}
