@@ -342,8 +342,25 @@ type ReviewNavigationItem =
       type: "note";
     };
 
-function formatRelativeAnchor(pageNumber: number, paragraphNumber: number | null | undefined) {
-  return paragraphNumber ? `Pág. ${pageNumber} · párr. ${paragraphNumber}` : `Pág. ${pageNumber}`;
+function formatAnnotationAnchor(pageNumber: number, paragraphNumber: number, toc: ReaderTocEntry[]) {
+  const section = toc.reduce<ReaderTocEntry | null>((currentSection, entry) => {
+    const startsBeforeAnnotation = entry.pageNumber < pageNumber
+      || (entry.pageNumber === pageNumber && entry.paragraphNumber <= paragraphNumber);
+
+    if (!startsBeforeAnnotation) {
+      return currentSection;
+    }
+
+    if (!currentSection
+      || entry.pageNumber > currentSection.pageNumber
+      || (entry.pageNumber === currentSection.pageNumber && entry.paragraphNumber >= currentSection.paragraphNumber)) {
+      return entry;
+    }
+
+    return currentSection;
+  }, null);
+
+  return `Pág. ${pageNumber} · ${section ? `Sección: ${section.title}` : "Sin sección"}`;
 }
 
 function formatPageAnchor(pageNumber: number) {
@@ -3872,7 +3889,7 @@ export function BookBuilderPage() {
                               </div>
                               <div className="reader-navigation-note-meta">
                                 <span>{item.type === "highlight" ? "Resaltado" : "Nota"}</span>
-                                <span>{formatRelativeAnchor(item.pageNumber, item.paragraphNumber)}</span>
+                                <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, reviewNavigationQuery.data?.toc ?? [])}</span>
                               </div>
                             </button>
                             {item.type === "note" ? <p>{item.noteText}</p> : null}

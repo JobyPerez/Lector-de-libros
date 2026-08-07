@@ -212,6 +212,28 @@ type NavigationPanelContentProps = {
 };
 
 type BookmarkNavigationItem = Extract<ReaderNavigationListItem, { type: "bookmark" }>;
+type TocNavigationItem = Extract<ReaderNavigationListItem, { type: "toc" }>;
+
+function annotationLocationLabel(item: { pageNumber: number; paragraphNumber: number }, tocItems: TocNavigationItem[]) {
+  const section = tocItems.reduce<TocNavigationItem | null>((currentSection, tocItem) => {
+    const startsBeforeAnnotation = tocItem.pageNumber < item.pageNumber
+      || (tocItem.pageNumber === item.pageNumber && tocItem.paragraphNumber <= item.paragraphNumber);
+
+    if (!startsBeforeAnnotation) {
+      return currentSection;
+    }
+
+    if (!currentSection
+      || tocItem.pageNumber > currentSection.pageNumber
+      || (tocItem.pageNumber === currentSection.pageNumber && tocItem.paragraphNumber >= currentSection.paragraphNumber)) {
+      return tocItem;
+    }
+
+    return currentSection;
+  }, null);
+
+  return `Pág. ${item.pageNumber} · ${section ? `Sección: ${section.title}` : "Sin sección"}`;
+}
 
 function haveSameUserIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((userId) => right.includes(userId));
@@ -718,7 +740,8 @@ export function ReaderNavigationPanelContent({
   const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
   const indexItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "bookmark" | "toc" }> => item.type === "bookmark" || item.type === "toc");
   const noteItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "highlight" | "note" }> => item.type === "highlight" || item.type === "note");
-  const tocItemCount = indexItems.filter((item) => item.type === "toc").length;
+  const tocItems = indexItems.filter((item): item is TocNavigationItem => item.type === "toc");
+  const tocItemCount = tocItems.length;
   const tabsId = useId();
   const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
@@ -841,7 +864,7 @@ export function ReaderNavigationPanelContent({
           <div className="reader-navigation-item-topline">
             <span className={`reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}`} />
             <strong>{item.excerpt}</strong>
-            <span className="reader-navigation-inline-meta">Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
+            <span className="reader-navigation-inline-meta">{annotationLocationLabel(item, tocItems)}</span>
           </div>
         </button>
         <div className="reader-note-actions">
@@ -924,7 +947,7 @@ export function ReaderNavigationPanelContent({
           </div>
           <div className="reader-navigation-note-meta">
             {item.isReadOnly && item.authorLabel ? <span>Compartida por {item.authorLabel}</span> : null}
-            <span>Pág. {item.pageNumber} · párr. {item.paragraphNumber}</span>
+            <span>{annotationLocationLabel(item, tocItems)}</span>
           </div>
         </button>
         <div className="reader-note-actions">
