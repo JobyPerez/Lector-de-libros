@@ -34,6 +34,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
@@ -2123,9 +2124,11 @@ export function ReaderPage() {
   }, [currentPageNumber, currentParagraphNumber, navigationQuery.data?.toc]);
 
   const activeTocEntryKey = activeTocEntry ? tocEntryKey(activeTocEntry) : null;
-  const activeChapterTitle = activeTocEntry?.title ?? null;
+  const activeChapterTitle = useMemo(() => {
+    return formatSectionTitleWithAncestors(activeTocEntry, navigationQuery.data?.toc);
+  }, [activeTocEntry, navigationQuery.data?.toc]);
   const activeOfflineChapterId = activeTocEntry?.chapterId ?? null;
-  const activeOfflineChapterTitle = activeTocEntry?.title ?? null;
+  const activeOfflineChapterTitle = activeChapterTitle;
   const activeReadingSection = useMemo(() => {
     if (!activeTocEntry || activeTocEntry.sequenceNumber === null) {
       return null;
@@ -2197,7 +2200,7 @@ export function ReaderPage() {
         : null,
       chapterRemainingLabel: formatEstimatedReadingTime(estimateReadingMinutes(chapterRemainingWords, playbackRate)),
       chapterRemainingPageCount: Math.max(0, activeReadingSection.endPageNumber - currentChapterPage + 1),
-      chapterTitle: activeTocEntry.title,
+      chapterTitle: activeChapterTitle,
       chapterTotalCostLabel: shouldShowCost
         ? formatEstimatedUsdCost(estimateDeepgramTtsCostUsd(activeReadingSection.characterCount))
         : null,

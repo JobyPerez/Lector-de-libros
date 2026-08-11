@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useEffect, useId, useState } from "react";
 
 import type { BookOutlineSource } from "../../app/api";
-import { getOutlineSourceMeta } from "../../app/outline-source";
+import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 
 type AudioEngineOption = {
@@ -232,7 +232,8 @@ function annotationLocationLabel(item: { pageNumber: number; paragraphNumber: nu
     return currentSection;
   }, null);
 
-  return `Pág. ${item.pageNumber} · ${section ? `Sección: ${section.title}` : "Sin sección"}`;
+  const sectionTitle = formatSectionTitleWithAncestors(section, tocItems);
+  return `Pág. ${item.pageNumber} · ${sectionTitle ? `Sección: ${sectionTitle}` : "Sin sección"}`;
 }
 
 function haveSameUserIds(left: string[], right: string[]) {

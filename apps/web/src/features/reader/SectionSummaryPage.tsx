@@ -23,6 +23,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
@@ -1114,6 +1115,9 @@ export function SectionSummaryPage() {
   }
 
   const section = summaryQuery.data?.section ?? null;
+  const sectionTitlePath = useMemo(() => {
+    return formatSectionTitleWithAncestors(section, navigationQuery.data?.toc);
+  }, [section, navigationQuery.data?.toc]);
   const backToReaderPath = section ? `/books/${bookId}?page=${section.startPageNumber}` : `/books/${bookId}`;
 
   return (
@@ -1130,7 +1134,7 @@ export function SectionSummaryPage() {
 
         <div className="reader-section-summary-hero-main">
           <p className="eyebrow">Resumen de la sección del índice</p>
-          <h2>{section?.title ?? "Cargando sección..."}</h2>
+          <h2>{sectionTitlePath ?? section?.title ?? "Cargando sección..."}</h2>
           {section ? (
             <div className="reader-section-summary-meta">
               <span>Inicio: pág. {section.startPageNumber}</span>

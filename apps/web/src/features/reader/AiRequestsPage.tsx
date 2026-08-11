@@ -28,6 +28,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
@@ -771,7 +772,6 @@ export function AiRequestsPage() {
     activeNavigationItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [chapterId, isNavigationPanelVisible]);
 
-  const contextTitle = requestsQuery.data?.section?.title ?? requestsQuery.data?.book.title ?? "Peticiones IA";
   const isSectionScope = Boolean(chapterId);
   const backToReaderPath = requestsQuery.data?.section
     ? `/books/${bookId}?page=${requestsQuery.data.section.startPageNumber}`
@@ -907,6 +907,16 @@ export function AiRequestsPage() {
   const selectedChapterIdSet = useMemo(() => new Set(selectedChapterIds), [selectedChapterIds]);
   const selectedChapterCount = selectedChapterIds.length;
   const currentSectionEntry = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex] ?? null : null;
+  const currentSectionPathTitle = useMemo(() => {
+    if (currentSectionEntry) {
+      return formatSectionTitleWithAncestors(currentSectionEntry, navigationQuery.data?.toc);
+    }
+    if (requestsQuery.data?.section) {
+      return formatSectionTitleWithAncestors(requestsQuery.data.section, navigationQuery.data?.toc);
+    }
+    return null;
+  }, [currentSectionEntry, requestsQuery.data?.section, navigationQuery.data?.toc]);
+  const contextTitle = currentSectionPathTitle ?? requestsQuery.data?.book.title ?? "Peticiones IA";
   const rootSectionLevel = sectionEntries.length > 0
     ? sectionEntries.reduce((minimumLevel, entry) => Math.min(minimumLevel, entry.level), sectionEntries[0]?.level ?? 0)
     : 0;
@@ -998,7 +1008,7 @@ export function AiRequestsPage() {
       return;
     }
 
-    const currentSectionTitle = currentSectionEntry?.title ?? requestsQuery.data?.section?.title ?? "actual";
+    const currentSectionTitle = currentSectionPathTitle ?? "actual";
     setSelectedChapterIds(selectSameLevelPreviousAndCurrentChapterIds());
     setPromptText(`Eres editor literario. Resume el capítulo o sección «${currentSectionTitle}», teniendo en cuenta los capítulos anteriores solo para las referencias, si las hubiera, o el contexto. Es un libro en español; resume de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`);
     resetAiRequestFeedback();

@@ -29,7 +29,7 @@ import {
   type HighlightColor
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
-import { getOutlineSourceMeta } from "../../app/outline-source";
+import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { useAiConfig } from "../../components/AiModelBadge";
@@ -360,7 +360,8 @@ function formatAnnotationAnchor(pageNumber: number, paragraphNumber: number, toc
     return currentSection;
   }, null);
 
-  return `Pág. ${pageNumber} · ${section ? `Sección: ${section.title}` : "Sin sección"}`;
+  const sectionTitle = formatSectionTitleWithAncestors(section, toc);
+  return `Pág. ${pageNumber} · ${sectionTitle ? `Sección: ${sectionTitle}` : "Sin sección"}`;
 }
 
 function formatPageAnchor(pageNumber: number) {
@@ -2742,6 +2743,9 @@ export function BookBuilderPage() {
 
     return activeEntry;
   }, [reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  const reviewActiveChapterTitle = useMemo(() => {
+    return formatSectionTitleWithAncestors(reviewActiveTocEntry, reviewNavigationQuery.data?.toc);
+  }, [reviewActiveTocEntry, reviewNavigationQuery.data?.toc]);
   const activeTocEntryKey = reviewActiveTocEntry ? tocEntryKey(reviewActiveTocEntry) : null;
   const reviewActiveReadingSection = useMemo(() => {
     if (!reviewActiveTocEntry || reviewActiveTocEntry.sequenceNumber === null) {
@@ -3443,6 +3447,7 @@ export function BookBuilderPage() {
           <div>
             <p className="eyebrow">Edición</p>
             <h2>{selectedReviewBook?.title ?? "Cargando libro..."}</h2>
+            {reviewActiveChapterTitle ? <p className="reader-chapter-title">{reviewActiveChapterTitle}</p> : null}
           </div>
           <button
             aria-label="Volver al lector"
