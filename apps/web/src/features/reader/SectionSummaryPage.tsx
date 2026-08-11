@@ -436,6 +436,7 @@ export function SectionSummaryPage() {
       noteText: note.noteText,
       pageNumber: note.pageNumber,
       paragraphNumber: note.paragraphNumber ?? 1,
+      sharedWithUserIds: note.sharedWithUserIds ?? [],
       type: "note"
     }));
 
@@ -834,6 +835,15 @@ export function SectionSummaryPage() {
     }
 
     await updateBookmarkShares(accessToken, bookId, bookmarkId, sharedWithUserIds);
+    await refreshNavigationMetadata();
+  }
+
+  async function handleUpdateNoteShares(noteId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateNote(accessToken, bookId, noteId, { sharedWithUserIds });
     await refreshNavigationMetadata();
   }
 
@@ -1369,6 +1379,7 @@ export function SectionSummaryPage() {
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
               onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+              onUpdateNoteShares={(noteId, sharedWithUserIds) => handleUpdateNoteShares(noteId, sharedWithUserIds)}
               sharableUsers={sharableUsers}
               summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
             />

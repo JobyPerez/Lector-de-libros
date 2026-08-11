@@ -241,6 +241,18 @@ function ForwardIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <RequestIcon>
+      <circle cx="6" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m8.2 10.9 7.6-3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="m8.2 13.1 7.6 3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </RequestIcon>
+  );
+}
+
 function PlayIcon() {
   return (
     <RequestIcon>
@@ -347,6 +359,7 @@ export function AiRequestsPage() {
   const [enteringRequestId, setEnteringRequestId] = useState<string | null>(null);
   const [deletingRequestId, setDeletingRequestId] = useState<string | null>(null);
   const [updatingSharesRequestId, setUpdatingSharesRequestId] = useState<string | null>(null);
+  const [openShareRequestId, setOpenShareRequestId] = useState<string | null>(null);
   const [removingRequestId, setRemovingRequestId] = useState<string | null>(null);
   const [loadingAudioRequestId, setLoadingAudioRequestId] = useState<string | null>(null);
   const [playingRequestId, setPlayingRequestId] = useState<string | null>(null);
@@ -830,6 +843,7 @@ export function AiRequestsPage() {
       noteText: note.noteText,
       pageNumber: note.pageNumber,
       paragraphNumber: note.paragraphNumber ?? 1,
+      sharedWithUserIds: note.sharedWithUserIds ?? [],
       type: "note"
     }));
 
@@ -1110,6 +1124,15 @@ export function AiRequestsPage() {
     }
 
     await updateBookmarkShares(accessToken, bookId, bookmarkId, sharedWithUserIds);
+    await refreshNavigationMetadata();
+  }
+
+  async function handleUpdateNoteShares(noteId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateNote(accessToken, bookId, noteId, { sharedWithUserIds });
     await refreshNavigationMetadata();
   }
 
@@ -1764,6 +1787,20 @@ export function AiRequestsPage() {
                 >
                   {isAudioLoading ? <LoadingAudioIcon /> : isPlaying ? <PauseIcon /> : <PlayIcon />}
                 </button>
+                {request.isOwnedByCurrentUser && canCreateRequest && sharableUsers.length > 0 ? (
+                  <button
+                    aria-expanded={openShareRequestId === request.requestId}
+                    aria-label={openShareRequestId === request.requestId ? "Cerrar opciones para compartir petición" : sharedWithUserIds.length > 0 ? `Compartida con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir petición (Privada)"}
+                    className={`reader-note-icon-button reader-postit-share-btn ${sharedWithUserIds.length > 0 ? "shared" : ""} ${openShareRequestId === request.requestId ? "active" : ""}`}
+                    disabled={updatingSharesRequestId === request.requestId}
+                    onClick={() => setOpenShareRequestId((currentId) => currentId === request.requestId ? null : request.requestId)}
+                    title={sharedWithUserIds.length > 0 ? `Compartida con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir petición (Privada)"}
+                    type="button"
+                  >
+                    <ShareIcon />
+                    {sharedWithUserIds.length > 0 ? <span className="reader-share-badge">{sharedWithUserIds.length}</span> : null}
+                  </button>
+                ) : null}
                 <button
                   aria-label={deleteLabel}
                   className="reader-note-icon-button danger-icon-button"
@@ -1777,11 +1814,11 @@ export function AiRequestsPage() {
               </div>
             </div>
 
-            {request.isOwnedByCurrentUser && canCreateRequest && sharableUsers.length > 0 ? (
-              <div className="ai-request-share-editor">
+            {request.isOwnedByCurrentUser && canCreateRequest && sharableUsers.length > 0 && openShareRequestId === request.requestId ? (
+              <div className="ai-request-share-editor reader-popover-share-container">
                 <ShareWithSelector
                   disabled={updatingSharesRequestId === request.requestId}
-                  emptyLabel="Esta petición solo la verás tú."
+                  emptyLabel="Esta petición solo la verás tú (Privada)."
                   label="Compartida con"
                   onChange={(userIds) => {
                     setShareDrafts((current) => ({ ...current, [request.requestId]: userIds }));
@@ -1909,6 +1946,7 @@ export function AiRequestsPage() {
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
               onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+              onUpdateNoteShares={(noteId, sharedWithUserIds) => handleUpdateNoteShares(noteId, sharedWithUserIds)}
               sharableUsers={sharableUsers}
               summaryHrefBuilder={(targetChapterId) => sectionAiRequestsHref(targetChapterId)}
             />

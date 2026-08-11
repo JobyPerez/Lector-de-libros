@@ -399,6 +399,17 @@ function highlightClassName(color: HighlightColor) {
   }
 }
 
+function getPostItColorClass(color?: string | null) {
+  if (!color) return "postit-yellow";
+  const c = color.toLowerCase();
+  if (c.includes("green") || c.includes("verde")) return "postit-green";
+  if (c.includes("blue") || c.includes("azul")) return "postit-blue";
+  if (c.includes("pink") || c.includes("rosa") || c.includes("rose")) return "postit-pink";
+  if (c.includes("orange") || c.includes("naranja")) return "postit-orange";
+  if (c.includes("purple") || c.includes("morado") || c.includes("púrpura") || c.includes("violeta")) return "postit-purple";
+  return "postit-yellow";
+}
+
 type ReviewTextAlignment = "center" | "left" | "right";
 type AppendInsertionSide = "before" | "after";
 type ReviewImageCropEdge = "bottom" | "left" | "right" | "top";
@@ -3880,26 +3891,55 @@ export function BookBuilderPage() {
                     </div>
                     {reviewNoteItems.length ? (
                       <div className="reader-navigation-list reader-navigation-notes-list">
-                        {reviewNoteItems.map((item) => (
-                          <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-                            <button
-                              className="reader-note-jump"
-                              onClick={() => jumpToReviewPage(item.pageNumber)}
-                              ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                              type="button"
+                        {reviewNoteItems.map((item) => {
+                          const colorClass = getPostItColorClass(item.color);
+                          return (
+                            <article
+                              className={`reader-note-card reader-postit-card reader-navigation-item-note reader-navigation-note-entry ${colorClass} ${item.isActive ? "active" : ""}`}
+                              key={item.key}
                             >
-                              <div className="reader-navigation-item-topline">
-                                <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                                <strong>{item.excerpt}</strong>
+                              <div className="reader-postit-tape" />
+
+                              {/* 1. TEXTO ARRIBA */}
+                              <div className="reader-postit-note-text">
+                                {item.type === "note" && item.noteText ? (
+                                  <p>{item.noteText}</p>
+                                ) : (
+                                  <span className="reader-postit-highlight-title">
+                                    {item.type === "highlight" ? "Resaltado" : "(Sin nota escrita)"}
+                                  </span>
+                                )}
                               </div>
-                              <div className="reader-navigation-note-meta">
-                                <span>{item.type === "highlight" ? "Resaltado" : "Nota"}</span>
-                                <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, reviewNavigationQuery.data?.toc ?? [])}</span>
+
+                              {/* 2. LO ANOTADO DEBAJO */}
+                              <div className="reader-postit-excerpt-block">
+                                <div className="reader-postit-excerpt-header">
+                                  <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+                                  <span className="reader-postit-excerpt-label">Texto anotado</span>
+                                </div>
+                                <blockquote className="reader-postit-excerpt-quote">
+                                  "{item.excerpt}"
+                                </blockquote>
+                                <div className="reader-navigation-note-meta">
+                                  <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, reviewNavigationQuery.data?.toc ?? [])}</span>
+                                </div>
                               </div>
-                            </button>
-                            {item.type === "note" ? <p>{item.noteText}</p> : null}
-                          </article>
-                        ))}
+
+                              {/* 3. LOS BOTONES ABAJO */}
+                              <div className="reader-postit-footer">
+                                <button
+                                  className="reader-postit-jump-btn"
+                                  onClick={() => jumpToReviewPage(item.pageNumber)}
+                                  ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
+                                  type="button"
+                                  title="Ir a esta página"
+                                >
+                                  <span>Ir al texto</span>
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
                     ) : (
                       <p className="reader-navigation-empty">Todavía no hay notas ni resaltados en este libro.</p>

@@ -172,6 +172,7 @@ export type ReaderNavigationListItem =
       noteText: string;
       pageNumber: number;
       paragraphNumber: number;
+      sharedWithUserIds?: string[];
       type: "note";
     };
 
@@ -207,6 +208,7 @@ type NavigationPanelContentProps = {
   onSummaryClick?: () => void;
   onToggleNoteExpansion: (noteId: string) => void;
   onUpdateBookmarkShares: (bookmarkId: string, sharedWithUserIds: string[]) => Promise<void>;
+  onUpdateNoteShares?: (noteId: string, sharedWithUserIds: string[]) => Promise<void>;
   sharableUsers: { displayName: string | null; userId: string; username: string }[];
   summaryHrefBuilder?: (chapterId: string) => string;
 };
@@ -275,6 +277,64 @@ function BookmarkShareEditor({ id, item, onUpdateShares, sharableUsers }: {
         disabled={isSaving}
         emptyLabel="Este marcador solo lo verás tú."
         label="Compartido con"
+        onChange={(userIds) => {
+          setDraft(userIds);
+          setError(null);
+        }}
+        options={sharableUsers}
+        selected={selected}
+      />
+      {error ? <p className="error-text" role="alert">{error}</p> : null}
+      {hasChanges ? (
+        <button
+          className="secondary-button ai-request-share-save"
+          disabled={isSaving}
+          onClick={() => void handleSave()}
+          type="button"
+        >
+          {isSaving ? "Guardando..." : "Guardar destinatarios"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function NoteShareEditor({ id, item, onUpdateShares, sharableUsers }: {
+  id: string;
+  item: Extract<ReaderNavigationListItem, { type: "note" }>;
+  onUpdateShares: (noteId: string, sharedWithUserIds: string[]) => Promise<void>;
+  sharableUsers: { displayName: string | null; userId: string; username: string }[];
+}) {
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const currentShares = item.sharedWithUserIds ?? [];
+  const selected = draft ?? currentShares;
+  const hasChanges = draft !== null && !haveSameUserIds(draft, currentShares);
+
+  async function handleSave() {
+    if (isSaving) {
+      return;
+    }
+
+    setIsSaving(true);
+    setError(null);
+    try {
+      await onUpdateShares(item.noteId, selected);
+      setDraft(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "No se pudo actualizar con quién se comparte la nota.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="ai-request-share-editor reader-bookmark-share-editor" id={id}>
+      <ShareWithSelector
+        disabled={isSaving}
+        emptyLabel="Esta nota solo la verás tú (Privada)."
+        label="Compartida con"
         onChange={(userIds) => {
           setDraft(userIds);
           setError(null);
@@ -417,6 +477,17 @@ function ChevronIcon() {
 
 function highlightClassName(color: ReaderHighlightColor) {
   return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
+}
+
+function getPostItColorClass(color?: string | null) {
+  if (!color) return "postit-yellow";
+  const c = color.toLowerCase();
+  if (c.includes("green") || c.includes("verde")) return "postit-green";
+  if (c.includes("blue") || c.includes("azul")) return "postit-blue";
+  if (c.includes("pink") || c.includes("rosa") || c.includes("rose")) return "postit-pink";
+  if (c.includes("orange") || c.includes("naranja")) return "postit-orange";
+  if (c.includes("purple") || c.includes("morado") || c.includes("púrpura") || c.includes("violeta")) return "postit-purple";
+  return "postit-yellow";
 }
 
 const BOOKMARK_TONE_COUNT = 6;
@@ -733,6 +804,7 @@ export function ReaderNavigationPanelContent({
   onSummaryClick,
   onToggleNoteExpansion,
   onUpdateBookmarkShares,
+  onUpdateNoteShares,
   outlineEditHref,
   outlineSource,
   sharableUsers,
@@ -747,6 +819,7 @@ export function ReaderNavigationPanelContent({
   const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
   const [openBookmarkShareId, setOpenBookmarkShareId] = useState<string | null>(null);
+  const [openNoteShareId, setOpenNoteShareId] = useState<string | null>(null);
 
   useEffect(() => {
     activeItemRef?.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -787,8 +860,13 @@ export function ReaderNavigationPanelContent({
     const shareEditorId = `${tabsId}-bookmark-share-${item.bookmarkId}`;
     const canRemove = item.isOwnedByCurrentUser || item.visibilitySource === "DIRECT";
     const deleteLabel = item.isOwnedByCurrentUser ? "Borrar marcador" : "Quitar de mis marcadores";
+    const toneClass = bookmarkToneClassName(item.bookmarkId);
+    const sharedWithUserIds = item.sharedWithUserIds ?? [];
+    const isShared = sharedWithUserIds.length > 0;
+    const canShare = item.isOwnedByCurrentUser && sharableUsers.length > 0;
+
     return (
-      <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} data-deleting={isDeleting ? "" : undefined} key={item.key}>
+      <article className={`reader-note-card reader-navigation-item-bookmark-card ${toneClass} ${item.isActive ? "active" : ""}`} data-deleting={isDeleting ? "" : undefined} key={item.key}>
         <button
           className="reader-navigation-item reader-navigation-item-bookmark"
           onClick={() => onSelectBookmark(item)}
@@ -800,7 +878,7 @@ export function ReaderNavigationPanelContent({
           type="button"
         >
           <div className="reader-navigation-item-topline">
-            <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${bookmarkToneClassName(item.bookmarkId)}`}><BookmarkIcon /></span>
+            <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${toneClass}`}><BookmarkIcon /></span>
             <strong>{item.title}</strong>
             <span className="reader-navigation-inline-meta">Pág. {item.pageNumber}</span>
           </div>
@@ -809,17 +887,18 @@ export function ReaderNavigationPanelContent({
           ) : null}
         </button>
         <div className="reader-note-actions">
-          {item.isOwnedByCurrentUser && sharableUsers.length > 0 ? (
+          {canShare ? (
             <button
               aria-controls={shareEditorId}
               aria-expanded={isShareEditorOpen}
-              aria-label={isShareEditorOpen ? "Cerrar opciones para compartir" : "Compartir marcador"}
-              className={isShareEditorOpen ? "reader-note-icon-button active" : "reader-note-icon-button"}
+              aria-label={isShareEditorOpen ? "Cerrar opciones para compartir" : isShared ? `Compartido con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir marcador (Privada)"}
+              className={`reader-note-icon-button reader-postit-share-btn ${isShared ? "shared" : ""} ${isShareEditorOpen ? "active" : ""}`}
               onClick={() => setOpenBookmarkShareId((currentId) => currentId === item.bookmarkId ? null : item.bookmarkId)}
-              title={isShareEditorOpen ? "Cerrar opciones para compartir" : "Compartir marcador"}
+              title={isShared ? `Compartido con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir marcador (Privada)"}
               type="button"
             >
               <ShareIcon />
+              {isShared ? <span className="reader-share-badge">{sharedWithUserIds.length}</span> : null}
             </button>
           ) : null}
           {canRemove ? (
@@ -835,7 +914,7 @@ export function ReaderNavigationPanelContent({
             </button>
           ) : null}
         </div>
-        {item.isOwnedByCurrentUser && sharableUsers.length > 0 && isShareEditorOpen ? (
+        {canShare && isShareEditorOpen ? (
           <BookmarkShareEditor
             id={shareEditorId}
             item={item}
@@ -849,53 +928,24 @@ export function ReaderNavigationPanelContent({
 
   function renderHighlightCard(item: Extract<ReaderNavigationListItem, { type: "highlight" }>) {
     const isHighlightEditing = editingHighlightId === item.highlightId;
+    const colorClass = getPostItColorClass(item.color);
 
     return (
-      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-        <button
-          className="reader-note-jump"
-          onClick={() => onSelectHighlight(item)}
-          ref={item.isActive && activeItemRef
-            ? (element) => {
-                activeItemRef.current = element;
-              }
-            : undefined}
-          type="button"
-        >
-          <div className="reader-navigation-item-topline">
-            <span className={`reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}`} />
-            <strong>{item.excerpt}</strong>
-            <span className="reader-navigation-inline-meta">{annotationLocationLabel(item, tocItems)}</span>
-          </div>
-        </button>
-        <div className="reader-note-actions">
-          <button
-            aria-label="Añadir nota al resaltado"
-            className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-            onClick={() => onBeginHighlightEditing(item.highlightId)}
-            title="Añadir nota"
-            type="button"
-          >
-            <EditIcon />
-          </button>
-          <button
-            aria-label="Borrar resaltado"
-            className="reader-note-delete"
-            onClick={() => onDeleteHighlight(item.highlightId)}
-            title="Borrar resaltado"
-            type="button"
-          >
-            <DeletePageIcon />
-          </button>
-        </div>
+      <article
+        className={`reader-note-card reader-postit-card reader-navigation-item-note reader-navigation-note-entry ${colorClass} ${item.isActive ? "active" : ""}`}
+        key={item.key}
+      >
+        <div className="reader-postit-tape" />
 
+        {/* 1. TEXTO ARRIBA */}
         {isHighlightEditing ? (
           <div className="reader-note-editor">
             <label className="reader-note-composer compact">
               <textarea
                 onChange={(event) => onEditingHighlightTextChange(event.target.value)}
-                rows={4}
+                rows={3}
                 value={editingHighlightText}
+                placeholder="Añadir una nota a este resaltado..."
               />
             </label>
             <div className="reader-note-editor-actions">
@@ -920,72 +970,85 @@ export function ReaderNavigationPanelContent({
               </button>
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="reader-postit-note-text">
+            <span className="reader-postit-highlight-title">Resaltado</span>
+          </div>
+        )}
+
+        {/* 2. LO ANOTADO DEBAJO */}
+        <div className="reader-postit-excerpt-block">
+          <div className="reader-postit-excerpt-header">
+            <span className={`reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}`} />
+            <span className="reader-postit-excerpt-label">Texto anotado</span>
+          </div>
+          <blockquote className="reader-postit-excerpt-quote">
+            "{item.excerpt}"
+          </blockquote>
+          <div className="reader-navigation-note-meta">
+            <span>{annotationLocationLabel(item, tocItems)}</span>
+          </div>
+        </div>
+
+        {/* 3. LOS BOTONES ABAJO */}
+        <div className="reader-postit-footer">
+          <button
+            className="reader-postit-jump-btn"
+            onClick={() => onSelectHighlight(item)}
+            ref={item.isActive && activeItemRef
+              ? (element) => {
+                  activeItemRef.current = element;
+                }
+              : undefined}
+            type="button"
+            title="Ir al lugar en el libro"
+          >
+            <span>Ir al texto</span>
+          </button>
+
+          <div className="reader-note-actions">
+            <button
+              aria-label="Añadir nota al resaltado"
+              className={isHighlightEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+              onClick={() => onBeginHighlightEditing(item.highlightId)}
+              title="Añadir nota"
+              type="button"
+            >
+              <EditIcon />
+            </button>
+            <button
+              aria-label="Borrar resaltado"
+              className="reader-note-delete"
+              onClick={() => onDeleteHighlight(item.highlightId)}
+              title="Borrar resaltado"
+              type="button"
+            >
+              <DeletePageIcon />
+            </button>
+          </div>
+        </div>
       </article>
     );
   }
 
   function renderNoteCard(item: Extract<ReaderNavigationListItem, { type: "note" }>) {
-    const isNoteExpanded = expandedNoteId === item.noteId;
     const isNoteEditing = editingNoteId === item.noteId;
     const hasNoteText = item.noteText.trim().length > 0;
+    const colorClass = getPostItColorClass(item.color);
+    const isShareEditorOpen = openNoteShareId === item.noteId;
+    const shareEditorId = `${tabsId}-note-share-${item.noteId}`;
+    const sharedWithUserIds = item.sharedWithUserIds ?? [];
+    const isShared = sharedWithUserIds.length > 0;
+    const canShare = !item.isReadOnly && sharableUsers.length > 0;
 
     return (
-      <article className={item.isActive ? "reader-note-card reader-navigation-item-note reader-navigation-note-entry active" : "reader-note-card reader-navigation-item-note reader-navigation-note-entry"} key={item.key}>
-        <button
-          className="reader-note-jump"
-          onClick={() => onSelectNote(item)}
-          ref={item.isActive && activeItemRef
-            ? (element) => {
-                activeItemRef.current = element;
-              }
-            : undefined}
-          type="button"
-        >
-          <div className="reader-navigation-item-topline">
-            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-            <strong>{item.excerpt}</strong>
-          </div>
-          <div className="reader-navigation-note-meta">
-            {item.isReadOnly && item.authorLabel ? <span>Compartida por {item.authorLabel}</span> : null}
-            <span>{annotationLocationLabel(item, tocItems)}</span>
-          </div>
-        </button>
-        <div className="reader-note-actions">
-          {hasNoteText ? (
-            <button
-              aria-expanded={isNoteExpanded}
-              aria-label={isNoteExpanded ? "Ocultar contenido de la nota" : "Mostrar contenido de la nota"}
-              className="reader-note-icon-button"
-              onClick={() => onToggleNoteExpansion(item.noteId)}
-              title={isNoteExpanded ? "Ocultar nota" : "Ver nota"}
-              type="button"
-            >
-              <EyeIcon />
-            </button>
-          ) : null}
-          {!item.isReadOnly ? (
-            <button
-              aria-label="Editar nota"
-              className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
-              onClick={() => onBeginNoteEditing({ color: item.color, noteId: item.noteId, noteText: item.noteText })}
-              title="Editar nota"
-              type="button"
-            >
-              <EditIcon />
-            </button>
-          ) : null}
-          <button
-            aria-label={item.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
-            className="reader-note-delete"
-            onClick={() => handleDeleteNote(item)}
-            title={item.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
-            type="button"
-          >
-            <DeletePageIcon />
-          </button>
-        </div>
+      <article
+        className={`reader-note-card reader-postit-card reader-navigation-item-note reader-navigation-note-entry ${colorClass} ${item.isActive ? "active" : ""}`}
+        key={item.key}
+      >
+        <div className="reader-postit-tape" />
 
+        {/* 1. TEXTO ARRIBA */}
         {isNoteEditing ? (
           <div className="reader-note-editor">
             {editingNoteColor ? (
@@ -1011,7 +1074,7 @@ export function ReaderNavigationPanelContent({
             <label className="reader-note-composer compact">
               <textarea
                 onChange={(event) => onEditingNoteTextChange(event.target.value)}
-                rows={4}
+                rows={3}
                 value={editingNoteText}
               />
             </label>
@@ -1037,8 +1100,92 @@ export function ReaderNavigationPanelContent({
               </button>
             </div>
           </div>
-        ) : isNoteExpanded ? (
-          <p>{item.noteText}</p>
+        ) : (
+          <div className="reader-postit-note-text">
+            {hasNoteText ? (
+              <p>{item.noteText}</p>
+            ) : (
+              <p className="reader-postit-empty-text">(Sin nota escrita)</p>
+            )}
+          </div>
+        )}
+
+        {/* 2. LO ANOTADO DEBAJO */}
+        <div className="reader-postit-excerpt-block">
+          <div className="reader-postit-excerpt-header">
+            <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+            <span className="reader-postit-excerpt-label">Texto anotado</span>
+          </div>
+          <blockquote className="reader-postit-excerpt-quote">
+            "{item.excerpt}"
+          </blockquote>
+          <div className="reader-navigation-note-meta">
+            {item.isReadOnly && item.authorLabel ? <span>Compartida por {item.authorLabel} • </span> : null}
+            <span>{annotationLocationLabel(item, tocItems)}</span>
+          </div>
+        </div>
+
+        {/* 3. LOS BOTONES ABAJO */}
+        <div className="reader-postit-footer">
+          <button
+            className="reader-postit-jump-btn"
+            onClick={() => onSelectNote(item)}
+            ref={item.isActive && activeItemRef
+              ? (element) => {
+                  activeItemRef.current = element;
+                }
+              : undefined}
+            type="button"
+            title="Ir al lugar en el libro"
+          >
+            <span>Ir al texto</span>
+          </button>
+
+          <div className="reader-note-actions">
+            {canShare ? (
+              <button
+                aria-controls={shareEditorId}
+                aria-expanded={isShareEditorOpen}
+                aria-label={isShareEditorOpen ? "Cerrar opciones para compartir nota" : isShared ? `Compartida con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir nota (Privada)"}
+                className={`reader-note-icon-button reader-postit-share-btn ${isShared ? "shared" : ""} ${isShareEditorOpen ? "active" : ""}`}
+                onClick={() => setOpenNoteShareId((currentId) => currentId === item.noteId ? null : item.noteId)}
+                title={isShared ? `Compartida con ${sharedWithUserIds.length} ${sharedWithUserIds.length === 1 ? "persona" : "personas"}` : "Compartir nota (Privada)"}
+                type="button"
+              >
+                <ShareIcon />
+                {isShared ? <span className="reader-share-badge">{sharedWithUserIds.length}</span> : null}
+              </button>
+            ) : null}
+            {!item.isReadOnly ? (
+              <button
+                aria-label="Editar nota"
+                className={isNoteEditing ? "reader-note-icon-button active" : "reader-note-icon-button"}
+                onClick={() => onBeginNoteEditing({ color: item.color, noteId: item.noteId, noteText: item.noteText })}
+                title="Editar nota"
+                type="button"
+              >
+                <EditIcon />
+              </button>
+            ) : null}
+            <button
+              aria-label={item.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
+              className="reader-note-delete"
+              onClick={() => handleDeleteNote(item)}
+              title={item.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
+              type="button"
+            >
+              <DeletePageIcon />
+            </button>
+          </div>
+        </div>
+
+        {canShare && isShareEditorOpen && onUpdateNoteShares ? (
+          <NoteShareEditor
+            id={shareEditorId}
+            item={item}
+            onUpdateShares={onUpdateNoteShares}
+            sharableUsers={sharableUsers}
+          />
         ) : null}
       </article>
     );

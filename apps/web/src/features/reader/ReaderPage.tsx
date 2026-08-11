@@ -210,6 +210,7 @@ type NavigationListItem =
       noteText: string;
       pageNumber: number;
       paragraphNumber: number;
+      sharedWithUserIds?: string[];
       type: "note";
     };
 
@@ -993,6 +994,18 @@ function SaveIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <ReaderControlIcon>
+      <circle cx="6" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="18" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m8.2 10.9 7.6-3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="m8.2 13.1 7.6 3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+    </ReaderControlIcon>
+  );
+}
+
 function highlightClassName(color: HighlightColor) {
   return `reader-text-highlight reader-text-highlight-${color.toLowerCase()}`;
 }
@@ -1296,6 +1309,8 @@ export function ReaderPage() {
   const [isUpdatingNote, setIsUpdatingNote] = useState(false);
   const [selectionNoteSharedWith, setSelectionNoteSharedWith] = useState<string[]>([]);
   const [activeReaderNoteSharedWith, setActiveReaderNoteSharedWith] = useState<string[] | null>(null);
+  const [isReaderNoteShareOpen, setIsReaderNoteShareOpen] = useState(false);
+  const [isSelectionShareOpen, setIsSelectionShareOpen] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -2388,6 +2403,7 @@ export function ReaderPage() {
       noteText: note.noteText,
       pageNumber: note.pageNumber,
       paragraphNumber: note.paragraphNumber ?? 1,
+      sharedWithUserIds: note.sharedWithUserIds ?? [],
       type: "note"
     }));
 
@@ -2879,6 +2895,7 @@ export function ReaderPage() {
       const popoverLayout = resolveReaderPopoverLayout(rect);
       setSelectionDraft(null);
       setSelectionNoteText("");
+      setIsReaderNoteShareOpen(false);
       setActiveReaderNote({
         authorLabel: note?.userDisplayName?.trim() || (note?.username ? `@${note.username}` : null),
         color: note?.highlightColor ?? highlight.color,
@@ -4661,6 +4678,15 @@ export function ReaderPage() {
     await refreshReaderMetadata();
   }
 
+  async function handleUpdateNoteShares(noteId: string, sharedWithUserIds: string[]) {
+    if (!accessToken) {
+      return;
+    }
+
+    await updateNote(accessToken, bookId, noteId, { sharedWithUserIds });
+    await refreshReaderMetadata();
+  }
+
   function renderParagraphText(paragraph: ParagraphContent) {
     const segments = buildTextSegments(paragraph.paragraphText, highlightsByParagraphId.get(paragraph.paragraphId) ?? []);
     const activeSearchQuery = activeSearchTarget
@@ -4958,162 +4984,207 @@ export function ReaderPage() {
         </div>
       ) : null}
 
-      {selectionDraft ? (
-        <div
-          className="reader-selection-popover"
-          data-placement={selectionDraft.rect.placement}
-          ref={selectionPopoverRef}
-          style={{ left: `${selectionDraft.rect.left}px`, maxHeight: `${selectionDraft.rect.maxHeight}px`, top: `${selectionDraft.rect.top}px` }}
-        >
-          <div className="reader-selection-swatches" role="radiogroup" aria-label="Color del resaltado">
-            {HIGHLIGHT_OPTIONS.map((option) => (
-              <button
-                aria-checked={selectionColor === option.color}
-                className={selectionColor === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
-                key={option.color}
-                onClick={() => setSelectionColor(option.color)}
-                role="radio"
-                title={option.label}
-                type="button"
-              >
-                <span>{option.label}</span>
-              </button>
-            ))}
-          </div>
-          <p className="reader-selection-preview">{selectionDraft.selectedText}</p>
-          <label className="reader-note-composer compact">
-            <textarea
-              onChange={(event) => setSelectionNoteText(event.target.value)}
-              placeholder="Nota opcional: añade un apunte sobre este fragmento."
-              rows={3}
-              value={selectionNoteText}
-            />
-          </label>
-          {sharableUsers.length > 0 ? (
-            <ShareWithSelector
-              emptyLabel="Esta nota solo la verás tú."
-              label="Compartir nota con"
-              onChange={setSelectionNoteSharedWith}
-              options={sharableUsers}
-              selected={selectionNoteSharedWith}
-            />
-          ) : null}
-          <div className="reader-selection-actions">
-            <button
-              className="secondary-button"
-              onClick={() => {
-                setSelectionDraft(null);
-                setSelectionNoteText("");
-                setSelectionNoteSharedWith([]);
-                window.getSelection()?.removeAllRanges();
-              }}
-              type="button"
-            >
-              Cancelar
-            </button>
-            <button className="primary-button" disabled={isSavingSelection} onClick={() => void handleSaveSelection()} type="button">
-              {isSavingSelection ? "Guardando..." : "Guardar resaltado"}
-            </button>
-          </div>
-        </div>
-      ) : null}
+      {selectionDraft ? (() => {
+        const selectionSharedCount = selectionNoteSharedWith.length;
+        const isSelectionShared = selectionSharedCount > 0;
 
-      {activeReaderNote ? (
-        <div
-          className="reader-existing-note-popover"
-          data-placement={activeReaderNote.rect.placement}
-          ref={readerNotePopoverRef}
-          style={{ left: `${activeReaderNote.rect.left}px`, maxHeight: `${activeReaderNote.rect.maxHeight}px`, top: `${activeReaderNote.rect.top}px` }}
-        >
-          <div className="reader-existing-note-header">
-            <span className={activeReaderNote.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(activeReaderNote.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-            {activeReaderNote.noteId ? <strong>{activeReaderNote.isReadOnly ? "Nota compartida" : "Nota vinculada"}</strong> : null}
-            {activeReaderNote.isReadOnly && activeReaderNote.authorLabel ? <span>por {activeReaderNote.authorLabel}</span> : null}
-          </div>
-          {activeReaderNote.noteId && activeReaderNote.color && !activeReaderNote.isReadOnly ? (
-            <div aria-label="Color del resaltado" className="reader-selection-swatches" role="radiogroup">
+        return (
+          <div
+            className="reader-selection-popover"
+            data-placement={selectionDraft.rect.placement}
+            ref={selectionPopoverRef}
+            style={{ left: `${selectionDraft.rect.left}px`, maxHeight: `${selectionDraft.rect.maxHeight}px`, top: `${selectionDraft.rect.top}px` }}
+          >
+            <div className="reader-selection-swatches" role="radiogroup" aria-label="Color del resaltado">
               {HIGHLIGHT_OPTIONS.map((option) => (
                 <button
-                  aria-checked={activeReaderNote.color === option.color}
-                  className={activeReaderNote.color === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
-                  disabled={isUpdatingNote}
+                  aria-checked={selectionColor === option.color}
+                  className={selectionColor === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
                   key={option.color}
-                  onClick={() => {
-                    setActiveReaderNote((current) => current
-                      ? {
-                          ...current,
-                          color: option.color
-                        }
-                      : current);
-                  }}
+                  onClick={() => setSelectionColor(option.color)}
                   role="radio"
+                  title={option.label}
                   type="button"
                 >
-                  {option.label}
+                  <span>{option.label}</span>
                 </button>
               ))}
             </div>
-          ) : null}
-          <p className="reader-selection-preview">{activeReaderNote.selectedText}</p>
-          <label className="reader-note-composer compact">
-            <textarea
-              onChange={(event) => setActiveReaderNoteText(event.target.value)}
-              placeholder={activeReaderNote.noteId ? "Escribe para actualizar esta nota." : "Nota opcional: añade un apunte sobre este fragmento."}
-              readOnly={activeReaderNote.isReadOnly}
-              rows={4}
-              value={activeReaderNoteText}
-            />
-          </label>
-          {sharableUsers.length > 0 && !activeReaderNote.isReadOnly ? (
-            <ShareWithSelector
-              emptyLabel={activeReaderNote.noteId ? "Esta nota solo la verás tú." : "Esta nota solo la verás tú."}
-              label={activeReaderNote.noteId ? "Compartida con" : "Compartir nota con"}
-              onChange={setActiveReaderNoteSharedWith}
-              options={sharableUsers}
-              selected={activeReaderNoteSharedWith ?? []}
-            />
-          ) : null}
-          <div className="reader-note-editor-actions">
-            {activeReaderNote.noteId ? (
+            <p className="reader-selection-preview">{selectionDraft.selectedText}</p>
+            <label className="reader-note-composer compact">
+              <textarea
+                onChange={(event) => setSelectionNoteText(event.target.value)}
+                placeholder="Nota opcional: añade un apunte sobre este fragmento."
+                rows={3}
+                value={selectionNoteText}
+              />
+            </label>
+            {sharableUsers.length > 0 && isSelectionShareOpen ? (
+              <div className="reader-popover-share-container">
+                <ShareWithSelector
+                  emptyLabel="Esta nota solo la verás tú (Privada)."
+                  label="Compartir nota con"
+                  onChange={setSelectionNoteSharedWith}
+                  options={sharableUsers}
+                  selected={selectionNoteSharedWith}
+                />
+              </div>
+            ) : null}
+            <div className="reader-selection-actions">
+              {sharableUsers.length > 0 ? (
+                <button
+                  aria-expanded={isSelectionShareOpen}
+                  aria-label={isSelectionShareOpen ? "Cerrar opciones para compartir nota" : isSelectionShared ? `Compartida con ${selectionSharedCount} ${selectionSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota"}
+                  className={`secondary-button reader-postit-share-btn ${isSelectionShared ? "shared" : ""} ${isSelectionShareOpen ? "active" : ""}`}
+                  onClick={() => setIsSelectionShareOpen((prev) => !prev)}
+                  title={isSelectionShared ? `Compartida con ${selectionSharedCount} ${selectionSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota"}
+                  type="button"
+                >
+                  <ShareIcon />
+                  <span>{isSelectionShared ? `Compartida (${selectionSharedCount})` : "Compartir"}</span>
+                </button>
+              ) : null}
               <button
-                aria-label={activeReaderNote.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
-                className="reader-note-icon-button danger-icon-button"
-                disabled={isUpdatingNote}
-                onClick={() => handleDeleteReaderNote(activeReaderNote.noteId as string, activeReaderNote.isReadOnly)}
-                title={activeReaderNote.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
+                className="secondary-button"
+                onClick={() => {
+                  setSelectionDraft(null);
+                  setSelectionNoteText("");
+                  setSelectionNoteSharedWith([]);
+                  setIsSelectionShareOpen(false);
+                  window.getSelection()?.removeAllRanges();
+                }}
                 type="button"
               >
-                <DeletePageIcon />
+                Cancelar
               </button>
-            ) : null}
-            <button
-              aria-label="Cerrar nota"
-              className="reader-note-icon-button"
-              disabled={isUpdatingNote}
-              onClick={() => {
-                setActiveReaderNote(null);
-                setActiveReaderNoteText("");
-              }}
-              title="Cerrar"
-              type="button"
-            >
-              <CloseIcon />
-            </button>
-            {!activeReaderNote.isReadOnly ? <button
-              aria-label={activeReaderNote.noteId ? "Guardar nota editada" : "Guardar nueva nota"}
-              className="reader-note-icon-button primary"
-              disabled={isUpdatingNote || !activeReaderNoteText.trim()}
-              onClick={() => activeReaderNote.noteId
-                ? void handleUpdateExistingNote(activeReaderNote.noteId, activeReaderNoteText, "reader", activeReaderNote.color ?? undefined)
-                : void handleCreateNoteForHighlight(activeReaderNote.highlightId, activeReaderNoteText, "reader")}
-              title={activeReaderNote.noteId ? "Guardar cambios" : "Guardar nota"}
-              type="button"
-            >
-              <SaveIcon />
-            </button> : null}
+              <button className="primary-button" disabled={isSavingSelection} onClick={() => void handleSaveSelection()} type="button">
+                {isSavingSelection ? "Guardando..." : "Guardar resaltado"}
+              </button>
+            </div>
           </div>
-        </div>
-      ) : null}
+        );
+      })() : null}
+
+      {activeReaderNote ? (() => {
+        const readerNoteSharedCount = (activeReaderNoteSharedWith ?? []).length;
+        const isReaderNoteShared = readerNoteSharedCount > 0;
+
+        return (
+          <div
+            className="reader-existing-note-popover"
+            data-placement={activeReaderNote.rect.placement}
+            ref={readerNotePopoverRef}
+            style={{ left: `${activeReaderNote.rect.left}px`, maxHeight: `${activeReaderNote.rect.maxHeight}px`, top: `${activeReaderNote.rect.top}px` }}
+          >
+            <div className="reader-existing-note-header">
+              <span className={activeReaderNote.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(activeReaderNote.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
+              {activeReaderNote.noteId ? <strong>{activeReaderNote.isReadOnly ? "Nota compartida" : "Nota vinculada"}</strong> : null}
+              {activeReaderNote.isReadOnly && activeReaderNote.authorLabel ? <span>por {activeReaderNote.authorLabel}</span> : null}
+            </div>
+            {activeReaderNote.noteId && activeReaderNote.color && !activeReaderNote.isReadOnly ? (
+              <div aria-label="Color del resaltado" className="reader-selection-swatches" role="radiogroup">
+                {HIGHLIGHT_OPTIONS.map((option) => (
+                  <button
+                    aria-checked={activeReaderNote.color === option.color}
+                    className={activeReaderNote.color === option.color ? `reader-swatch active ${highlightClassName(option.color)}` : `reader-swatch ${highlightClassName(option.color)}`}
+                    disabled={isUpdatingNote}
+                    key={option.color}
+                    onClick={() => {
+                      setActiveReaderNote((current) => current
+                        ? {
+                            ...current,
+                            color: option.color
+                          }
+                        : current);
+                    }}
+                    role="radio"
+                    type="button"
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <p className="reader-selection-preview">{activeReaderNote.selectedText}</p>
+            <label className="reader-note-composer compact">
+              <textarea
+                onChange={(event) => setActiveReaderNoteText(event.target.value)}
+                placeholder={activeReaderNote.noteId ? "Escribe para actualizar esta nota." : "Nota opcional: añade un apunte sobre este fragmento."}
+                readOnly={activeReaderNote.isReadOnly}
+                rows={4}
+                value={activeReaderNoteText}
+              />
+            </label>
+            {sharableUsers.length > 0 && !activeReaderNote.isReadOnly && isReaderNoteShareOpen ? (
+              <div className="reader-popover-share-container">
+                <ShareWithSelector
+                  emptyLabel={activeReaderNote.noteId ? "Esta nota solo la verás tú (Privada)." : "Esta nota solo la verás tú (Privada)."}
+                  label={activeReaderNote.noteId ? "Compartida con" : "Compartir nota con"}
+                  onChange={setActiveReaderNoteSharedWith}
+                  options={sharableUsers}
+                  selected={activeReaderNoteSharedWith ?? []}
+                />
+              </div>
+            ) : null}
+            <div className="reader-note-editor-actions">
+              {activeReaderNote.noteId ? (
+                <button
+                  aria-label={activeReaderNote.isReadOnly ? "Quitar nota compartida" : "Borrar nota"}
+                  className="reader-note-icon-button danger-icon-button"
+                  disabled={isUpdatingNote}
+                  onClick={() => handleDeleteReaderNote(activeReaderNote.noteId as string, activeReaderNote.isReadOnly)}
+                  title={activeReaderNote.isReadOnly ? "Quitar de mis notas" : "Borrar nota"}
+                  type="button"
+                >
+                  <DeletePageIcon />
+                </button>
+              ) : null}
+              {sharableUsers.length > 0 && !activeReaderNote.isReadOnly ? (
+                <button
+                  aria-expanded={isReaderNoteShareOpen}
+                  aria-label={isReaderNoteShareOpen ? "Cerrar opciones para compartir nota" : isReaderNoteShared ? `Compartida con ${readerNoteSharedCount} ${readerNoteSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota (Privada)"}
+                  className={`reader-note-icon-button reader-postit-share-btn ${isReaderNoteShared ? "shared" : ""} ${isReaderNoteShareOpen ? "active" : ""}`}
+                  disabled={isUpdatingNote}
+                  onClick={() => setIsReaderNoteShareOpen((prev) => !prev)}
+                  title={isReaderNoteShared ? `Compartida con ${readerNoteSharedCount} ${readerNoteSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota (Privada)"}
+                  type="button"
+                >
+                  <ShareIcon />
+                  {isReaderNoteShared ? <span className="reader-share-badge">{readerNoteSharedCount}</span> : null}
+                </button>
+              ) : null}
+              <button
+                aria-label="Cerrar nota"
+                className="reader-note-icon-button"
+                disabled={isUpdatingNote}
+                onClick={() => {
+                  setActiveReaderNote(null);
+                  setActiveReaderNoteText("");
+                  setIsReaderNoteShareOpen(false);
+                }}
+                title="Cerrar"
+                type="button"
+              >
+                <CloseIcon />
+              </button>
+              {!activeReaderNote.isReadOnly ? (
+                <button
+                  aria-label={activeReaderNote.noteId ? "Guardar nota editada" : "Guardar nueva nota"}
+                  className="reader-note-icon-button primary"
+                  disabled={isUpdatingNote || !activeReaderNoteText.trim()}
+                  onClick={() => activeReaderNote.noteId
+                    ? void handleUpdateExistingNote(activeReaderNote.noteId, activeReaderNoteText, "reader", activeReaderNote.color ?? undefined)
+                    : void handleCreateNoteForHighlight(activeReaderNote.highlightId, activeReaderNoteText, "reader")}
+                  title={activeReaderNote.noteId ? "Guardar cambios" : "Guardar nota"}
+                  type="button"
+                >
+                  <SaveIcon />
+                </button>
+              ) : null}
+            </div>
+          </div>
+        );
+      })() : null}
 
       <div aria-label="Controles flotantes del lector" className="reader-floating-controls" role="toolbar">
         <ReaderFloatingAudioPopover
@@ -5282,6 +5353,7 @@ export function ReaderPage() {
             onSummaryClick={closeNavigationPanel}
             onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
             onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
+            onUpdateNoteShares={(noteId, sharedWithUserIds) => handleUpdateNoteShares(noteId, sharedWithUserIds)}
             sharableUsers={sharableUsers}
             summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
           />
