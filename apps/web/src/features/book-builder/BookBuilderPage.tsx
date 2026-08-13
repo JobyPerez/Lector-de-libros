@@ -29,6 +29,7 @@ import {
   type HighlightColor
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
@@ -313,6 +314,7 @@ type ReviewNavigationItem =
     }
   | {
       bookmarkId: string;
+      createdAt: string;
       isActive: boolean;
       key: string;
       pageNumber: number;
@@ -2785,6 +2787,7 @@ export function BookBuilderPage() {
 
     const bookmarkItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.bookmarks ?? []).map((bookmark: ReaderBookmark) => ({
       bookmarkId: bookmark.bookmarkId,
+      createdAt: bookmark.createdAt,
       isActive: bookmark.pageNumber === reviewPageNumber,
       key: `bookmark:${bookmark.bookmarkId}`,
       pageNumber: bookmark.pageNumber,
@@ -3858,7 +3861,12 @@ export function BookBuilderPage() {
                               <div className="reader-navigation-item-topline">
                                 <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${bookmarkToneClassName(item.bookmarkId)}`}>■</span>
                                 <strong>{item.title}</strong>
-                                <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                                <span
+                                  className="reader-navigation-inline-meta"
+                                  title={formatExactDate(item.createdAt) ? `Guardado el ${formatExactDate(item.createdAt)}` : undefined}
+                                >
+                                  {formatPageAnchor(item.pageNumber)}{formatRelativeDate(item.createdAt) ? ` · ${formatRelativeDate(item.createdAt)}` : ""}
+                                </span>
                               </div>
                             </button>
                           </article>

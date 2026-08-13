@@ -414,6 +414,7 @@ export function SectionSummaryPage() {
     const bookmarkItems: ReaderNavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
       authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
       bookmarkId: bookmark.bookmarkId,
+      createdAt: bookmark.createdAt,
       isActive: false,
       isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
       key: `bookmark:${bookmark.bookmarkId}`,

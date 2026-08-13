@@ -179,6 +179,7 @@ type NavigationListItem =
   | {
       authorLabel: string | null;
       bookmarkId: string;
+      createdAt: string;
       isActive: boolean;
       isOwnedByCurrentUser: boolean;
       key: string;
@@ -2381,6 +2382,7 @@ export function ReaderPage() {
     const bookmarkItems: NavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
       authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
       bookmarkId: bookmark.bookmarkId,
+      createdAt: bookmark.createdAt,
       isActive: bookmark.pageNumber === currentPageNumber && bookmark.paragraphNumber === currentParagraphNumber,
       isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
       key: `bookmark:${bookmark.bookmarkId}`,

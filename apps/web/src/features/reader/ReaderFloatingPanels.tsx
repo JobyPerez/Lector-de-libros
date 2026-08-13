@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useEffect, useId, useState } from "react";
 
 import type { BookOutlineSource } from "../../app/api";
+import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 
@@ -141,6 +142,7 @@ export type ReaderNavigationListItem =
   | {
       authorLabel: string | null;
       bookmarkId: string;
+      createdAt: string;
       isActive: boolean;
       isOwnedByCurrentUser: boolean;
       key: string;
@@ -864,6 +866,8 @@ export function ReaderNavigationPanelContent({
     const sharedWithUserIds = item.sharedWithUserIds ?? [];
     const isShared = sharedWithUserIds.length > 0;
     const canShare = item.isOwnedByCurrentUser && sharableUsers.length > 0;
+    const relativeCreatedAt = formatRelativeDate(item.createdAt);
+    const exactCreatedAt = formatExactDate(item.createdAt);
 
     return (
       <article className={`reader-note-card reader-navigation-item-bookmark-card ${toneClass} ${item.isActive ? "active" : ""}`} data-deleting={isDeleting ? "" : undefined} key={item.key}>
@@ -880,7 +884,9 @@ export function ReaderNavigationPanelContent({
           <div className="reader-navigation-item-topline">
             <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${toneClass}`}><BookmarkIcon /></span>
             <strong>{item.title}</strong>
-            <span className="reader-navigation-inline-meta">Pág. {item.pageNumber}</span>
+            <span className="reader-navigation-inline-meta" title={exactCreatedAt ? `Guardado el ${exactCreatedAt}` : undefined}>
+              Pág. {item.pageNumber}{relativeCreatedAt ? ` · ${relativeCreatedAt}` : ""}
+            </span>
           </div>
           {!item.isOwnedByCurrentUser && item.authorLabel ? (
             <span className="reader-navigation-inline-meta">Compartido por {item.authorLabel} · Solo lectura</span>

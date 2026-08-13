@@ -371,6 +371,7 @@ type StoredPageNoteRecord = {
 
 type StoredPageBookmarkRecord = {
   bookmarkId: string;
+  createdAt: Date;
   pageNumber: number;
   paragraphId: string;
   paragraphNumber: number;
@@ -1126,6 +1127,7 @@ async function listPageBookmarks(
     `
       SELECT
         bookmark_id AS "bookmarkId",
+        created_at AS "createdAt",
         user_id AS "userId",
         page_number AS "pageNumber",
         paragraph_id AS "paragraphId",
@@ -1471,12 +1473,13 @@ async function restorePageBookmarks(
           :pageNumber,
           :paragraphNumber,
           :sequenceNumber,
-          SYSTIMESTAMP
+          :createdAt
         )
       `,
       {
         bookId,
         bookmarkId: bookmark.bookmarkId,
+        createdAt: bookmark.createdAt,
         pageNumber: bookmark.pageNumber,
         paragraphId: replacementParagraph.paragraphId,
         paragraphNumber: replacementParagraph.paragraphNumber,
