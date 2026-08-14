@@ -4822,7 +4822,13 @@ export function ReaderPage() {
   const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
   const canDeleteImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
 
-  function renderReaderHeaderActionButtons(buttonClassName: string, onAction?: () => void) {
+  function renderReaderHeaderActionButtons(
+    buttonClassName: string,
+    onAction?: () => void,
+    group: "all" | "primary" | "secondary" = "all"
+  ) {
+    const showPrimaryActions = group !== "secondary";
+    const showSecondaryActions = group !== "primary";
     const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
       ? "danger-button reader-header-icon-button reader-header-floating-action-button"
       : "danger-button reader-header-icon-button";
@@ -4835,7 +4841,7 @@ export function ReaderPage() {
 
     return (
       <>
-        <Link
+        {showPrimaryActions ? <Link
           aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
           className={buttonClassName}
           onClick={onAction}
@@ -4843,8 +4849,8 @@ export function ReaderPage() {
           to={isReturningToGlobalSearch ? readerReturnTo : "/"}
         >
           {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
-        </Link>
-        <Link
+        </Link> : null}
+        {showSecondaryActions ? <Link
           aria-label="Buscar dentro del libro"
           className={buttonClassName}
           onClick={onAction}
@@ -4853,8 +4859,8 @@ export function ReaderPage() {
           to={readerSearchHref}
         >
           <SearchIcon />
-        </Link>
-        <button
+        </Link> : null}
+        {showPrimaryActions ? <button
           aria-label={isCurrentPageBookmarked ? "Quitar marcador de la página" : "Guardar marcador de la página"}
           className={bookmarkButtonClassName}
           data-bookmark-animation={bookmarkAnimationState ?? undefined}
@@ -4867,8 +4873,8 @@ export function ReaderPage() {
           type="button"
         >
           {isCurrentPageBookmarked ? <BookmarkIcon /> : <BookmarkOutlineIcon />}
-        </button>
-        <button
+        </button> : null}
+        {showSecondaryActions ? <button
           aria-label={isScreenLockEnabled ? "Desactivar lectura protegida con pantalla encendida" : "Activar lectura protegida con pantalla encendida"}
           className={screenLockButtonClassName}
           onClick={() => {
@@ -4879,8 +4885,8 @@ export function ReaderPage() {
           type="button"
         >
           <ScreenLockIcon />
-        </button>
-        {bookNotionUrl ? (
+        </button> : null}
+        {showSecondaryActions && bookNotionUrl ? (
           <a
             aria-label="Abrir libro en Notion"
             className={buttonClassName}
@@ -4893,7 +4899,7 @@ export function ReaderPage() {
             <NotionIcon />
           </a>
         ) : null}
-        {pageQuery.data?.book.sourceType === "IMAGES" && appendPagesLink ? (
+        {showSecondaryActions && pageQuery.data?.book.sourceType === "IMAGES" && appendPagesLink ? (
           <Link
             aria-label="Añadir páginas"
             className={buttonClassName}
@@ -4904,7 +4910,7 @@ export function ReaderPage() {
             <AddPagesIcon />
           </Link>
         ) : null}
-        {canEditImportedPage && reviewOcrLink ? (
+        {showSecondaryActions && canEditImportedPage && reviewOcrLink ? (
           <Link
             aria-label="Editar esta página"
             className={buttonClassName}
@@ -4915,7 +4921,7 @@ export function ReaderPage() {
             <OriginalPageIcon />
           </Link>
         ) : null}
-        {canDeleteImportedPage ? (
+        {showSecondaryActions && canDeleteImportedPage ? (
           <button
             aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
             className={deleteButtonClassName}
@@ -4984,22 +4990,32 @@ export function ReaderPage() {
           ref={floatingHeaderActionsRef}
           style={floatingHeaderDockStyle ?? undefined}
         >
-          <div className={isFloatingHeaderActionsExpanded ? "reader-header-floating-dock-panel open" : "reader-header-floating-dock-panel"}>
+          <div className="reader-header-floating-primary-actions">
             {renderReaderHeaderActionButtons(
               "secondary-button link-button reader-header-icon-button reader-header-floating-action-button",
-              () => setIsFloatingHeaderActionsExpanded(false)
+              undefined,
+              "primary"
             )}
           </div>
-          <button
-            aria-expanded={isFloatingHeaderActionsExpanded}
-            aria-label={isFloatingHeaderActionsExpanded ? "Cerrar acciones del encabezado" : "Abrir acciones del encabezado"}
-            className="reader-header-floating-toggle"
-            onClick={() => setIsFloatingHeaderActionsExpanded((current) => !current)}
-            title={isFloatingHeaderActionsExpanded ? "Cerrar acciones" : "Abrir acciones"}
-            type="button"
-          >
-            {isFloatingHeaderActionsExpanded ? <CloseIcon /> : <ActionsMenuIcon />}
-          </button>
+          <div className="reader-header-floating-menu">
+            <button
+              aria-expanded={isFloatingHeaderActionsExpanded}
+              aria-label={isFloatingHeaderActionsExpanded ? "Cerrar acciones del encabezado" : "Abrir acciones del encabezado"}
+              className="reader-header-floating-toggle"
+              onClick={() => setIsFloatingHeaderActionsExpanded((current) => !current)}
+              title={isFloatingHeaderActionsExpanded ? "Cerrar acciones" : "Abrir acciones"}
+              type="button"
+            >
+              {isFloatingHeaderActionsExpanded ? <CloseIcon /> : <ActionsMenuIcon />}
+            </button>
+            <div className={isFloatingHeaderActionsExpanded ? "reader-header-floating-dock-panel open" : "reader-header-floating-dock-panel"}>
+              {renderReaderHeaderActionButtons(
+                "secondary-button link-button reader-header-icon-button reader-header-floating-action-button",
+                () => setIsFloatingHeaderActionsExpanded(false),
+                "secondary"
+              )}
+            </div>
+          </div>
         </div>
       ) : null}
 
