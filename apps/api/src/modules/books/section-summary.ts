@@ -21,8 +21,33 @@ const summaryResponseSchema = z.object({
   summary: z.unknown()
 });
 
+export const AI_VISUAL_TYPES = ["MIND_MAP", "CONCEPT_MAP", "TIMELINE", "INFOGRAPHIC", "FLOWCHART", "RELATIONSHIPS"] as const;
+export type AiVisualType = "AUTO" | (typeof AI_VISUAL_TYPES)[number];
+
+const diagramResponseSchema = z.object({
+  type: z.enum(AI_VISUAL_TYPES),
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(2000),
+  nodes: z.array(z.object({
+    id: z.string().trim().regex(/^[a-z0-9_-]+$/iu).max(40),
+    label: z.string().trim().min(1).max(140),
+    detail: z.string().trim().max(500).optional(),
+    category: z.string().trim().max(60).optional(),
+    date: z.string().trim().max(80).optional(),
+    metric: z.string().trim().max(80).optional()
+  })).min(2).max(24),
+  edges: z.array(z.object({
+    from: z.string().trim().min(1).max(40),
+    to: z.string().trim().min(1).max(40),
+    label: z.string().trim().max(100).optional()
+  })).max(40)
+});
+
+export type AiRequestKind = "TEXT" | "DIAGRAM";
+
 const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
+const PROVIDER_REQUEST_ATTEMPTS = 3;
 
 export const DEFAULT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume una sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 export const DEFAULT_SECTION_AI_REQUEST_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
@@ -31,6 +56,22 @@ export const DEFAULT_BOOK_AI_REQUEST_PROMPT = "Eres editor literario. Resume el 
 const DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT = "Eres editor literario. Recibirás varios resúmenes parciales de una misma sección. Devuelve un único resumen fiel, claro y breve. No inventes detalles y no repitas ideas.";
 
 const SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS = "Regla técnica obligatoria: responde únicamente con JSON válido con la forma exacta {\"summary\":\"texto del resumen\"}. El valor de summary debe ser una cadena de texto preparada para mostrarse en el cuadro de resumen, no un objeto, no una lista y no una estructura anidada.";
+const VISUAL_TYPE_LABELS: Record<AiVisualType, string> = {
+  AUTO: "el formato visual que mejor explique el texto",
+  MIND_MAP: "un mapa mental radial con una idea central y sus ramas",
+  CONCEPT_MAP: "un mapa conceptual jerárquico que rotule las relaciones",
+  TIMELINE: "una línea de tiempo ordenada; usa date en cada nodo",
+  INFOGRAPHIC: "una infografía editorial por bloques; usa category y metric cuando aporten información",
+  FLOWCHART: "un diagrama de flujo ordenado por pasos o decisiones",
+  RELATIONSHIPS: "una red de relaciones entre personajes, hechos o ideas"
+};
+
+function createDiagramResponseFormatInstructions(visualType: AiVisualType) {
+  const typeRule = visualType === "AUTO"
+    ? `Elige type entre ${AI_VISUAL_TYPES.join(", ")} según el contenido.`
+    : `Usa exactamente \"type\":\"${visualType}\".`;
+  return `Regla técnica obligatoria: responde únicamente con JSON válido con la forma {\"type\":\"CONCEPT_MAP\",\"title\":\"título\",\"summary\":\"síntesis accesible\",\"nodes\":[{\"id\":\"id_unico\",\"label\":\"concepto\",\"detail\":\"explicación opcional\",\"category\":\"grupo opcional\",\"date\":\"fecha opcional\",\"metric\":\"dato destacado opcional\"}],\"edges\":[{\"from\":\"id_origen\",\"to\":\"id_destino\",\"label\":\"relación opcional\"}]}. Crea ${VISUAL_TYPE_LABELS[visualType]}. ${typeRule} Usa entre 2 y 24 nodos, identificadores breves con letras, números, guion o guion bajo, y solo referencias a nodos existentes. Mantén el orden narrativo en nodes para cronologías e infografías. No incluyas Markdown, HTML ni Mermaid.`;
+}
 
 function ensureSummaryConfiguration() {
   if (!appEnv.opencodeGoApiKey) {
@@ -156,9 +197,11 @@ function createSummaryRateLimitError(details: { code: string | null; message: st
   });
 }
 
-function createSummaryProviderError(details: { code: string | null; message: string }) {
-  return Object.assign(new Error(`Error de OpenCode al generar el resumen: ${details.message}`), {
+function createSummaryProviderError(details: { code: string | null; message: string }, transient = false) {
+  const retrySuggestion = transient ? " Prueba de nuevo o selecciona DeepSeek V4 Flash si el proveedor de NVIDIA continúa inestable." : "";
+  return Object.assign(new Error(`Error de OpenCode al generar la respuesta: ${details.message}.${retrySuggestion}`), {
     providerCode: details.code,
+    retryable: transient,
     statusCode: 502
   });
 }
@@ -243,19 +286,20 @@ function wait(ms: number) {
   });
 }
 
-async function requestSummaryChunk(prompt: { condensed?: boolean; model: SummaryAiModelId; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string }) {
+async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; model: SummaryAiModelId; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
   ensureSummaryConfiguration();
 
   const promptOverride = prompt.promptOverride?.trim();
   const editablePrompt = promptOverride || (prompt.condensed
     ? DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT
     : DEFAULT_SECTION_SUMMARY_PROMPT);
-  const systemPrompt = `${editablePrompt}\n\n${SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
+  const kind = prompt.kind ?? "TEXT";
+  const systemPrompt = `${editablePrompt}\n\n${kind === "DIAGRAM" ? createDiagramResponseFormatInstructions(prompt.visualType ?? "AUTO") : SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
 
   const model = prompt.model;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const requestBody = JSON.stringify({
-    max_tokens: getOpenCodeMaxTokens(model, prompt.condensed ? 900 : 1200),
+    max_tokens: getOpenCodeMaxTokens(model, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200),
     messages: [
       {
         role: "system",
@@ -275,7 +319,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; model: Summary
   let response: Response | null = null;
   let retryAfterSeconds: number | null = null;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < PROVIDER_REQUEST_ATTEMPTS; attempt += 1) {
     try {
       response = await fetch(endpoint, {
         method: "POST",
@@ -286,8 +330,13 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; model: Summary
         body: requestBody
       });
     } catch {
+      if (attempt < PROVIDER_REQUEST_ATTEMPTS - 1) {
+        await wait(750 * (attempt + 1));
+        continue;
+      }
       throw Object.assign(new Error("Se interrumpió la conexión entre la API y OpenCode al generar la respuesta."), {
         code: "AI_PROVIDER_NETWORK",
+        retryable: true,
         statusCode: 502
       });
     }
@@ -308,7 +357,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; model: Summary
     }
 
     if (isRateLimitError(response.status, normalizedProviderError)) {
-      if (attempt === 0 && retryAfterSeconds !== null && retryAfterSeconds <= 30) {
+      if (attempt < PROVIDER_REQUEST_ATTEMPTS - 1 && retryAfterSeconds !== null && retryAfterSeconds <= 30) {
         await wait((retryAfterSeconds + 1) * 1000);
         continue;
       }
@@ -316,7 +365,13 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; model: Summary
       throw createSummaryRateLimitError(details, retryAfterSeconds);
     }
 
-    throw createSummaryProviderError(details);
+    const isTransientProviderError = response.status >= 500 && response.status <= 599;
+    if (isTransientProviderError && attempt < PROVIDER_REQUEST_ATTEMPTS - 1) {
+      await wait(750 * (attempt + 1));
+      continue;
+    }
+
+    throw createSummaryProviderError(details, isTransientProviderError);
   }
 
   if (!response?.ok) {
@@ -346,6 +401,20 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; model: Summary
   const assistantText = extractAssistantText(payload.choices);
 
   try {
+    if (kind === "DIAGRAM") {
+      const diagram = diagramResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
+      const nodeIds = new Set(diagram.nodes.map((node) => node.id));
+      if (nodeIds.size !== diagram.nodes.length || diagram.edges.some((edge) => !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to)) {
+        throw new Error("Invalid diagram references.");
+      }
+
+      const serializedDiagram = JSON.stringify(diagram);
+      if (serializedDiagram.length > 12000) {
+        throw new Error("Diagram is too large.");
+      }
+      return serializedDiagram;
+    }
+
     const parsedPayload = summaryResponseSchema.parse(JSON.parse(extractJsonPayload(assistantText)));
     const summaryText = formatStructuredSummaryValue(parsedPayload.summary);
     if (!summaryText || summaryText.length > 12000) {
@@ -371,13 +440,17 @@ export async function generateSectionSummary(sectionTitle: string, paragraphs: s
 }
 
 export async function generateAiRequestResponse(options: {
+  kind?: AiRequestKind | undefined;
   model?: SummaryAiModelId | undefined;
   paragraphs: string[];
   promptOverride?: string | undefined;
   scopeLabel: "Libro" | "Sección";
   title: string;
+  visualType?: AiVisualType | undefined;
 }): Promise<string> {
   const { paragraphs, promptOverride, scopeLabel, title } = options;
+  const kind = options.kind ?? "TEXT";
+  const visualType = options.visualType ?? "AUTO";
   const model = options.model ?? appEnv.opencodeModel;
   const modelConfiguration = getAiModel(model);
   const normalizedParagraphs = paragraphs.map((paragraph) => paragraph.trim()).filter(Boolean);
@@ -389,26 +462,30 @@ export async function generateAiRequestResponse(options: {
 
   const chunks = chunkParagraphs(normalizedParagraphs, modelConfiguration.summaryChunkTargetCharacters);
   if (chunks.length === 1) {
-    return requestSummaryChunk({ model, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n") });
+    return requestSummaryChunk({ kind, model, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
   }
 
   const partialSummaries: string[] = [];
   for (const [index, chunk] of chunks.entries()) {
     partialSummaries.push(await requestSummaryChunk({
       model,
+      kind,
       promptOverride,
       scopeLabel,
       sectionTitle: `${title} · fragmento ${index + 1}`,
-      text: chunk
+      text: chunk,
+      visualType
     }));
   }
 
   return requestSummaryChunk({
     condensed: true,
+    kind,
     model,
     promptOverride,
     scopeLabel,
     sectionTitle: title,
-    text: partialSummaries.map((summary, index) => `Fragmento ${index + 1}: ${summary}`).join("\n\n")
+    text: partialSummaries.map((summary, index) => `Fragmento ${index + 1}: ${summary}`).join("\n\n"),
+    visualType
   });
 }

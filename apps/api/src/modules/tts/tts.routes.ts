@@ -42,8 +42,24 @@ type TtsAiRequestRow = {
   cachedAudioMimeType?: string | null;
   cachedTextChecksum?: string | null;
   requestId: string;
+  requestKind: "TEXT" | "DIAGRAM";
   responseText: string;
 };
+
+function getAiRequestSpeechText(request: Pick<TtsAiRequestRow, "requestKind" | "responseText">) {
+  if (request.requestKind !== "DIAGRAM") {
+    return request.responseText;
+  }
+
+  try {
+    const diagram = JSON.parse(request.responseText) as { summary?: unknown; title?: unknown };
+    const title = typeof diagram.title === "string" ? diagram.title.trim() : "";
+    const summary = typeof diagram.summary === "string" ? diagram.summary.trim() : "";
+    return [title, summary].filter(Boolean).join(". ");
+  } catch {
+    return request.responseText;
+  }
+}
 
 type DeepgramProjectInfo = {
   projectId: string;
@@ -1242,6 +1258,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           SELECT
             ar.book_id AS "bookId",
             ar.request_id AS "requestId",
+            ar.request_kind AS "requestKind",
             ar.response_text AS "responseText",
             cache.file_id AS "cachedAudioFileId",
             cache.text_checksum_sha256 AS "cachedTextChecksum",
@@ -1284,7 +1301,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "AI request not found." });
       }
 
-      const textChecksum = computeTextChecksum(normalizeTextForDeepgram(aiRequest.responseText));
+      const speechText = getAiRequestSpeechText(aiRequest);
+      const textChecksum = computeTextChecksum(normalizeTextForDeepgram(speechText));
       const cachedAudio = aiRequest.cachedAudioBlob
         && aiRequest.cachedAudioMimeType
         && aiRequest.cachedTextChecksum === textChecksum
@@ -1297,7 +1315,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
       if (!resolvedAudio) {
         const deepgramApiKey = requireDeepgramApiKey(credentials);
-        const synthesizedAudio = await synthesizeTextWithDeepgram(aiRequest.responseText, requestedVoiceModel, deepgramApiKey);
+        const synthesizedAudio = await synthesizeTextWithDeepgram(speechText, requestedVoiceModel, deepgramApiKey);
         resolvedAudio = await persistAiRequestAudioBuffer(
           connection,
           aiRequest,

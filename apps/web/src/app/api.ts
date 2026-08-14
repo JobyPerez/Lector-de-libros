@@ -596,6 +596,8 @@ export type SectionSummaryPromptResponse = {
 };
 
 export type AiRequestScopeType = "BOOK" | "SECTION";
+export type AiRequestKind = "TEXT" | "DIAGRAM";
+export type AiVisualType = "AUTO" | "MIND_MAP" | "CONCEPT_MAP" | "TIMELINE" | "INFOGRAPHIC" | "FLOWCHART" | "RELATIONSHIPS";
 
 export type AiRequestRecord = {
   author: {
@@ -611,6 +613,7 @@ export type AiRequestRecord = {
   endSequenceNumber: number | null;
   modelId: AiModelId | null;
   isOwnedByCurrentUser: boolean;
+  kind: AiRequestKind;
   promptText: string;
   requestId: string;
   responseText: string;
@@ -1057,7 +1060,7 @@ export function fetchAiRequests(accessToken: string, bookId: string, chapterId?:
   return request<AiRequestsResponse>(path, { accessToken });
 }
 
-export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; model?: SummaryAiModelId; promptText: string }) {
+export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; kind: AiRequestKind; model?: SummaryAiModelId; promptText: string; visualType?: AiVisualType }) {
   const path = payload.chapterId
     ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
     : `/books/${bookId}/ai-requests`;
@@ -1065,8 +1068,10 @@ export function createAiRequest(accessToken: string, bookId: string, payload: { 
     accessToken,
     body: {
       ...(payload.chapterIds ? { chapterIds: payload.chapterIds } : {}),
+      kind: payload.kind,
       ...(payload.model ? { model: payload.model } : {}),
-      promptText: payload.promptText
+      promptText: payload.promptText,
+      ...(payload.visualType ? { visualType: payload.visualType } : {})
     },
     method: "POST"
   });

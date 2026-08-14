@@ -1,6 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { Background, Controls, MarkerType, ReactFlow, type Edge, type Node as FlowNode } from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 
 import {
   createNote,
@@ -21,8 +23,10 @@ import {
   updateBookmarkShares,
   updateNote,
   type HighlightColor,
+  type AiRequestKind,
   type AiRequestRecord,
   type AiRequestsResponse,
+  type AiVisualType,
   type ReaderHighlight,
   type ReaderNote,
   type ReaderTocEntry
@@ -50,6 +54,16 @@ const AI_REQUEST_CREATION_ANIMATION_MS = 520;
 const CURRENT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 const MULTIPLE_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume estas secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
 const ALL_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume las secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
+const GRAPHIC_SUMMARY_PROMPT = "Eres editor literario. Crea un resumen gráfico en español que organice las ideas, hechos, personajes o conceptos principales y muestre claramente sus relaciones. Sé fiel al texto, compacto y no inventes información.";
+const AI_VISUAL_TYPE_OPTIONS: Array<{ description: string; label: string; value: AiVisualType }> = [
+  { description: "La IA elige según el contenido", label: "Automático", value: "AUTO" },
+  { description: "Idea central y ramas", label: "Mapa mental", value: "MIND_MAP" },
+  { description: "Conceptos jerárquicos y conexiones", label: "Mapa conceptual", value: "CONCEPT_MAP" },
+  { description: "Hechos ordenados temporalmente", label: "Línea de tiempo", value: "TIMELINE" },
+  { description: "Bloques editoriales y datos destacados", label: "Infografía", value: "INFOGRAPHIC" },
+  { description: "Pasos, procesos y decisiones", label: "Diagrama de flujo", value: "FLOWCHART" },
+  { description: "Conexiones entre personajes o ideas", label: "Red de relaciones", value: "RELATIONSHIPS" }
+];
 const USD_BALANCE_FORMATTER = new Intl.NumberFormat("en-US", {
   currency: "USD",
   maximumFractionDigits: 2,
@@ -320,6 +334,178 @@ function paragraphize(value: string) {
     .filter(Boolean);
 }
 
+type AiRequestDiagramData = {
+  edges: Array<{ from: string; label?: string; to: string }>;
+  nodes: Array<{ category?: string; date?: string; detail?: string; id: string; label: string; metric?: string }>;
+  summary: string;
+  title: string;
+  type: Exclude<AiVisualType, "AUTO">;
+};
+
+const AI_VISUAL_TYPES = new Set<AiRequestDiagramData["type"]>(["MIND_MAP", "CONCEPT_MAP", "TIMELINE", "INFOGRAPHIC", "FLOWCHART", "RELATIONSHIPS"]);
+
+function parseAiRequestDiagram(value: string): AiRequestDiagramData | null {
+  try {
+    const diagram = JSON.parse(value) as Partial<AiRequestDiagramData>;
+    if (
+      typeof diagram.title !== "string"
+      || typeof diagram.summary !== "string"
+      || !Array.isArray(diagram.nodes)
+      || !Array.isArray(diagram.edges)
+    ) {
+      return null;
+    }
+    const type = typeof diagram.type === "string" && AI_VISUAL_TYPES.has(diagram.type as AiRequestDiagramData["type"])
+      ? diagram.type as AiRequestDiagramData["type"]
+      : "CONCEPT_MAP";
+    return { ...diagram, type } as AiRequestDiagramData;
+  } catch {
+    return null;
+  }
+}
+
+function getAiRequestSpeechText(request: AiRequestRecord) {
+  if (request.kind !== "DIAGRAM") {
+    return request.responseText;
+  }
+  const diagram = parseAiRequestDiagram(request.responseText);
+  return diagram ? `${diagram.title}. ${diagram.summary}` : request.responseText;
+}
+
+function DiagramHeader({ diagram }: { diagram: AiRequestDiagramData }) {
+  const visualLabel = AI_VISUAL_TYPE_OPTIONS.find((option) => option.value === diagram.type)?.label ?? "Resumen gráfico";
+  return (
+    <header className="ai-request-diagram-header">
+      <span className="ai-request-diagram-kicker">{visualLabel}</span>
+      <h4>{diagram.title}</h4>
+      <p>{diagram.summary}</p>
+    </header>
+  );
+}
+
+function AiRequestFlowDiagram({ diagram }: { diagram: AiRequestDiagramData }) {
+  const [flow, setFlow] = useState<{ edges: Edge[]; nodes: FlowNode[] } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const direction = diagram.type === "MIND_MAP" || diagram.type === "RELATIONSHIPS" ? "RIGHT" : "DOWN";
+    void import("elkjs/lib/elk.bundled.js").then(({ default: ELK }) => new ELK().layout({
+        id: "root",
+        layoutOptions: {
+          "elk.algorithm": "layered",
+          "elk.direction": direction,
+          "elk.layered.spacing.nodeNodeBetweenLayers": "70",
+          "elk.spacing.nodeNode": "38"
+        },
+        children: diagram.nodes.map((node) => ({ height: node.detail ? 116 : 88, id: node.id, width: 230 })),
+        edges: diagram.edges.map((edge, index) => ({ id: `elk-${index}`, sources: [edge.from], targets: [edge.to] }))
+      })).then((layout) => {
+      if (cancelled) {
+        return;
+      }
+      setFlow({
+        nodes: diagram.nodes.map((node, index) => {
+          const position = layout.children?.find((child) => child.id === node.id);
+          return {
+            className: index === 0 ? "ai-flow-node is-primary" : "ai-flow-node",
+            data: {
+              label: (
+                <div className="ai-flow-node-content">
+                  {node.category ? <span>{node.category}</span> : null}
+                  <strong>{node.label}</strong>
+                  {node.detail ? <small>{node.detail}</small> : null}
+                </div>
+              )
+            },
+            id: node.id,
+            position: { x: position?.x ?? 0, y: position?.y ?? index * 120 }
+          };
+        }),
+        edges: diagram.edges.map((edge, index) => ({
+          animated: diagram.type === "FLOWCHART",
+          id: `edge-${edge.from}-${edge.to}-${index}`,
+          label: edge.label,
+          markerEnd: { type: MarkerType.ArrowClosed },
+          source: edge.from,
+          target: edge.to,
+          type: "smoothstep"
+        }))
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [diagram]);
+
+  return (
+    <div className="ai-request-flow" aria-label={`Diagrama interactivo: ${diagram.title}`}>
+      {flow ? (
+        <ReactFlow
+          edges={flow.edges}
+          fitView
+          fitViewOptions={{ padding: 0.18 }}
+          maxZoom={1.5}
+          minZoom={0.25}
+          nodes={flow.nodes}
+          nodesConnectable={false}
+          nodesDraggable={false}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background color="#b9c8bd" gap={22} size={1} />
+          <Controls position="bottom-right" showInteractive={false} />
+        </ReactFlow>
+      ) : <p className="subdued">Organizando el diagrama...</p>}
+    </div>
+  );
+}
+
+function AiRequestTimeline({ diagram }: { diagram: AiRequestDiagramData }) {
+  return (
+    <ol className="ai-request-timeline">
+      {diagram.nodes.map((node, index) => (
+        <li key={node.id}>
+          <span className="ai-request-timeline-marker">{index + 1}</span>
+          <article>
+            {node.date ? <time>{node.date}</time> : null}
+            <h5>{node.label}</h5>
+            {node.detail ? <p>{node.detail}</p> : null}
+          </article>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function AiRequestInfographic({ diagram }: { diagram: AiRequestDiagramData }) {
+  return (
+    <div className="ai-request-infographic">
+      {diagram.nodes.map((node, index) => (
+        <article className={index === 0 ? "is-featured" : undefined} key={node.id}>
+          <span className="ai-request-infographic-index">{String(index + 1).padStart(2, "0")}</span>
+          {node.category ? <span className="ai-request-infographic-category">{node.category}</span> : null}
+          {node.metric ? <strong className="ai-request-infographic-metric">{node.metric}</strong> : null}
+          <h5>{node.label}</h5>
+          {node.detail ? <p>{node.detail}</p> : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function AiRequestDiagram({ diagram }: { diagram: AiRequestDiagramData }) {
+  const isFlowDiagram = diagram.type === "MIND_MAP" || diagram.type === "CONCEPT_MAP" || diagram.type === "FLOWCHART" || diagram.type === "RELATIONSHIPS";
+
+  return (
+    <section className="ai-request-diagram" aria-label={`Esquema gráfico: ${diagram.title}`}>
+      <DiagramHeader diagram={diagram} />
+      {isFlowDiagram ? <AiRequestFlowDiagram diagram={diagram} /> : null}
+      {diagram.type === "TIMELINE" ? <AiRequestTimeline diagram={diagram} /> : null}
+      {diagram.type === "INFOGRAPHIC" ? <AiRequestInfographic diagram={diagram} /> : null}
+    </section>
+  );
+}
+
 function haveSameUserIds(left: string[], right: string[]) {
   return left.length === right.length && left.every((userId) => right.includes(userId));
 }
@@ -342,6 +528,8 @@ export function AiRequestsPage() {
   const wakeLockRef = useRef<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean } | null>(null);
   const initialPromptKeyRef = useRef<string | null>(null);
   const [promptText, setPromptText] = useState("");
+  const [requestKind, setRequestKind] = useState<AiRequestKind>("TEXT");
+  const [visualType, setVisualType] = useState<AiVisualType>("AUTO");
   const [shareDrafts, setShareDrafts] = useState<Record<string, string[]>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitStatus, setSubmitStatus] = useState<string | null>(null);
@@ -801,6 +989,7 @@ export function AiRequestsPage() {
   const groupedRequests = useMemo(
     () => requests.map((request) => ({
       ...request,
+      diagram: request.kind === "DIAGRAM" ? parseAiRequestDiagram(request.responseText) : null,
       responseParagraphs: paragraphize(request.responseText)
     })),
     [requests]
@@ -986,6 +1175,16 @@ export function AiRequestsPage() {
   function resetAiRequestFeedback() {
     setSubmitError(null);
     setSubmitStatus(null);
+  }
+
+  function selectRequestKind(kind: AiRequestKind) {
+    setRequestKind(kind);
+    if (kind === "DIAGRAM") {
+      setPromptText(GRAPHIC_SUMMARY_PROMPT);
+    } else if (promptText === GRAPHIC_SUMMARY_PROMPT) {
+      setPromptText(requestsQuery.data?.prompt ?? (isSectionScope ? CURRENT_SECTION_SUMMARY_PROMPT : ""));
+    }
+    resetAiRequestFeedback();
   }
 
   function toggleSectionBranch(targetChapterId: string) {
@@ -1248,8 +1447,10 @@ export function AiRequestsPage() {
       const result = await createAiRequest(accessToken, bookId, {
         ...(chapterId ? { chapterId } : {}),
         ...(chapterId ? { chapterIds: selectedChapterIds } : {}),
+        kind: requestKind,
         model: aiModelSelection.selectedModelId,
-        promptText: promptText.trim()
+        promptText: promptText.trim(),
+        ...(requestKind === "DIAGRAM" ? { visualType } : {})
       });
       if (!result.request) {
         throw new Error("La IA respondió, pero no se pudo recuperar la petición creada.");
@@ -1362,7 +1563,8 @@ export function AiRequestsPage() {
 
   async function handlePlayRequest(request: AiRequestRecord) {
     const audioElement = audioRef.current;
-    if (!accessToken || !audioElement || !request.responseText.trim()) {
+    const speechText = getAiRequestSpeechText(request);
+    if (!accessToken || !audioElement || !speechText.trim()) {
       return;
     }
 
@@ -1419,7 +1621,7 @@ export function AiRequestsPage() {
         return;
       }
 
-      const utterance = new SpeechSynthesisUtterance(request.responseText);
+      const utterance = new SpeechSynthesisUtterance(speechText);
       utterance.lang = "es-ES";
       utterance.rate = playbackRate;
       utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices);
@@ -1559,6 +1761,35 @@ export function AiRequestsPage() {
             onChange={aiModelSelection.setSelectedModelId}
             value={aiModelSelection.selectedModelId}
           />
+        ) : null}
+        <fieldset className="ai-request-kind-selector" disabled={isSubmitting || requestsQuery.isLoading}>
+          <legend>Formato de respuesta</legend>
+          <label className={requestKind === "TEXT" ? "is-selected" : undefined}>
+            <input checked={requestKind === "TEXT"} name="ai-request-kind" onChange={() => selectRequestKind("TEXT")} type="radio" />
+            <span><strong>Resumen escrito</strong><small>Texto organizado en párrafos</small></span>
+          </label>
+          <label className={requestKind === "DIAGRAM" ? "is-selected" : undefined}>
+            <input checked={requestKind === "DIAGRAM"} name="ai-request-kind" onChange={() => selectRequestKind("DIAGRAM")} type="radio" />
+            <span><strong>Esquema gráfico</strong><small>Conceptos y relaciones visuales</small></span>
+          </label>
+        </fieldset>
+        {requestKind === "DIAGRAM" ? (
+          <label className="ai-visual-type-selector">
+            <span>Tipo de visualización</span>
+            <select
+              disabled={isSubmitting || requestsQuery.isLoading}
+              onChange={(event) => {
+                setVisualType(event.target.value as AiVisualType);
+                resetAiRequestFeedback();
+              }}
+              value={visualType}
+            >
+              {AI_VISUAL_TYPE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label} · {option.description}</option>
+              ))}
+            </select>
+            <small>{AI_VISUAL_TYPE_OPTIONS.find((option) => option.value === visualType)?.description}</small>
+          </label>
         ) : null}
         <label className="reader-note-composer">
           <span>Petición</span>
@@ -1846,11 +2077,15 @@ export function AiRequestsPage() {
               <p>{request.promptText}</p>
             </details>
 
-            <div className="reader-section-summary-copy">
-              {request.responseParagraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
-            </div>
+            {request.kind === "DIAGRAM" && request.diagram ? (
+              <AiRequestDiagram diagram={request.diagram} />
+            ) : (
+              <div className="reader-section-summary-copy">
+                {request.responseParagraphs.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+              </div>
+            )}
           </article>
         );
       })}

@@ -20,7 +20,7 @@ import { buildDerivedBookOutline, replaceBookOutline, resolveBookOutline, resolv
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
-import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary } from "./section-summary.js";
+import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary, type AiRequestKind } from "./section-summary.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -101,8 +101,10 @@ const sectionSummaryGenerationSchema = z.object({
 
 const aiRequestPayloadSchema = z.object({
   chapterIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
+  kind: z.enum(["TEXT", "DIAGRAM"]).default("TEXT"),
   model: summaryAiModelIdSchema.optional(),
-  promptText: z.string().trim().min(1).max(4000)
+  promptText: z.string().trim().min(1).max(4000),
+  visualType: z.enum(["AUTO", "MIND_MAP", "CONCEPT_MAP", "TIMELINE", "INFOGRAPHIC", "FLOWCHART", "RELATIONSHIPS"]).default("AUTO")
 });
 
 const aiRequestSharesPayloadSchema = z.object({
@@ -319,6 +321,7 @@ type StoredAiRequestRecord = {
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
   isOwnedByCurrentUser: boolean;
+  kind: AiRequestKind;
   modelId: string | null;
   promptText: string;
   requestId: string;
@@ -2212,6 +2215,7 @@ async function listAiRequests(
           ar.end_paragraph_number AS "endParagraphNumber",
           ar.start_sequence_number AS "startSequenceNumber",
           ar.end_sequence_number AS "endSequenceNumber",
+          ar.request_kind AS "kind",
           ar.model_id AS "modelId",
           ar.prompt_text AS "promptText",
           ar.response_text AS "responseText",
@@ -2278,6 +2282,7 @@ async function listAiRequests(
           ar.end_paragraph_number AS "endParagraphNumber",
           ar.start_sequence_number AS "startSequenceNumber",
           ar.end_sequence_number AS "endSequenceNumber",
+          ar.request_kind AS "kind",
           ar.model_id AS "modelId",
           ar.prompt_text AS "promptText",
           ar.response_text AS "responseText",
@@ -2393,6 +2398,7 @@ async function createAiRequest(
   connection: Awaited<ReturnType<typeof getConnection>>,
   options: {
     bookId: string;
+    kind: AiRequestKind;
     modelId: string;
     promptText: string;
     responseText: string;
@@ -2419,6 +2425,7 @@ async function createAiRequest(
         end_paragraph_number,
         start_sequence_number,
         end_sequence_number,
+        request_kind,
         model_id,
         prompt_text,
         response_text
@@ -2435,6 +2442,7 @@ async function createAiRequest(
         :endParagraphNumber,
         :startSequenceNumber,
         :endSequenceNumber,
+        :kind,
         :modelId,
         :promptText,
         :responseText
@@ -2446,6 +2454,7 @@ async function createAiRequest(
       endPageNumber: section?.endPageNumber ?? null,
       endParagraphNumber: section?.endParagraphNumber ?? null,
       endSequenceNumber: section?.endSequenceNumber ?? null,
+      kind: options.kind,
       modelId: options.modelId,
       promptText: options.promptText,
       requestId,
@@ -5017,14 +5026,17 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const responseText = await generateAiRequestResponse({
+        kind: body.kind,
         model: body.model,
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Libro",
-        title: book.title
+        title: book.title,
+        visualType: body.visualType
       });
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
+        kind: body.kind,
         modelId: body.model ?? appEnv.opencodeModel,
         promptText: body.promptText,
         responseText,
@@ -5115,14 +5127,17 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const responseText = await generateAiRequestResponse({
+        kind: body.kind,
         model: body.model,
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Sección",
-        title: createSelectedSectionsAiTitle(selectedSections)
+        title: createSelectedSectionsAiTitle(selectedSections),
+        visualType: body.visualType
       });
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
+        kind: body.kind,
         modelId: body.model ?? appEnv.opencodeModel,
         promptText: formatSectionAiRequestPromptText(body.promptText, selectedSections),
         responseText,
