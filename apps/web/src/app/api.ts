@@ -99,7 +99,7 @@ export function fetchAppVersion(fromCommit: string) {
   return request<AppVersionResponse>(`/app-version?${query.toString()}`);
 }
 
-export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests" | "outline-regenerate";
+export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
 export type AiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free" | "mimo-v2.5-free";
 export type SummaryAiModelId = Exclude<AiModelId, "mimo-v2.5-free">;
@@ -529,7 +529,7 @@ export type ReaderTocEntry = {
   title: string;
 };
 
-export type BookOutlineSource = "EPUB_TOC" | "GENERATED_HEADINGS" | "MANUAL" | "NONE";
+export type BookOutlineSource = "GENERATED_HEADINGS" | "NONE";
 
 export type ReaderPageAnnotations = {
   bookmarks: ReaderBookmark[];
@@ -1033,10 +1033,6 @@ export function fetchReaderNavigation(accessToken: string, bookId: string) {
   return request<ReaderNavigationSummary>(`/books/${bookId}/navigation`, { accessToken });
 }
 
-export function fetchBookOutline(accessToken: string, bookId: string) {
-  return request<{ outline: BookOutlineEntry[]; outlineSource: BookOutlineSource }>(`/books/${bookId}/outline`, { accessToken });
-}
-
 export function fetchSectionSummary(accessToken: string, bookId: string, chapterId: string) {
   return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, { accessToken });
 }
@@ -1089,22 +1085,6 @@ export function deleteAiRequest(accessToken: string, bookId: string, requestId: 
   return request<void>(`/books/${bookId}/ai-requests/${requestId}`, {
     accessToken,
     method: "DELETE"
-  });
-}
-
-export function updateBookOutline(accessToken: string, bookId: string, payload: { entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title">> }) {
-  return request<void>(`/books/${bookId}/outline`, {
-    accessToken,
-    body: payload,
-    method: "PUT"
-  });
-}
-
-export function regenerateBookOutline(accessToken: string, bookId: string) {
-  return request<void>(`/books/${bookId}/outline/regenerate`, {
-    accessToken,
-    body: {},
-    method: "POST"
   });
 }
 

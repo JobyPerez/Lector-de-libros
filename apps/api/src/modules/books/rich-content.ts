@@ -37,6 +37,7 @@ export type StructuredRichBlockInput =
 const headingPattern = /^(#{1,6})\s+(.+)$/u;
 const imagePattern = /^!\[(.*?)\]\((.+?)\)$/u;
 const alignmentPattern = /^::(left|center|right)::\s*([\s\S]+)$/u;
+const readerLinkPattern = /\[([^\]]+)\]\(reader-page-(\d+)-paragraph-(\d+)\)/gu;
 const headingKeywordPattern = /^(cap[ií]tulo|chapter|parte|section|pr[oó]logo|ep[ií]logo|prefacio|introducci[oó]n)\b/iu;
 const embeddedImageSourcePattern = /^embedded-image-\d+$/u;
 const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
@@ -98,6 +99,7 @@ function stripInlineMarkdown(value: string): string {
       .replace(alignmentPattern, "$2")
       .replace(/^#{1,6}\s+/u, "")
       .replace(/!\[(.*?)\]\((.+?)\)/gu, "")
+      .replace(readerLinkPattern, "$1")
       .replace(/\*\*(.+?)\*\*/gu, "$1")
       .replace(/__(.+?)__/gu, "$1")
       .replace(/\*(.+?)\*/gu, "$1")
@@ -111,6 +113,7 @@ function stripInlineMarkdownPreservingLineBreaks(value: string): string {
       .replace(alignmentPattern, "$2")
       .replace(/^#{1,6}\s+/u, "")
       .replace(/!\[(.*?)\]\((.+?)\)/gu, "")
+      .replace(readerLinkPattern, "$1")
       .replace(/\*\*(.+?)\*\*/gu, "$1")
       .replace(/__(.+?)__/gu, "$1")
       .replace(/\*(.+?)\*/gu, "$1")
@@ -122,6 +125,7 @@ function renderInlineMarkdown(value: string): string {
   const escaped = escapeHtml(value);
 
   return escaped
+    .replace(readerLinkPattern, '<a data-lector-page="$2" data-lector-paragraph="$3" href="?page=$2&amp;paragraph=$3">$1</a>')
     .replace(/\*\*(.+?)\*\*/gu, "<strong>$1</strong>")
     .replace(/__(.+?)__/gu, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/gu, "<em>$1</em>")
@@ -311,8 +315,9 @@ export function extractEmbeddedImageSources(htmlContent: string | null | undefin
   const document = load(htmlContent);
   let imageIndex = 1;
 
-  document("figure.reader-rich-node img, .reader-rich-node img, .epub-page-body img").each((_, node) => {
-    const source = document(node).attr("src")?.trim();
+  document("figure.reader-rich-node img, figure.reader-rich-node image, .reader-rich-node img, .reader-rich-node image, .epub-page-body img, .epub-page-body image").each((_, node) => {
+    const element = document(node);
+    const source = (element.attr("src") ?? element.attr("href") ?? element.attr("xlink:href"))?.trim();
     if (!source) {
       return;
     }

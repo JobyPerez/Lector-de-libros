@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { load } from "cheerio";
 
 import { getConnection } from "../../config/database.js";
@@ -14,130 +12,25 @@ export type BookOutlineEntry = {
   title: string;
 };
 
-export type BookOutlineSource = "EPUB_TOC" | "GENERATED_HEADINGS" | "MANUAL" | "NONE";
-
-type StoredBookOutlineSource = Extract<BookOutlineSource, "EPUB_TOC" | "MANUAL">;
+export type BookOutlineSource = "GENERATED_HEADINGS" | "NONE";
 
 export type ResolvedBookOutline = {
   outline: BookOutlineEntry[];
   source: BookOutlineSource;
 };
 
+type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
+type OutlinePageRecord = { htmlContent: string | null; pageNumber: number };
+type OutlineParagraphRecord = { paragraphId: string; pageNumber: number; paragraphNumber: number; sequenceNumber: number };
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function createGeneratedChapterSlug(title: string): string {
-  const normalizedTitle = normalizeWhitespace(title)
-    .normalize("NFD")
-    .replace(/\p{Diacritic}+/gu, "")
-    .toLowerCase();
-  const slug = normalizedTitle.replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "");
-  return slug || "section";
-}
-
-type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
-
-function createOutlineLocationKey(entry: Pick<BookOutlineEntry, "pageNumber" | "paragraphNumber">): string {
-  return `${entry.pageNumber}:${entry.paragraphNumber}`;
-}
-
-async function resolveOutlineEntrySequenceNumbers(
-  connection: DatabaseConnection,
-  bookId: string,
-  entries: BookOutlineEntry[]
-): Promise<BookOutlineEntry[]> {
-  if (entries.length === 0) {
-    return [];
-  }
-
-  const result = await connection.execute(
-    `
-      SELECT
-        page_number AS "pageNumber",
-        paragraph_number AS "paragraphNumber",
-        sequence_number AS "sequenceNumber"
-      FROM book_paragraphs
-      WHERE book_id = :bookId
-    `,
-    { bookId }
-  );
-
-  const sequenceLookup = new Map<string, number>();
-  for (const row of (result.rows ?? []) as Array<{ pageNumber: number; paragraphNumber: number; sequenceNumber: number }>) {
-    sequenceLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, row.sequenceNumber);
-  }
-
-  return [...entries]
-    .map((entry, index) => ({
-      ...entry,
-      sequenceNumber: sequenceLookup.get(createOutlineLocationKey(entry)) ?? entry.sequenceNumber ?? index + 1
-    }))
-    .sort((left, right) => {
-      if (left.sequenceNumber !== right.sequenceNumber) {
-        return left.sequenceNumber - right.sequenceNumber;
-      }
-
-      if (left.pageNumber !== right.pageNumber) {
-        return left.pageNumber - right.pageNumber;
-      }
-
-      if (left.paragraphNumber !== right.paragraphNumber) {
-        return left.paragraphNumber - right.paragraphNumber;
-      }
-
-      return left.level - right.level;
-    });
-}
-
-async function getStoredBookOutlineSource(connection: DatabaseConnection, bookId: string): Promise<StoredBookOutlineSource | null> {
-  const result = await connection.execute(
-    `
-      SELECT outline_source AS "outlineSource"
-      FROM books
-      WHERE book_id = :bookId
-    `,
-    { bookId }
-  );
-
-  const [row] = (result.rows ?? []) as Array<{ outlineSource?: StoredBookOutlineSource | null }>;
-  return row?.outlineSource ?? null;
-}
-
-export async function listStoredBookOutline(connection: DatabaseConnection, bookId: string): Promise<BookOutlineEntry[]> {
-  const result = await connection.execute(
-    `
-      SELECT
-        chapter_id AS "chapterId",
-        heading_level AS "level",
-        page_number AS "pageNumber",
-        paragraph_number AS "paragraphNumber",
-        sequence_number AS "sequenceNumber",
-        title AS "title"
-      FROM book_chapters
-      WHERE book_id = :bookId
-      ORDER BY sequence_number ASC
-    `,
-    { bookId }
-  );
-
-  return ((result.rows ?? []) as Array<Omit<BookOutlineEntry, "isGenerated">>).map((row) => ({
-    ...row,
-    isGenerated: false
-  }));
-}
-
 export async function buildDerivedBookOutline(
   connection: DatabaseConnection,
-  bookId: string,
-  options?: { pageNumber?: number }
+  bookId: string
 ): Promise<BookOutlineEntry[]> {
-  const pageBinds: Record<string, number | string> = { bookId };
-  const pageNumberFilter = options?.pageNumber !== undefined ? "AND page_number = :pageNumber" : "";
-  if (options?.pageNumber !== undefined) {
-    pageBinds.pageNumber = options.pageNumber;
-  }
-
   const [pageResult, paragraphResult] = await Promise.all([
     connection.execute(
       `
@@ -147,14 +40,14 @@ export async function buildDerivedBookOutline(
         FROM book_pages
         WHERE book_id = :bookId
           AND html_content IS NOT NULL
-          ${pageNumberFilter}
         ORDER BY page_number ASC
       `,
-      pageBinds
+      { bookId }
     ),
     connection.execute(
       `
         SELECT
+          paragraph_id AS "paragraphId",
           page_number AS "pageNumber",
           paragraph_number AS "paragraphNumber",
           sequence_number AS "sequenceNumber"
@@ -165,179 +58,68 @@ export async function buildDerivedBookOutline(
     )
   ]);
 
-  const paragraphLookup = new Map<string, number>();
-  for (const row of (paragraphResult.rows ?? []) as Array<{ pageNumber: number; paragraphNumber: number; sequenceNumber: number }>) {
-    paragraphLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, Number(row.sequenceNumber));
+  return buildOutlineFromTitles(
+    (pageResult.rows ?? []) as OutlinePageRecord[],
+    (paragraphResult.rows ?? []) as OutlineParagraphRecord[]
+  );
+}
+
+export function buildOutlineFromTitles(
+  pages: OutlinePageRecord[],
+  paragraphs: OutlineParagraphRecord[]
+): BookOutlineEntry[] {
+  const paragraphLookup = new Map<string, { paragraphId: string; sequenceNumber: number }>();
+  for (const row of paragraphs) {
+    paragraphLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, {
+      paragraphId: row.paragraphId,
+      sequenceNumber: Number(row.sequenceNumber)
+    });
   }
 
   const outline: BookOutlineEntry[] = [];
-  const seenEntries = new Set<string>();
-  const titleOccurrences = new Map<string, number>();
+  const seenParagraphIds = new Set<string>();
 
-  for (const row of (pageResult.rows ?? []) as Array<{ htmlContent: string | null; pageNumber: number }>) {
+  for (const row of pages) {
     if (!row.htmlContent) {
       continue;
     }
 
     const document = load(row.htmlContent);
-    document("h1[data-paragraph-number], h2[data-paragraph-number], h3[data-paragraph-number], h4[data-paragraph-number], h5[data-paragraph-number], h6[data-paragraph-number]").each((_, node) => {
+    document("h1[data-paragraph-number], h2[data-paragraph-number], h3[data-paragraph-number]").each((_, node) => {
       const element = document(node);
       const title = normalizeWhitespace(element.text());
       const paragraphNumber = Number.parseInt(element.attr("data-paragraph-number") ?? "", 10);
-      const tagName = node.tagName?.toLowerCase() ?? "h1";
-      const level = Number.parseInt(tagName.replace("h", ""), 10);
+      const level = Number.parseInt((node.tagName?.toLowerCase() ?? "h1").slice(1), 10);
+      const paragraph = paragraphLookup.get(`${row.pageNumber}:${paragraphNumber}`);
 
-      if (!title || !Number.isInteger(paragraphNumber) || !Number.isInteger(level)) {
+      if (!title || !paragraph || !Number.isInteger(level) || seenParagraphIds.has(paragraph.paragraphId)) {
         return;
       }
 
-      const entryKey = `${row.pageNumber}:${paragraphNumber}:${title}`;
-      if (seenEntries.has(entryKey)) {
-        return;
-      }
-
-      seenEntries.add(entryKey);
-      const titleKey = createGeneratedChapterSlug(title);
-      const titleOccurrence = (titleOccurrences.get(titleKey) ?? 0) + 1;
-      titleOccurrences.set(titleKey, titleOccurrence);
-
+      seenParagraphIds.add(paragraph.paragraphId);
       outline.push({
-        chapterId: `generated:${titleKey}:${titleOccurrence}`,
+        chapterId: paragraph.paragraphId,
         isGenerated: true,
         level,
         pageNumber: row.pageNumber,
         paragraphNumber,
-        sequenceNumber: paragraphLookup.get(`${row.pageNumber}:${paragraphNumber}`) ?? outline.length + 1,
+        sequenceNumber: paragraph.sequenceNumber,
         title
       });
     });
   }
 
-  return outline;
+  return outline.sort((left, right) => left.sequenceNumber - right.sequenceNumber);
 }
 
 export async function resolveBookOutline(connection: DatabaseConnection, bookId: string): Promise<BookOutlineEntry[]> {
-  const resolvedOutline = await resolveBookOutlineWithSource(connection, bookId);
-  return resolvedOutline.outline;
+  return buildDerivedBookOutline(connection, bookId);
 }
 
 export async function resolveBookOutlineWithSource(connection: DatabaseConnection, bookId: string): Promise<ResolvedBookOutline> {
-  const storedOutline = await listStoredBookOutline(connection, bookId);
-  const storedSource = await getStoredBookOutlineSource(connection, bookId);
-  if (storedSource || storedOutline.length > 0) {
-    return {
-      outline: await resolveOutlineEntrySequenceNumbers(connection, bookId, storedOutline),
-      source: storedSource ?? "MANUAL"
-    };
-  }
-
-  const derivedOutline = await buildDerivedBookOutline(connection, bookId);
+  const outline = await buildDerivedBookOutline(connection, bookId);
   return {
-    outline: derivedOutline,
-    source: derivedOutline.length > 0 ? "GENERATED_HEADINGS" : "NONE"
+    outline,
+    source: outline.length > 0 ? "GENERATED_HEADINGS" : "NONE"
   };
-}
-
-export async function replaceBookOutline(
-  connection: DatabaseConnection,
-  bookId: string,
-  entries: Array<Pick<BookOutlineEntry, "level" | "pageNumber" | "paragraphNumber" | "title"> & Partial<Pick<BookOutlineEntry, "chapterId">>>,
-  source: StoredBookOutlineSource = "MANUAL"
-): Promise<void> {
-  await connection.execute(
-    `
-      DELETE FROM book_chapters
-      WHERE book_id = :bookId
-    `,
-    { bookId }
-  );
-
-  for (const [index, entry] of entries.entries()) {
-    await connection.execute(
-      `
-        INSERT INTO book_chapters (
-          chapter_id,
-          book_id,
-          title,
-          heading_level,
-          page_number,
-          paragraph_number,
-          sequence_number
-        ) VALUES (
-          :chapterId,
-          :bookId,
-          :title,
-          :headingLevel,
-          :pageNumber,
-          :paragraphNumber,
-          :sequenceNumber
-        )
-      `,
-      {
-        bookId,
-        chapterId: entry.chapterId ?? randomUUID(),
-        headingLevel: entry.level,
-        pageNumber: entry.pageNumber,
-        paragraphNumber: entry.paragraphNumber,
-        sequenceNumber: index + 1,
-        title: entry.title
-      }
-    );
-  }
-
-  await connection.execute(
-    `
-      UPDATE books
-      SET outline_source = :outlineSource
-      WHERE book_id = :bookId
-    `,
-    {
-      bookId,
-      outlineSource: source
-    }
-  );
-}
-
-function ensureUniqueOutlineChapterIds(entries: BookOutlineEntry[]): BookOutlineEntry[] {
-  const usedChapterIds = new Set<string>();
-
-  return entries.map((entry) => {
-    if (!usedChapterIds.has(entry.chapterId)) {
-      usedChapterIds.add(entry.chapterId);
-      return entry;
-    }
-
-    const slug = createGeneratedChapterSlug(entry.title);
-    let occurrence = 2;
-    let chapterId = `generated:${slug}:${occurrence}`;
-    while (usedChapterIds.has(chapterId)) {
-      occurrence += 1;
-      chapterId = `generated:${slug}:${occurrence}`;
-    }
-    usedChapterIds.add(chapterId);
-    return { ...entry, chapterId };
-  });
-}
-
-export async function syncBookOutlineForPage(
-  connection: DatabaseConnection,
-  bookId: string,
-  pageNumber: number
-): Promise<void> {
-  const storedSource = await getStoredBookOutlineSource(connection, bookId);
-  const storedOutline = await listStoredBookOutline(connection, bookId);
-  const baseOutline = storedSource || storedOutline.length > 0
-    ? storedOutline
-    : await buildDerivedBookOutline(connection, bookId);
-  const pageOutline = await buildDerivedBookOutline(connection, bookId, { pageNumber });
-  const nextOutline = await resolveOutlineEntrySequenceNumbers(
-    connection,
-    bookId,
-    [
-      ...baseOutline.filter((entry) => entry.pageNumber !== pageNumber),
-      ...pageOutline
-    ]
-  );
-
-  await replaceBookOutline(connection, bookId, ensureUniqueOutlineChapterIds(nextOutline), "MANUAL");
 }

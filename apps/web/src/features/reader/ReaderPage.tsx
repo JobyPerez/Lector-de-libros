@@ -3428,6 +3428,25 @@ export function ReaderPage() {
     return currentParagraphs.find((paragraph) => paragraph.paragraphNumber === paragraphNumber) ?? null;
   }
 
+  function findInternalEpubLinkFromNode(target: EventTarget | null) {
+    if (!(target instanceof Element)) {
+      return null;
+    }
+
+    const anchor = target.closest<HTMLAnchorElement>("a[href]");
+    if (!anchor) {
+      return null;
+    }
+
+    const pageNumber = Number.parseInt(anchor.dataset.lectorPage ?? "", 10);
+    const paragraphNumber = Number.parseInt(anchor.dataset.lectorParagraph ?? "", 10);
+    return {
+      anchor,
+      pageNumber: Number.isInteger(pageNumber) && pageNumber > 0 ? pageNumber : null,
+      paragraphNumber: Number.isInteger(paragraphNumber) && paragraphNumber > 0 ? paragraphNumber : null
+    };
+  }
+
   function decorateRichHtmlContent(htmlContent: string, activeParagraphNumber: number | null) {
     if (!htmlContent || activeParagraphNumber === null || typeof DOMParser === "undefined") {
       return htmlContent;
@@ -3501,8 +3520,26 @@ export function ReaderPage() {
         <div
           className={pageQuery.data?.book.sourceType === "IMAGES" ? "reader-rich-content ocr-rich-content" : "reader-rich-content"}
           dangerouslySetInnerHTML={{ __html: renderedHtmlContent }}
-          onClick={interactive
-            ? (event) => {
+           onClick={interactive
+             ? (event) => {
+                const epubLink = findInternalEpubLinkFromNode(event.target);
+                if (epubLink) {
+                  if (
+                    epubLink.pageNumber !== null
+                    && epubLink.paragraphNumber !== null
+                    && event.button === 0
+                    && !event.altKey
+                    && !event.ctrlKey
+                    && !event.metaKey
+                    && !event.shiftKey
+                    && epubLink.anchor.target !== "_blank"
+                  ) {
+                    event.preventDefault();
+                    void goToLocation(epubLink.pageNumber, epubLink.paragraphNumber);
+                  }
+                  return;
+                }
+
                 const paragraph = findParagraphFromNode(event.target);
                 if (paragraph) {
                   void selectParagraph(paragraph);
@@ -3510,7 +3547,11 @@ export function ReaderPage() {
               }
             : undefined}
           onKeyDown={interactive
-            ? (event) => {
+             ? (event) => {
+                if (findInternalEpubLinkFromNode(event.target)) {
+                  return;
+                }
+
                 if (event.key !== "Enter" && event.key !== " ") {
                   return;
                 }
@@ -4303,6 +4344,7 @@ export function ReaderPage() {
         return;
       }
 
+      pendingParagraphScrollRef.current = targetParagraph.paragraphNumber;
       setCurrentParagraphNumber(targetParagraph.paragraphNumber);
       await persistProgress(targetParagraph, currentPageNumber);
       return;
@@ -4405,7 +4447,7 @@ export function ReaderPage() {
       return;
     }
 
-    const confirmed = window.confirm(`Se borrará la página ${currentPageNumber} de este libro. Esta acción no se puede deshacer. ¿Continuar?`);
+    const confirmed = window.confirm(`Se borrará la página ${currentPageNumber} de la versión procesada del libro, junto con sus párrafos, anotaciones, capítulos y resúmenes asociados. Las páginas posteriores se renumerarán y el archivo original no cambiará. Esta acción no se puede deshacer. ¿Continuar?`);
     if (!confirmed) {
       return;
     }
@@ -4437,12 +4479,15 @@ export function ReaderPage() {
         return;
       }
 
+      queryClient.removeQueries({ queryKey: ["book-page", bookId] });
+      queryClient.removeQueries({ queryKey: ["reader-annotations", bookId] });
       setCurrentPageNumber(response.nextPageNumber);
       setCurrentParagraphNumber(1);
-      await progressQuery.refetch();
-      if (response.nextPageNumber === currentPageNumber) {
-        await pageQuery.refetch();
-      }
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["book", bookId] }),
+        queryClient.invalidateQueries({ queryKey: ["progress", bookId] }),
+        queryClient.invalidateQueries({ queryKey: ["reader-navigation", bookId] })
+      ]);
     } catch (error) {
       setReaderError(error instanceof Error ? error.message : "No se pudo borrar la página actual.");
     } finally {
@@ -4775,7 +4820,7 @@ export function ReaderPage() {
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
   const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
   const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
-  const canDeleteImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF";
+  const canDeleteImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
 
   function renderReaderHeaderActionButtons(buttonClassName: string, onAction?: () => void) {
     const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
@@ -5326,9 +5371,6 @@ export function ReaderPage() {
             expandedNoteId={expandedNavigationNoteId}
             isUpdatingNote={isUpdatingNote}
             items={orderedNavigationItems}
-            onOutlineEditClick={closeNavigationPanel}
-            outlineEditHref={canEditBook ? `/books/${bookId}/outline/edit` : undefined}
-            outlineSource={navigationQuery.data?.tocSource ?? "NONE"}
             onBeginHighlightEditing={beginNavigationHighlightEditing}
             onBeginNoteEditing={beginNavigationNoteEditing}
             onCancelHighlightEditing={() => {

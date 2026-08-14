@@ -34,11 +34,26 @@ type PageAnchorLookup = {
   fragmentTargets: Map<string, PageAnchorTarget>;
 };
 
+type PreparedSpineDocument = {
+  document: ReturnType<typeof load>;
+  entryPath: string;
+  inlineStyles: string[];
+};
+
 const paragraphSelector = "p, h1, h2, h3, h4, h5, h6, li, blockquote";
 const headingSelector = "h1, h2, h3, h4, h5, h6";
-const structuralWrapperTags = new Set(["article", "div", "main", "section"]);
+const structuralWrapperTags = new Set([
+  "article", "aside", "blockquote", "dd", "div", "dl", "dt", "li", "main", "nav", "ol", "pre", "section",
+  "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul"
+]);
 const maxChunkCharacters = 4200;
 const maxChunkParagraphs = 14;
+const maxParagraphCharacters = 900;
+const chunkMarkerAttribute = "data-lector-import-chunk";
+const extraParagraphAttribute = "data-lector-import-extra-paragraph";
+const temporaryTextWrapperAttribute = "data-lector-import-text";
+const temporaryPositionAttribute = "data-lector-import-position";
+const tocNormalizedHeadingAttribute = "data-lector-toc-normalized";
 
 type ChunkUnit = {
   characters: number;
@@ -46,12 +61,14 @@ type ChunkUnit = {
   html: string;
   images: number;
   isHeading: boolean;
+  markerId: string;
   paragraphs: number;
 };
 
-type ContentRoot = {
-  wrapperChain: Array<{ attributes: Record<string, string>; tagName: string }>;
-  units: ChunkUnit[];
+type ChunkCollectionState = {
+  lastMarkerId: string | null;
+  pendingAnchorNodes: Array<Parameters<ReturnType<typeof load>["html"]>[0]>;
+  value: number;
 };
 
 const mimeTypeByExtension = new Map([
@@ -138,6 +155,120 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeHeadingComparison(value: string): string {
+  return normalizeWhitespace(value)
+    .normalize("NFD")
+    .replace(/\p{Diacritic}+/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim();
+}
+
+function headingLevel(node: Parameters<ReturnType<typeof load>["html"]>[0]): number | null {
+  const tagName = ((node as { name?: string; tagName?: string }).tagName
+    ?? (node as { name?: string; tagName?: string }).name
+    ?? "").toLowerCase();
+  const level = /^h[1-6]$/u.test(tagName) ? Number.parseInt(tagName.slice(1), 10) : NaN;
+  return Number.isInteger(level) ? level : null;
+}
+
+function setHeadingLevel(node: Parameters<ReturnType<typeof load>["html"]>[0], level: number): void {
+  const tagName = `h${Math.min(6, Math.max(1, level))}`;
+  (node as { name?: string }).name = tagName;
+  (node as { tagName?: string }).tagName = tagName;
+}
+
+function findDocumentFragmentNode(
+  document: ReturnType<typeof load>,
+  fragment: string | null
+): Parameters<ReturnType<typeof load>["html"]>[0] | null {
+  if (!fragment) {
+    return null;
+  }
+
+  const normalizedFragment = normalizeFragmentIdentifier(fragment);
+  return document("[id], [xml\\:id], a[name]").toArray().find((node) => {
+    const element = document(node);
+    const identifier = element.attr("id") ?? element.attr("xml:id") ?? element.attr("name") ?? "";
+    return normalizeFragmentIdentifier(identifier) === normalizedFragment;
+  }) ?? null;
+}
+
+function normalizeDocumentHeadingsFromToc(
+  preparedDocument: PreparedSpineDocument,
+  tocEntries: TocReferenceEntry[]
+): number[] {
+  const { document, entryPath } = preparedDocument;
+  const normalizedEntryPath = normalizeArchiveLookupPath(entryPath);
+  const matchingEntries = tocEntries.filter((entry) => normalizeArchiveLookupPath(entry.entryPath) === normalizedEntryPath);
+  const offsets: number[] = [];
+
+  for (const entry of matchingEntries) {
+    const headings = document(headingSelector).toArray();
+    if (headings.length === 0) {
+      continue;
+    }
+
+    const fragmentNode = findDocumentFragmentNode(document, entry.fragment);
+    const allBodyNodes = document("body *").toArray();
+    const fragmentNodeIndex = fragmentNode ? allBodyNodes.indexOf(fragmentNode as (typeof allBodyNodes)[number]) : -1;
+    const headingFragmentNode = fragmentNode && headingLevel(fragmentNode)
+      ? fragmentNode as (typeof headings)[number]
+      : null;
+    const candidate = headingFragmentNode
+      ? headingFragmentNode
+      : headings.find((heading) => fragmentNodeIndex < 0 || allBodyNodes.indexOf(heading) >= fragmentNodeIndex) ?? headings[0];
+    if (!candidate) {
+      continue;
+    }
+
+    const candidateIndex = headings.indexOf(candidate);
+    const nextHeading = headings[candidateIndex + 1];
+    const candidateElement = document(candidate);
+    const candidateTitle = normalizeHeadingComparison(candidateElement.text());
+    const nextTitle = nextHeading ? normalizeHeadingComparison(document(nextHeading).text()) : "";
+    const officialTitle = normalizeHeadingComparison(entry.title);
+    const combinedTitle = normalizeHeadingComparison(`${candidateElement.text()} ${nextHeading ? document(nextHeading).text() : ""}`);
+    const candidateMatches = officialTitle === candidateTitle
+      || officialTitle.startsWith(`${candidateTitle} `)
+      || (candidateTitle.length >= 3 && officialTitle.includes(candidateTitle));
+    const combinedMatches = Boolean(nextHeading)
+      && headingLevel(nextHeading) === headingLevel(candidate)
+      && officialTitle === combinedTitle;
+
+    if (!candidateMatches && !combinedMatches && officialTitle !== nextTitle) {
+      continue;
+    }
+
+    const originalLevel = headingLevel(candidate);
+    if (!originalLevel) {
+      continue;
+    }
+
+    candidateElement.text(entry.title);
+    candidateElement.attr(tocNormalizedHeadingAttribute, "true");
+    setHeadingLevel(candidate, entry.level);
+    offsets.push(entry.level - originalLevel);
+
+    if (combinedMatches && nextHeading) {
+      document(nextHeading).remove();
+    }
+  }
+
+  return offsets;
+}
+
+function applyHeadingLevelOffset(document: ReturnType<typeof load>, offset: number): void {
+  document(headingSelector).each((_, node) => {
+    const element = document(node);
+    const level = headingLevel(node);
+    if (level && !element.is(`[${tocNormalizedHeadingAttribute}]`)) {
+      setHeadingLevel(node, level + offset);
+    }
+    element.removeAttr(tocNormalizedHeadingAttribute);
+  });
+}
+
 function parsePositiveInteger(value: string | undefined): number | null {
   const parsedValue = Number.parseInt(value ?? "", 10);
   return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : null;
@@ -188,10 +319,11 @@ function escapeHtmlAttribute(value: string): string {
     .replace(/>/g, "&gt;");
 }
 
-function renderAttributes(attributes: Record<string, string>): string {
-  return Object.entries(attributes)
-    .map(([name, value]) => ` ${name}="${escapeHtmlAttribute(value)}"`)
-    .join("");
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function stripQuotes(value: string): string {
@@ -399,17 +531,163 @@ function sanitizeDocumentMarkup(document: ReturnType<typeof load>): void {
   });
 }
 
-function createChunkUnit(document: ReturnType<typeof load>, node: Parameters<ReturnType<typeof load>["html"]>[0]): ChunkUnit | null {
+type MutableDomNode = {
+  attribs?: Record<string, string>;
+  children?: MutableDomNode[];
+  data?: string;
+  type?: string;
+};
+
+function walkDom(node: MutableDomNode, visitor: (currentNode: MutableDomNode) => void): void {
+  visitor(node);
+  for (const child of node.children ?? []) {
+    walkDom(child, visitor);
+  }
+}
+
+function buildTextRanges(text: string, maxCharacters: number): Array<{ end: number; start: number }> {
+  const ranges: Array<{ end: number; start: number }> = [];
+  let start = 0;
+
+  while (start < text.length) {
+    let end = Math.min(text.length, start + maxCharacters);
+    if (end < text.length) {
+      const minimumBoundary = start + Math.floor(maxCharacters / 2);
+      for (let index = end; index > minimumBoundary; index -= 1) {
+        if (/\s/u.test(text[index - 1] ?? "")) {
+          end = index;
+          break;
+        }
+      }
+    }
+
+    ranges.push({ end, start });
+    start = end;
+  }
+
+  return ranges;
+}
+
+function splitParagraphMarkup(html: string, maxCharacters: number): string[] {
+  const sourceDocument = load(`<html><body>${html}</body></html>`, { xmlMode: false });
+  const sourceRoot = sourceDocument("body").children().first();
+  const sourceNode = sourceRoot.get(0) as MutableDomNode | undefined;
+  if (!sourceNode) {
+    return [html];
+  }
+
+  let sourceOffset = 0;
+  const markPositions = (node: MutableDomNode): void => {
+    if (node.type === "text") {
+      sourceOffset += node.data?.length ?? 0;
+      return;
+    }
+
+    if (node.type === "tag" && node.attribs) {
+      const hasIdentity = Boolean(node.attribs.id || node.attribs.name || node.attribs["xml:id"]);
+      const isPositionedAsset = ["image", "img", "svg"].includes((node as { name?: string }).name ?? "");
+      if (hasIdentity || isPositionedAsset) {
+        node.attribs[temporaryPositionAttribute] = String(sourceOffset);
+      }
+    }
+
+    for (const child of node.children ?? []) {
+      markPositions(child);
+    }
+  };
+  markPositions(sourceNode);
+
+  const markedHtml = sourceDocument.html(sourceNode as Parameters<ReturnType<typeof load>["html"]>[0]) ?? html;
+  const rawText = sourceRoot.text();
+  const ranges = buildTextRanges(rawText, maxCharacters);
+
+  return ranges.map((range, rangeIndex) => {
+    const fragmentDocument = load(`<html><body>${markedHtml}</body></html>`, { xmlMode: false });
+    const fragmentRoot = fragmentDocument("body").children().first();
+    const fragmentNode = fragmentRoot.get(0) as MutableDomNode | undefined;
+    let fragmentOffset = 0;
+
+    if (fragmentNode) {
+      walkDom(fragmentNode, (currentNode) => {
+        if (currentNode.type !== "text") {
+          return;
+        }
+
+        const text = currentNode.data ?? "";
+        const nodeStart = fragmentOffset;
+        const nodeEnd = nodeStart + text.length;
+        const overlapStart = Math.max(range.start, nodeStart);
+        const overlapEnd = Math.min(range.end, nodeEnd);
+        currentNode.data = overlapStart < overlapEnd
+          ? text.slice(overlapStart - nodeStart, overlapEnd - nodeStart)
+          : "";
+        fragmentOffset = nodeEnd;
+      });
+    }
+
+    fragmentRoot.find(`[${temporaryPositionAttribute}]`).addBack(`[${temporaryPositionAttribute}]`).each((_, positionedNode) => {
+      const positionedElement = fragmentDocument(positionedNode);
+      const position = Number.parseInt(positionedElement.attr(temporaryPositionAttribute) ?? "", 10);
+      const belongsToRange = position >= range.start
+        && (position < range.end || (rangeIndex === ranges.length - 1 && position === range.end));
+
+      if (!belongsToRange) {
+        if (positionedElement.is("img, svg, image")) {
+          positionedElement.remove();
+          return;
+        }
+        positionedElement.removeAttr("id").removeAttr("name").removeAttr("xml:id");
+      }
+
+      positionedElement.removeAttr(temporaryPositionAttribute);
+    });
+
+    return fragmentDocument.html(fragmentRoot.get(0)) ?? "";
+  }).filter((fragment) => normalizeWhitespace(load(fragment).text()).length > 0 || /<(img|svg|image)\b/iu.test(fragment));
+}
+
+function splitOversizedParagraphNodes(document: ReturnType<typeof load>): void {
+  document("body")
+    .find(paragraphSelector)
+    .filter((_, node) => document(node).find(paragraphSelector).length === 0)
+    .each((_, node) => {
+      const element = document(node);
+      const paragraphText = normalizeWhitespace(element.text());
+      if (paragraphText.length <= maxParagraphCharacters) {
+        return;
+      }
+
+      const replacementMarkup = splitParagraphMarkup(document.html(node) ?? "", maxParagraphCharacters).join("");
+
+      element.replaceWith(replacementMarkup);
+    });
+}
+
+function createChunkUnit(
+  document: ReturnType<typeof load>,
+  node: Parameters<ReturnType<typeof load>["html"]>[0],
+  markerId: string
+): ChunkUnit | null {
   const element = document(node);
   const html = document.html(node) ?? "";
   const textContent = normalizeWhitespace(element.text());
   const images = element.is("img, svg, image") ? 1 : element.find("img, svg, image").length;
-  const paragraphCount = element.is(paragraphSelector) ? 1 : element.find(paragraphSelector).length;
-  const isHeading = element.is(headingSelector);
+  const paragraphNodes = element
+    .find(paragraphSelector)
+    .addBack(paragraphSelector)
+    .filter((_, paragraphNode) => document(paragraphNode).find(paragraphSelector).length === 0);
+  const paragraphCount = paragraphNodes.length;
+  const effectiveParagraphCount = paragraphCount > 0 ? paragraphCount : (textContent.length > 0 ? 1 : 0);
+  const isHeading = paragraphNodes.first().is(headingSelector);
   const hasRenderableContent = html.trim().length > 0 && (textContent.length > 0 || images > 0 || /<(img|svg|table|hr|figure)\b/iu.test(html));
 
   if (!hasRenderableContent) {
     return null;
+  }
+
+  element.attr(chunkMarkerAttribute, markerId);
+  if (paragraphCount === 0 && textContent.length > 0) {
+    element.attr(extraParagraphAttribute, "true");
   }
 
   return {
@@ -418,76 +696,179 @@ function createChunkUnit(document: ReturnType<typeof load>, node: Parameters<Ret
     html,
     images,
     isHeading,
-    paragraphs: paragraphCount
+    markerId,
+    paragraphs: effectiveParagraphCount
   };
 }
 
-function resolveContentRoot(document: ReturnType<typeof load>) {
-  let currentRoot: any = document("body").first();
-  const wrapperChain: Array<{ attributes: Record<string, string>; tagName: string }> = [];
-
-  while (true) {
-    const meaningfulChildren = currentRoot.contents().toArray().filter((node: any) => {
-      const nodeText = normalizeWhitespace(document(node).text());
-      if (node.type === "text") {
-        return nodeText.length > 0;
-      }
-
-      return true;
-    });
-
-    if (meaningfulChildren.length !== 1) {
-      break;
-    }
-
-    const onlyChild = meaningfulChildren[0];
-    if (!onlyChild) {
-      break;
-    }
-
-    if (onlyChild.type !== "tag") {
-      break;
-    }
-
-    const onlyChildElement = document(onlyChild);
-    const rawTagName = (onlyChild as { name?: string; tagName?: string }).tagName
-      ?? (onlyChild as { name?: string; tagName?: string }).name;
-    const tagName = rawTagName?.toLowerCase() ?? "";
-    if (!structuralWrapperTags.has(tagName)) {
-      break;
-    }
-
-    wrapperChain.push({
-      attributes: { ...(((onlyChild as { attribs?: Record<string, string> }).attribs) ?? {}) },
-      tagName
-    });
-    currentRoot = onlyChildElement;
+function attachChunkUnit(
+  document: ReturnType<typeof load>,
+  node: Parameters<ReturnType<typeof load>["html"]>[0],
+  markerId: string,
+  state: ChunkCollectionState
+): ChunkUnit | null {
+  const unit = createChunkUnit(document, node, markerId);
+  if (!unit) {
+    return null;
   }
 
-  const units = currentRoot.contents()
-    .toArray()
-    .map((node: any) => createChunkUnit(document, node))
-    .filter((unit: ChunkUnit | null): unit is ChunkUnit => unit !== null);
-
-  return {
-    wrapperChain,
-    units
-  } satisfies ContentRoot;
+  for (const pendingAnchorNode of state.pendingAnchorNodes) {
+    document(pendingAnchorNode).attr(chunkMarkerAttribute, markerId);
+  }
+  state.pendingAnchorNodes = [];
+  state.lastMarkerId = markerId;
+  return unit;
 }
 
-function wrapChunkHtml(units: ChunkUnit[], wrapperChain: ContentRoot["wrapperChain"]): string {
-  let wrappedHtml = units.map((unit) => unit.html).join("");
+function collectChunkUnits(
+  document: ReturnType<typeof load>,
+  node: Parameters<ReturnType<typeof load>["html"]>[0],
+  state: ChunkCollectionState
+): ChunkUnit[] {
+  const element = document(node);
+  const rawTagName = (node as { name?: string; tagName?: string }).tagName
+    ?? (node as { name?: string; tagName?: string }).name;
+  const tagName = rawTagName?.toLowerCase() ?? "";
+  const nodeType = (node as { type?: string } | undefined)?.type;
 
-  for (let index = wrapperChain.length - 1; index >= 0; index -= 1) {
-    const wrapper = wrapperChain[index];
-    if (!wrapper) {
-      continue;
+  if (nodeType === "text") {
+    const text = element.text();
+    if (!normalizeWhitespace(text)) {
+      return [];
     }
 
-    wrappedHtml = `<${wrapper.tagName}${renderAttributes(wrapper.attributes)}>${wrappedHtml}</${wrapper.tagName}>`;
+    const textRanges = buildTextRanges(text, maxParagraphCharacters);
+    const markerIds = textRanges.map(() => String(state.value++));
+    element.replaceWith(textRanges.map((range, index) => (
+      `<span ${chunkMarkerAttribute}="${markerIds[index]}" ${temporaryTextWrapperAttribute}="true">${escapeHtmlText(text.slice(range.start, range.end))}</span>`
+    )).join(""));
+
+    return markerIds.flatMap((markerId) => {
+      const wrappedNode = document(`[${chunkMarkerAttribute}="${markerId}"]`).first().get(0);
+      if (!wrappedNode) {
+        return [];
+      }
+
+      const unit = attachChunkUnit(document, wrappedNode, markerId, state);
+      return unit ? [unit] : [];
+    });
   }
 
-  return wrappedHtml;
+  const isEmptyAnchor = nodeType === "tag"
+    && Boolean(element.attr("id") || element.attr("xml:id") || (element.is("a") && element.attr("name")))
+    && normalizeWhitespace(element.text()).length === 0
+    && element.find("img, svg, image, table, hr, figure").length === 0;
+  if (isEmptyAnchor) {
+    state.pendingAnchorNodes.push(node);
+    return [];
+  }
+
+  const hasNestedParagraphs = element.find(paragraphSelector).length > 0;
+  const shouldDescend = nodeType === "tag"
+    && structuralWrapperTags.has(tagName)
+    && (!(tagName === "li" || tagName === "blockquote") || hasNestedParagraphs);
+
+  if (shouldDescend) {
+    const childUnits = element.contents()
+      .toArray()
+      .flatMap((childNode) => collectChunkUnits(document, childNode, state));
+
+    if (childUnits.length > 0) {
+      return childUnits;
+    }
+  }
+
+  const markerId = String(state.value++);
+  const unit = attachChunkUnit(document, node, markerId, state);
+  return unit ? [unit] : [];
+}
+
+function resolveChunkUnits(document: ReturnType<typeof load>): ChunkUnit[] {
+  document(`[${chunkMarkerAttribute}], [${temporaryTextWrapperAttribute}]`)
+    .removeAttr(chunkMarkerAttribute)
+    .removeAttr(temporaryTextWrapperAttribute);
+
+  document("ol").each((_, node) => {
+    const list = document(node);
+    const items = list.children("li");
+    const reversed = list.is("[reversed]");
+    const step = reversed ? -1 : 1;
+    let currentValue = Number.parseInt(list.attr("start") ?? "", 10);
+    if (!Number.isInteger(currentValue)) {
+      currentValue = reversed ? items.length : 1;
+    }
+
+    items.each((_, itemNode) => {
+      const item = document(itemNode);
+      const explicitValue = Number.parseInt(item.attr("value") ?? "", 10);
+      if (Number.isInteger(explicitValue)) {
+        currentValue = explicitValue;
+      } else {
+        item.attr("value", String(currentValue));
+      }
+      currentValue += step;
+    });
+  });
+
+  const state: ChunkCollectionState = {
+    lastMarkerId: null,
+    pendingAnchorNodes: [],
+    value: 1
+  };
+  const units = document("body")
+    .first()
+    .contents()
+    .toArray()
+    .flatMap((node) => collectChunkUnits(document, node, state));
+
+  if (state.lastMarkerId) {
+    for (const pendingAnchorNode of state.pendingAnchorNodes) {
+      document(pendingAnchorNode).attr(chunkMarkerAttribute, state.lastMarkerId);
+    }
+  }
+
+  return units;
+}
+
+function createChunkDocument(document: ReturnType<typeof load>, chunkUnits: ChunkUnit[]): ReturnType<typeof load> {
+  const selectedMarkerIds = new Set(chunkUnits.map((unit) => unit.markerId));
+  const chunkDocument = load(document.html(), { xmlMode: false });
+
+  chunkDocument(`[${chunkMarkerAttribute}]`).each((_, node) => {
+    const element = chunkDocument(node);
+    if (!selectedMarkerIds.has(element.attr(chunkMarkerAttribute) ?? "")) {
+      element.remove();
+    }
+  });
+
+  const wrapperSelector = Array.from(structuralWrapperTags).join(", ");
+  chunkDocument(wrapperSelector).toArray().reverse().forEach((node) => {
+    const element = chunkDocument(node);
+    const hasContent = normalizeWhitespace(element.text()).length > 0
+      || element.find("img, svg, image, table, hr, figure").length > 0
+      || Boolean(element.attr("id") || element.attr("xml:id") || element.attr("name"));
+    if (!hasContent) {
+      element.remove();
+    }
+  });
+
+  chunkDocument(`[${chunkMarkerAttribute}]`).removeAttr(chunkMarkerAttribute);
+
+  return chunkDocument;
+}
+
+/*
+ * Paragraph-like containers such as list items and blockquotes are annotated at
+ * their deepest textual node so HTML and persisted paragraph counts stay aligned.
+ */
+function findParagraphNodes(document: ReturnType<typeof load>, includeExtraParagraphs = false) {
+  const selector = includeExtraParagraphs
+    ? `${paragraphSelector}, [${extraParagraphAttribute}]`
+    : paragraphSelector;
+
+  return document("body")
+    .find(selector)
+    .filter((_, node) => document(node).find(selector).length === 0);
 }
 
 function splitIntoChunks(units: ChunkUnit[]): ChunkUnit[][] {
@@ -501,7 +882,9 @@ function splitIntoChunks(units: ChunkUnit[]): ChunkUnit[][] {
   let currentParagraphs = 0;
 
   for (const unit of units) {
-    const wouldExceedCharacters = currentChunk.length > 0 && currentCharacters + unit.characters > maxChunkCharacters;
+    const separatorCharacters = currentChunk.length > 0 ? 1 : 0;
+    const wouldExceedCharacters = currentChunk.length > 0
+      && currentCharacters + separatorCharacters + unit.characters > maxChunkCharacters;
     const wouldExceedParagraphs = currentChunk.length > 0 && currentParagraphs + unit.paragraphs > maxChunkParagraphs;
     const shouldBreakBeforeHeading = currentChunk.length > 0 && unit.isHeading && currentParagraphs >= Math.max(4, Math.floor(maxChunkParagraphs / 2));
 
@@ -512,8 +895,9 @@ function splitIntoChunks(units: ChunkUnit[]): ChunkUnit[][] {
       currentParagraphs = 0;
     }
 
+    const addedSeparatorCharacters = currentChunk.length > 0 ? 1 : 0;
     currentChunk.push(unit);
-    currentCharacters += unit.characters;
+    currentCharacters += addedSeparatorCharacters + unit.characters;
     currentParagraphs += unit.paragraphs;
   }
 
@@ -524,12 +908,10 @@ function splitIntoChunks(units: ChunkUnit[]): ChunkUnit[][] {
   return chunks;
 }
 
-function annotateParagraphNodes(document: ReturnType<typeof load>): string[] {
+function annotateParagraphNodes(document: ReturnType<typeof load>, includeExtraParagraphs = false): string[] {
   const paragraphs: string[] = [];
 
-  document("body")
-    .find(paragraphSelector)
-    .filter((_, node) => document(node).parents(paragraphSelector).length === 0)
+  findParagraphNodes(document, includeExtraParagraphs)
     .each((_, node) => {
       const element = document(node);
       const paragraphText = normalizeWhitespace(element.text());
@@ -547,9 +929,25 @@ function annotateParagraphNodes(document: ReturnType<typeof load>): string[] {
       element.attr("data-paragraph-number", String(paragraphs.length));
       element.attr("role", "button");
       element.attr("tabindex", "0");
+      element.removeAttr(extraParagraphAttribute).removeAttr(temporaryTextWrapperAttribute);
     });
 
   return paragraphs;
+}
+
+function annotateFallbackParagraph(document: ReturnType<typeof load>, rawText: string): string[] {
+  if (!rawText) {
+    return [];
+  }
+
+  const body = document("body").first();
+  body.find(`[${temporaryTextWrapperAttribute}]`).each((_, node) => {
+    const element = document(node);
+    element.replaceWith(element.html() ?? "");
+  });
+  body.find(`[${extraParagraphAttribute}]`).removeAttr(extraParagraphAttribute);
+  body.html(`<div class="reader-rich-node" data-paragraph-number="1" role="button" tabindex="0">${body.html() ?? ""}</div>`);
+  return [rawText];
 }
 
 function buildRichPageMarkup(document: ReturnType<typeof load>, inlineStyles: string[]): string | null {
@@ -572,9 +970,8 @@ function buildRichPageMarkup(document: ReturnType<typeof load>, inlineStyles: st
 
 function createPagesFromDocument(document: ReturnType<typeof load>, inlineStyles: string[]): Array<Pick<ImportedPage, "htmlContent" | "paragraphs" | "rawText">> {
   const bodyElement = document("body").first();
-  const bodyClassName = bodyElement.attr("class");
-  const bodyStyle = bodyElement.attr("style");
-  const { units, wrapperChain } = resolveContentRoot(document);
+  splitOversizedParagraphNodes(document);
+  const units = resolveChunkUnits(document);
 
   if (units.length === 0) {
     const rawText = normalizeWhitespace(bodyElement.text());
@@ -588,22 +985,14 @@ function createPagesFromDocument(document: ReturnType<typeof load>, inlineStyles
   }
 
   return splitIntoChunks(units).map((chunkUnits) => {
-    const chunkDocument = load("<html><body></body></html>", {
-      xmlMode: false
-    });
+    const chunkDocument = createChunkDocument(document, chunkUnits);
 
-    if (bodyClassName) {
-      chunkDocument("body").attr("class", bodyClassName);
-    }
-
-    if (bodyStyle) {
-      chunkDocument("body").attr("style", bodyStyle);
-    }
-
-    chunkDocument("body").html(wrapChunkHtml(chunkUnits, wrapperChain));
-
-    const paragraphs = annotateParagraphNodes(chunkDocument);
+    const hasStandardParagraphs = findParagraphNodes(chunkDocument).length > 0;
+    let paragraphs = annotateParagraphNodes(chunkDocument, hasStandardParagraphs);
     const rawText = normalizeWhitespace(chunkDocument("body").text());
+    if (paragraphs.length === 0) {
+      paragraphs = annotateFallbackParagraph(chunkDocument, rawText);
+    }
     const htmlContent = buildRichPageMarkup(chunkDocument, inlineStyles);
 
     return {
@@ -652,7 +1041,8 @@ function extractNavigationEntriesFromList(
   document(listElement).children("li").each((_, itemNode) => {
     const listItem = document(itemNode);
     const labelContainer = listItem.children().not("ol, ul");
-    const anchor = labelContainer.find("a[href]").first();
+    const directAnchor = labelContainer.filter("a[href]").first();
+    const anchor = directAnchor.length > 0 ? directAnchor : labelContainer.find("a[href]").first();
     const title = normalizeWhitespace(anchor.length > 0 ? anchor.text() : labelContainer.first().text());
 
     if (anchor.length > 0 && title) {
@@ -861,6 +1251,42 @@ function resolveTocTarget(lookup: PageAnchorLookup, entry: TocReferenceEntry): P
   }
 
   return lookup.entryTargets.get(entry.entryPath) ?? null;
+}
+
+function rewritePageInternalLinks(
+  htmlContent: string | null | undefined,
+  entryPath: string,
+  lookup: PageAnchorLookup
+): string | null {
+  if (!htmlContent) {
+    return null;
+  }
+
+  const document = load(htmlContent, { xmlMode: false });
+  document("a[href]").each((_, node) => {
+    const element = document(node);
+    const originalHref = element.attr("href")?.trim();
+    const resolvedReference = originalHref ? resolveInternalReference(entryPath, originalHref) : null;
+    if (!originalHref || !resolvedReference) {
+      return;
+    }
+
+    const target = resolvedReference.fragment
+      ? buildFragmentLookupKeys(resolvedReference.entryPath, resolvedReference.fragment)
+        .map((key) => lookup.fragmentTargets.get(key))
+        .find((candidate): candidate is PageAnchorTarget => candidate !== undefined) ?? null
+      : lookup.entryTargets.get(normalizeArchiveLookupPath(resolvedReference.entryPath)) ?? null;
+    if (!target) {
+      return;
+    }
+
+    element.attr("data-lector-epub-href", originalHref);
+    element.attr("data-lector-page", String(target.pageNumber));
+    element.attr("data-lector-paragraph", String(target.paragraphNumber));
+    element.attr("href", `?page=${target.pageNumber}&paragraph=${target.paragraphNumber}`);
+  });
+
+  return document("body").html()?.trim() || null;
 }
 
 function buildOutlineFromTocEntries(tocEntries: TocReferenceEntry[], lookup: PageAnchorLookup): ImportedOutlineEntry[] {
@@ -1074,10 +1500,12 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
   const tocEntries = extractTocEntries(parsedArchive);
 
   const pages: ImportedPage[] = [];
+  const pageEntryPaths: string[] = [];
   const pageAnchorLookup: PageAnchorLookup = {
     entryTargets: new Map(),
     fragmentTargets: new Map()
   };
+  const preparedDocuments: PreparedSpineDocument[] = [];
 
   for (const idReference of parsedArchive.spineItemIds) {
     const manifestItem = parsedArchive.manifest.get(idReference);
@@ -1102,6 +1530,18 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
     inlineBinaryAssets(document, documentDirectory, parsedArchive.archive);
     sanitizeDocumentMarkup(document);
 
+    preparedDocuments.push({ document, entryPath, inlineStyles });
+  }
+
+  const headingOffsets = preparedDocuments.flatMap((preparedDocument) => normalizeDocumentHeadingsFromToc(preparedDocument, tocEntries));
+  const dominantHeadingOffset = [...new Map(
+    headingOffsets.map((offset) => [offset, headingOffsets.filter((candidate) => candidate === offset).length])
+  ).entries()].sort((left, right) => right[1] - left[1] || Math.abs(left[0]) - Math.abs(right[0]))[0]?.[0] ?? 0;
+
+  for (const preparedDocument of preparedDocuments) {
+    const { document, entryPath, inlineStyles } = preparedDocument;
+    applyHeadingLevelOffset(document, dominantHeadingOffset);
+
     const chunkedPages = createPagesFromDocument(document, inlineStyles);
 
     for (const chunkedPage of chunkedPages) {
@@ -1114,7 +1554,12 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
         paragraphs: chunkedPage.paragraphs,
         rawText: chunkedPage.rawText
       });
+      pageEntryPaths.push(entryPath);
     }
+  }
+
+  for (const [pageIndex, page] of pages.entries()) {
+    page.htmlContent = rewritePageInternalLinks(page.htmlContent, pageEntryPaths[pageIndex] ?? "", pageAnchorLookup);
   }
 
   const outlineEntries = tocEntries.length > 0

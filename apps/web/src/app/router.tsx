@@ -10,7 +10,6 @@ import { LoginPage } from "../features/auth/LoginPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { AiRequestsPage } from "../features/reader/AiRequestsPage";
-import { OutlineEditorPage } from "../features/reader/OutlineEditorPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
 import { ResetPasswordPage } from "../features/auth/ResetPasswordPage";
 import { SearchPage } from "../features/search/SearchPage";
@@ -599,7 +598,6 @@ export function AppRouter() {
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/books/:bookId" element={<ReaderPage />} />
             <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
-            <Route path="/books/:bookId/outline/edit" element={<OutlineEditorPage />} />
             <Route path="/books/:bookId/sections/:chapterId/ai-requests" element={<AiRequestsPage />} />
             <Route path="/books/:bookId/sections/:chapterId/summary" element={<AiRequestsPage />} />
             <Route path="/builder" element={<BookBuilderPage />} />

@@ -23,7 +23,6 @@ type AiModelSelectorProps = {
 const FEATURE_LABELS: Record<AiFeature, string> = {
   "ai-requests": "Peticiones IA",
   "ocr-vision": "OCR con IA",
-  "outline-regenerate": "Regenerar índice",
   "section-summary": "Resumen de sección"
 };
 

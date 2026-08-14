@@ -1,5 +1,7 @@
 import { extname } from "node:path";
 
+import { load } from "cheerio";
+
 import { parseEpubBuffer } from "./epub-import.js";
 import { parsePdfBuffer } from "./pdf-import.js";
 
@@ -154,6 +156,29 @@ export function sanitizeParagraphs(paragraphs: string[]): string[] {
     .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
 }
 
+function remapInternalPageLinks(htmlContent: string | null, pageNumberMap: Map<number, number>): string | null {
+  if (!htmlContent) {
+    return null;
+  }
+
+  const document = load(htmlContent);
+  document("a[data-lector-page]").each((_, node) => {
+    const element = document(node);
+    const originalPageNumber = Number.parseInt(element.attr("data-lector-page") ?? "", 10);
+    const mappedPageNumber = pageNumberMap.get(originalPageNumber);
+    if (!mappedPageNumber) {
+      element.replaceWith(element.html() ?? "");
+      return;
+    }
+
+    const paragraphNumber = Math.max(1, Number.parseInt(element.attr("data-lector-paragraph") ?? "1", 10) || 1);
+    element.attr("data-lector-page", String(mappedPageNumber));
+    element.attr("href", `?page=${mappedPageNumber}&paragraph=${paragraphNumber}`);
+  });
+
+  return document("body").html()?.trim() || null;
+}
+
 export function inferSourceType(fileName: string, mimeType: string): SupportedBookSourceType | null {
   const extension = extname(fileName).toLowerCase();
 
@@ -186,7 +211,9 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
       originalPageNumber: page.pageNumber,
       editedText: page.editedText?.trim() || null,
       htmlContent: page.htmlContent?.trim() || null,
-      paragraphs: sanitizeParagraphs(page.paragraphs),
+      paragraphs: sourceType === "EPUB"
+        ? page.paragraphs.map(normalizeWhitespacePreservingLineBreaks).filter((paragraph) => normalizeWhitespace(paragraph).length > 0)
+        : sanitizeParagraphs(page.paragraphs),
       rawText: page.rawText.trim()
     }))
     .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
@@ -238,7 +265,10 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
   return {
     coverImage: importedDocument.coverImage ?? null,
     ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
-    pages: normalizedPages,
+    pages: normalizedPages.map((page) => ({
+      ...page,
+      htmlContent: remapInternalPageLinks(page.htmlContent, pageNumberMap)
+    })),
     totalPages: normalizedPages.length,
     totalParagraphs
   };

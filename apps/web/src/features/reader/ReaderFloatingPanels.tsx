@@ -1,9 +1,8 @@
 import { Link } from "react-router-dom";
 import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, useEffect, useId, useState } from "react";
 
-import type { BookOutlineSource } from "../../app/api";
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
-import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
+import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 
 type AudioEngineOption = {
@@ -188,9 +187,6 @@ type NavigationPanelContentProps = {
   expandedNoteId: string | null;
   isUpdatingNote: boolean;
   items: ReaderNavigationListItem[];
-  onOutlineEditClick?: () => void;
-  outlineSource?: BookOutlineSource;
-  outlineEditHref?: string | undefined;
   onBeginHighlightEditing: (highlightId: string) => void;
   onBeginNoteEditing: (note: { color: ReaderHighlightColor | null; noteId: string; noteText: string }) => void;
   onCancelHighlightEditing: () => void;
@@ -786,7 +782,6 @@ export function ReaderNavigationPanelContent({
   expandedNoteId,
   isUpdatingNote,
   items,
-  onOutlineEditClick,
   onBeginHighlightEditing,
   onBeginNoteEditing,
   onCancelHighlightEditing,
@@ -807,12 +802,9 @@ export function ReaderNavigationPanelContent({
   onToggleNoteExpansion,
   onUpdateBookmarkShares,
   onUpdateNoteShares,
-  outlineEditHref,
-  outlineSource,
   sharableUsers,
   summaryHrefBuilder
 }: NavigationPanelContentProps) {
-  const outlineSourceMeta = outlineSource ? getOutlineSourceMeta(outlineSource) : null;
   const indexItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "bookmark" | "toc" }> => item.type === "bookmark" || item.type === "toc");
   const noteItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "highlight" | "note" }> => item.type === "highlight" || item.type === "note");
   const tocItems = indexItems.filter((item): item is TocNavigationItem => item.type === "toc");
@@ -1231,21 +1223,9 @@ export function ReaderNavigationPanelContent({
           <div className="reader-navigation-section-heading">
             <div className="reader-navigation-section-heading-copy">
               <strong>Índice del libro</strong>
-              {outlineSourceMeta ? <span className="reader-navigation-source-badge" title={outlineSourceMeta.description}>{outlineSourceMeta.badgeLabel}</span> : null}
             </div>
             <div className="reader-navigation-section-actions">
               <span>{tocItemCount}</span>
-              {outlineEditHref ? (
-                <Link
-                  aria-label="Editar índice"
-                  className="reader-note-icon-button reader-navigation-edit-link"
-                  onClick={onOutlineEditClick}
-                  title="Editar índice"
-                  to={outlineEditHref}
-                >
-                  <EditIcon />
-                </Link>
-              ) : null}
             </div>
           </div>
 

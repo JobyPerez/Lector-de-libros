@@ -9,6 +9,7 @@
     "backfill:ai-credentials": "tsx src/scripts/backfill-ai-credentials.ts",
     "backfill:paragraph-reading-metrics": "tsx src/scripts/backfill-paragraph-reading-metrics.ts",
     "start": "node dist/server.js",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

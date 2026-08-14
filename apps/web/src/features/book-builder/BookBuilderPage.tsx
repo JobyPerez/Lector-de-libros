@@ -30,7 +30,7 @@ import {
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
-import { formatSectionTitleWithAncestors, getOutlineSourceMeta } from "../../app/outline-source";
+import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { useAiConfig } from "../../components/AiModelBadge";
@@ -2394,7 +2394,7 @@ export function BookBuilderPage() {
       return;
     }
 
-    const confirmed = window.confirm(`Se borrará la página ${reviewPageNumber} de este libro. Esta acción no se puede deshacer. ¿Continuar?`);
+    const confirmed = window.confirm(`Se borrará la página ${reviewPageNumber} de la versión procesada del libro, junto con sus párrafos, anotaciones, capítulos y resúmenes asociados. Las páginas posteriores se renumerarán y el archivo original no cambiará. Esta acción no se puede deshacer. ¿Continuar?`);
     if (!confirmed) {
       return;
     }
@@ -2618,7 +2618,7 @@ export function BookBuilderPage() {
     updateReviewEditor(nextValue, nextSelectionStart, nextSelectionEnd);
   }
 
-  function toggleReviewHeading(level: 1 | 2) {
+  function toggleReviewHeading(level: 1 | 2 | 3 | 4 | 5 | 6) {
     const editor = reviewEditorRef.current;
     if (!editor) {
       return;
@@ -2729,7 +2729,7 @@ export function BookBuilderPage() {
   const reviewImageCropDirty = !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
   const isReviewImageLoading = Boolean(reviewImageLoadingKey);
-  const canDeleteReviewPage = selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF";
+  const canDeleteReviewPage = selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF" || selectedReviewBook?.sourceType === "EPUB";
   const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
   const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
@@ -2847,7 +2847,6 @@ export function BookBuilderPage() {
     (item): item is Extract<ReviewNavigationItem, { type: "highlight" | "note" }> => item.type === "note" || item.type === "highlight"
   );
 
-  const reviewOutlineSourceMeta = getOutlineSourceMeta(reviewNavigationQuery.data?.tocSource ?? "NONE");
 
   useEffect(() => {
     if (!isReviewIndexVisible) {
@@ -3721,6 +3720,19 @@ export function BookBuilderPage() {
                     >
                       <span>T2</span>
                     </button>
+                    {[3, 4, 5, 6].map((level) => (
+                      <button
+                        className="review-format-button"
+                        disabled={isSavingReview || !reviewBookId}
+                        key={level}
+                        onClick={() => toggleReviewHeading(level as 3 | 4 | 5 | 6)}
+                        onMouseDown={(event) => event.preventDefault()}
+                        title={level === 3 ? "Título de tercer nivel incluido en el índice" : `Título visual de nivel ${level}`}
+                        type="button"
+                      >
+                        <span>{`T${level}`}</span>
+                      </button>
+                    ))}
                     <button
                       className="review-format-button"
                       disabled={isSavingReview || !reviewBookId}
@@ -3844,7 +3856,6 @@ export function BookBuilderPage() {
                     <div className="reader-navigation-section-heading">
                       <div className="reader-navigation-section-heading-copy">
                         <strong>Índice del libro</strong>
-                        {reviewOutlineSourceMeta ? <span className="reader-navigation-source-badge" title={reviewOutlineSourceMeta.description}>{reviewOutlineSourceMeta.badgeLabel}</span> : null}
                       </div>
                       <span>{orderedNavigationItems.filter((item) => item.type === "toc").length}</span>
                     </div>

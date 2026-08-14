@@ -5,7 +5,7 @@ import { appEnv } from "../../config/env.js";
 
 type AiProvider = "opencode";
 
-type AiFeature = "ocr-vision" | "section-summary" | "ai-requests" | "outline-regenerate";
+type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
 type AiConfigResponse = {
   configured: boolean;
@@ -24,7 +24,7 @@ type AiConfigResponse = {
   summaryModelIds: string[];
 };
 
-const AI_FEATURES: AiFeature[] = ["ocr-vision", "section-summary", "ai-requests", "outline-regenerate"];
+const AI_FEATURES: AiFeature[] = ["ocr-vision", "section-summary", "ai-requests"];
 
 export async function registerAiConfigRoutes(app: FastifyInstance): Promise<void> {
   app.get("/ai-config", async () => {
