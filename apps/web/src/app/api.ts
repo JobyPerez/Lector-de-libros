@@ -301,6 +301,7 @@ export type BookSummary = {
   title: string;
   totalPages: number;
   totalParagraphs: number;
+  totalWords: number;
   updatedAt?: string;
 };
 

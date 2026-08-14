@@ -3459,6 +3459,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.status AS "status",
             b.total_pages AS "totalPages",
             b.total_paragraphs AS "totalParagraphs",
+            (SELECT NVL(SUM(bp.word_count), 0) FROM book_paragraphs bp WHERE bp.book_id = b.book_id) AS "totalWords",
             b.created_at AS "createdAt",
             b.updated_at AS "updatedAt",
             b.owner_user_id AS "ownerUserId",

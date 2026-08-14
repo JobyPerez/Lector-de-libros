@@ -1338,6 +1338,10 @@ textarea {
   box-shadow: 0 26px 56px rgba(70, 44, 20, 0.14);
 }
 
+.shelf-book-card::before {
+  display: none;
+}
+
 .shelf-book-card[data-download-menu-open="true"] {
   z-index: 10;
 }
@@ -1377,6 +1381,7 @@ textarea {
 .shelf-book-cover-frame {
   position: relative;
   overflow: hidden;
+  width: min(100%, 28rem);
   aspect-ratio: 10 / 14.4;
   border-radius: 24px 18px 18px 12px;
   background:
@@ -1480,6 +1485,8 @@ textarea {
 .shelf-book-copy {
   display: grid;
   gap: 0.35rem;
+  min-height: 7.5rem;
+  align-content: start;
   padding-right: 0;
   padding-inline: 0.15rem;
 }

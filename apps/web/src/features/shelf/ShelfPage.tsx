@@ -25,6 +25,7 @@ const emptyBookEditForm: BookEditFormState = {
 };
 
 const removalExitAnimationMs = 280;
+const shelfNumberFormatter = new Intl.NumberFormat("es-ES");
 
 function EditIcon() {
   return (
@@ -170,7 +171,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
           </div>
         )}
       </div>
-      <span className="book-spine shelf-book-source-badge">{book.sourceType}</span>
+      <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
     </>
   );
 }
@@ -645,11 +646,11 @@ export function ShelfPage() {
                 <dl className="shelf-book-stats">
                   <div>
                     <dt>Páginas</dt>
-                    <dd>{book.totalPages}</dd>
+                    <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
                   </div>
                   <div>
-                    <dt>Párrafos</dt>
-                    <dd>{book.totalParagraphs}</dd>
+                    <dt>Palabras</dt>
+                    <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
                   </div>
                   {book.lastOpenedAt ? (
                     <div>
@@ -657,7 +658,7 @@ export function ShelfPage() {
                       <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
                     </div>
                   ) : null}
-                 </dl>
+                </dl>
               </Link>
               <div
                 className="book-card-actions"
