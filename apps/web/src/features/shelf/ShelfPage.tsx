@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
@@ -178,6 +178,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
 export function ShelfPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [editingBook, setEditingBook] = useState<BookSummary | null>(null);
@@ -201,10 +202,11 @@ export function ShelfPage() {
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
-  const [scope, setScope] = useState<BookScope>("mine");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
   const canEditBookMetadata = !editingBook?.currentUserRole || editingBook.currentUserRole === "OWNER";
+  const requestedScope = searchParams.get("scope");
+  const scope: BookScope = requestedScope === "shared" || requestedScope === "all" ? requestedScope : "mine";
 
   const sharedBooksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -220,7 +222,19 @@ export function ShelfPage() {
   });
 
   const hasSharedBooks = (sharedBooksQuery.data?.length ?? 0) > 0;
-  const effectiveScope: BookScope = hasSharedBooks ? scope : "mine";
+  const effectiveScope = scope;
+
+  function selectScope(nextScope: BookScope) {
+    setSearchParams((current) => {
+      const nextParams = new URLSearchParams(current);
+      if (nextScope === "mine") {
+        nextParams.delete("scope");
+      } else {
+        nextParams.set("scope", nextScope);
+      }
+      return nextParams;
+    });
+  }
 
   const booksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -557,12 +571,12 @@ export function ShelfPage() {
           </div>
         </div>
 
-        {hasSharedBooks || sharedBooksQuery.isLoading ? (
+        {hasSharedBooks || sharedBooksQuery.isLoading || scope !== "mine" ? (
           <div className="shelf-scope-tabs" role="tablist">
             <button
               aria-selected={effectiveScope === "mine"}
               className={["shelf-scope-tab", effectiveScope === "mine" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => setScope("mine")}
+              onClick={() => selectScope("mine")}
               role="tab"
               type="button"
             >
@@ -571,7 +585,7 @@ export function ShelfPage() {
             <button
               aria-selected={effectiveScope === "shared"}
               className={["shelf-scope-tab", effectiveScope === "shared" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => setScope("shared")}
+              onClick={() => selectScope("shared")}
               role="tab"
               type="button"
             >
@@ -580,7 +594,7 @@ export function ShelfPage() {
             <button
               aria-selected={effectiveScope === "all"}
               className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => setScope("all")}
+              onClick={() => selectScope("all")}
               role="tab"
               type="button"
             >

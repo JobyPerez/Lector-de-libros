@@ -491,6 +491,7 @@ function ProtectedShell() {
   const isHydrated = useAuthStore((state) => state.isHydrated);
   const user = useAuthStore((state) => state.user);
   const clearSession = useAuthStore((state) => state.clearSession);
+  const location = useLocation();
 
   useEffect(() => {
     if (!accessToken || user) {
@@ -511,7 +512,13 @@ function ProtectedShell() {
   }
 
   if (!accessToken) {
-    return <Navigate to="/login" replace />;
+    return (
+      <Navigate
+        replace
+        state={{ from: `${location.pathname}${location.search}${location.hash}` }}
+        to="/login"
+      />
+    );
   }
 
   if (!user) {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import { forgotPassword, loginUser } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
@@ -7,6 +7,7 @@ import { RabbitMark } from "../../components/RabbitMark";
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const loginFormRef = useRef<HTMLFormElement | null>(null);
   const accessToken = useAuthStore((state) => state.accessToken);
   const setSession = useAuthStore((state) => state.setSession);
@@ -22,12 +23,13 @@ export function LoginPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSendingRecovery, setIsSendingRecovery] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const returnTo = (location.state as { from?: string } | null)?.from ?? "/";
 
   useEffect(() => {
     if (accessToken) {
-      navigate("/", { replace: true });
+      navigate(returnTo, { replace: true });
     }
-  }, [accessToken, navigate]);
+  }, [accessToken, navigate, returnTo]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -41,7 +43,7 @@ export function LoginPage() {
       });
 
       setSession(response);
-      navigate("/", { replace: true });
+      navigate(returnTo, { replace: true });
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo abrir la sesión.");
     } finally {

@@ -1654,7 +1654,7 @@ export function ReaderPage() {
   }, [availableDeviceVoices, selectedDeviceVoiceUri]);
 
   useEffect(() => {
-    if (Number.isInteger(requestedPageNumber) && requestedPageNumber >= 1) {
+    if (Number.isInteger(requestedPageNumber) && requestedPageNumber >= 1 && !progressHydratedRef.current) {
       progressHydratedRef.current = true;
       const nextParagraphNumber = Number.isInteger(requestedParagraphNumber) && requestedParagraphNumber >= 1
         ? requestedParagraphNumber
@@ -1689,6 +1689,10 @@ export function ReaderPage() {
   }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
 
   useEffect(() => {
+    if (!pendingRouteNavigationRef.current) {
+      return;
+    }
+
     if (!Number.isInteger(requestedPageNumber) || requestedPageNumber < 1) {
       return;
     }
@@ -1745,7 +1749,7 @@ export function ReaderPage() {
 
     if (pendingRouteNavigationRef.current) {
       pendingRouteNavigationRef.current = null;
-      navigate(`/books/${bookId}`, { replace: true, state: location.state });
+      navigate(`/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}`, { replace: true, state: location.state });
     }
   }, [
     bookId,
@@ -1760,6 +1764,26 @@ export function ReaderPage() {
     requestedSearchCaseSensitive,
     requestedSearchParam
   ]);
+
+  useEffect(() => {
+    if (!progressHydratedRef.current || !Number.isInteger(currentPageNumber) || currentPageNumber < 1) {
+      return;
+    }
+
+    if (pendingRouteNavigationRef.current && Number.isInteger(requestedPageNumber) && requestedPageNumber !== currentPageNumber) {
+      return;
+    }
+
+    const nextSearchParams = new URLSearchParams(location.search);
+    nextSearchParams.set("page", String(currentPageNumber));
+    const nextSearch = `?${nextSearchParams.toString()}`;
+
+    if (nextSearch === location.search) {
+      return;
+    }
+
+    navigate({ pathname: location.pathname, search: nextSearch }, { replace: true, state: location.state });
+  }, [currentPageNumber, location.pathname, location.search, location.state, navigate, requestedPageNumber]);
 
   useEffect(() => {
     if (!activeSearchTarget) {
@@ -2666,7 +2690,7 @@ export function ReaderPage() {
       && pendingRouteNavigationRef.current.paragraphNumber === targetParagraph.paragraphNumber
     ) {
       pendingRouteNavigationRef.current = null;
-      navigate(`/books/${bookId}`, { replace: true, state: location.state });
+      navigate(`/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}`, { replace: true, state: location.state });
     }
     if (pendingAutoPlayNextPage) {
       setPendingAutoPlayNextPage(false);
