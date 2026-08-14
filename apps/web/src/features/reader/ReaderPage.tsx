@@ -21,6 +21,7 @@ import {
   fetchReaderNavigation,
   requestParagraphAudio,
   requestParagraphAudioBlock,
+  sendListeningHeartbeat,
   updateBookmarkShares,
   updateNote,
   updateProgress,
@@ -85,6 +86,7 @@ const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toF
 const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
 const ESTIMATED_WORDS_PER_MINUTE = 155;
 const DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS = 0.03;
+const LISTENING_HEARTBEAT_INTERVAL_MS = 30_000;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -1375,6 +1377,32 @@ export function ReaderPage() {
     setCurrentParagraphNumber(1);
     setActiveSearchTarget(null);
   }, [bookId]);
+
+  useEffect(() => {
+    if (!accessToken || !isAudioPlaying) {
+      return;
+    }
+
+    const activeAccessToken = accessToken;
+    const sessionId = crypto.randomUUID();
+    let activeSince = Date.now();
+
+    function flushListeningTime() {
+      const now = Date.now();
+      const activeSeconds = Math.min(Math.floor((now - activeSince) / 1000), 60);
+      activeSince = now;
+      if (activeSeconds > 0) {
+        void sendListeningHeartbeat(activeAccessToken, bookId, { activeSeconds, sessionId }).catch(() => undefined);
+      }
+    }
+
+    const heartbeatId = window.setInterval(flushListeningTime, LISTENING_HEARTBEAT_INTERVAL_MS);
+
+    return () => {
+      flushListeningTime();
+      window.clearInterval(heartbeatId);
+    };
+  }, [accessToken, bookId, isAudioPlaying]);
 
   useEffect(() => {
     currentPageNumberRef.current = currentPageNumber;

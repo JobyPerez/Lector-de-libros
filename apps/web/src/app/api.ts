@@ -690,11 +690,45 @@ export type ManagedUser = {
   createdAt: string;
   displayName: string | null;
   email: string;
+  lastActivityAt: string | null;
+  lastLoginAt: string | null;
+  listeningSeconds: number;
   role: SessionUser["role"];
+  listenedBooks: number;
   totalBooks: number;
   updatedAt: string;
   userId: string;
   username: string;
+};
+
+export type UserActivityAction = "LOGIN" | "BOOK_VIEWED" | "BOOK_CREATED" | "BOOK_UPDATED" | "BOOK_DELETED";
+
+export type ManagedUserActivity = {
+  books: Array<{
+    bookId: string;
+    bookTitle: string;
+    lastListenedAt: string;
+    listeningSeconds: number;
+    sessionCount: number;
+  }>;
+  events: Array<{
+    action: UserActivityAction;
+    activityId: string;
+    bookId: string | null;
+    bookTitle: string | null;
+    createdAt: string;
+    ipAddress: string | null;
+    userAgent: string | null;
+  }>;
+  summary: {
+    booksCreated: number;
+    booksDeleted: number;
+    booksUpdated: number;
+    booksViewed: number;
+    listeningSeconds: number;
+    totalLogins: number;
+  };
+  user: Pick<ManagedUser, "displayName" | "userId" | "username">;
 };
 
 export function registerUser(payload: { displayName?: string; email: string; password: string; username: string }) {
@@ -1256,6 +1290,10 @@ export function updateProgress(accessToken: string, bookId: string, payload: Omi
   return request<void>(`/books/${bookId}/progress`, { accessToken, body: payload, method: "PUT" });
 }
 
+export function sendListeningHeartbeat(accessToken: string, bookId: string, payload: { activeSeconds: number; sessionId: string }) {
+  return request<void>(`/books/${bookId}/listening-heartbeat`, { accessToken, body: payload, method: "POST" });
+}
+
 export async function requestParagraphAudio(accessToken: string, bookId: string, paragraphId: string, options: ReaderAudioOptions = {}) {
   const response = await fetchWithAutoRefresh(`/books/${bookId}/tts`, {
     accessToken,
@@ -1342,6 +1380,10 @@ export function fetchDeepgramBalance(accessToken: string) {
 
 export function fetchUsers(accessToken: string) {
   return request<{ users: ManagedUser[] }>("/users", { accessToken });
+}
+
+export function fetchUserActivity(accessToken: string, userId: string) {
+  return request<ManagedUserActivity>(`/users/${userId}/activity`, { accessToken });
 }
 
 export function createManagedUser(

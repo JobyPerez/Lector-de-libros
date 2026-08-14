@@ -8,6 +8,7 @@ import { z } from "zod";
 import { getConnection } from "../../config/database.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
 import { sendPasswordResetEmail } from "../../services/mailer.js";
+import { recordUserActivity } from "../../services/user-activity.js";
 import { encryptOptionalSecret, getUserAiCredentialSummary } from "../../services/user-ai-credentials.js";
 
 export type UserRole = "ADMIN" | "EDITOR";
@@ -430,6 +431,19 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         userAgent: request.headers["user-agent"] ?? null
       }
     );
+
+    const activityConnection = await getConnection();
+    try {
+      await recordUserActivity(activityConnection, {
+        action: "LOGIN",
+        ipAddress: request.ip ?? null,
+        userAgent: request.headers["user-agent"] ?? null,
+        userId: user.userId
+      });
+      await activityConnection.commit();
+    } finally {
+      await activityConnection.close();
+    }
 
     return reply.send(session);
   });

@@ -12,6 +12,7 @@ import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
 import { calculateParagraphReadingMetrics } from "../../services/paragraph-metrics.js";
+import { recordBookView, recordUserActivity } from "../../services/user-activity.js";
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
@@ -3617,6 +3618,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await recordUserActivity(connection, {
+        action: "BOOK_UPDATED",
+        bookId: params.bookId,
+        bookTitle: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       return reply.send({
@@ -3661,6 +3669,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
 
+      await recordUserActivity(connection, {
+        action: "BOOK_DELETED",
+        bookId: params.bookId,
+        bookTitle: existingBook.title,
+        userId: request.currentUser.userId
+      });
+
       await connection.execute(
         `
           DELETE FROM books
@@ -3670,11 +3685,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         {
           bookId: params.bookId,
           ownerUserId: request.currentUser.userId
-        },
-        {
-          autoCommit: true
         }
       );
+
+      await connection.commit();
 
       return reply.status(204).send();
     } finally {
@@ -3719,11 +3733,16 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           sourceType: payload.sourceType,
           synopsis: payload.synopsis ?? null,
           title: payload.title
-        },
-        {
-          autoCommit: true
         }
       );
+
+      await recordUserActivity(connection, {
+        action: "BOOK_CREATED",
+        bookId,
+        bookTitle: payload.title,
+        userId: request.currentUser.userId
+      });
+      await connection.commit();
     } finally {
       await connection.close();
     }
@@ -3950,6 +3969,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      await recordUserActivity(connection, {
+        action: "BOOK_CREATED",
+        bookId,
+        bookTitle: title,
+        userId: request.currentUser.userId
+      });
       await connection.commit();
     } catch (error) {
       await connection.rollback();
@@ -4046,6 +4071,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "BOOK_CREATED",
+        bookId,
+        bookTitle: payload.title,
+        userId: request.currentUser.userId
+      });
       await connection.commit();
     } catch (error) {
       await connection.rollback();
@@ -4732,6 +4763,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (!pageRecord) {
         return reply.status(404).send({ message: "Page not found." });
       }
+
+      await recordBookView(connection, {
+        bookId: params.bookId,
+        bookTitle: String(book.title ?? "Libro"),
+        userId: request.currentUser.userId
+      });
+      await connection.commit();
 
       const pageResult = await connection.execute(
         `

@@ -70,6 +70,14 @@ function DownloadIcon() {
   );
 }
 
+function ChevronDownIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="m6 9 6 6 6-6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" />
+    </svg>
+  );
+}
+
 function BackIcon() {
   return (
     <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
@@ -156,23 +164,20 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
   }, [coverQuery.data]);
 
   return (
-    <>
-      <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
-        {coverUrl ? (
-          <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
-        ) : (
-          <div className="shelf-book-cover-placeholder">
-            <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
-            <div className="shelf-book-cover-fallback-copy">
-              <span className="shelf-book-cover-kicker">{describeSourceType(book.sourceType)}</span>
-              <strong>{book.title}</strong>
-              <span>{book.authorName ?? "Autor pendiente"}</span>
-            </div>
+    <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
+      {coverUrl ? (
+        <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
+      ) : (
+        <div className="shelf-book-cover-placeholder">
+          <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
+          <div className="shelf-book-cover-fallback-copy">
+            <span className="shelf-book-cover-kicker">{describeSourceType(book.sourceType)}</span>
+            <strong>{book.title}</strong>
+            <span>{book.authorName ?? "Autor pendiente"}</span>
           </div>
-        )}
-      </div>
-      <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
-    </>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -202,6 +207,7 @@ export function ShelfPage() {
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
+  const [expandedBookIds, setExpandedBookIds] = useState<ReadonlySet<string>>(new Set());
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
@@ -224,6 +230,18 @@ export function ShelfPage() {
 
   const hasSharedBooks = (sharedBooksQuery.data?.length ?? 0) > 0;
   const effectiveScope = scope;
+
+  function toggleBookDetails(bookId: string) {
+    setExpandedBookIds((current) => {
+      const next = new Set(current);
+      if (next.has(bookId)) {
+        next.delete(bookId);
+      } else {
+        next.add(bookId);
+      }
+      return next;
+    });
+  }
 
   function selectScope(nextScope: BookScope) {
     setSearchParams((current) => {
@@ -619,12 +637,15 @@ export function ShelfPage() {
                 : undefined;
             const isBookRemoving = removalState !== undefined;
             const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
+            const isExpanded = expandedBookIds.has(book.bookId);
+            const detailsId = `shelf-book-details-${book.bookId}`;
 
             return (
             <article
               aria-busy={isBookRemoving}
               className="book-card shelf-book-card"
               data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
+              data-expanded={isExpanded ? "true" : undefined}
               data-removing={removalState}
               key={book.bookId}
             >
@@ -632,143 +653,162 @@ export function ShelfPage() {
                 <div className="shelf-book-cover-shell">
                   <ShelfBookCover accessToken={accessToken} book={book} />
                 </div>
-
-                <div className="book-card-copy shelf-book-copy">
-                  <h3>{book.title}</h3>
-                  <p>{book.authorName ?? "Autor pendiente"}</p>
-                  {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
-                    <p className="shelf-book-shared-by">
-                      Compartido por <strong>@{book.ownerUsername}</strong>
-                    </p>
-                  ) : null}
-                </div>
-
-                <dl className="shelf-book-stats">
-                  <div>
-                    <dt>Páginas</dt>
-                    <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
-                  </div>
-                  <div>
-                    <dt>Palabras</dt>
-                    <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
-                  </div>
-                  {book.lastOpenedAt ? (
-                    <div>
-                      <dt>Última lectura</dt>
-                      <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
-                    </div>
-                  ) : null}
-                </dl>
               </Link>
-              <div
-                className="book-card-actions"
-                onBlur={(event) => {
-                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                    setDownloadMenuBookId((current) => current === book.bookId ? null : current);
-                  }
-                }}
-              >
-                <button
-                  aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
-                  aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
-                  aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
-                  className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
-                  disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
-                  onClick={(event) => handleDownloadAction(book, event)}
-                  title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
-                  type="button"
-                >
-                  <DownloadIcon />
-                </button>
-                {book.notionBookUrl?.trim() ? (
-                  <a
-                    aria-label={`Abrir ${book.title} en Notion`}
-                    className="book-card-icon-button book-card-notion-button"
-                    href={book.notionBookUrl.trim()}
-                    onClick={(event) => { event.stopPropagation(); }}
-                    rel="noreferrer noopener"
-                    target="_blank"
-                    title="Abrir libro en Notion"
-                  >
-                    <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
-                  </a>
-                ) : null}
-                {book.currentUserRole === "OWNER" ? (
-                  <button
-                    aria-label={`Compartir ${book.title}`}
-                    className="book-card-icon-button book-card-share-button"
-                    disabled={isBookRemoving}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setShareBook(book);
-                    }}
-                    title="Compartir"
-                    type="button"
-                  >
-                    <ShareIcon />
-                  </button>
-                ) : null}
-                <button
-                  aria-label={`Editar ${book.title}`}
-                  className="book-card-icon-button book-card-edit-button"
-                  disabled={isBookRemoving}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    startEditingBook(book);
-                  }}
-                  title="Editar libro"
-                  type="button"
-                >
-                  <EditIcon />
-                </button>
-                <button
-                  aria-label={isBookOwner ? `Eliminar ${book.title}` : `Salir del libro ${book.title}`}
-                  className="book-card-icon-button book-card-delete-button"
-                  disabled={isBookRemoving}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    void handleDeleteBook(book);
-                  }}
-                  title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
-                  type="button"
-                >
-                  <DeleteIcon />
-                </button>
 
-                {downloadMenuBookId === book.bookId ? (
-                  <div className="book-card-download-menu" role="menu">
-                    <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
-                    <button
-                      className="menu-item book-card-download-option"
-                      disabled={exportingBookId === book.bookId}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleExportFromCard(book, "epub");
-                      }}
-                      role="menuitem"
-                      type="button"
-                    >
-                      {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
-                    </button>
-                    <button
-                      className="menu-item book-card-download-option"
-                      disabled={exportingBookId === book.bookId}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleExportFromCard(book, "pdf");
-                      }}
-                      role="menuitem"
-                      type="button"
-                    >
-                      {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
-                    </button>
+              <div className="shelf-book-plank-row">
+                <button
+                  aria-controls={detailsId}
+                  aria-expanded={isExpanded}
+                  aria-label={isExpanded ? `Ocultar información de ${book.title}` : `Mostrar información de ${book.title}`}
+                  className="shelf-book-expand-button"
+                  disabled={isBookRemoving}
+                  onClick={() => toggleBookDetails(book.bookId)}
+                  title={isExpanded ? "Ocultar información" : "Mostrar información"}
+                  type="button"
+                >
+                  <ChevronDownIcon />
+                </button>
+              </div>
+              <div className="shelf-book-details" id={detailsId}>
+                <div className="shelf-book-details-inner">
+                  <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
+                  <div className="book-card-copy shelf-book-copy">
+                    <h3>{book.title}</h3>
+                    <p>{book.authorName ?? "Autor pendiente"}</p>
+                    {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
+                      <p className="shelf-book-shared-by">
+                        Compartido por <strong>@{book.ownerUsername}</strong>
+                      </p>
+                    ) : null}
                   </div>
-                ) : null}
+
+                  <dl className="shelf-book-stats">
+                    <div>
+                      <dt>Páginas</dt>
+                      <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
+                    </div>
+                    <div>
+                      <dt>Palabras</dt>
+                      <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
+                    </div>
+                    {book.lastOpenedAt ? (
+                      <div>
+                        <dt>Última lectura</dt>
+                        <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                  <div
+                    className="book-card-actions"
+                    onBlur={(event) => {
+                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setDownloadMenuBookId((current) => current === book.bookId ? null : current);
+                      }
+                    }}
+                  >
+                    <button
+                      aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
+                      aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
+                      aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
+                      className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
+                      disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
+                      onClick={(event) => handleDownloadAction(book, event)}
+                      title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
+                      type="button"
+                    >
+                      <DownloadIcon />
+                    </button>
+                    {book.notionBookUrl?.trim() ? (
+                      <a
+                        aria-label={`Abrir ${book.title} en Notion`}
+                        className="book-card-icon-button book-card-notion-button"
+                        href={book.notionBookUrl.trim()}
+                        onClick={(event) => { event.stopPropagation(); }}
+                        rel="noreferrer noopener"
+                        target="_blank"
+                        title="Abrir libro en Notion"
+                      >
+                        <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
+                      </a>
+                    ) : null}
+                    {book.currentUserRole === "OWNER" ? (
+                      <button
+                        aria-label={`Compartir ${book.title}`}
+                        className="book-card-icon-button book-card-share-button"
+                        disabled={isBookRemoving}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setShareBook(book);
+                        }}
+                        title="Compartir"
+                        type="button"
+                      >
+                        <ShareIcon />
+                      </button>
+                    ) : null}
+                    <button
+                      aria-label={`Editar ${book.title}`}
+                      className="book-card-icon-button book-card-edit-button"
+                      disabled={isBookRemoving}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        startEditingBook(book);
+                      }}
+                      title="Editar libro"
+                      type="button"
+                    >
+                      <EditIcon />
+                    </button>
+                    <button
+                      aria-label={isBookOwner ? `Eliminar ${book.title}` : `Salir del libro ${book.title}`}
+                      className="book-card-icon-button book-card-delete-button"
+                      disabled={isBookRemoving}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void handleDeleteBook(book);
+                      }}
+                      title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
+                      type="button"
+                    >
+                      <DeleteIcon />
+                    </button>
+
+                    {downloadMenuBookId === book.bookId ? (
+                      <div className="book-card-download-menu" role="menu">
+                        <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
+                        <button
+                          className="menu-item book-card-download-option"
+                          disabled={exportingBookId === book.bookId}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleExportFromCard(book, "epub");
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
+                        </button>
+                        <button
+                          className="menu-item book-card-download-option"
+                          disabled={exportingBookId === book.bookId}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            void handleExportFromCard(book, "pdf");
+                          }}
+                          role="menuitem"
+                          type="button"
+                        >
+                          {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
               </div>
               <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
                 <span className="book-card-removing-dot" />

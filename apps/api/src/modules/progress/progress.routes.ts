@@ -15,7 +15,58 @@ const progressSchema = z.object({
   readingPercentage: z.number().min(0).max(100).default(0)
 });
 
+const listeningHeartbeatSchema = z.object({
+  activeSeconds: z.number().int().min(1).max(60),
+  sessionId: z.string().uuid()
+});
+
 export const registerProgressRoutes: FastifyPluginAsync = async (app) => {
+  app.post("/books/:bookId/listening-heartbeat", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({ bookId: z.string().uuid() }).parse(request.params);
+    const payload = listeningHeartbeatSchema.parse(request.body);
+    const connection = await getConnection();
+
+    try {
+      await connection.execute(
+        `
+          MERGE INTO user_reading_sessions target
+          USING (SELECT :sessionId AS session_id FROM dual) source
+          ON (target.session_id = source.session_id)
+          WHEN MATCHED THEN UPDATE SET
+            duration_seconds = target.duration_seconds + :activeSeconds,
+            last_activity_at = SYSTIMESTAMP
+            WHERE target.user_id = :userId AND target.book_id = :bookId
+          WHEN NOT MATCHED THEN INSERT (
+            session_id,
+            user_id,
+            book_id,
+            duration_seconds
+          ) VALUES (
+            :sessionId,
+            :userId,
+            :bookId,
+            :activeSeconds
+          )
+        `,
+        {
+          activeSeconds: payload.activeSeconds,
+          bookId: params.bookId,
+          sessionId: payload.sessionId,
+          userId: request.currentUser.userId
+        },
+        { autoCommit: true }
+      );
+
+      return reply.status(204).send();
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.get("/books/:bookId/progress", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });

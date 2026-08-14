@@ -28,7 +28,11 @@ type ManagedUser = {
   createdAt: string;
   displayName: string | null;
   email: string;
+  lastActivityAt: string | null;
+  lastLoginAt: string | null;
+  listeningSeconds: number;
   role: "ADMIN" | "EDITOR";
+  listenedBooks: number;
   totalBooks: number;
   updatedAt: string;
   userId: string;
@@ -55,6 +59,26 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
     try {
       const result = await connection.execute(
         `
+          WITH book_counts AS (
+            SELECT owner_user_id AS user_id, COUNT(*) AS total_books
+            FROM books
+            GROUP BY owner_user_id
+          ), event_stats AS (
+            SELECT
+              user_id,
+              MAX(created_at) AS last_event_at,
+              MAX(CASE WHEN action = 'LOGIN' THEN created_at END) AS last_login_at
+            FROM user_activity_events
+            GROUP BY user_id
+          ), reading_stats AS (
+            SELECT
+              user_id,
+              SUM(duration_seconds) AS reading_seconds,
+              COUNT(DISTINCT book_id) AS started_books,
+              MAX(last_activity_at) AS last_reading_at
+            FROM user_reading_sessions
+            GROUP BY user_id
+          )
           SELECT
             u.user_id AS "userId",
             u.username AS "username",
@@ -63,23 +87,114 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
             u.role AS "role",
             u.created_at AS "createdAt",
             u.updated_at AS "updatedAt",
-            COUNT(b.book_id) AS "totalBooks"
+            NVL(bc.total_books, 0) AS "totalBooks",
+            NVL(rs.reading_seconds, 0) AS "listeningSeconds",
+            NVL(rs.started_books, 0) AS "listenedBooks",
+            es.last_login_at AS "lastLoginAt",
+            CASE
+              WHEN es.last_event_at IS NULL THEN rs.last_reading_at
+              WHEN rs.last_reading_at IS NULL THEN es.last_event_at
+              WHEN es.last_event_at >= rs.last_reading_at THEN es.last_event_at
+              ELSE rs.last_reading_at
+            END AS "lastActivityAt"
           FROM users u
-          LEFT JOIN books b
-            ON b.owner_user_id = u.user_id
-          GROUP BY
-            u.user_id,
-            u.username,
-            u.email,
-            u.display_name,
-            u.role,
-            u.created_at,
-            u.updated_at
-          ORDER BY LOWER(u.username) ASC
+          LEFT JOIN book_counts bc ON bc.user_id = u.user_id
+          LEFT JOIN event_stats es ON es.user_id = u.user_id
+          LEFT JOIN reading_stats rs ON rs.user_id = u.user_id
+          ORDER BY NVL(
+            CASE
+              WHEN es.last_event_at IS NULL THEN rs.last_reading_at
+              WHEN rs.last_reading_at IS NULL THEN es.last_event_at
+              WHEN es.last_event_at >= rs.last_reading_at THEN es.last_event_at
+              ELSE rs.last_reading_at
+            END,
+            u.created_at
+          ) DESC
         `
       );
 
       return reply.send({ users: result.rows ?? [] });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.get("/:userId/activity", { preHandler: [authenticateRequest, requireAdministrator] }, async (request, reply) => {
+    const params = z.object({ userId: z.string().uuid() }).parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const userResult = await connection.execute(
+        `
+          SELECT
+            user_id AS "userId",
+            username AS "username",
+            display_name AS "displayName"
+          FROM users
+          WHERE user_id = :userId
+        `,
+        { userId: params.userId }
+      );
+      const [user] = (userResult.rows ?? []) as Array<{ displayName: string | null; userId: string; username: string }>;
+      if (!user) {
+        return reply.status(404).send({ message: "Usuario no encontrado." });
+      }
+
+      const summaryResult = await connection.execute(
+          `
+            SELECT
+              (SELECT COUNT(*) FROM user_activity_events WHERE user_id = :userId AND action = 'LOGIN') AS "totalLogins",
+              (SELECT COUNT(*) FROM user_activity_events WHERE user_id = :userId AND action = 'BOOK_VIEWED') AS "booksViewed",
+              (SELECT COUNT(*) FROM user_activity_events WHERE user_id = :userId AND action = 'BOOK_CREATED') AS "booksCreated",
+              (SELECT COUNT(*) FROM user_activity_events WHERE user_id = :userId AND action = 'BOOK_UPDATED') AS "booksUpdated",
+              (SELECT COUNT(*) FROM user_activity_events WHERE user_id = :userId AND action = 'BOOK_DELETED') AS "booksDeleted",
+              (SELECT NVL(SUM(duration_seconds), 0) FROM user_reading_sessions WHERE user_id = :userId) AS "listeningSeconds"
+            FROM dual
+          `,
+          { userId: params.userId }
+        );
+      const eventsResult = await connection.execute(
+          `
+            SELECT * FROM (
+              SELECT
+                activity_id AS "activityId",
+                action AS "action",
+                book_id AS "bookId",
+                book_title AS "bookTitle",
+                ip_address AS "ipAddress",
+                user_agent AS "userAgent",
+                created_at AS "createdAt"
+              FROM user_activity_events
+              WHERE user_id = :userId
+              ORDER BY created_at DESC
+            ) WHERE ROWNUM <= 60
+          `,
+          { userId: params.userId }
+        );
+      const booksResult = await connection.execute(
+          `
+            SELECT
+              rs.book_id AS "bookId",
+              b.title AS "bookTitle",
+              SUM(rs.duration_seconds) AS "listeningSeconds",
+              COUNT(*) AS "sessionCount",
+              MAX(rs.last_activity_at) AS "lastListenedAt"
+            FROM user_reading_sessions rs
+            JOIN books b ON b.book_id = rs.book_id
+            WHERE rs.user_id = :userId
+            GROUP BY rs.book_id, b.title
+            ORDER BY MAX(rs.last_activity_at) DESC
+          `,
+          { userId: params.userId }
+        );
+
+      const [summary] = (summaryResult.rows ?? []) as Array<Record<string, unknown>>;
+      return reply.send({
+        books: booksResult.rows ?? [],
+        events: eventsResult.rows ?? [],
+        summary: summary ?? {},
+        user
+      });
     } finally {
       await connection.close();
     }
