@@ -582,7 +582,7 @@ export function AiRequestsPage() {
   });
 
   const navigationQuery = useQuery({
-    enabled: Boolean(accessToken && bookId && chapterId),
+    enabled: Boolean(accessToken && bookId),
     queryKey: ["reader-navigation", bookId],
     queryFn: async () => {
       if (!accessToken) {
@@ -1093,11 +1093,25 @@ export function AiRequestsPage() {
     () => sectionEntries.findIndex((entry) => entry.chapterId === chapterId),
     [chapterId, sectionEntries]
   );
-  const currentSectionCounter = currentSectionIndex >= 0 && sectionEntries.length > 0
-    ? `${currentSectionIndex + 1}/${sectionEntries.length}`
+  const currentSectionNumber = !chapterId ? 0 : currentSectionIndex >= 0 ? currentSectionIndex + 1 : null;
+  const currentSectionCounter = currentSectionNumber !== null
+    ? `${currentSectionNumber}/${sectionEntries.length}`
     : null;
-  const previousSection = currentSectionIndex > 0 ? sectionEntries[currentSectionIndex - 1] ?? null : null;
-  const nextSection = currentSectionIndex >= 0 ? sectionEntries[currentSectionIndex + 1] ?? null : null;
+  const bookAiRequestsHref = `/books/${bookId}/ai-requests`;
+  const previousSectionChapterId = currentSectionIndex > 0
+    ? sectionEntries[currentSectionIndex - 1]?.chapterId
+    : null;
+  const previousSectionHref = currentSectionIndex === 0
+    ? bookAiRequestsHref
+    : previousSectionChapterId
+      ? sectionAiRequestsHref(previousSectionChapterId)
+      : null;
+  const nextSectionChapterId = !chapterId
+    ? sectionEntries[0]?.chapterId
+    : currentSectionIndex >= 0
+      ? sectionEntries[currentSectionIndex + 1]?.chapterId
+      : null;
+  const nextSectionHref = nextSectionChapterId ? sectionAiRequestsHref(nextSectionChapterId) : null;
 
   useEffect(() => {
     if (!chapterId) {
@@ -2090,8 +2104,12 @@ export function AiRequestsPage() {
         );
       })}
 
-      {requestsQuery.data?.section ? (
-        <div className="reader-floating-controls reader-section-summary-floating-controls">
+      {requestsQuery.data ? (
+        <div
+          aria-label="Controles de lectura de peticiones IA"
+          className="reader-floating-controls reader-section-summary-floating-controls"
+          role="toolbar"
+        >
           <ReaderFloatingAudioPopover
             buttonLabel="Ajustes de audio"
             isOpen={isAudioSettingsVisible}
@@ -2124,14 +2142,14 @@ export function AiRequestsPage() {
           </ReaderFloatingAudioPopover>
 
           <div
-            aria-label={currentSectionCounter ? `Sección ${currentSectionIndex + 1} de ${sectionEntries.length}` : "Contador de secciones"}
+            aria-label={currentSectionNumber !== null ? `Sección ${currentSectionNumber} de ${sectionEntries.length}` : "Contador de secciones"}
             className="reader-floating-status"
           >
             <strong>{currentSectionCounter ?? "-/-"}</strong>
           </div>
 
           <ReaderNavigationPopover
-            aiRequestsHref={`/books/${bookId}/ai-requests`}
+            aiRequestsHref={bookAiRequestsHref}
             aiRequestsLabel="Peticiones IA del libro"
             buttonLabel="Abrir panel de índice, marcadores y notas"
             closeLabel="Cerrar panel de navegación"
@@ -2190,10 +2208,10 @@ export function AiRequestsPage() {
           <button
             aria-label="Sección anterior"
             className="reader-float-button"
-            disabled={!previousSection?.chapterId}
+            disabled={!previousSectionHref}
             onClick={() => {
-              if (previousSection?.chapterId) {
-                navigate(sectionAiRequestsHref(previousSection.chapterId));
+              if (previousSectionHref) {
+                navigate(previousSectionHref);
               }
             }}
             type="button"
@@ -2224,10 +2242,10 @@ export function AiRequestsPage() {
           <button
             aria-label="Sección siguiente"
             className="reader-float-button"
-            disabled={!nextSection?.chapterId}
+            disabled={!nextSectionHref}
             onClick={() => {
-              if (nextSection?.chapterId) {
-                navigate(sectionAiRequestsHref(nextSection.chapterId));
+              if (nextSectionHref) {
+                navigate(nextSectionHref);
               }
             }}
             type="button"
