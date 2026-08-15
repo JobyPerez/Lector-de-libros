@@ -3245,6 +3245,7 @@ textarea {
   right: 1rem;
   bottom: 1rem;
   z-index: 3;
+  pointer-events: none;
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
