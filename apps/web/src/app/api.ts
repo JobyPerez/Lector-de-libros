@@ -1096,7 +1096,16 @@ export function fetchAiRequests(accessToken: string, bookId: string, chapterId?:
   return request<AiRequestsResponse>(path, { accessToken });
 }
 
-export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; kind: AiRequestKind; model?: SummaryAiModelId; promptText: string; visualType?: AiVisualType }) {
+export type AiRequestRetryProgress = {
+  attempt: number;
+  maxAttempts: number;
+};
+
+export function fetchAiRequestRetryProgress(accessToken: string, progressId: string) {
+  return request<{ progress: AiRequestRetryProgress }>(`/books/ai-requests/progress/${progressId}`, { accessToken });
+}
+
+export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; kind: AiRequestKind; model?: SummaryAiModelId; progressId?: string; promptText: string; visualType?: AiVisualType }) {
   const path = payload.chapterId
     ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
     : `/books/${bookId}/ai-requests`;
@@ -1106,6 +1115,7 @@ export function createAiRequest(accessToken: string, bookId: string, payload: { 
       ...(payload.chapterIds ? { chapterIds: payload.chapterIds } : {}),
       kind: payload.kind,
       ...(payload.model ? { model: payload.model } : {}),
+      ...(payload.progressId ? { progressId: payload.progressId } : {}),
       promptText: payload.promptText,
       ...(payload.visualType ? { visualType: payload.visualType } : {})
     },

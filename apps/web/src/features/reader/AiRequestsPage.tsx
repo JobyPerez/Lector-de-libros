@@ -16,6 +16,7 @@ import {
   fetchDeepgramBalance,
   fetchReaderNavigation,
   fetchAiRequests,
+  fetchAiRequestRetryProgress,
   isBookCommenterOrAbove,
   isRetryableRateLimitError,
   requestAiResponseAudio,
@@ -32,6 +33,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
@@ -527,6 +529,7 @@ export function AiRequestsPage() {
   const activeNavigationItemRef = useRef<HTMLButtonElement | null>(null);
   const wakeLockRef = useRef<{ addEventListener?: (type: "release", listener: () => void) => void; release: () => Promise<void>; released?: boolean } | null>(null);
   const initialPromptKeyRef = useRef<string | null>(null);
+  const isSubmittingRef = useRef(false);
   const [promptText, setPromptText] = useState("");
   const [requestKind, setRequestKind] = useState<AiRequestKind>("TEXT");
   const [visualType, setVisualType] = useState<AiVisualType>("AUTO");
@@ -539,6 +542,7 @@ export function AiRequestsPage() {
   const [showOnlySelectedSections, setShowOnlySelectedSections] = useState(false);
   const [collapsedSectionIds, setCollapsedSectionIds] = useState<Set<string>>(() => new Set());
   const [retryAfterSeconds, setRetryAfterSeconds] = useState(0);
+  const [submitProgressId, setSubmitProgressId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [shareError, setShareError] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -658,6 +662,34 @@ export function AiRequestsPage() {
       window.clearInterval(intervalId);
     };
   }, [retryAfterSeconds]);
+
+  useEffect(() => {
+    if (!isSubmitting || !submitProgressId || !accessToken || typeof window === "undefined") {
+      return;
+    }
+
+    let cancelled = false;
+    const pollProgress = async () => {
+      try {
+        const response = await fetchAiRequestRetryProgress(accessToken, submitProgressId);
+        if (!cancelled && isSubmittingRef.current) {
+          setSubmitStatus(`Reintentando petición a OpenCode (intento ${response.progress.attempt} de ${response.progress.maxAttempts})...`);
+        }
+      } catch {
+        // El progreso no existe hasta que OpenCode necesita hacer el primer reintento.
+      }
+    };
+
+    void pollProgress();
+    const intervalId = window.setInterval(() => {
+      void pollProgress();
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, isSubmitting, submitProgressId]);
 
   useEffect(() => {
     const audioElement = new Audio();
@@ -1434,7 +1466,7 @@ export function AiRequestsPage() {
   }
 
   async function handleCreateRequest() {
-    if (!accessToken || !canCreateRequest || retryAfterSeconds > 0) {
+    if (!accessToken || !canCreateRequest || retryAfterSeconds > 0 || isSubmittingRef.current) {
       return;
     }
 
@@ -1453,9 +1485,13 @@ export function AiRequestsPage() {
       return;
     }
 
+    isSubmittingRef.current = true;
+    const progressId = crypto.randomUUID();
     setIsSubmitting(true);
+    setSubmitProgressId(progressId);
     setSubmitError(null);
     setSubmitStatus("Enviando petición a OpenCode...");
+    prepareCompletionSound();
 
     try {
       const result = await createAiRequest(accessToken, bookId, {
@@ -1463,6 +1499,7 @@ export function AiRequestsPage() {
         ...(chapterId ? { chapterIds: selectedChapterIds } : {}),
         kind: requestKind,
         model: aiModelSelection.selectedModelId,
+        progressId,
         promptText: promptText.trim(),
         ...(requestKind === "DIAGRAM" ? { visualType } : {})
       });
@@ -1475,6 +1512,7 @@ export function AiRequestsPage() {
         setEnteringRequestId((current) => current === result.request?.requestId ? null : current);
       }, AI_REQUEST_CREATION_ANIMATION_MS);
       setSubmitStatus("Petición creada correctamente.");
+      playCompletionSound("success");
     } catch (error) {
       setEnteringRequestId(null);
       setSubmitStatus(null);
@@ -1487,7 +1525,10 @@ export function AiRequestsPage() {
       } else {
         setSubmitError(error instanceof Error ? error.message : "No se pudo crear la petición IA.");
       }
+      playCompletionSound("error");
     } finally {
+      isSubmittingRef.current = false;
+      setSubmitProgressId(null);
       setIsSubmitting(false);
     }
   }
@@ -2112,10 +2153,13 @@ export function AiRequestsPage() {
         >
           <ReaderFloatingAudioPopover
             buttonLabel="Ajustes de audio"
+            closeLabel="Cerrar preferencias de audio"
             isOpen={isAudioSettingsVisible}
             menuRef={audioSettingsRef}
+            onClose={() => setIsAudioSettingsVisible(false)}
             onToggle={() => setIsAudioSettingsVisible((current) => !current)}
             panelId="ai-requests-audio-settings-panel"
+            title="Preferencias de audio"
           >
             <ReaderAudioSettingsContent
               deepgramBalanceErrorMessage={deepgramBalanceQuery.isError ? deepgramBalanceErrorMessage : null}

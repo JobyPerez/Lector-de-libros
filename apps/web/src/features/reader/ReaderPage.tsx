@@ -5301,13 +5301,22 @@ export function ReaderPage() {
         );
       })() : null}
 
-      <div aria-label="Controles flotantes del lector" className="reader-floating-controls" role="toolbar">
+      <div
+        aria-label="Controles flotantes del lector"
+        className={isAudioSettingsVisible || isNavigationPanelRendered
+          ? "reader-floating-controls reader-floating-controls-panel-open"
+          : "reader-floating-controls"}
+        role="toolbar"
+      >
         <ReaderFloatingAudioPopover
           buttonLabel="Opciones de audio"
+          closeLabel="Cerrar preferencias de audio"
           isOpen={isAudioSettingsVisible}
           menuRef={audioSettingsRef}
+          onClose={() => setIsAudioSettingsVisible(false)}
           onToggle={() => setIsAudioSettingsVisible((current) => !current)}
           panelId="reader-audio-settings-panel"
+          title="Preferencias de audio"
         >
           <ReaderAudioSettingsContent
             deepgramBalanceErrorMessage={deepgramBalanceQuery.isError ? deepgramBalanceErrorMessage : null}

@@ -30,6 +30,7 @@ import {
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
+import { playCompletionSound, prepareCompletionSound, type CompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
@@ -892,6 +893,7 @@ export function BookBuilderPage() {
   const appendCancelHoldTimeoutRef = useRef<number | null>(null);
   const appendCancelHoldIntervalRef = useRef<number | null>(null);
   const isAppendCancelRequestedRef = useRef(false);
+  const activeOcrOperationsRef = useRef(new Set<"append" | OcrRetryContext>());
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -1982,7 +1984,7 @@ export function BookBuilderPage() {
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!accessToken) {
+    if (!accessToken || activeOcrOperationsRef.current.has("create")) {
       return;
     }
 
@@ -1991,8 +1993,10 @@ export function BookBuilderPage() {
       return;
     }
 
+    activeOcrOperationsRef.current.add("create");
     setIsCreating(true);
     setCreateError(null);
+    prepareCompletionSound();
 
     try {
       const formData = new FormData();
@@ -2020,10 +2024,13 @@ export function BookBuilderPage() {
       clearCreateSelection();
       setReviewBookId(response.book.bookId);
       setReviewPageNumber(1);
+      playCompletionSound("success");
       navigate(`/books/${response.book.bookId}`);
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro desde imágenes.");
+      playCompletionSound("error");
     } finally {
+      activeOcrOperationsRef.current.delete("create");
       setIsCreating(false);
     }
   }
@@ -2031,7 +2038,7 @@ export function BookBuilderPage() {
   async function handleAppendImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!accessToken) {
+    if (!accessToken || activeOcrOperationsRef.current.has("append")) {
       return;
     }
 
@@ -2054,11 +2061,13 @@ export function BookBuilderPage() {
       return;
     }
 
+    activeOcrOperationsRef.current.add("append");
     setIsAppending(true);
     setAppendError(null);
     setIsAppendCancelRequested(false);
     setAppendProgressOffset(alreadyCompletedFiles);
     void ensureAppendScreenWakeLock();
+    prepareCompletionSound();
     setAppendImportProgress({
       bookId: selectedBookId,
       completedFiles: 0,
@@ -2074,6 +2083,9 @@ export function BookBuilderPage() {
       waitReason: null,
       waitSecondsRemaining: null
     });
+
+    let completionSound: CompletionSound | null = null;
+    let skippedFailedOcr = false;
 
     try {
       let completedFiles = alreadyCompletedFiles;
@@ -2180,6 +2192,8 @@ export function BookBuilderPage() {
               continue;
             }
 
+            skippedFailedOcr = true;
+
             const skipFormData = new FormData();
             skipFormData.append("images", file);
             const skipProgressId = crypto.randomUUID();
@@ -2235,13 +2249,19 @@ export function BookBuilderPage() {
       if (reviewBookId === selectedBookId) {
         setReviewPageNumber(targetPageNumber);
       }
+      completionSound = skippedFailedOcr ? "error" : "success";
       navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
     } catch (error) {
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
+      completionSound = "error";
     } finally {
+      activeOcrOperationsRef.current.delete("append");
       setIsAppending(false);
       setAppendProgressId(null);
       setIsAppendCancelRequested(false);
+      if (completionSound) {
+        playCompletionSound(completionSound);
+      }
     }
   }
 
@@ -2344,7 +2364,7 @@ export function BookBuilderPage() {
   }
 
   async function handleRerunOcr(modeOverride?: ImageOcrMode, promptOverride?: string) {
-    if (!accessToken || !reviewBookId) {
+    if (!accessToken || !reviewBookId || activeOcrOperationsRef.current.has("review")) {
       return;
     }
 
@@ -2356,11 +2376,13 @@ export function BookBuilderPage() {
       return;
     }
 
+    activeOcrOperationsRef.current.add("review");
     setReviewError(null);
     setReviewMessage(null);
     setIsSavingReview(true);
     setIsRerunningOcr(true);
     setIsReviewOcrMenuVisible(false);
+    prepareCompletionSound();
 
     try {
       if (hasPendingImageEdits) {
@@ -2380,10 +2402,13 @@ export function BookBuilderPage() {
       setReviewMessage(rerunOcrMessage);
       showReviewOcrToast(rerunOcrMessage);
       await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+      playCompletionSound("success");
     } catch (error) {
       const rerunOcrErrorMessage = error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.";
       setReviewError(rerunOcrErrorMessage);
+      playCompletionSound("error");
     } finally {
+      activeOcrOperationsRef.current.delete("review");
       setIsRerunningOcr(false);
       setIsSavingReview(false);
     }

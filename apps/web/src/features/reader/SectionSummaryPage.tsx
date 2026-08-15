@@ -23,6 +23,7 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
@@ -285,6 +286,7 @@ export function SectionSummaryPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const queryClient = useQueryClient();
   const aiModelSelection = useAiModelSelection();
+  const isGeneratingRef = useRef(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isLoadingSummaryPrompt, setIsLoadingSummaryPrompt] = useState(false);
   const [isSummaryPromptEditorOpen, setIsSummaryPromptEditorOpen] = useState(false);
@@ -965,7 +967,7 @@ export function SectionSummaryPage() {
   }
 
   async function handleGenerateSummary() {
-    if (!accessToken) {
+    if (!accessToken || isGeneratingRef.current) {
       return;
     }
 
@@ -979,9 +981,11 @@ export function SectionSummaryPage() {
       return;
     }
 
+    isGeneratingRef.current = true;
     setIsGenerating(true);
     setGenerationError(null);
     setSummaryPromptError(null);
+    prepareCompletionSound();
 
     try {
       const response = await generateSectionSummary(accessToken, bookId, chapterId, {
@@ -990,9 +994,12 @@ export function SectionSummaryPage() {
       });
       queryClient.setQueryData(["section-summary", bookId, chapterId], response);
       setIsSummaryPromptEditorOpen(false);
+      playCompletionSound("success");
     } catch (error) {
       setSummaryPromptError(error instanceof Error ? error.message : "No se pudo generar el resumen.");
+      playCompletionSound("error");
     } finally {
+      isGeneratingRef.current = false;
       setIsGenerating(false);
     }
   }
@@ -1295,10 +1302,13 @@ export function SectionSummaryPage() {
         <div className="reader-floating-controls reader-section-summary-floating-controls">
           <ReaderFloatingAudioPopover
             buttonLabel="Ajustes de audio"
+            closeLabel="Cerrar preferencias de audio"
             isOpen={isAudioSettingsVisible}
             menuRef={audioSettingsRef}
+            onClose={() => setIsAudioSettingsVisible(false)}
             onToggle={() => setIsAudioSettingsVisible((current) => !current)}
             panelId="section-summary-audio-settings-panel"
+            title="Preferencias de audio"
           >
             <ReaderAudioSettingsContent
               deepgramBalanceErrorMessage={deepgramBalanceQuery.isError ? deepgramBalanceErrorMessage : null}

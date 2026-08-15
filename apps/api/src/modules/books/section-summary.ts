@@ -44,6 +44,10 @@ const diagramResponseSchema = z.object({
 });
 
 export type AiRequestKind = "TEXT" | "DIAGRAM";
+export type ProviderRetryProgress = {
+  attempt: number;
+  maxAttempts: number;
+};
 
 const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
@@ -286,7 +290,7 @@ function wait(ms: number) {
   });
 }
 
-async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; model: SummaryAiModelId; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
+async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; model: SummaryAiModelId; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
   ensureSummaryConfiguration();
 
   const promptOverride = prompt.promptOverride?.trim();
@@ -331,6 +335,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
       });
     } catch {
       if (attempt < PROVIDER_REQUEST_ATTEMPTS - 1) {
+        prompt.onProviderRetry?.({ attempt: attempt + 2, maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
         await wait(750 * (attempt + 1));
         continue;
       }
@@ -358,6 +363,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
 
     if (isRateLimitError(response.status, normalizedProviderError)) {
       if (attempt < PROVIDER_REQUEST_ATTEMPTS - 1 && retryAfterSeconds !== null && retryAfterSeconds <= 30) {
+        prompt.onProviderRetry?.({ attempt: attempt + 2, maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
         await wait((retryAfterSeconds + 1) * 1000);
         continue;
       }
@@ -367,6 +373,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
 
     const isTransientProviderError = response.status >= 500 && response.status <= 599;
     if (isTransientProviderError && attempt < PROVIDER_REQUEST_ATTEMPTS - 1) {
+      prompt.onProviderRetry?.({ attempt: attempt + 2, maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
       await wait(750 * (attempt + 1));
       continue;
     }
@@ -442,6 +449,7 @@ export async function generateSectionSummary(sectionTitle: string, paragraphs: s
 export async function generateAiRequestResponse(options: {
   kind?: AiRequestKind | undefined;
   model?: SummaryAiModelId | undefined;
+  onProviderRetry?: (progress: ProviderRetryProgress) => void;
   paragraphs: string[];
   promptOverride?: string | undefined;
   scopeLabel: "Libro" | "Sección";
@@ -462,7 +470,7 @@ export async function generateAiRequestResponse(options: {
 
   const chunks = chunkParagraphs(normalizedParagraphs, modelConfiguration.summaryChunkTargetCharacters);
   if (chunks.length === 1) {
-    return requestSummaryChunk({ kind, model, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
+    return requestSummaryChunk({ kind, model, onProviderRetry: options.onProviderRetry, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
   }
 
   const partialSummaries: string[] = [];
@@ -471,6 +479,7 @@ export async function generateAiRequestResponse(options: {
       model,
       kind,
       promptOverride,
+      onProviderRetry: options.onProviderRetry,
       scopeLabel,
       sectionTitle: `${title} · fragmento ${index + 1}`,
       text: chunk,
@@ -482,6 +491,7 @@ export async function generateAiRequestResponse(options: {
     condensed: true,
     kind,
     model,
+    onProviderRetry: options.onProviderRetry,
     promptOverride,
     scopeLabel,
     sectionTitle: title,

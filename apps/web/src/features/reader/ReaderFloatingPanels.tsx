@@ -46,10 +46,13 @@ type AudioPopoverProps = {
   buttonLabel: string;
   buttonTitle?: string;
   children: ReactNode;
+  closeLabel?: string;
   isOpen: boolean;
   menuRef?: Ref<HTMLDivElement>;
+  onClose?: () => void;
   onToggle: () => void;
   panelId: string;
+  title?: string;
 };
 
 type AudioSettingsContentProps = {
@@ -366,12 +369,9 @@ function ReaderControlIcon({ children }: { children: ReactNode }) {
 function AudioSettingsIcon() {
   return (
     <ReaderControlIcon>
-      <path d="M5 8.5H11" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M5 15.5H8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M13 15.5H19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <path d="M16 8.5H19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
-      <circle cx="13" cy="8.5" fill="currentColor" r="1.6" />
-      <circle cx="10" cy="15.5" fill="currentColor" r="1.6" />
+      <path d="M5 13V11.5C5 7.63 8.13 4.5 12 4.5C15.87 4.5 19 7.63 19 11.5V13" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M5 12.5H6.5C7.33 12.5 8 13.17 8 14V17.5C8 18.33 7.33 19 6.5 19H5.75C4.78 19 4 18.22 4 17.25V13.5C4 12.95 4.45 12.5 5 12.5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M19 12.5H17.5C16.67 12.5 16 13.17 16 14V17.5C16 18.33 16.67 19 17.5 19H18.25C19.22 19 20 18.22 20 17.25V13.5C20 12.95 19.55 12.5 19 12.5Z" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.9" />
     </ReaderControlIcon>
   );
 }
@@ -498,7 +498,20 @@ export function bookmarkToneClassName(bookmarkId: string) {
   return `reader-navigation-chip-bookmark-tone-${hash % BOOKMARK_TONE_COUNT}`;
 }
 
-export function ReaderFloatingAudioPopover({ buttonLabel, buttonTitle, children, isOpen, menuRef, onToggle, panelId }: AudioPopoverProps) {
+export function ReaderFloatingAudioPopover({
+  buttonLabel,
+  buttonTitle,
+  children,
+  closeLabel = "Cerrar preferencias de audio",
+  isOpen,
+  menuRef,
+  onClose,
+  onToggle,
+  panelId,
+  title = "Preferencias de audio"
+}: AudioPopoverProps) {
+  const handleClose = onClose ?? onToggle;
+
   return (
     <div className="reader-floating-audio-menu" ref={menuRef}>
       <button
@@ -515,6 +528,23 @@ export function ReaderFloatingAudioPopover({ buttonLabel, buttonTitle, children,
 
       {isOpen ? (
         <section aria-label={buttonLabel} className="reader-floating-audio-panel" id={panelId}>
+          <div className="reader-navigation-header reader-audio-header">
+            <div>
+              <h3>{title}</h3>
+            </div>
+            <div className="reader-navigation-header-actions reader-audio-header-actions">
+              <button
+                aria-label={closeLabel}
+                className="reader-icon-ghost"
+                onClick={handleClose}
+                title={closeLabel}
+                type="button"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+          </div>
+
           {children}
         </section>
       ) : null}

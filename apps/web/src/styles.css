@@ -698,7 +698,8 @@
   box-shadow: 0 20px 50px var(--shadow-ambient);
 }
 
-[data-theme-mode="dark"] .reader-navigation-header h3 {
+[data-theme-mode="dark"] .reader-navigation-header h3,
+[data-theme-mode="dark"] .reader-audio-header h3 {
   color: var(--forest-900);
 }
 
@@ -1777,7 +1778,7 @@ textarea {
 }
 
 .version-activity-header span {
-  color: #6d766b;
+  color: var(--ink-muted);
   font-size: 0.78rem;
   white-space: nowrap;
 }
@@ -1794,9 +1795,10 @@ textarea {
   display: grid;
   gap: 0.28rem;
   padding: 0.75rem 0.85rem;
-  border: 1px solid rgba(31, 43, 35, 0.08);
+  border: 1px solid var(--border-subtle);
   border-radius: 16px;
-  background: rgba(255, 253, 247, 0.92);
+  background: var(--paper);
+  color: var(--ink);
 }
 
 .commit-subject,
@@ -1815,7 +1817,7 @@ textarea {
 
 .commit-meta,
 .commit-empty {
-  color: #5f675f;
+  color: var(--ink-muted);
   font-size: 0.78rem;
 }
 
@@ -1842,10 +1844,11 @@ textarea {
   gap: 1rem;
   overflow: hidden;
   padding: clamp(1.25rem, 4vw, 1.75rem);
-  border: 1px solid rgba(255, 253, 247, 0.4);
+  border: 1px solid var(--border-subtle);
   border-radius: 30px;
-  background: rgba(255, 249, 240, 0.98);
-  box-shadow: 0 30px 90px rgba(7, 14, 10, 0.34);
+  background: var(--paper-strong);
+  color: var(--ink);
+  box-shadow: 0 30px 90px var(--shadow-ambient);
 }
 
 .app-update-modal h2,
@@ -1861,15 +1864,15 @@ textarea {
 }
 
 .app-update-copy {
-  color: #3f4b43;
+  color: var(--ink);
 }
 
 .app-update-changes {
   min-height: 0;
   overflow: hidden;
-  border: 1px solid rgba(31, 43, 35, 0.1);
+  border: 1px solid var(--border-subtle);
   border-radius: 20px;
-  background: rgba(255, 253, 247, 0.72);
+  background: var(--paper-muted);
 }
 
 .app-update-commit-list {
@@ -4836,6 +4839,10 @@ textarea {
   transform: translateX(-50%);
 }
 
+.reader-floating-controls-panel-open {
+  z-index: 109;
+}
+
 .reader-toast {
   position: fixed;
   left: 50%;
@@ -5209,19 +5216,22 @@ textarea {
   box-shadow: inset 3px 0 0 rgba(169, 87, 37, 0.3);
 }
 
-.reader-navigation-header {
+.reader-navigation-header,
+.reader-audio-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
 }
 
-.reader-navigation-header h3 {
+.reader-navigation-header h3,
+.reader-audio-header h3 {
   margin: 0.15rem 0 0;
   color: var(--forest-900);
 }
 
-.reader-navigation-header-actions {
+.reader-navigation-header-actions,
+.reader-audio-header-actions {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;

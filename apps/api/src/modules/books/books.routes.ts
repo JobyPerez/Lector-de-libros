@@ -104,6 +104,7 @@ const aiRequestPayloadSchema = z.object({
   chapterIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   kind: z.enum(["TEXT", "DIAGRAM"]).default("TEXT"),
   model: summaryAiModelIdSchema.optional(),
+  progressId: z.string().uuid().optional(),
   promptText: z.string().trim().min(1).max(4000),
   visualType: z.enum(["AUTO", "MIND_MAP", "CONCEPT_MAP", "TIMELINE", "INFOGRAPHIC", "FLOWCHART", "RELATIONSHIPS"]).default("AUTO")
 });
@@ -263,6 +264,13 @@ type ImportImagesProgressRecord = {
   userId: string;
 };
 
+type AiRequestRetryProgressRecord = {
+  attempt: number;
+  maxAttempts: number;
+  updatedAt: number;
+  userId: string;
+};
+
 type SectionParagraphBoundary = {
   pageNumber: number;
   paragraphNumber: number;
@@ -417,6 +425,7 @@ type RestoredHighlightRecord = HighlightTextRange & {
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
 const importImagesCancellationRequests = new Set<string>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
+const aiRequestRetryProgressStore = new Map<string, AiRequestRetryProgressRecord>();
 const maximumUploadedImageBytes = 32 * 1024 * 1024;
 const maximumOcrTransientErrorRetriesPerFile = 3;
 
@@ -443,6 +452,24 @@ function setImportImagesProgress(progressId: string, progress: ImportImagesProgr
     ...progress,
     updatedAt: Date.now()
   });
+}
+
+function pruneAiRequestRetryProgressStore() {
+  const expiresBefore = Date.now() - importImagesProgressTtlMs;
+  for (const [progressId, progress] of aiRequestRetryProgressStore.entries()) {
+    if (progress.updatedAt < expiresBefore) {
+      aiRequestRetryProgressStore.delete(progressId);
+    }
+  }
+}
+
+function setAiRequestRetryProgress(progressId: string | undefined, progress: Omit<AiRequestRetryProgressRecord, "updatedAt">) {
+  if (!progressId) {
+    return;
+  }
+
+  pruneAiRequestRetryProgressStore();
+  aiRequestRetryProgressStore.set(progressId, { ...progress, updatedAt: Date.now() });
 }
 
 function isImportImagesCancellationRequested(progressId: string | undefined): boolean {
@@ -3335,6 +3362,27 @@ function detectSourceType(fileName: string, mimeType: string, requestedSourceTyp
 }
 
 export const registerBookRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/ai-requests/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const params = z.object({ progressId: z.string().uuid() }).parse(request.params);
+    pruneAiRequestRetryProgressStore();
+    const progress = aiRequestRetryProgressStore.get(params.progressId);
+
+    if (!progress || progress.userId !== request.currentUser.userId) {
+      return reply.status(404).send({ message: "Progreso no encontrado." });
+    }
+
+    return reply.send({
+      progress: {
+        attempt: progress.attempt,
+        maxAttempts: progress.maxAttempts
+      }
+    });
+  });
+
   app.get("/import-images/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -5235,6 +5283,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         model: body.model,
+        onProviderRetry: ({ attempt, maxAttempts }) => {
+          setAiRequestRetryProgress(body.progressId, {
+            attempt,
+            maxAttempts,
+            userId: request.currentUser!.userId
+          });
+        },
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Libro",
@@ -5336,6 +5391,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         model: body.model,
+        onProviderRetry: ({ attempt, maxAttempts }) => {
+          setAiRequestRetryProgress(body.progressId, {
+            attempt,
+            maxAttempts,
+            userId: request.currentUser!.userId
+          });
+        },
         paragraphs,
         promptOverride: body.promptText,
         scopeLabel: "Sección",
