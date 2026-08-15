@@ -189,9 +189,8 @@ export function ShelfPage() {
   const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [editingBook, setEditingBook] = useState<BookSummary | null>(null);
   const [bookForm, setBookForm] = useState<BookEditFormState>(emptyBookEditForm);
-  const [importForm, setImportForm] = useState<{ authorName: string; sourceType: "PDF" | "EPUB"; title: string }>({
+  const [importForm, setImportForm] = useState<{ authorName: string; title: string }>({
     authorName: "",
-    sourceType: "PDF",
     title: ""
   });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -282,7 +281,6 @@ export function ShelfPage() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
-      formData.append("sourceType", importForm.sourceType);
 
       if (importForm.title) {
         formData.append("title", importForm.title);
@@ -294,7 +292,7 @@ export function ShelfPage() {
 
       await importBook(accessToken, formData);
 
-      setImportForm({ authorName: "", sourceType: "PDF", title: "" });
+      setImportForm({ authorName: "", title: "" });
       setSelectedFile(null);
       setViewTransitionDirection("back");
       setIsImportPanelVisible(false);
@@ -940,22 +938,13 @@ export function ShelfPage() {
               />
             </label>
             <label>
-              Origen
-              <select
-                onChange={(event) => setImportForm((current) => ({ ...current, sourceType: event.target.value as "PDF" | "EPUB" }))}
-                value={importForm.sourceType}
-              >
-                <option value="PDF">PDF</option>
-                <option value="EPUB">EPUB</option>
-              </select>
-            </label>
-            <label>
               Archivo
               <input
                 accept=".pdf,.epub,application/pdf,application/epub+zip"
                 onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
                 type="file"
               />
+              <span className="helper-text">Formatos admitidos: PDF y EPUB.</span>
             </label>
 
             {createError ? <p className="error-text">{createError}</p> : null}
