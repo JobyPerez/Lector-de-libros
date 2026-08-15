@@ -1,17 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
-import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary } from "../../app/api";
+import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
 import { ShareBookModal } from "../sharing/ShareBookModal";
 
+export type ShelfSortMode = "lastOpened" | "rating";
+
 type BookEditFormState = {
   authorName: string;
   notionBookUrl: string;
-  synopsis: string;
+  rating: number | null;
+  readingStatus: ReadingStatus;
   title: string;
+  userComments: string;
 };
 
 type ShelfView = "edit" | "import" | "shelf";
@@ -20,8 +24,25 @@ type ShelfViewTransitionDirection = "back" | "forward";
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
   notionBookUrl: "",
-  synopsis: "",
-  title: ""
+  rating: null,
+  readingStatus: "WANT_TO_READ",
+  title: "",
+  userComments: ""
+};
+
+const READING_STATUS_CONFIG: { id: ReadingStatus; label: string }[] = [
+  { id: "READING", label: "Leyéndolo" },
+  { id: "WANT_TO_READ", label: "Me gustaría leer" },
+  { id: "READ", label: "Leído" },
+  { id: "ABANDONED", label: "Abandonado" }
+];
+
+const RATING_LABELS: Record<number, string> = {
+  1: "1 - No me gustó nada",
+  2: "2 - No me gustó",
+  3: "3 - Normalito",
+  4: "4 - Me gustó",
+  5: "5 - Me gustó mucho"
 };
 
 const removalExitAnimationMs = 280;
@@ -93,6 +114,77 @@ function SearchIcon() {
       <circle cx="11" cy="11" r="5.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <path d="M15 15L19 19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </svg>
+  );
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg aria-hidden="true" className={filled ? "star-icon is-filled" : "star-icon"} fill={filled ? "currentColor" : "none"} viewBox="0 0 24 24">
+      <path
+        d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+    </svg>
+  );
+}
+
+function StarRatingInput({
+  value,
+  onChange
+}: {
+  value: number | null;
+  onChange: (rating: number | null) => void;
+}) {
+  const [hoverValue, setHoverValue] = useState<number | null>(null);
+  const activeRating = hoverValue ?? value;
+
+  return (
+    <div className="star-rating-picker-wrapper">
+      <div className="star-rating-picker" onMouseLeave={() => setHoverValue(null)}>
+        {[1, 2, 3, 4, 5].map((star) => {
+          const isFilled = activeRating !== null && star <= activeRating;
+          return (
+            <button
+              aria-label={`Calificar con ${RATING_LABELS[star]}`}
+              className={["star-rating-button", isFilled ? "is-active" : ""].filter(Boolean).join(" ")}
+              key={star}
+              onClick={(e) => {
+                e.preventDefault();
+                onChange(value === star ? null : star);
+              }}
+              onMouseEnter={() => setHoverValue(star)}
+              type="button"
+            >
+              <StarIcon filled={isFilled} />
+            </button>
+          );
+        })}
+        {value !== null ? (
+          <button
+            aria-label="Borrar calificación"
+            className="star-rating-clear-button"
+            onClick={(e) => {
+              e.preventDefault();
+              onChange(null);
+            }}
+            title="Quitar calificación"
+            type="button"
+          >
+            ✕
+          </button>
+        ) : null}
+      </div>
+      <div className="star-rating-picker-label">
+        {activeRating !== null ? (
+          <span className="star-rating-active-label">{RATING_LABELS[activeRating]}</span>
+        ) : (
+          <span className="star-rating-empty-label">Sin calificar</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -182,6 +274,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
 }
 
 export function ShelfPage() {
+  const queryClient = useQueryClient();
   const accessToken = useAuthStore((state) => state.accessToken);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -209,6 +302,7 @@ export function ShelfPage() {
   const [expandedBookIds, setExpandedBookIds] = useState<ReadonlySet<string>>(new Set());
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
+  const [sortMode, setSortMode] = useState<ShelfSortMode>("lastOpened");
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
   const canEditBookMetadata = !editingBook?.currentUserRole || editingBook.currentUserRole === "OWNER";
   const requestedScope = searchParams.get("scope");
@@ -332,14 +426,37 @@ export function ShelfPage() {
     setBookForm({
       authorName: book.authorName ?? "",
       notionBookUrl: book.notionBookUrl ?? "",
-      synopsis: book.synopsis ?? "",
-      title: book.title
+      rating: book.rating ?? null,
+      readingStatus: book.readingStatus ?? "WANT_TO_READ",
+      title: book.title,
+      userComments: book.userComments ?? ""
     });
     setIsCreateMenuOpen(false);
     setIsImportPanelVisible(false);
     setBookActionError(null);
     setBookActionSuccess(null);
     setDownloadMenuBookId(null);
+  }
+
+  function hasUnsavedChanges(): boolean {
+    if (!editingBook) {
+      return false;
+    }
+    const originalTitle = editingBook.title.trim();
+    const originalAuthor = (editingBook.authorName ?? "").trim();
+    const originalNotion = (editingBook.notionBookUrl ?? "").trim();
+    const originalStatus = editingBook.readingStatus ?? "WANT_TO_READ";
+    const originalRating = editingBook.rating ?? null;
+    const originalComments = (editingBook.userComments ?? "").trim();
+
+    return (
+      bookForm.title.trim() !== originalTitle ||
+      bookForm.authorName.trim() !== originalAuthor ||
+      bookForm.notionBookUrl.trim() !== originalNotion ||
+      bookForm.readingStatus !== originalStatus ||
+      bookForm.rating !== originalRating ||
+      bookForm.userComments.trim() !== originalComments
+    );
   }
 
   function resetBookForm() {
@@ -349,6 +466,16 @@ export function ShelfPage() {
     setBookActionError(null);
     setBookActionSuccess(null);
     setDownloadMenuBookId(null);
+  }
+
+  function handleCancelOrBack() {
+    if (hasUnsavedChanges()) {
+      const confirmLeave = window.confirm("Tienes cambios sin guardar. Si vuelves a la estantería, se perderán las modificaciones. ¿Deseas continuar?");
+      if (!confirmLeave) {
+        return;
+      }
+    }
+    resetBookForm();
   }
 
   async function handleDownloadExport(format: "epub" | "pdf") {
@@ -444,9 +571,12 @@ export function ShelfPage() {
         title: bookForm.title.trim(),
         ...(bookForm.authorName.trim() ? { authorName: bookForm.authorName.trim() } : {}),
         notionBookUrl: bookForm.notionBookUrl.trim() || null,
-        ...(bookForm.synopsis.trim() ? { synopsis: bookForm.synopsis.trim() } : {})
+        rating: bookForm.rating,
+        readingStatus: bookForm.readingStatus,
+        userComments: bookForm.userComments.trim() || null
       });
 
+      await queryClient.invalidateQueries({ queryKey: ["books"] });
       await booksQuery.refetch();
       setBookActionSuccess(`Se actualizó el libro ${bookForm.title.trim()}.`);
       setViewTransitionDirection("back");
@@ -543,6 +673,242 @@ export function ShelfPage() {
     }
   }
 
+  const allBooks = booksQuery.data ?? [];
+
+  const sortBooks = (books: BookSummary[]) => {
+    return [...books].sort((a, b) => {
+      if (sortMode === "rating") {
+        const ratingA = a.rating ?? 0;
+        const ratingB = b.rating ?? 0;
+        if (ratingB !== ratingA) {
+          return ratingB - ratingA;
+        }
+      }
+      const dateA = new Date(a.lastOpenedAt ?? a.createdAt ?? 0).getTime();
+      const dateB = new Date(b.lastOpenedAt ?? b.createdAt ?? 0).getTime();
+      return dateB - dateA;
+    });
+  };
+
+  const sectionsWithBooks = READING_STATUS_CONFIG.map((statusConfig) => {
+    const matchingBooks = allBooks.filter((book) => {
+      const bookStatus = book.readingStatus ?? "WANT_TO_READ";
+      return bookStatus === statusConfig.id;
+    });
+    return {
+      ...statusConfig,
+      books: sortBooks(matchingBooks)
+    };
+  }).filter((section) => section.books.length > 0);
+
+  function renderBookCard(book: BookSummary) {
+    const isDeletingBook = deletingBookId === book.bookId;
+    const removalState = removingBookId === book.bookId
+      ? "exiting"
+      : isDeletingBook
+        ? "pending"
+        : undefined;
+    const isBookRemoving = removalState !== undefined;
+    const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
+    const isExpanded = expandedBookIds.has(book.bookId);
+    const detailsId = `shelf-book-details-${book.bookId}`;
+
+    return (
+      <article
+        aria-busy={isBookRemoving}
+        className="book-card shelf-book-card"
+        data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
+        data-expanded={isExpanded ? "true" : undefined}
+        data-removing={removalState}
+        key={book.bookId}
+      >
+        <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
+          <div className="shelf-book-cover-shell">
+            <ShelfBookCover accessToken={accessToken} book={book} />
+          </div>
+        </Link>
+
+        <div className="shelf-book-plank-row">
+          <button
+            aria-controls={detailsId}
+            aria-expanded={isExpanded}
+            aria-label={isExpanded ? `Ocultar información de ${book.title}` : `Mostrar información de ${book.title}`}
+            className="shelf-book-expand-button"
+            disabled={isBookRemoving}
+            onClick={() => toggleBookDetails(book.bookId)}
+            title={isExpanded ? "Ocultar información" : "Mostrar información"}
+            type="button"
+          >
+            <ChevronDownIcon />
+          </button>
+        </div>
+        <div className="shelf-book-details" id={detailsId}>
+          <div className="shelf-book-details-inner">
+            <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
+            <div className="book-card-copy shelf-book-copy">
+              <h3>{book.title}</h3>
+              <p>{book.authorName ?? "Autor pendiente"}</p>
+              {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
+                <p className="shelf-book-shared-by">
+                  Compartido por <strong>@{book.ownerUsername}</strong>
+                </p>
+              ) : null}
+            </div>
+
+            {book.rating ? (
+              <div className="shelf-book-rating-badge" title={RATING_LABELS[book.rating] ?? `Calificación: ${book.rating}/5`}>
+                <span className="shelf-book-rating-stars">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <span className={star <= (book.rating ?? 0) ? "star-active" : "star-inactive"} key={star}>★</span>
+                  ))}
+                </span>
+                <span className="shelf-book-rating-text">{RATING_LABELS[book.rating]}</span>
+              </div>
+            ) : null}
+
+            {book.userComments?.trim() ? (
+              <div className="shelf-book-user-comments">
+                <p className="shelf-book-user-comments-label">Comentarios:</p>
+                <p className="shelf-book-user-comments-text">{book.userComments.trim()}</p>
+              </div>
+            ) : null}
+
+            <dl className="shelf-book-stats">
+              <div>
+                <dt>Páginas</dt>
+                <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
+              </div>
+              <div>
+                <dt>Palabras</dt>
+                <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
+              </div>
+              {book.lastOpenedAt ? (
+                <div>
+                  <dt>Última lectura</dt>
+                  <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
+                </div>
+              ) : null}
+            </dl>
+            <div
+              className="book-card-actions"
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                  setDownloadMenuBookId((current) => current === book.bookId ? null : current);
+                }
+              }}
+            >
+              <button
+                aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
+                aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
+                aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
+                className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
+                disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
+                onClick={(event) => handleDownloadAction(book, event)}
+                title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
+                type="button"
+              >
+                <DownloadIcon />
+              </button>
+              {book.notionBookUrl?.trim() ? (
+                <a
+                  aria-label={`Abrir ${book.title} en Notion`}
+                  className="book-card-icon-button book-card-notion-button"
+                  href={book.notionBookUrl.trim()}
+                  onClick={(event) => { event.stopPropagation(); }}
+                  rel="noreferrer noopener"
+                  target="_blank"
+                  title="Abrir libro en Notion"
+                >
+                  <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
+                </a>
+              ) : null}
+              {book.currentUserRole === "OWNER" ? (
+                <button
+                  aria-label={`Compartir ${book.title}`}
+                  className="book-card-icon-button book-card-share-button"
+                  disabled={isBookRemoving}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setShareBook(book);
+                  }}
+                  title="Compartir"
+                  type="button"
+                >
+                  <ShareIcon />
+                </button>
+              ) : null}
+              <button
+                aria-label={`Editar ${book.title}`}
+                className="book-card-icon-button book-card-edit-button"
+                disabled={isBookRemoving}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  startEditingBook(book);
+                }}
+                title="Editar libro"
+                type="button"
+              >
+                <EditIcon />
+              </button>
+              <button
+                aria-label={isBookOwner ? `Eliminar ${book.title}` : `Salir del libro ${book.title}`}
+                className="book-card-icon-button book-card-delete-button"
+                disabled={isBookRemoving}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void handleDeleteBook(book);
+                }}
+                title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
+                type="button"
+              >
+                <DeleteIcon />
+              </button>
+
+              {downloadMenuBookId === book.bookId ? (
+                <div className="book-card-download-menu" role="menu">
+                  <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
+                  <button
+                    className="menu-item book-card-download-option"
+                    disabled={exportingBookId === book.bookId}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void handleExportFromCard(book, "epub");
+                    }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
+                  </button>
+                  <button
+                    className="menu-item book-card-download-option"
+                    disabled={exportingBookId === book.bookId}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void handleExportFromCard(book, "pdf");
+                    }}
+                    role="menuitem"
+                    type="button"
+                  >
+                    {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
+          <span className="book-card-removing-dot" />
+          {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
+        </div>
+      </article>
+    );
+  }
+
   return (
     <div className="page-stack shelf-layout">
       {activeView === "shelf" ? (
@@ -588,233 +954,76 @@ export function ShelfPage() {
           </div>
         </div>
 
-        {hasSharedBooks || sharedBooksQuery.isLoading || scope !== "mine" ? (
-          <div className="shelf-scope-tabs" role="tablist">
-            <button
-              aria-selected={effectiveScope === "mine"}
-              className={["shelf-scope-tab", effectiveScope === "mine" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => selectScope("mine")}
-              role="tab"
-              type="button"
+        <div className="shelf-toolbar">
+          {hasSharedBooks || sharedBooksQuery.isLoading || scope !== "mine" ? (
+            <div className="shelf-scope-tabs" role="tablist">
+              <button
+                aria-selected={effectiveScope === "mine"}
+                className={["shelf-scope-tab", effectiveScope === "mine" ? "is-active" : ""].filter(Boolean).join(" ")}
+                onClick={() => selectScope("mine")}
+                role="tab"
+                type="button"
+              >
+                Mis libros
+              </button>
+              <button
+                aria-selected={effectiveScope === "shared"}
+                className={["shelf-scope-tab", effectiveScope === "shared" ? "is-active" : ""].filter(Boolean).join(" ")}
+                onClick={() => selectScope("shared")}
+                role="tab"
+                type="button"
+              >
+                Compartidos conmigo
+              </button>
+              <button
+                aria-selected={effectiveScope === "all"}
+                className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
+                onClick={() => selectScope("all")}
+                role="tab"
+                type="button"
+              >
+                Todos
+              </button>
+            </div>
+          ) : <div />}
+
+          <div className="shelf-sort-controls">
+            <label className="shelf-sort-label" htmlFor="shelf-sort-select">Ordenar:</label>
+            <select
+              className="shelf-sort-select"
+              id="shelf-sort-select"
+              onChange={(e) => setSortMode(e.target.value as ShelfSortMode)}
+              value={sortMode}
             >
-              Mis libros
-            </button>
-            <button
-              aria-selected={effectiveScope === "shared"}
-              className={["shelf-scope-tab", effectiveScope === "shared" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => selectScope("shared")}
-              role="tab"
-              type="button"
-            >
-              Compartidos conmigo
-            </button>
-            <button
-              aria-selected={effectiveScope === "all"}
-              className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
-              onClick={() => selectScope("all")}
-              role="tab"
-              type="button"
-            >
-              Todos
-            </button>
+              <option value="lastOpened">Última lectura</option>
+              <option value="rating">Calificación</option>
+            </select>
           </div>
-        ) : null}
+        </div>
 
         {booksQuery.isLoading ? <p>Cargando libros...</p> : null}
         {booksQuery.isError ? <p className="error-text">No se pudo cargar la estantería.</p> : null}
         {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
         {bookActionSuccess ? <p className="success-text">{bookActionSuccess}</p> : null}
 
-        <div className="shelf-grid" data-compact-row={booksQuery.data && booksQuery.data.length > 0 && booksQuery.data.length < 3 ? "true" : undefined}>
-          {booksQuery.data?.map((book) => {
-            const isDeletingBook = deletingBookId === book.bookId;
-            const removalState = removingBookId === book.bookId
-              ? "exiting"
-              : isDeletingBook
-                ? "pending"
-                : undefined;
-            const isBookRemoving = removalState !== undefined;
-            const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
-            const isExpanded = expandedBookIds.has(book.bookId);
-            const detailsId = `shelf-book-details-${book.bookId}`;
+        {!booksQuery.isLoading && allBooks.length === 0 ? (
+          <div className="shelf-empty-state">
+            <p>No hay libros en tu estantería.</p>
+          </div>
+        ) : null}
 
-            return (
-            <article
-              aria-busy={isBookRemoving}
-              className="book-card shelf-book-card"
-              data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
-              data-expanded={isExpanded ? "true" : undefined}
-              data-removing={removalState}
-              key={book.bookId}
-            >
-              <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
-                <div className="shelf-book-cover-shell">
-                  <ShelfBookCover accessToken={accessToken} book={book} />
-                </div>
-              </Link>
-
-              <div className="shelf-book-plank-row">
-                <button
-                  aria-controls={detailsId}
-                  aria-expanded={isExpanded}
-                  aria-label={isExpanded ? `Ocultar información de ${book.title}` : `Mostrar información de ${book.title}`}
-                  className="shelf-book-expand-button"
-                  disabled={isBookRemoving}
-                  onClick={() => toggleBookDetails(book.bookId)}
-                  title={isExpanded ? "Ocultar información" : "Mostrar información"}
-                  type="button"
-                >
-                  <ChevronDownIcon />
-                </button>
+        <div className="shelf-sections-container">
+          {sectionsWithBooks.map((section) => (
+            <section className="shelf-section" key={section.id}>
+              <div className="shelf-section-header">
+                <h3 className="shelf-section-title">{section.label}</h3>
+                <span className="shelf-section-count">{section.books.length}</span>
               </div>
-              <div className="shelf-book-details" id={detailsId}>
-                <div className="shelf-book-details-inner">
-                  <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
-                  <div className="book-card-copy shelf-book-copy">
-                    <h3>{book.title}</h3>
-                    <p>{book.authorName ?? "Autor pendiente"}</p>
-                    {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
-                      <p className="shelf-book-shared-by">
-                        Compartido por <strong>@{book.ownerUsername}</strong>
-                      </p>
-                    ) : null}
-                  </div>
-
-                  <dl className="shelf-book-stats">
-                    <div>
-                      <dt>Páginas</dt>
-                      <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
-                    </div>
-                    <div>
-                      <dt>Palabras</dt>
-                      <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
-                    </div>
-                    {book.lastOpenedAt ? (
-                      <div>
-                        <dt>Última lectura</dt>
-                        <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
-                      </div>
-                    ) : null}
-                  </dl>
-                  <div
-                    className="book-card-actions"
-                    onBlur={(event) => {
-                      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                        setDownloadMenuBookId((current) => current === book.bookId ? null : current);
-                      }
-                    }}
-                  >
-                    <button
-                      aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
-                      aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
-                      aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
-                      className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
-                      disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
-                      onClick={(event) => handleDownloadAction(book, event)}
-                      title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
-                      type="button"
-                    >
-                      <DownloadIcon />
-                    </button>
-                    {book.notionBookUrl?.trim() ? (
-                      <a
-                        aria-label={`Abrir ${book.title} en Notion`}
-                        className="book-card-icon-button book-card-notion-button"
-                        href={book.notionBookUrl.trim()}
-                        onClick={(event) => { event.stopPropagation(); }}
-                        rel="noreferrer noopener"
-                        target="_blank"
-                        title="Abrir libro en Notion"
-                      >
-                        <img alt="" aria-hidden="true" className="shelf-book-notion-icon" src={notionIconUrl} />
-                      </a>
-                    ) : null}
-                    {book.currentUserRole === "OWNER" ? (
-                      <button
-                        aria-label={`Compartir ${book.title}`}
-                        className="book-card-icon-button book-card-share-button"
-                        disabled={isBookRemoving}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          setShareBook(book);
-                        }}
-                        title="Compartir"
-                        type="button"
-                      >
-                        <ShareIcon />
-                      </button>
-                    ) : null}
-                    <button
-                      aria-label={`Editar ${book.title}`}
-                      className="book-card-icon-button book-card-edit-button"
-                      disabled={isBookRemoving}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        startEditingBook(book);
-                      }}
-                      title="Editar libro"
-                      type="button"
-                    >
-                      <EditIcon />
-                    </button>
-                    <button
-                      aria-label={isBookOwner ? `Eliminar ${book.title}` : `Salir del libro ${book.title}`}
-                      className="book-card-icon-button book-card-delete-button"
-                      disabled={isBookRemoving}
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void handleDeleteBook(book);
-                      }}
-                      title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
-                      type="button"
-                    >
-                      <DeleteIcon />
-                    </button>
-
-                    {downloadMenuBookId === book.bookId ? (
-                      <div className="book-card-download-menu" role="menu">
-                        <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
-                        <button
-                          className="menu-item book-card-download-option"
-                          disabled={exportingBookId === book.bookId}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            void handleExportFromCard(book, "epub");
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
-                        </button>
-                        <button
-                          className="menu-item book-card-download-option"
-                          disabled={exportingBookId === book.bookId}
-                          onClick={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            void handleExportFromCard(book, "pdf");
-                          }}
-                          role="menuitem"
-                          type="button"
-                        >
-                          {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
+              <div className="shelf-grid" data-compact-row={section.books.length > 0 && section.books.length < 3 ? "true" : undefined}>
+                {section.books.map((book) => renderBookCard(book))}
               </div>
-              <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
-                <span className="book-card-removing-dot" />
-                {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
-              </div>
-            </article>
-            );
-          })}
+            </section>
+          ))}
         </div>
       </section>
       ) : null}
@@ -829,7 +1038,7 @@ export function ShelfPage() {
             <button
               aria-label="Volver a la estantería"
               className="secondary-button reader-header-icon-button"
-              onClick={resetBookForm}
+              onClick={handleCancelOrBack}
               title="Volver a la estantería"
               type="button"
             >
@@ -865,14 +1074,48 @@ export function ShelfPage() {
                 value={bookForm.notionBookUrl}
               />
             </label>
+
+            <div className="shelf-edit-form-grid">
+              <label>
+                Estado de lectura
+                <select
+                  onChange={(event) =>
+                    setBookForm((current) => ({
+                      ...current,
+                      readingStatus: event.target.value as ReadingStatus
+                    }))
+                  }
+                  value={bookForm.readingStatus}
+                >
+                  {READING_STATUS_CONFIG.map((status) => (
+                    <option key={status.id} value={status.id}>
+                      {status.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="shelf-rating-form-group">
+                <span className="shelf-rating-form-label">Calificación</span>
+                <StarRatingInput
+                  onChange={(nextRating) =>
+                    setBookForm((current) => ({
+                      ...current,
+                      rating: nextRating
+                    }))
+                  }
+                  value={bookForm.rating}
+                />
+              </div>
+            </div>
+
             <label>
-              Sinopsis
+              Comentarios sobre el libro
               <textarea
-                disabled={!canEditBookMetadata}
-                onChange={(event) => setBookForm((current) => ({ ...current, synopsis: event.target.value }))}
-                placeholder="Resumen opcional del libro"
+                onChange={(event) => setBookForm((current) => ({ ...current, userComments: event.target.value }))}
+                placeholder="¿Qué te ha parecido el libro? Escribe aquí tus notas o impresiones..."
                 rows={5}
-                value={bookForm.synopsis}
+                value={bookForm.userComments}
               />
             </label>
 
@@ -894,7 +1137,7 @@ export function ShelfPage() {
                   {exportingFormat === "pdf" ? "Exportando PDF..." : "Exportar PDF"}
                 </span>
               </button>
-              <button className="secondary-button" onClick={resetBookForm} type="button">
+              <button className="secondary-button" onClick={handleCancelOrBack} type="button">
                 Cancelar
               </button>
             </div>

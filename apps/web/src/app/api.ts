@@ -284,6 +284,8 @@ export type BookRole = "OWNER" | "EDITOR" | "COMMENTER" | "VIEWER";
 
 export type ShareRole = "viewer" | "commenter" | "editor";
 
+export type ReadingStatus = "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
+
 export type BookSummary = {
   authorName: string | null;
   bookId: string;
@@ -294,8 +296,11 @@ export type BookSummary = {
   ownerDisplayName?: string | null;
   ownerUserId?: string;
   ownerUsername?: string;
+  rating?: number | null;
+  readingStatus?: ReadingStatus;
   shareUserAnnotations?: boolean;
   synopsis?: string | null;
+  userComments?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
   title: string;
@@ -805,7 +810,17 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export function updateBook(accessToken: string, bookId: string, payload: { authorName?: string; notionBookUrl?: string | null; synopsis?: string; title: string }) {
+export type UpdateBookInput = {
+  authorName?: string;
+  notionBookUrl?: string | null;
+  rating?: number | null;
+  readingStatus?: ReadingStatus;
+  synopsis?: string;
+  title: string;
+  userComments?: string | null;
+};
+
+export function updateBook(accessToken: string, bookId: string, payload: UpdateBookInput) {
   return request<{ book: BookSummary }>(`/books/${bookId}`, {
     accessToken,
     body: payload,

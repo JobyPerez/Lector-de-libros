@@ -122,7 +122,10 @@ const updateBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
-  notionBookUrl: z.string().trim().url().max(2000).nullable().optional()
+  notionBookUrl: z.string().trim().url().max(2000).nullable().optional(),
+  readingStatus: z.enum(["READING", "WANT_TO_READ", "READ", "ABANDONED"]).optional(),
+  rating: z.number().int().min(1).max(5).nullable().optional(),
+  userComments: z.string().trim().max(10000).nullable().optional()
 });
 
 const pageParamsSchema = z.object({
@@ -167,12 +170,15 @@ type OwnedBookRecord = {
   authorName: string | null;
   bookId: string;
   notionBookUrl: string | null;
+  readingStatus?: "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
+  rating?: number | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
   synopsis: string | null;
   title: string;
   totalPages: number;
   totalParagraphs: number;
+  userComments?: string | null;
 };
 
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
@@ -1781,6 +1787,9 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
         b.title AS "title",
         b.author_name AS "authorName",
         us.notion_book_url AS "notionBookUrl",
+        NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
+        us.rating AS "rating",
+        us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
         b.status AS "status",
@@ -1815,6 +1824,9 @@ async function findAccessibleBook(
         b.title AS "title",
         b.author_name AS "authorName",
         us.notion_book_url AS "notionBookUrl",
+        NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
+        us.rating AS "rating",
+        us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
         b.status AS "status",
@@ -1839,7 +1851,14 @@ async function findAccessibleBook(
 
 async function upsertUserBookSettings(
   connection: Awaited<ReturnType<typeof getConnection>>,
-  input: { bookId: string; notionBookUrl: string | null; userId: string }
+  input: {
+    bookId: string;
+    notionBookUrl: string | null;
+    rating?: number | null;
+    readingStatus?: "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
+    userComments?: string | null;
+    userId: string;
+  }
 ): Promise<void> {
   await connection.execute(
     `
@@ -1847,18 +1866,31 @@ async function upsertUserBookSettings(
       USING (
         SELECT :userId AS user_id,
                :bookId AS book_id,
-               :notionBookUrl AS notion_book_url
+               :notionBookUrl AS notion_book_url,
+               :readingStatus AS reading_status,
+               :rating AS rating,
+               :userComments AS user_comments
         FROM dual
       ) source
       ON (target.user_id = source.user_id AND target.book_id = source.book_id)
       WHEN MATCHED THEN
         UPDATE SET notion_book_url = source.notion_book_url,
+                   reading_status = NVL(source.reading_status, target.reading_status),
+                   rating = source.rating,
+                   user_comments = source.user_comments,
                    updated_at = SYSTIMESTAMP
       WHEN NOT MATCHED THEN
-        INSERT (user_id, book_id, notion_book_url)
-        VALUES (source.user_id, source.book_id, source.notion_book_url)
+        INSERT (user_id, book_id, notion_book_url, reading_status, rating, user_comments)
+        VALUES (source.user_id, source.book_id, source.notion_book_url, NVL(source.reading_status, 'WANT_TO_READ'), source.rating, source.user_comments)
     `,
-    input
+    {
+      bookId: input.bookId,
+      notionBookUrl: input.notionBookUrl,
+      rating: input.rating !== undefined ? input.rating : null,
+      readingStatus: input.readingStatus ?? null,
+      userComments: input.userComments !== undefined ? input.userComments : null,
+      userId: input.userId
+    }
   );
 }
 
@@ -3503,6 +3535,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.title AS "title",
             b.author_name AS "authorName",
             us.notion_book_url AS "notionBookUrl",
+            NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
+            us.rating AS "rating",
+            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -3630,11 +3665,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const nextAuthorName = payload.authorName ?? null;
-      const nextSynopsis = payload.synopsis ?? null;
+      const nextSynopsis = payload.synopsis !== undefined ? payload.synopsis : (existingBook.synopsis ?? null);
       const nextNotionBookUrl = payload.notionBookUrl ?? null;
+      const nextReadingStatus = payload.readingStatus ?? existingBook.readingStatus ?? "WANT_TO_READ";
+      const nextRating = payload.rating !== undefined ? payload.rating : (existingBook.rating ?? null);
+      const nextUserComments = payload.userComments !== undefined ? payload.userComments : (existingBook.userComments ?? null);
       const hasMetadataChanges = payload.title !== existingBook.title
         || nextAuthorName !== existingBook.authorName
-        || nextSynopsis !== existingBook.synopsis;
+        || (payload.synopsis !== undefined && nextSynopsis !== existingBook.synopsis);
 
       if (hasMetadataChanges && request.bookAccess?.role !== "OWNER") {
         return reply.status(403).send({ message: "Solo el propietario puede actualizar los metadatos del libro." });
@@ -3663,6 +3701,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       await upsertUserBookSettings(connection, {
         bookId: params.bookId,
         notionBookUrl: nextNotionBookUrl,
+        rating: nextRating,
+        readingStatus: nextReadingStatus,
+        userComments: nextUserComments,
         userId: request.currentUser.userId
       });
 
@@ -3680,8 +3721,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           ...existingBook,
           authorName: request.bookAccess?.role === "OWNER" ? nextAuthorName : existingBook.authorName,
           notionBookUrl: nextNotionBookUrl,
+          rating: nextRating,
+          readingStatus: nextReadingStatus,
           synopsis: request.bookAccess?.role === "OWNER" ? nextSynopsis : existingBook.synopsis,
-          title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title
+          title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title,
+          userComments: nextUserComments
         }
       });
     } finally {
@@ -4733,6 +4777,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.title AS "title",
             b.author_name AS "authorName",
             us.notion_book_url AS "notionBookUrl",
+            NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
+            us.rating AS "rating",
+            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -4785,6 +4832,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.title AS "title",
             b.author_name AS "authorName",
             us.notion_book_url AS "notionBookUrl",
+            NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
+            us.rating AS "rating",
+            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
