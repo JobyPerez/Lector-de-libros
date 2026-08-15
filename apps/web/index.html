@@ -13,6 +13,19 @@
     <link rel="icon" href="%BASE_URL%favicon.png" sizes="64x64" type="image/png" />
     <link rel="shortcut icon" href="%BASE_URL%favicon.png" type="image/png" />
     <title>Lector de libros</title>
+    <script>
+      (function() {
+        try {
+          var mode = localStorage.getItem('lector.themeMode') || 'system';
+          var palette = localStorage.getItem('lector.themePalette') || 'default';
+          var isDark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var effectiveMode = isDark ? 'dark' : 'light';
+          document.documentElement.setAttribute('data-theme-mode', effectiveMode);
+          document.documentElement.setAttribute('data-theme-preference', mode);
+          document.documentElement.setAttribute('data-theme-palette', palette);
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

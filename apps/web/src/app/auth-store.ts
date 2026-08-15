@@ -14,11 +14,15 @@ export type UserAiCredentialSummary = {
   hasDeepgramApiKey: boolean;
 };
 
+import type { ThemeMode, ThemePalette } from "./api";
+
 export type SessionUser = {
   aiCredentials?: UserAiCredentialSummary;
   displayName: string | null;
   email: string;
   role: UserRole;
+  themeMode?: ThemeMode;
+  themePalette?: ThemePalette;
   userId: string;
   username: string;
 };

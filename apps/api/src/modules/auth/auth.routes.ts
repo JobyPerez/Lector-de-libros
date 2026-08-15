@@ -12,6 +12,8 @@ import { recordUserActivity } from "../../services/user-activity.js";
 import { encryptOptionalSecret, getUserAiCredentialSummary } from "../../services/user-ai-credentials.js";
 
 export type UserRole = "ADMIN" | "EDITOR";
+export type ThemeMode = "light" | "dark" | "system";
+export type ThemePalette = "default" | "ocean" | "amethyst" | "coffee" | "graphite";
 
 type AuthUser = {
   userId: string;
@@ -19,6 +21,8 @@ type AuthUser = {
   email: string;
   displayName: string | null;
   role: UserRole;
+  themeMode?: ThemeMode;
+  themePalette?: ThemePalette;
 };
 
 type AuthenticatedJwtPayload = JwtPayload & {
@@ -62,6 +66,9 @@ const resetPasswordSchema = z.object({
   token: z.string().min(1)
 });
 
+const themeModeSchema = z.enum(["light", "dark", "system"]);
+const themePaletteSchema = z.enum(["default", "ocean", "amethyst", "coffee", "graphite"]);
+
 const updateProfileSchema = z.object({
   awsAccessKeyId: z.string().trim().min(1).max(500).optional(),
   awsRegion: z.string().trim().min(1).max(100).optional(),
@@ -71,7 +78,9 @@ const updateProfileSchema = z.object({
   deepgramApiKey: z.string().trim().min(1).max(1000).optional(),
   deepgramTtsModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional(),
   displayName: z.string().trim().max(120).optional(),
-  email: z.string().email()
+  email: z.string().email(),
+  themeMode: themeModeSchema.optional(),
+  themePalette: themePaletteSchema.optional()
 });
 
 function hashToken(token: string): string {
@@ -146,7 +155,9 @@ async function findUserByIdentifier(identifier: string): Promise<(AuthUser & { p
           email AS "email",
           display_name AS "displayName",
           role AS "role",
-          password_hash AS "passwordHash"
+          password_hash AS "passwordHash",
+          theme_mode AS "themeMode",
+          theme_palette AS "themePalette"
         FROM users
         WHERE LOWER(username) = :identifier OR LOWER(email) = :identifier
       `,
@@ -173,7 +184,9 @@ async function findUserById(userId: string, existingConnection?: Awaited<ReturnT
           username AS "username",
           email AS "email",
           display_name AS "displayName",
-          role AS "role"
+          role AS "role",
+          theme_mode AS "themeMode",
+          theme_palette AS "themePalette"
         FROM users
         WHERE user_id = :userId
       `,
@@ -693,6 +706,8 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
           UPDATE users
           SET display_name = :displayName,
               email = :email,
+              theme_mode = COALESCE(:themeMode, theme_mode),
+              theme_palette = COALESCE(:themePalette, theme_palette),
               deepgram_tts_model = COALESCE(:deepgramTtsModel, deepgram_tts_model),
               deepgram_api_key_encrypted = CASE
                 WHEN :clearDeepgramApiKey = 1 THEN NULL
@@ -726,6 +741,8 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
           deepgramTtsModel: payload.deepgramTtsModel ?? null,
           displayName: payload.displayName?.trim() || null,
           email: payload.email.toLowerCase(),
+          themeMode: payload.themeMode ?? null,
+          themePalette: payload.themePalette ?? null,
           userId: request.currentUser.userId
         },
         { autoCommit: true }

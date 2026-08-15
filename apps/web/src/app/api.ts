@@ -458,6 +458,9 @@ export const deepgramTtsModels = [
 
 export type DeepgramTtsModel = (typeof deepgramTtsModels)[number];
 
+export type ThemeMode = "light" | "dark" | "system";
+export type ThemePalette = "default" | "ocean" | "amethyst" | "coffee" | "graphite";
+
 export type UpdateProfilePayload = {
   awsAccessKeyId?: string;
   awsRegion?: string;
@@ -468,6 +471,8 @@ export type UpdateProfilePayload = {
   deepgramTtsModel?: DeepgramTtsModel;
   displayName?: string;
   email: string;
+  themeMode?: ThemeMode;
+  themePalette?: ThemePalette;
 };
 
 function decodeBase64Url(value: string): string {
