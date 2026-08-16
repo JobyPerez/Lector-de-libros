@@ -162,7 +162,6 @@ export function UsersAdminPage() {
 
   const totalAdmins = (usersQuery.data ?? []).filter((managedUser) => managedUser.role === "ADMIN").length;
   const totalEditors = (usersQuery.data ?? []).filter((managedUser) => managedUser.role === "EDITOR").length;
-  const activeUsers = (usersQuery.data ?? []).filter((managedUser) => managedUser.lastActivityAt).length;
   const normalizedSearch = searchTerm.trim().toLocaleLowerCase();
   const filteredUsers = (usersQuery.data ?? []).filter((managedUser) => !normalizedSearch
     || managedUser.username.toLocaleLowerCase().includes(normalizedSearch)
@@ -314,7 +313,6 @@ export function UsersAdminPage() {
           <article><strong>{usersQuery.data?.length ?? 0}</strong><span>Usuarios</span></article>
           <article><strong>{totalAdmins}</strong><span>Administradores</span></article>
           <article><strong>{totalEditors}</strong><span>Editores</span></article>
-          <article><strong>{activeUsers}</strong><span>Con actividad</span></article>
         </div>
 
         <label className="user-search-field">
