@@ -31,9 +31,9 @@ const emptyBookEditForm: BookEditFormState = {
 };
 
 const READING_STATUS_CONFIG: { id: ReadingStatus; label: string }[] = [
-  { id: "READING", label: "Leyéndolo" },
-  { id: "WANT_TO_READ", label: "Me gustaría leer" },
-  { id: "READ", label: "Leído" },
+  { id: "READING", label: "Leyendo" },
+  { id: "WANT_TO_READ", label: "Pendiente" },
+  { id: "READ", label: "Terminado" },
   { id: "ABANDONED", label: "Abandonado" }
 ];
 

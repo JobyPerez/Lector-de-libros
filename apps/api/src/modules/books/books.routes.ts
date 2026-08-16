@@ -3722,9 +3722,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (payload.readingStatus !== undefined && payload.readingStatus !== existingBook.readingStatus) {
         const statusMap: Record<string, string> = {
           ABANDONED: "Abandonado",
-          READ: "Leído",
+          READ: "Terminado",
           READING: "Leyendo",
-          WANT_TO_READ: "Por leer"
+          WANT_TO_READ: "Pendiente"
         };
         await recordUserActivity(connection, {
           action: "BOOK_STATUS_UPDATED",
