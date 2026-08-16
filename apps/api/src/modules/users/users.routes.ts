@@ -5,6 +5,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
+import { recordUserActivity } from "../../services/user-activity.js";
 import { authenticateRequest, requireAdministrator } from "../auth/auth.routes.js";
 
 const userRoleSchema = z.enum(["ADMIN", "EDITOR"]);
@@ -154,23 +155,27 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
           { userId: params.userId }
         );
       const eventsResult = await connection.execute(
-          `
-            SELECT * FROM (
-              SELECT
-                activity_id AS "activityId",
-                action AS "action",
-                book_id AS "bookId",
-                book_title AS "bookTitle",
-                ip_address AS "ipAddress",
-                user_agent AS "userAgent",
-                created_at AS "createdAt"
-              FROM user_activity_events
-              WHERE user_id = :userId
-              ORDER BY created_at DESC
-            ) WHERE ROWNUM <= 60
-          `,
-          { userId: params.userId }
-        );
+        `
+          SELECT * FROM (
+            SELECT
+              activity_id AS "activityId",
+              action AS "action",
+              book_id AS "bookId",
+              book_title AS "bookTitle",
+              chapter_title AS "chapterTitle",
+              page_number AS "pageNumber",
+              detail AS "detail",
+              duration_seconds AS "durationSeconds",
+              ip_address AS "ipAddress",
+              user_agent AS "userAgent",
+              created_at AS "createdAt"
+            FROM user_activity_events
+            WHERE user_id = :userId
+            ORDER BY created_at DESC
+          ) WHERE ROWNUM <= 150
+        `,
+        { userId: params.userId }
+      );
       const booksResult = await connection.execute(
           `
             SELECT
@@ -237,6 +242,14 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
           autoCommit: true
         }
       );
+
+      if (request.currentUser) {
+        await recordUserActivity(connection, {
+          action: "USER_CREATED",
+          detail: `@${payload.username.toLowerCase()} (${payload.role})`,
+          userId: request.currentUser.userId
+        });
+      }
 
       return reply.status(201).send({
         user: {
@@ -325,6 +338,12 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "USER_UPDATED",
+        detail: `@${payload.displayName || user.userId} (${payload.role})`,
+        userId: request.currentUser.userId
+      });
+
       return reply.status(204).send();
     } catch (error) {
       if ((error as { errorNum?: number }).errorNum === 1) {
@@ -387,6 +406,12 @@ export const registerUserRoutes: FastifyPluginAsync = async (app) => {
           autoCommit: true
         }
       );
+
+      await recordUserActivity(connection, {
+        action: "USER_DELETED",
+        detail: `@${user.userId}`,
+        userId: request.currentUser.userId
+      });
 
       return reply.status(204).send();
     } finally {

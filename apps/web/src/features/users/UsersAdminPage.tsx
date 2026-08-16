@@ -24,27 +24,68 @@ const emptyForm: UserFormState = {
 };
 
 const activityLabels: Record<UserActivityAction, string> = {
+  AI_REQUEST_CREATED: "Consultó a la IA",
+  AI_REQUEST_DELETED: "Eliminó consulta IA",
+  AUDIO_LISTENED: "Escuchó el libro",
   BOOK_CREATED: "Creó el libro",
   BOOK_DELETED: "Borró el libro",
+  BOOK_EXPORTED: "Exportó el libro",
+  BOOK_IMPORTED: "Importó el libro",
+  BOOK_RATED: "Calificó el libro",
+  BOOK_SHARED: "Compartió el libro",
+  BOOK_STATUS_UPDATED: "Cambió estado de lectura",
+  BOOK_TRANSFERRED: "Transfirió libro",
+  BOOK_UNSHARED: "Dejó de compartir libro",
   BOOK_UPDATED: "Modificó el libro",
   BOOK_VIEWED: "Consultó el libro",
-  LOGIN: "Inició sesión"
+  BOOKMARK_CREATED: "Añadió marcador",
+  BOOKMARK_DELETED: "Eliminó marcador",
+  CHAPTER_SUMMARY_GENERATED: "Generó resumen de capítulo",
+  HIGHLIGHT_CREATED: "Subrayó texto",
+  HIGHLIGHT_DELETED: "Eliminó subrayado",
+  LOGIN: "Inició sesión",
+  LOGOUT: "Cerró sesión",
+  NOTE_CREATED: "Añadió nota",
+  NOTE_DELETED: "Eliminó nota",
+  NOTE_UPDATED: "Modificó nota",
+  OCR_UPDATED: "Modificó OCR de página",
+  PAGE_DELETED: "Eliminó página",
+  PAGE_IMAGE_ROTATED: "Rotó imagen de página",
+  PAGE_IMAGE_UPDATED: "Actualizó imagen de página",
+  PAGE_OCR_RERUN: "Reejecutó OCR de página",
+  PAGES_IMPORTED: "Añadió páginas al libro",
+  PASSWORD_RESET: "Restableció contraseña",
+  PROFILE_UPDATED: "Actualizó perfil",
+  USER_CREATED: "Creó usuario",
+  USER_DELETED: "Eliminó usuario",
+  USER_UPDATED: "Modificó usuario"
 };
 
 function formatDuration(totalSeconds: number): string {
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
   if (hours > 0) {
-    return `${hours} h ${minutes} min`;
+    return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
   }
   if (minutes > 0) {
-    return `${minutes} min`;
+    return seconds > 0 ? `${minutes} min ${seconds} s` : `${minutes} min`;
   }
   return totalSeconds > 0 ? `${totalSeconds} s` : "Sin escucha";
 }
 
 function formatDate(value: string | null): string {
-  return value ? new Date(value).toLocaleString() : "Sin actividad";
+  if (!value) {
+    return "Sin actividad";
+  }
+  return new Date(value).toLocaleString(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
 }
 
 export function UsersAdminPage() {
@@ -344,50 +385,86 @@ export function UsersAdminPage() {
                 <h2>{selectedUser ? selectedUser.displayName ?? selectedUser.username : "Actividad"}</h2>
                 {selectedUser ? <p className="subdued">@{selectedUser.username}</p> : null}
               </div>
-              <button aria-label="Cerrar actividad" className="mobile-activity-close secondary-button" onClick={closeMobileActivity} type="button">
-                Volver a usuarios
-              </button>
+              <div className="activity-header-actions">
+                <button
+                  aria-label="Refrescar historial de actividad"
+                  className="secondary-button refresh-activity-button"
+                  disabled={activityQuery.isFetching}
+                  onClick={() => void activityQuery.refetch()}
+                  title="Refrescar historial de actividad"
+                  type="button"
+                >
+                  <span aria-hidden="true" className={activityQuery.isFetching ? "spin-animation" : ""}>🔄</span>
+                  <span>{activityQuery.isFetching ? "Refrescando..." : "Refrescar"}</span>
+                </button>
+                <button aria-label="Cerrar actividad" className="mobile-activity-close secondary-button" onClick={closeMobileActivity} type="button">
+                  Volver a usuarios
+                </button>
+              </div>
             </div>
 
             {activityQuery.isLoading ? <p className="subdued">Cargando actividad...</p> : null}
             {activityQuery.isError ? <p className="error-text">No se pudo cargar el seguimiento del usuario.</p> : null}
             {activityQuery.data ? (
               <div className="user-activity-content">
-                <div className="activity-summary-grid">
-                  <article><strong>{activityQuery.data.summary.totalLogins}</strong><span>Conexiones</span></article>
-                  <article><strong>{activityQuery.data.summary.booksViewed}</strong><span>Consultas</span></article>
-                  <article><strong>{activityQuery.data.summary.booksCreated}</strong><span>Creados</span></article>
-                  <article><strong>{activityQuery.data.summary.booksUpdated}</strong><span>Modificados</span></article>
-                  <article><strong>{activityQuery.data.summary.booksDeleted}</strong><span>Borrados</span></article>
-                  <article><strong>{formatDuration(Number(activityQuery.data.summary.listeningSeconds))}</strong><span>Escucha</span></article>
-                </div>
-
                 <section className="activity-section">
-                  <h3>Escucha por libro</h3>
-                  {activityQuery.data.books.length === 0 ? <p className="subdued">Todavía no hay tiempo de escucha registrado.</p> : (
-                    <div className="reading-book-list">
-                      {activityQuery.data.books.map((book) => (
-                        <article key={book.bookId}>
-                          <div><strong>{book.bookTitle}</strong><span>{book.sessionCount} {book.sessionCount === 1 ? "sesión" : "sesiones"}</span></div>
-                          <div><strong>{formatDuration(Number(book.listeningSeconds))}</strong><span>{formatDate(book.lastListenedAt)}</span></div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </section>
+                  <div className="activity-section-header">
+                    <h3>Historial de actividad</h3>
+                    <span className="activity-count-badge">
+                      {activityQuery.data.events.length} {activityQuery.data.events.length === 1 ? "evento" : "eventos"}
+                    </span>
+                  </div>
 
-                <section className="activity-section">
-                  <h3>Historial reciente</h3>
-                  {activityQuery.data.events.length === 0 ? <p className="subdued">No hay eventos registrados todavía.</p> : (
+                  {activityQuery.data.events.length === 0 ? (
+                    <p className="subdued empty-activity-state">No hay actividad registrada todavía para este usuario.</p>
+                  ) : (
                     <ol className="activity-timeline">
                       {activityQuery.data.events.map((event) => (
                         <li data-action={event.action} key={event.activityId}>
                           <span className="activity-dot" />
-                          <div>
-                            <strong>{activityLabels[event.action]}</strong>
-                            {event.bookTitle ? <span>{event.bookTitle}</span> : null}
-                            <time dateTime={event.createdAt}>{formatDate(event.createdAt)}</time>
-                            {event.action === "LOGIN" && event.ipAddress ? <small>IP {event.ipAddress}</small> : null}
+                          <div className="activity-item-body">
+                            <div className="activity-item-main">
+                              <span className="activity-action-label">
+                                {activityLabels[event.action] ?? event.action}
+                              </span>
+                              {event.bookTitle ? (
+                                <strong className="activity-book-name">{event.bookTitle}</strong>
+                              ) : null}
+                            </div>
+
+                            {(event.chapterTitle || typeof event.pageNumber === "number" || (event.action === "AUDIO_LISTENED" && event.durationSeconds) || event.detail) ? (
+                              <div className="activity-details-row">
+                                {typeof event.pageNumber === "number" ? (
+                                  <span className="activity-pill activity-page-pill">
+                                    Pág. {event.pageNumber}
+                                  </span>
+                                ) : null}
+                                {event.chapterTitle ? (
+                                  <span className="activity-pill activity-chapter-pill" title={event.chapterTitle}>
+                                    {event.action === "AUDIO_LISTENED" ? `Capítulo: ${event.chapterTitle}` : event.chapterTitle}
+                                  </span>
+                                ) : null}
+                                {event.action === "AUDIO_LISTENED" && event.durationSeconds ? (
+                                  <span className="activity-pill activity-duration-pill">
+                                    Duración: {formatDuration(Number(event.durationSeconds))}
+                                  </span>
+                                ) : null}
+                                {event.detail ? (
+                                  <span className="activity-pill activity-detail-pill" title={event.detail}>
+                                    {event.detail}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+
+                            <div className="activity-meta-row">
+                              <time className="activity-time" dateTime={event.createdAt}>
+                                {formatDate(event.createdAt)}
+                              </time>
+                              {event.action === "LOGIN" && event.ipAddress ? (
+                                <span className="activity-ip">IP: {event.ipAddress}</span>
+                              ) : null}
+                            </div>
                           </div>
                         </li>
                       ))}

@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { requireBookRole } from "../../services/book-access.js";
+import { recordUserActivity } from "../../services/user-activity.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutlineWithSource } from "../books/book-outline.js";
 
@@ -173,6 +174,7 @@ const updateNoteSchema = z.object({
 type OwnedBookRecord = {
   bookId: string;
   sourceType: "PDF" | "EPUB" | "IMAGES";
+  title: string;
   totalPages: number;
 };
 
@@ -353,6 +355,7 @@ async function findAccessibleBook(connection: Awaited<ReturnType<typeof getConne
     `
       SELECT
         b.book_id AS "bookId",
+        b.title AS "title",
         b.source_type AS "sourceType",
         b.total_pages AS "totalPages",
         b.share_user_annotations AS "shareUserAnnotations"
@@ -979,6 +982,14 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         { autoCommit: true }
       );
 
+      await recordUserActivity(connection, {
+        action: "BOOKMARK_CREATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        pageNumber: bookmark.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       return reply.status(201).send({ bookmark });
     } finally {
       await connection.close();
@@ -1056,6 +1067,12 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
               AND user_id = :userId`,
           { bookmarkId: params.bookmarkId, userId: request.currentUser.userId }
         );
+        await recordUserActivity(connection, {
+          action: "NOTE_DELETED",
+          bookId: params.bookId,
+          userId: request.currentUser.userId
+        });
+
         await connection.commit();
         return reply.status(204).send();
       }
@@ -1078,6 +1095,12 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         await connection.rollback();
         return reply.status(404).send({ message: "Bookmark not found." });
       }
+
+      await recordUserActivity(connection, {
+        action: "BOOKMARK_DELETED",
+        bookId: params.bookId,
+        userId: request.currentUser.userId
+      });
 
       await connection.commit();
       return reply.status(204).send();
@@ -1175,6 +1198,15 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         { autoCommit: true }
       );
 
+      await recordUserActivity(connection, {
+        action: "HIGHLIGHT_CREATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        detail: highlight.highlightedText,
+        pageNumber: highlight.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       return reply.status(201).send({ highlight });
     } finally {
       await connection.close();
@@ -1208,6 +1240,12 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       if ((result.rowsAffected ?? 0) === 0) {
         return reply.status(404).send({ message: "Highlight not found." });
       }
+
+      await recordUserActivity(connection, {
+        action: "HIGHLIGHT_DELETED",
+        bookId: params.bookId,
+        userId: request.currentUser.userId
+      });
 
       return reply.status(204).send();
     } finally {
@@ -1307,6 +1345,15 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       if (payload.sharedWithUserIds?.length) {
         await insertAnnotationShares(connection, noteId, "note", params.bookId, payload.sharedWithUserIds);
       }
+
+      await recordUserActivity(connection, {
+        action: "NOTE_CREATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        detail: payload.noteText,
+        pageNumber: pageNumber ?? undefined,
+        userId: request.currentUser.userId
+      });
 
       return reply.status(201).send({
         note: {
@@ -1410,6 +1457,13 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
             return reply.status(404).send({ message: "Highlight not found." });
           }
         }
+
+        await recordUserActivity(connection, {
+          action: "NOTE_UPDATED",
+          bookId: params.bookId,
+          detail: payload.noteText ?? null,
+          userId: request.currentUser.userId
+        });
 
         await connection.commit();
       } catch (error) {

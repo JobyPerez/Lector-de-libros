@@ -3707,12 +3707,42 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
-      await recordUserActivity(connection, {
-        action: "BOOK_UPDATED",
-        bookId: params.bookId,
-        bookTitle: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title,
-        userId: request.currentUser.userId
-      });
+      const bookTitle = request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title;
+
+      if (payload.rating !== undefined && payload.rating !== existingBook.rating) {
+        await recordUserActivity(connection, {
+          action: "BOOK_RATED",
+          bookId: params.bookId,
+          bookTitle,
+          detail: payload.rating ? `${payload.rating} ⭐` : "Sin calificación",
+          userId: request.currentUser.userId
+        });
+      }
+
+      if (payload.readingStatus !== undefined && payload.readingStatus !== existingBook.readingStatus) {
+        const statusMap: Record<string, string> = {
+          ABANDONED: "Abandonado",
+          READ: "Leído",
+          READING: "Leyendo",
+          WANT_TO_READ: "Por leer"
+        };
+        await recordUserActivity(connection, {
+          action: "BOOK_STATUS_UPDATED",
+          bookId: params.bookId,
+          bookTitle,
+          detail: statusMap[payload.readingStatus] ?? payload.readingStatus,
+          userId: request.currentUser.userId
+        });
+      }
+
+      if (hasMetadataChanges) {
+        await recordUserActivity(connection, {
+          action: "BOOK_UPDATED",
+          bookId: params.bookId,
+          bookTitle,
+          userId: request.currentUser.userId
+        });
+      }
 
       await connection.commit();
 
@@ -4062,7 +4092,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       await recordUserActivity(connection, {
-        action: "BOOK_CREATED",
+        action: "BOOK_IMPORTED",
         bookId,
         bookTitle: title,
         userId: request.currentUser.userId
@@ -4741,6 +4771,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "PAGE_DELETED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        pageNumber: params.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       return reply.send({
@@ -4809,6 +4847,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
+
+      await recordBookView(connection, {
+        bookId: params.bookId,
+        bookTitle: String(book.title ?? "Libro"),
+        userId: request.currentUser.userId
+      });
+      await connection.commit();
 
       return reply.send({ book });
     } finally {
@@ -4974,6 +5019,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "PAGE_IMAGE_ROTATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        detail: `${payload.rotation}°`,
+        pageNumber: params.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       return reply.status(204).send();
@@ -5119,6 +5173,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "PAGE_IMAGE_UPDATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        pageNumber: params.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       return reply.status(204).send();
@@ -5173,6 +5235,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         paragraphs,
         rawText: richPage.rawText,
         ...(book.sourceType === "IMAGES" && payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
+      });
+
+      await recordUserActivity(connection, {
+        action: "OCR_UPDATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        pageNumber: params.pageNumber,
+        userId: request.currentUser.userId
       });
 
       await connection.commit();
@@ -5269,6 +5339,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         rawText: ocrResult.rawText
       });
 
+      await recordUserActivity(connection, {
+        action: "PAGE_OCR_RERUN",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        detail: payload.ocrMode,
+        pageNumber: params.pageNumber,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       return reply.status(204).send();
@@ -5353,6 +5432,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         promptText: body.promptText,
         responseText,
         scopeType: "BOOK",
+        userId: request.currentUser.userId
+      });
+
+      await recordUserActivity(connection, {
+        action: "AI_REQUEST_CREATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        detail: body.promptText || body.kind,
         userId: request.currentUser.userId
       });
 
@@ -5462,6 +5549,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         responseText,
         scopeType: "SECTION",
         section,
+        userId: request.currentUser.userId
+      });
+
+      await recordUserActivity(connection, {
+        action: "AI_REQUEST_CREATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        chapterTitle: section.title,
+        detail: body.promptText || body.kind,
         userId: request.currentUser.userId
       });
 
@@ -5590,6 +5686,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         await connection.rollback();
         return reply.status(404).send({ message: "AI request not found." });
       }
+
+      await recordUserActivity(connection, {
+        action: "AI_REQUEST_DELETED",
+        bookId: params.bookId,
+        userId: request.currentUser.userId
+      });
 
       await connection.commit();
       return reply.status(204).send();
@@ -5784,6 +5886,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         );
       }
 
+      await recordUserActivity(connection, {
+        action: "CHAPTER_SUMMARY_GENERATED",
+        bookId: params.bookId,
+        bookTitle: book.title,
+        chapterTitle: section.title,
+        userId: request.currentUser.userId
+      });
+
       await connection.commit();
 
       const storedSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
@@ -5902,6 +6012,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (!download) {
         return reply.status(404).send({ message: "Book not found." });
       }
+
+      await recordUserActivity(connection, {
+        action: "BOOK_EXPORTED",
+        bookId: params.bookId,
+        detail: params.format.toUpperCase(),
+        userId: request.currentUser.userId
+      });
+      await connection.commit();
 
       return reply
         .header("Content-Type", download.mimeType)

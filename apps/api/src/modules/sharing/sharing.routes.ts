@@ -7,6 +7,7 @@ import {
   logShareEvent,
   requireBookRole
 } from "../../services/book-access.js";
+import { recordUserActivity } from "../../services/user-activity.js";
 
 const SHARE_ROLES = ["viewer", "commenter", "editor"] as const;
 type ShareRole = (typeof SHARE_ROLES)[number];
@@ -225,6 +226,13 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
         targetUserId: target.userId
       });
 
+      await recordUserActivity(connection, {
+        action: "BOOK_SHARED",
+        bookId,
+        detail: `@${target.username} (${body.role})`,
+        userId: request.currentUser!.userId
+      });
+
       return {
         role: body.role,
         userId: target.userId,
@@ -332,6 +340,12 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
         actorUserId: request.currentUser!.userId,
         bookId,
         targetUserId: userId
+      });
+
+      await recordUserActivity(connection, {
+        action: "BOOK_UNSHARED",
+        bookId,
+        userId: request.currentUser!.userId
       });
 
       return { ok: true };
@@ -485,6 +499,13 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
         bookId,
         details: `from=${request.currentUser!.userId};to=${target.userId}`,
         targetUserId: target.userId
+      });
+
+      await recordUserActivity(connection, {
+        action: "BOOK_TRANSFERRED",
+        bookId,
+        detail: `@${normalizedUsername}`,
+        userId: request.currentUser!.userId
       });
 
       return { ok: true, newOwnerUserId: target.userId };

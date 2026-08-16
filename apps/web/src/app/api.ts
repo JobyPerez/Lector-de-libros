@@ -711,7 +711,42 @@ export type ManagedUser = {
   username: string;
 };
 
-export type UserActivityAction = "LOGIN" | "BOOK_VIEWED" | "BOOK_CREATED" | "BOOK_UPDATED" | "BOOK_DELETED";
+export type UserActivityAction =
+  | "LOGIN"
+  | "LOGOUT"
+  | "PROFILE_UPDATED"
+  | "PASSWORD_RESET"
+  | "BOOK_VIEWED"
+  | "BOOK_CREATED"
+  | "BOOK_IMPORTED"
+  | "BOOK_UPDATED"
+  | "BOOK_DELETED"
+  | "BOOK_EXPORTED"
+  | "BOOK_STATUS_UPDATED"
+  | "BOOK_RATED"
+  | "BOOK_SHARED"
+  | "BOOK_UNSHARED"
+  | "BOOK_TRANSFERRED"
+  | "AUDIO_LISTENED"
+  | "OCR_UPDATED"
+  | "PAGE_OCR_RERUN"
+  | "PAGE_IMAGE_ROTATED"
+  | "PAGE_IMAGE_UPDATED"
+  | "PAGE_DELETED"
+  | "PAGES_IMPORTED"
+  | "BOOKMARK_CREATED"
+  | "BOOKMARK_DELETED"
+  | "NOTE_CREATED"
+  | "NOTE_UPDATED"
+  | "NOTE_DELETED"
+  | "HIGHLIGHT_CREATED"
+  | "HIGHLIGHT_DELETED"
+  | "AI_REQUEST_CREATED"
+  | "AI_REQUEST_DELETED"
+  | "CHAPTER_SUMMARY_GENERATED"
+  | "USER_CREATED"
+  | "USER_UPDATED"
+  | "USER_DELETED";
 
 export type ManagedUserActivity = {
   books: Array<{
@@ -726,8 +761,12 @@ export type ManagedUserActivity = {
     activityId: string;
     bookId: string | null;
     bookTitle: string | null;
+    chapterTitle?: string | null;
     createdAt: string;
+    detail?: string | null;
+    durationSeconds?: number | null;
     ipAddress: string | null;
+    pageNumber?: number | null;
     userAgent: string | null;
   }>;
   summary: {
@@ -1320,7 +1359,11 @@ export function updateProgress(accessToken: string, bookId: string, payload: Omi
   return request<void>(`/books/${bookId}/progress`, { accessToken, body: payload, method: "PUT" });
 }
 
-export function sendListeningHeartbeat(accessToken: string, bookId: string, payload: { activeSeconds: number; sessionId: string }) {
+export function sendListeningHeartbeat(
+  accessToken: string,
+  bookId: string,
+  payload: { activeSeconds: number; chapterTitle?: string | null; sessionId: string }
+) {
   return request<void>(`/books/${bookId}/listening-heartbeat`, { accessToken, body: payload, method: "POST" });
 }
 

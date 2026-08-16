@@ -86,7 +86,7 @@ const READER_SCREEN_LOCK_HOLD_SECONDS_TEXT = READER_SCREEN_LOCK_HOLD_SECONDS.toF
 const OFFLINE_AUDIO_DOWNLOAD_CONCURRENCY = 2;
 const ESTIMATED_WORDS_PER_MINUTE = 155;
 const DEEPGRAM_AURA2_COST_USD_PER_1000_CHARACTERS = 0.03;
-const LISTENING_HEARTBEAT_INTERVAL_MS = 30_000;
+const LISTENING_HEARTBEAT_INTERVAL_MS = 10_000;
 
 const HIGHLIGHT_OPTIONS: Array<{ color: HighlightColor; label: string }> = [
   { color: "YELLOW", label: "Amarillo" },
@@ -1317,6 +1317,7 @@ export function ReaderPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
+  const activeChapterTitleRef = useRef<string | null>(null);
   const audioBlockQueueRef = useRef<QueuedAudioBlock[]>([]);
   const activeAudioBlockRef = useRef<ActiveAudioBlock | null>(null);
   const audioBlockModeAvailableRef = useRef(true);
@@ -1392,7 +1393,11 @@ export function ReaderPage() {
       const activeSeconds = Math.min(Math.floor((now - activeSince) / 1000), 60);
       activeSince = now;
       if (activeSeconds > 0) {
-        void sendListeningHeartbeat(activeAccessToken, bookId, { activeSeconds, sessionId }).catch(() => undefined);
+        void sendListeningHeartbeat(activeAccessToken, bookId, {
+          activeSeconds,
+          chapterTitle: activeChapterTitleRef.current || null,
+          sessionId
+        }).catch(() => undefined);
       }
     }
 
@@ -2195,6 +2200,7 @@ export function ReaderPage() {
   const activeChapterTitle = useMemo(() => {
     return formatSectionTitleWithAncestors(activeTocEntry, navigationQuery.data?.toc);
   }, [activeTocEntry, navigationQuery.data?.toc]);
+  activeChapterTitleRef.current = activeChapterTitle;
   const activeOfflineChapterId = activeTocEntry?.chapterId ?? null;
   const activeOfflineChapterTitle = activeChapterTitle;
   const activeReadingSection = useMemo(() => {

@@ -631,9 +631,16 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await recordUserActivity(connection, {
+        action: "PASSWORD_RESET",
+        ipAddress: request.ip ?? null,
+        userAgent: request.headers["user-agent"] ?? null,
+        userId: tokenRow.userId
+      });
+
       await connection.commit();
 
-      return reply.status(204).send();
+      return reply.send({ message: "Contraseña actualizada correctamente." });
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -747,6 +754,13 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         },
         { autoCommit: true }
       );
+
+      await recordUserActivity(connection, {
+        action: "PROFILE_UPDATED",
+        ipAddress: request.ip ?? null,
+        userAgent: request.headers["user-agent"] ?? null,
+        userId: request.currentUser.userId
+      });
 
       const user = await findUserById(request.currentUser.userId, connection);
       if (!user) {

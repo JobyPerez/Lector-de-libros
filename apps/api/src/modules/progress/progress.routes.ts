@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { requireBookRole } from "../../services/book-access.js";
+import { recordListeningActivity } from "../../services/user-activity.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 
 const progressSchema = z.object({
@@ -17,6 +18,7 @@ const progressSchema = z.object({
 
 const listeningHeartbeatSchema = z.object({
   activeSeconds: z.number().int().min(1).max(60),
+  chapterTitle: z.string().trim().max(500).nullish(),
   sessionId: z.string().uuid()
 });
 
@@ -31,6 +33,17 @@ export const registerProgressRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      const bookResult = await connection.execute(
+        `
+          SELECT title AS "title"
+          FROM books
+          WHERE book_id = :bookId
+        `,
+        { bookId: params.bookId }
+      );
+      const [bookRow] = (bookResult.rows ?? []) as Array<{ title?: string }>;
+      const bookTitle = bookRow?.title ?? "Libro";
+
       await connection.execute(
         `
           MERGE INTO user_reading_sessions target
@@ -57,9 +70,19 @@ export const registerProgressRoutes: FastifyPluginAsync = async (app) => {
           bookId: params.bookId,
           sessionId: payload.sessionId,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
+
+      await recordListeningActivity(connection, {
+        activeSeconds: payload.activeSeconds,
+        bookId: params.bookId,
+        bookTitle,
+        chapterTitle: payload.chapterTitle ?? null,
+        sessionId: payload.sessionId,
+        userId: request.currentUser.userId
+      });
+
+      await connection.commit();
 
       return reply.status(204).send();
     } finally {
