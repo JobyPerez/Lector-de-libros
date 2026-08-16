@@ -399,10 +399,11 @@ function CloseIcon() {
 function SummarySectionIcon() {
   return (
     <ReaderControlIcon>
-      <path d="M7 6.5H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M7 11H17" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M7 15.5H13.5" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M16.25 14L17 15.5L18.5 16.25L17 17L16.25 18.5L15.5 17L14 16.25L15.5 15.5L16.25 14Z" fill="currentColor" />
+      <path d="M4.5 5.5H19.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
+      <path d="M8.5 9V15" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+      <path d="M12.75 15L15.5 9L18.25 15" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M13.7 13.2H17.3" stroke="currentColor" strokeLinecap="round" strokeWidth="1.6" />
+      <path d="M4.5 18.5H19.5" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
     </ReaderControlIcon>
   );
 }
