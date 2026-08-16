@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
@@ -115,6 +115,41 @@ function SearchIcon() {
       <path d="M15 15L19 19" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </svg>
   );
+}
+
+function BookSearchChoiceIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1-2.5-2.5Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="M7 7h9M7 11h9M7 15h6" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function TextSearchChoiceIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="M4 6h16M4 11h10M4 16h8" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <circle cx="17.5" cy="16.5" r="3.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+      <path d="m19.8 18.8 2.2 2.2" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function ClearIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" viewBox="0 0 24 24">
+      <path d="m18 6-12 12M6 6l12 12" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
 }
 
 function StarIcon({ filled }: { filled: boolean }) {
@@ -278,6 +313,12 @@ export function ShelfPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const urlShelfQuery = searchParams.get("q")?.trim() ?? "";
+  const [shelfSearchQuery, setShelfSearchQuery] = useState(urlShelfQuery);
+  const [isShelfSearchOpen, setIsShelfSearchOpen] = useState(Boolean(urlShelfQuery));
+  const [isSearchMenuOpen, setIsSearchMenuOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const headerActionsRef = useRef<HTMLDivElement>(null);
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
   const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [editingBook, setEditingBook] = useState<BookSummary | null>(null);
@@ -415,7 +456,75 @@ export function ShelfPage() {
     setCreateError(null);
   }
 
+  useEffect(() => {
+    setShelfSearchQuery(urlShelfQuery);
+    if (urlShelfQuery) {
+      setIsShelfSearchOpen(true);
+    }
+  }, [urlShelfQuery]);
+
+  useEffect(() => {
+    if (!isSearchMenuOpen && !isCreateMenuOpen) {
+      return;
+    }
+
+    function handleDocumentClick(event: MouseEvent) {
+      if (headerActionsRef.current && !headerActionsRef.current.contains(event.target as Node)) {
+        setIsSearchMenuOpen(false);
+        setIsCreateMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsSearchMenuOpen(false);
+        setIsCreateMenuOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isCreateMenuOpen, isSearchMenuOpen]);
+
+  function handleShelfSearchChange(value: string) {
+    setShelfSearchQuery(value);
+    setSearchParams((current) => {
+      const nextParams = new URLSearchParams(current);
+      if (value.trim()) {
+        nextParams.set("q", value);
+      } else {
+        nextParams.delete("q");
+      }
+      return nextParams;
+    }, { replace: true });
+  }
+
+  function openShelfSearch() {
+    setIsSearchMenuOpen(false);
+    setIsCreateMenuOpen(false);
+    setIsShelfSearchOpen(true);
+    window.setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 50);
+  }
+
+  function closeShelfSearch() {
+    setIsShelfSearchOpen(false);
+    setShelfSearchQuery("");
+    setSearchParams((current) => {
+      const nextParams = new URLSearchParams(current);
+      nextParams.delete("q");
+      return nextParams;
+    }, { replace: true });
+  }
+
   function openGlobalSearch() {
+    setIsSearchMenuOpen(false);
     setIsCreateMenuOpen(false);
     navigate("/search");
   }
@@ -690,16 +799,29 @@ export function ShelfPage() {
     });
   };
 
+  const normalizedShelfQuery = normalizeSearchText(shelfSearchQuery);
+
+  const matchesShelfQuery = (book: BookSummary) => {
+    if (!normalizedShelfQuery) {
+      return true;
+    }
+    const titleNorm = normalizeSearchText(book.title);
+    const authorNorm = normalizeSearchText(book.authorName ?? "");
+    return titleNorm.includes(normalizedShelfQuery) || authorNorm.includes(normalizedShelfQuery);
+  };
+
   const sectionsWithBooks = READING_STATUS_CONFIG.map((statusConfig) => {
     const matchingBooks = allBooks.filter((book) => {
       const bookStatus = book.readingStatus ?? "WANT_TO_READ";
-      return bookStatus === statusConfig.id;
+      return bookStatus === statusConfig.id && matchesShelfQuery(book);
     });
     return {
       ...statusConfig,
       books: sortBooks(matchingBooks)
     };
   }).filter((section) => section.books.length > 0);
+
+  const totalFilteredBooks = sectionsWithBooks.reduce((acc, section) => acc + section.books.length, 0);
 
   function renderBookCard(book: BookSummary) {
     const isDeletingBook = deletingBookId === book.bookId;
@@ -917,28 +1039,66 @@ export function ShelfPage() {
           <div className="shelf-header-copy">
             <h2>Estantería</h2>
           </div>
-          <div className="header-actions shelf-header-actions">
+          <div className="header-actions shelf-header-actions" ref={headerActionsRef}>
             <button
               aria-expanded={isCreateMenuOpen}
               aria-label="Abrir menú de creación"
               className="plus-button"
               onClick={() => {
                 setIsCreateMenuOpen((current) => !current);
+                setIsSearchMenuOpen(false);
               }}
               type="button"
             >
               +
             </button>
 
-            <button
-              aria-label="Abrir buscador global"
-              className="shelf-header-icon-button"
-              onClick={openGlobalSearch}
-              title="Buscar en todos tus libros"
-              type="button"
-            >
-              <SearchIcon />
-            </button>
+            <div className="shelf-header-menu-container">
+              <button
+                aria-expanded={isSearchMenuOpen}
+                aria-label="Opciones de búsqueda"
+                className={["shelf-header-icon-button", isShelfSearchOpen || Boolean(shelfSearchQuery) ? "active" : ""].filter(Boolean).join(" ")}
+                onClick={() => {
+                  setIsSearchMenuOpen((current) => !current);
+                  setIsCreateMenuOpen(false);
+                }}
+                title="Buscar libros o palabras"
+                type="button"
+              >
+                <SearchIcon />
+              </button>
+
+              {isSearchMenuOpen ? (
+                <div className="menu-panel shelf-search-choice-menu" role="menu">
+                  <button
+                    className="menu-item shelf-search-choice-item"
+                    onClick={openShelfSearch}
+                    type="button"
+                  >
+                    <span className="shelf-search-choice-icon" aria-hidden="true">
+                      <BookSearchChoiceIcon />
+                    </span>
+                    <span className="shelf-search-choice-text">
+                      <strong>Buscar en estantería</strong>
+                      <span>Por título y autor</span>
+                    </span>
+                  </button>
+                  <button
+                    className="menu-item shelf-search-choice-item"
+                    onClick={openGlobalSearch}
+                    type="button"
+                  >
+                    <span className="shelf-search-choice-icon" aria-hidden="true">
+                      <TextSearchChoiceIcon />
+                    </span>
+                    <span className="shelf-search-choice-text">
+                      <strong>Buscar palabras</strong>
+                      <span>Dentro de todos los libros</span>
+                    </span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
 
             {isCreateMenuOpen ? (
               <div className="menu-panel" role="menu">
@@ -1001,6 +1161,51 @@ export function ShelfPage() {
           </div>
         </div>
 
+        {isShelfSearchOpen || Boolean(shelfSearchQuery) ? (
+          <div className="shelf-search-bar-wrapper">
+            <div className="shelf-search-bar">
+              <span className="shelf-search-bar-icon" aria-hidden="true">
+                <SearchIcon />
+              </span>
+              <input
+                aria-label="Buscar libros por título o autor"
+                className="shelf-search-input"
+                onChange={(e) => handleShelfSearchChange(e.target.value)}
+                placeholder="Buscar por título o autor..."
+                ref={searchInputRef}
+                type="text"
+                value={shelfSearchQuery}
+              />
+              {shelfSearchQuery ? (
+                <button
+                  aria-label="Limpiar búsqueda"
+                  className="shelf-search-clear-btn"
+                  onClick={() => handleShelfSearchChange("")}
+                  title="Limpiar búsqueda"
+                  type="button"
+                >
+                  <ClearIcon />
+                </button>
+              ) : null}
+              <button
+                aria-label="Cerrar búsqueda en estantería"
+                className="shelf-search-close-btn"
+                onClick={closeShelfSearch}
+                type="button"
+              >
+                Cerrar
+              </button>
+            </div>
+            {shelfSearchQuery ? (
+              <div className="shelf-search-stats">
+                {totalFilteredBooks === 1
+                  ? "1 libro encontrado"
+                  : `${totalFilteredBooks} libros encontrados`}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {booksQuery.isLoading ? <p>Cargando libros...</p> : null}
         {booksQuery.isError ? <p className="error-text">No se pudo cargar la estantería.</p> : null}
         {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
@@ -1009,6 +1214,23 @@ export function ShelfPage() {
         {!booksQuery.isLoading && allBooks.length === 0 ? (
           <div className="shelf-empty-state">
             <p>No hay libros en tu estantería.</p>
+          </div>
+        ) : null}
+
+        {!booksQuery.isLoading && allBooks.length > 0 && normalizedShelfQuery && totalFilteredBooks === 0 ? (
+          <div className="shelf-empty-search-panel">
+            <div className="shelf-empty-search-icon" aria-hidden="true">
+              <SearchIcon />
+            </div>
+            <h3>Sin resultados</h3>
+            <p>No se encontraron libros que coincidan con <strong>"{shelfSearchQuery}"</strong> en esta sección.</p>
+            <button
+              className="secondary-button"
+              onClick={() => handleShelfSearchChange("")}
+              type="button"
+            >
+              Limpiar búsqueda
+            </button>
           </div>
         ) : null}
 
