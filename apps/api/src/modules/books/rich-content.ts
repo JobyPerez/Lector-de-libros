@@ -20,19 +20,19 @@ type RichPageBuildOptions = {
 
 export type StructuredRichBlockInput =
   | {
-      text: string;
-      type: "paragraph";
-    }
+    text: string;
+    type: "paragraph";
+  }
   | {
-      level?: number;
-      text: string;
-      type: "heading";
-    }
+    level?: number;
+    text: string;
+    type: "heading";
+  }
   | {
-      altText?: string;
-      source: string;
-      type: "image";
-    };
+    altText?: string;
+    source: string;
+    type: "image";
+  };
 
 const headingPattern = /^(#{1,6})\s+(.+)$/u;
 const imagePattern = /^!\[(.*?)\]\((.+?)\)$/u;

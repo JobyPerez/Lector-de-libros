@@ -34,6 +34,7 @@ import { playCompletionSound, prepareCompletionSound, type CompletionSound } fro
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
+import { ImageViewerModal } from "../../components/ImageViewerModal";
 import { useAiConfig } from "../../components/AiModelBadge";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
@@ -855,6 +856,7 @@ export function BookBuilderPage() {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const [reviewOcrToast, setReviewOcrToast] = useState<ReviewOcrToastState | null>(null);
+  const [selectedViewerImage, setSelectedViewerImage] = useState<{ alt?: string; src: string; title?: string } | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [isAppending, setIsAppending] = useState(false);
   const [isSavingReview, setIsSavingReview] = useState(false);
@@ -3651,6 +3653,15 @@ export function BookBuilderPage() {
                         <img
                           alt={`Página ${reviewPageNumber} para revisión OCR`}
                           className="preview-image"
+                          onClick={() => {
+                            if (!isReviewCropMode && !isRerunningOcr && !isReviewImageLoading && reviewImageUrl) {
+                              setSelectedViewerImage({
+                                alt: `Página ${reviewPageNumber}`,
+                                src: reviewImageUrl,
+                                title: `Página ${reviewPageNumber}`
+                              });
+                            }
+                          }}
                           src={reviewImageUrl}
                         />
                       </div>
@@ -3700,6 +3711,19 @@ export function BookBuilderPage() {
                         <div
                           className="reader-rich-content"
                           dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
+                          onClick={(event) => {
+                            const target = event.target as HTMLElement | null;
+                            const imgElement = target instanceof HTMLImageElement ? target : target?.closest?.("img");
+                            if (imgElement && imgElement.src) {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setSelectedViewerImage({
+                                alt: imgElement.alt || imgElement.getAttribute("title") || "",
+                                src: imgElement.src,
+                                title: imgElement.getAttribute("title") || imgElement.alt || ""
+                              });
+                            }
+                          }}
                         />
                       </article>
                     </div>
@@ -4198,6 +4222,14 @@ export function BookBuilderPage() {
       ) : null}
       </>
       ) : null}
+
+      <ImageViewerModal
+        alt={selectedViewerImage?.alt}
+        isOpen={Boolean(selectedViewerImage)}
+        onClose={() => setSelectedViewerImage(null)}
+        src={selectedViewerImage?.src ?? ""}
+        title={selectedViewerImage?.title}
+      />
     </div>
   );
 }

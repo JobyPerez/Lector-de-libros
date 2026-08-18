@@ -37,6 +37,7 @@ import {
 import { useAuthStore } from "../../app/auth-store";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
+import { ImageViewerModal } from "../../components/ImageViewerModal";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
 import { createStoredZip } from "./audio-zip";
@@ -169,53 +170,53 @@ type ActiveAudioBlock = {
 
 type NavigationListItem =
   | {
-  chapterId: string | null;
-      isActive: boolean;
-      key: string;
-      level: number;
-      pageNumber: number;
-      paragraphNumber: number;
-      title: string;
-      type: "toc";
-    }
+    chapterId: string | null;
+    isActive: boolean;
+    key: string;
+    level: number;
+    pageNumber: number;
+    paragraphNumber: number;
+    title: string;
+    type: "toc";
+  }
   | {
-      authorLabel: string | null;
-      bookmarkId: string;
-      createdAt: string;
-      isActive: boolean;
-      isOwnedByCurrentUser: boolean;
-      key: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      sharedWithUserIds: string[];
-      title: string;
-      type: "bookmark";
-      visibilitySource: "OWN" | "DIRECT" | "BOOK";
-    }
+    authorLabel: string | null;
+    bookmarkId: string;
+    createdAt: string;
+    isActive: boolean;
+    isOwnedByCurrentUser: boolean;
+    key: string;
+    pageNumber: number;
+    paragraphNumber: number;
+    sharedWithUserIds: string[];
+    title: string;
+    type: "bookmark";
+    visibilitySource: "OWN" | "DIRECT" | "BOOK";
+  }
   | {
-      color: HighlightColor;
-      excerpt: string;
-      highlightId: string;
-      isActive: boolean;
-      key: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      type: "highlight";
-    }
+    color: HighlightColor;
+    excerpt: string;
+    highlightId: string;
+    isActive: boolean;
+    key: string;
+    pageNumber: number;
+    paragraphNumber: number;
+    type: "highlight";
+  }
   | {
-      authorLabel: string | null;
-      color: HighlightColor | null;
-      excerpt: string;
-      isActive: boolean;
-      isReadOnly: boolean;
-      key: string;
-      noteId: string;
-      noteText: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      sharedWithUserIds?: string[];
-      type: "note";
-    };
+    authorLabel: string | null;
+    color: HighlightColor | null;
+    excerpt: string;
+    isActive: boolean;
+    isReadOnly: boolean;
+    key: string;
+    noteId: string;
+    noteText: string;
+    pageNumber: number;
+    paragraphNumber: number;
+    sharedWithUserIds?: string[];
+    type: "note";
+  };
 
 function excerptPreview(value: string | null | undefined, fallback: string) {
   const normalizedValue = value?.replace(/\s+/gu, " ").trim();
@@ -625,19 +626,25 @@ function findParagraphTimingForTime(paragraphTimings: TimedAudioBlockParagraph[]
 }
 
 function normalizeRichTextForComparison(value: string) {
-  return value.replace(/\u00a0/gu, " ").replace(/\s+/gu, " ").trim().toLowerCase();
+  return value
+    .replace(/^pie de imagen:\s*/iu, "")
+    .replace(/^imagen:\s*/iu, "")
+    .replace(/\u00a0/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .toLowerCase();
 }
 
 type RichParagraphTextSegment =
   | {
-      kind: "break";
-      node: HTMLBRElement;
-    }
+    kind: "break";
+    node: HTMLBRElement;
+  }
   | {
-      kind: "text";
-      node: Text;
-      text: string;
-    };
+    kind: "text";
+    node: Text;
+    text: string;
+  };
 
 function getRichParagraphTextSegments(paragraphNode: HTMLElement): RichParagraphTextSegment[] {
   if (typeof NodeFilter === "undefined") {
@@ -702,19 +709,44 @@ function getSynchronizedRichHtmlContent(htmlContent: string | null, paragraphs: 
   }
 
   const document = new DOMParser().parseFromString(htmlContent, "text/html");
-  const richParagraphs = Array.from(document.querySelectorAll<HTMLElement>("[data-paragraph-number]"))
-    .map((node) => normalizeRichTextForComparison(extractRichParagraphText(node)))
-    .filter(Boolean);
-  const plainParagraphs = paragraphs
-    .map((paragraph) => normalizeRichTextForComparison(paragraph.paragraphText))
-    .filter(Boolean);
+  const paragraphMap = new Map<number, HTMLElement>();
 
-  if (richParagraphs.length !== plainParagraphs.length) {
+  document.querySelectorAll<HTMLElement>("[data-paragraph-number]").forEach((node) => {
+    const paragraphNumber = Number.parseInt(node.dataset.paragraphNumber ?? "", 10);
+    if (!Number.isInteger(paragraphNumber)) {
+      return;
+    }
+
+    const existing = paragraphMap.get(paragraphNumber);
+    if (!existing) {
+      paragraphMap.set(paragraphNumber, node);
+    } else {
+      if (node.tagName.toLowerCase() === "figcaption" || node.querySelectorAll("[data-paragraph-number]").length === 0) {
+        paragraphMap.set(paragraphNumber, node);
+      }
+    }
+  });
+
+  const plainParagraphs = paragraphs
+    .map((paragraph) => ({
+      paragraphNumber: paragraph.paragraphNumber,
+      text: normalizeRichTextForComparison(paragraph.paragraphText)
+    }))
+    .filter((paragraph) => Boolean(paragraph.text));
+
+  if (paragraphMap.size !== plainParagraphs.length) {
     return null;
   }
 
   for (let index = 0; index < plainParagraphs.length; index += 1) {
-    if (richParagraphs[index] !== plainParagraphs[index]) {
+    const plain = plainParagraphs[index];
+    const node = paragraphMap.get(plain.paragraphNumber);
+    if (!node) {
+      return null;
+    }
+
+    const richText = normalizeRichTextForComparison(extractRichParagraphText(node));
+    if (richText !== plain.text) {
       return null;
     }
   }
@@ -1045,10 +1077,10 @@ function buildTextSegments(
     segments.push({
       highlight: matchingHighlight
         ? {
-            color: matchingHighlight.color,
-            highlightId: matchingHighlight.highlightId,
-            text: sourceText.slice(start, end)
-          }
+          color: matchingHighlight.color,
+          highlightId: matchingHighlight.highlightId,
+          text: sourceText.slice(start, end)
+        }
         : null,
       text: sourceText.slice(start, end)
     });
@@ -1314,6 +1346,8 @@ export function ReaderPage() {
   const [activeReaderNoteSharedWith, setActiveReaderNoteSharedWith] = useState<string[] | null>(null);
   const [isReaderNoteShareOpen, setIsReaderNoteShareOpen] = useState(false);
   const [isSelectionShareOpen, setIsSelectionShareOpen] = useState(false);
+  const [selectedViewerImage, setSelectedViewerImage] = useState<{ alt?: string; src: string; title?: string } | null>(null);
+  const wasAudioPlayingBeforeViewerRef = useRef(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const activeAudioRequestRef = useRef<AbortController | null>(null);
@@ -2035,17 +2069,17 @@ export function ReaderPage() {
 
   const appendPagesLink = canEditBook
     ? {
-        hash: "#append-pages",
-        pathname: "/builder",
-        search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
-      }
+      hash: "#append-pages",
+      pathname: "/builder",
+      search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
+    }
     : null;
   const reviewOcrLink = canEditBook
     ? {
-        hash: "#review-ocr",
-        pathname: "/builder",
-        search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
-      }
+      hash: "#review-ocr",
+      pathname: "/builder",
+      search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
+    }
     : null;
 
   const readingPercentage = useMemo(() => {
@@ -3570,6 +3604,24 @@ export function ReaderPage() {
     return document.body.innerHTML;
   }
 
+  function openImageViewer(image: { alt?: string; src: string; title?: string }) {
+    if (isAudioPlaying) {
+      wasAudioPlayingBeforeViewerRef.current = true;
+      handlePause();
+    } else {
+      wasAudioPlayingBeforeViewerRef.current = false;
+    }
+    setSelectedViewerImage(image);
+  }
+
+  function closeImageViewer() {
+    setSelectedViewerImage(null);
+    if (wasAudioPlayingBeforeViewerRef.current) {
+      wasAudioPlayingBeforeViewerRef.current = false;
+      void handlePlay();
+    }
+  }
+
   function renderRichContent(htmlContent: string, activeParagraphNumber: number | null, interactive: boolean) {
     const renderedHtmlContent = decorateRichHtmlContent(htmlContent, activeParagraphNumber);
 
@@ -3578,50 +3630,75 @@ export function ReaderPage() {
         <div
           className={pageQuery.data?.book.sourceType === "IMAGES" ? "reader-rich-content ocr-rich-content" : "reader-rich-content"}
           dangerouslySetInnerHTML={{ __html: renderedHtmlContent }}
-           onClick={interactive
-             ? (event) => {
-                const epubLink = findInternalEpubLinkFromNode(event.target);
-                if (epubLink) {
-                  if (
-                    epubLink.pageNumber !== null
-                    && epubLink.paragraphNumber !== null
-                    && event.button === 0
-                    && !event.altKey
-                    && !event.ctrlKey
-                    && !event.metaKey
-                    && !event.shiftKey
-                    && epubLink.anchor.target !== "_blank"
-                  ) {
-                    event.preventDefault();
-                    void goToLocation(epubLink.pageNumber, epubLink.paragraphNumber);
-                  }
-                  return;
-                }
-
-                const paragraph = findParagraphFromNode(event.target);
-                if (paragraph) {
-                  void selectParagraph(paragraph);
-                }
-              }
-            : undefined}
-          onKeyDown={interactive
-             ? (event) => {
-                if (findInternalEpubLinkFromNode(event.target)) {
-                  return;
-                }
-
-                if (event.key !== "Enter" && event.key !== " ") {
-                  return;
-                }
-
-                const paragraph = findParagraphFromNode(event.target);
-                if (!paragraph) {
-                  return;
-                }
-
+          onClick={interactive
+            ? (event) => {
+              const target = event.target as HTMLElement | null;
+              const imgElement = target instanceof HTMLImageElement ? target : target?.closest?.("img");
+              if (imgElement && imgElement.src) {
                 event.preventDefault();
+                event.stopPropagation();
+                openImageViewer({
+                  alt: imgElement.alt || imgElement.getAttribute("title") || "",
+                  src: imgElement.src,
+                  title: imgElement.getAttribute("title") || imgElement.alt || ""
+                });
+                return;
+              }
+
+              const epubLink = findInternalEpubLinkFromNode(event.target);
+              if (epubLink) {
+                if (
+                  epubLink.pageNumber !== null
+                  && epubLink.paragraphNumber !== null
+                  && event.button === 0
+                  && !event.altKey
+                  && !event.ctrlKey
+                  && !event.metaKey
+                  && !event.shiftKey
+                  && epubLink.anchor.target !== "_blank"
+                ) {
+                  event.preventDefault();
+                  void goToLocation(epubLink.pageNumber, epubLink.paragraphNumber);
+                }
+                return;
+              }
+
+              const paragraph = findParagraphFromNode(event.target);
+              if (paragraph) {
                 void selectParagraph(paragraph);
               }
+            }
+            : undefined}
+          onKeyDown={interactive
+            ? (event) => {
+              const target = event.target as HTMLElement | null;
+              const imgElement = target instanceof HTMLImageElement ? target : target?.querySelector?.("img");
+              if ((event.key === "Enter" || event.key === " ") && imgElement && imgElement.src) {
+                event.preventDefault();
+                openImageViewer({
+                  alt: imgElement.alt || imgElement.getAttribute("title") || "",
+                  src: imgElement.src,
+                  title: imgElement.getAttribute("title") || imgElement.alt || ""
+                });
+                return;
+              }
+
+              if (findInternalEpubLinkFromNode(event.target)) {
+                return;
+              }
+
+              if (event.key !== "Enter" && event.key !== " ") {
+                return;
+              }
+
+              const paragraph = findParagraphFromNode(event.target);
+              if (!paragraph) {
+                return;
+              }
+
+              event.preventDefault();
+              void selectParagraph(paragraph);
+            }
             : undefined}
           ref={interactive ? richContentRef : undefined}
         />
@@ -3656,22 +3733,22 @@ export function ReaderPage() {
               key={paragraph.paragraphId}
               ref={interactive
                 ? (element) => {
-                    if (element) {
-                      paragraphRefs.current.set(paragraph.paragraphNumber, element);
-                      return;
-                    }
-
-                    paragraphRefs.current.delete(paragraph.paragraphNumber);
+                  if (element) {
+                    paragraphRefs.current.set(paragraph.paragraphNumber, element);
+                    return;
                   }
+
+                  paragraphRefs.current.delete(paragraph.paragraphNumber);
+                }
                 : undefined}
               onClick={interactive ? () => void selectParagraph(paragraph) : undefined}
               onKeyDown={interactive
                 ? (event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      void selectParagraph(paragraph);
-                    }
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    void selectParagraph(paragraph);
                   }
+                }
                 : undefined}
               role={interactive ? "button" : undefined}
               tabIndex={interactive ? 0 : undefined}
@@ -4707,9 +4784,9 @@ export function ReaderPage() {
 
       setActiveReaderNote((current) => current?.noteId === noteId
         ? {
-            ...current,
-            color: highlightColor ?? current.color
-          }
+          ...current,
+          color: highlightColor ?? current.color
+        }
         : current);
 
       if (source === "navigation") {
@@ -5213,9 +5290,9 @@ export function ReaderPage() {
                     onClick={() => {
                       setActiveReaderNote((current) => current
                         ? {
-                            ...current,
-                            color: option.color
-                          }
+                          ...current,
+                          color: option.color
+                        }
                         : current);
                     }}
                     role="radio"
@@ -5546,6 +5623,14 @@ export function ReaderPage() {
           <PageNextIcon />
         </button>
       </div>
+
+      <ImageViewerModal
+        alt={selectedViewerImage?.alt}
+        isOpen={Boolean(selectedViewerImage)}
+        onClose={closeImageViewer}
+        src={selectedViewerImage?.src ?? ""}
+        title={selectedViewerImage?.title}
+      />
     </div>
   );
 }
