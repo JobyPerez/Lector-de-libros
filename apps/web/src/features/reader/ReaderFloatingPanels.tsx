@@ -753,51 +753,59 @@ export function ReaderNavigationPopover({
 
 export function ReaderNavigationTocCard({ buttonRef, isActive, isExpanded, level, nestedCount, onSelect, onToggle, pageNumber, summaryHref, summaryLabel, onSummaryClick, title }: NavigationTocCardProps) {
   const articleClassName = [
-    "reader-note-card reader-navigation-item-toc-card",
+    "reader-navigation-item-toc-card",
     isActive ? "active" : "",
-    onToggle ? "with-toggle" : ""
+    onToggle ? "with-toggle" : "",
+    summaryHref ? "with-summary" : ""
   ].filter(Boolean).join(" ");
 
   return (
     <article className={articleClassName}>
       <button
         className={isActive ? "reader-navigation-item active" : "reader-navigation-item"}
+        data-level={level}
         onClick={onSelect}
         ref={buttonRef}
         style={{ "--toc-level": String(Math.max(0, level - 1)) } as CSSProperties}
         type="button"
       >
         <div className="reader-navigation-item-topline">
-          <strong>{title}</strong>
-          <span className="reader-navigation-inline-meta">Pág. {pageNumber}</span>
+          <strong className="reader-navigation-title">
+            {title}
+            <span className="reader-navigation-page-badge">Pág. {pageNumber}</span>
+          </strong>
         </div>
       </button>
 
-      {summaryHref ? (
-        <Link
-          aria-label={summaryLabel ?? `Abrir resumen de ${title}`}
-          className="reader-note-icon-button reader-navigation-summary-link"
-          onClick={onSummaryClick}
-          title="Peticiones IA de la sección"
-          to={summaryHref}
-        >
-          <SummarySectionIcon />
-        </Link>
-      ) : null}
+      {summaryHref || onToggle ? (
+        <div className="reader-navigation-toc-actions">
+          {summaryHref ? (
+            <Link
+              aria-label={summaryLabel ?? `Abrir resumen de ${title}`}
+              className="reader-note-icon-button reader-navigation-summary-link"
+              onClick={onSummaryClick}
+              title="Peticiones IA de la sección"
+              to={summaryHref}
+            >
+              <SummarySectionIcon />
+            </Link>
+          ) : null}
 
-      {onToggle ? (
-        <button
-          aria-expanded={isExpanded}
-          aria-label={isExpanded ? `Ocultar notas de ${title}` : `Mostrar notas de ${title}`}
-          className="reader-note-icon-button reader-navigation-toggle"
-          data-expanded={isExpanded ? "" : undefined}
-          onClick={onToggle}
-          title={isExpanded ? "Ocultar notas del capítulo" : "Mostrar notas del capítulo"}
-          type="button"
-        >
-          <ChevronIcon />
-          {typeof nestedCount === "number" ? <span className="reader-navigation-toggle-count">{nestedCount}</span> : null}
-        </button>
+          {onToggle ? (
+            <button
+              aria-expanded={isExpanded}
+              aria-label={isExpanded ? `Ocultar notas de ${title}` : `Mostrar notas de ${title}`}
+              className="reader-note-icon-button reader-navigation-toggle"
+              data-expanded={isExpanded ? "" : undefined}
+              onClick={onToggle}
+              title={isExpanded ? "Ocultar notas del capítulo" : "Mostrar notas del capítulo"}
+              type="button"
+            >
+              <ChevronIcon />
+              {typeof nestedCount === "number" ? <span className="reader-navigation-toggle-count">{nestedCount}</span> : null}
+            </button>
+          ) : null}
+        </div>
       ) : null}
     </article>
   );
@@ -906,13 +914,22 @@ export function ReaderNavigationPanelContent({
         >
           <div className="reader-navigation-item-topline">
             <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${toneClass}`}><BookmarkIcon /></span>
-            <strong>{item.title}</strong>
-            <span className="reader-navigation-inline-meta" title={exactCreatedAt ? `Guardado el ${exactCreatedAt}` : undefined}>
-              Pág. {item.pageNumber}{relativeCreatedAt ? ` · ${relativeCreatedAt}` : ""}
-            </span>
+            <strong className="reader-navigation-title">
+              {item.title}
+              <span className="reader-navigation-page-badge">Pág. {item.pageNumber}</span>
+            </strong>
           </div>
-          {!item.isOwnedByCurrentUser && item.authorLabel ? (
-            <span className="reader-navigation-inline-meta">Compartido por {item.authorLabel} · Solo lectura</span>
+          {relativeCreatedAt || (!item.isOwnedByCurrentUser && item.authorLabel) ? (
+            <div className="reader-navigation-item-subline">
+              {relativeCreatedAt ? (
+                <span className="reader-navigation-inline-meta" title={exactCreatedAt ? `Guardado el ${exactCreatedAt}` : undefined}>
+                  {relativeCreatedAt}
+                </span>
+              ) : null}
+              {!item.isOwnedByCurrentUser && item.authorLabel ? (
+                <span className="reader-navigation-inline-meta">· Compartido por {item.authorLabel} · Solo lectura</span>
+              ) : null}
+            </div>
           ) : null}
         </button>
         <div className="reader-note-actions">

@@ -3896,28 +3896,38 @@ export function BookBuilderPage() {
                             >
                               <div className="reader-navigation-item-topline">
                                 <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${bookmarkToneClassName(item.bookmarkId)}`}>■</span>
-                                <strong>{item.title}</strong>
-                                <span
-                                  className="reader-navigation-inline-meta"
-                                  title={formatExactDate(item.createdAt) ? `Guardado el ${formatExactDate(item.createdAt)}` : undefined}
-                                >
-                                  {formatPageAnchor(item.pageNumber)}{formatRelativeDate(item.createdAt) ? ` · ${formatRelativeDate(item.createdAt)}` : ""}
-                                </span>
+                                <strong className="reader-navigation-title">
+                                  {item.title}
+                                  <span className="reader-navigation-page-badge">{formatPageAnchor(item.pageNumber)}</span>
+                                </strong>
                               </div>
+                              {item.createdAt ? (
+                                <div className="reader-navigation-item-subline">
+                                  <span
+                                    className="reader-navigation-inline-meta"
+                                    title={formatExactDate(item.createdAt) ? `Guardado el ${formatExactDate(item.createdAt)}` : undefined}
+                                  >
+                                    {formatRelativeDate(item.createdAt)}
+                                  </span>
+                                </div>
+                              ) : null}
                             </button>
                           </article>
                         ) : (
-                          <article className={item.isActive ? "reader-note-card reader-navigation-item-toc-card active" : "reader-note-card reader-navigation-item-toc-card"} key={item.key}>
+                          <article className={item.isActive ? "reader-navigation-item-toc-card active" : "reader-navigation-item-toc-card"} key={item.key}>
                             <button
                               className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
+                              data-level={item.level}
                               onClick={() => jumpToReviewPage(item.pageNumber)}
                               ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
                               style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as React.CSSProperties}
                               type="button"
                             >
                               <div className="reader-navigation-item-topline">
-                                <strong>{item.title}</strong>
-                                <span className="reader-navigation-inline-meta">{formatPageAnchor(item.pageNumber)}</span>
+                                <strong className="reader-navigation-title">
+                                  {item.title}
+                                  <span className="reader-navigation-page-badge">{formatPageAnchor(item.pageNumber)}</span>
+                                </strong>
                               </div>
                             </button>
                           </article>
