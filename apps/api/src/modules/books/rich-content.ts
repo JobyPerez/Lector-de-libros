@@ -221,13 +221,15 @@ function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptio
       return null;
     }
 
+    const hasText = altText.length > 0;
+
     return {
       alignment,
       editableText: prependAlignment(`![${altText}](${sourceToken})`, alignment),
       html: `<figure class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
-      includeInParagraphs: false,
+      includeInParagraphs: hasText,
       level: null,
-      text: ""
+      text: altText
     };
   }
 

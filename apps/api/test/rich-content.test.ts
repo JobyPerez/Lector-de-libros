@@ -14,7 +14,7 @@ test("conserva una imagen SVG de portada al editar la pagina", () => {
   assert.match(rebuiltPage.htmlContent ?? "", new RegExp(`src="${source}"`, "u"));
   assert.match(rebuiltPage.htmlContent ?? "", /data-text-align="center"/u);
   assert.equal(rebuiltPage.editedText, "::center:: ![Portada](embedded-image-1)");
-  assert.deepEqual(rebuiltPage.paragraphs, []);
+  assert.deepEqual(rebuiltPage.paragraphs, ["Portada"]);
 });
 
 test("conserva enlaces internos del lector al editar texto", () => {

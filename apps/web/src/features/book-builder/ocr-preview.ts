@@ -309,7 +309,7 @@ function buildBlockFromParagraph(paragraph: string, embeddedImages: Map<string, 
 
     return {
       html: `<figure class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
-      isText: false
+      isText: Boolean(altText)
     };
   }
 
