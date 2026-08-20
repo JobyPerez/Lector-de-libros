@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
-import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
+import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, inspectBookImport, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
+import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
 import { ShareBookModal } from "../sharing/ShareBookModal";
@@ -11,6 +12,7 @@ export type ShelfSortMode = "lastOpened" | "rating";
 
 type BookEditFormState = {
   authorName: string;
+  languageCode: BookLanguageCode;
   notionBookUrl: string;
   rating: number | null;
   readingStatus: ReadingStatus;
@@ -23,6 +25,7 @@ type ShelfViewTransitionDirection = "back" | "forward";
 
 const emptyBookEditForm: BookEditFormState = {
   authorName: "",
+  languageCode: "es",
   notionBookUrl: "",
   rating: null,
   readingStatus: "WANT_TO_READ",
@@ -323,10 +326,13 @@ export function ShelfPage() {
   const [isImportPanelVisible, setIsImportPanelVisible] = useState(false);
   const [editingBook, setEditingBook] = useState<BookSummary | null>(null);
   const [bookForm, setBookForm] = useState<BookEditFormState>(emptyBookEditForm);
-  const [importForm, setImportForm] = useState<{ authorName: string; title: string }>({
+  const [importForm, setImportForm] = useState<{ authorName: string; languageCode: BookLanguageCode; title: string }>({
     authorName: "",
+    languageCode: "es",
     title: ""
   });
+  const [languageSuggestion, setLanguageSuggestion] = useState<"detected" | "metadata" | null>(null);
+  const [inspectingLanguage, setInspectingLanguage] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
@@ -416,6 +422,7 @@ export function ShelfPage() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
+      formData.append("languageCode", importForm.languageCode);
 
       if (importForm.title) {
         formData.append("title", importForm.title);
@@ -427,7 +434,8 @@ export function ShelfPage() {
 
       await importBook(accessToken, formData);
 
-      setImportForm({ authorName: "", title: "" });
+      setImportForm({ authorName: "", languageCode: "es", title: "" });
+      setLanguageSuggestion(null);
       setSelectedFile(null);
       setViewTransitionDirection("back");
       setIsImportPanelVisible(false);
@@ -436,6 +444,25 @@ export function ShelfPage() {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleImportFileChange(file: File | null) {
+    setSelectedFile(file);
+    setLanguageSuggestion(null);
+    if (!file || !accessToken) return;
+
+    setInspectingLanguage(true);
+    try {
+      const suggestion = await inspectBookImport(accessToken, file);
+      if (suggestion.languageCode) {
+        setImportForm((current) => ({ ...current, languageCode: suggestion.languageCode ?? current.languageCode }));
+        setLanguageSuggestion(suggestion.source);
+      }
+    } catch {
+      // Language inspection is advisory; importing remains available with manual selection.
+    } finally {
+      setInspectingLanguage(false);
     }
   }
 
@@ -534,6 +561,7 @@ export function ShelfPage() {
     setEditingBook(book);
     setBookForm({
       authorName: book.authorName ?? "",
+      languageCode: book.languageCode,
       notionBookUrl: book.notionBookUrl ?? "",
       rating: book.rating ?? null,
       readingStatus: book.readingStatus ?? "WANT_TO_READ",
@@ -554,6 +582,7 @@ export function ShelfPage() {
     const originalTitle = editingBook.title.trim();
     const originalAuthor = (editingBook.authorName ?? "").trim();
     const originalNotion = (editingBook.notionBookUrl ?? "").trim();
+    const originalLanguageCode = editingBook.languageCode;
     const originalStatus = editingBook.readingStatus ?? "WANT_TO_READ";
     const originalRating = editingBook.rating ?? null;
     const originalComments = (editingBook.userComments ?? "").trim();
@@ -561,6 +590,7 @@ export function ShelfPage() {
     return (
       bookForm.title.trim() !== originalTitle ||
       bookForm.authorName.trim() !== originalAuthor ||
+      bookForm.languageCode !== originalLanguageCode ||
       bookForm.notionBookUrl.trim() !== originalNotion ||
       bookForm.readingStatus !== originalStatus ||
       bookForm.rating !== originalRating ||
@@ -679,6 +709,7 @@ export function ShelfPage() {
       await updateBook(accessToken, editingBook.bookId, {
         title: bookForm.title.trim(),
         ...(bookForm.authorName.trim() ? { authorName: bookForm.authorName.trim() } : {}),
+        languageCode: bookForm.languageCode,
         notionBookUrl: bookForm.notionBookUrl.trim() || null,
         rating: bookForm.rating,
         readingStatus: bookForm.readingStatus,
@@ -896,6 +927,10 @@ export function ShelfPage() {
             ) : null}
 
             <dl className="shelf-book-stats">
+              <div>
+                <dt>Idioma</dt>
+                <dd>{getBookLanguageLabel(book.languageCode)}</dd>
+              </div>
               <div>
                 <dt>Páginas</dt>
                 <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
@@ -1288,6 +1323,17 @@ export function ShelfPage() {
               />
             </label>
             <label>
+              Idioma
+              <select
+                disabled={!canEditBookMetadata}
+                onChange={(event) => setBookForm((current) => ({ ...current, languageCode: event.target.value as BookLanguageCode }))}
+                value={bookForm.languageCode}
+              >
+                {BOOK_LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+              <span className="helper-text">Cambiarlo elimina el audio generado anteriormente; el OCR existente no se reprocesa.</span>
+            </label>
+            <label>
               URL en Notion personal
               <input
                 onChange={(event) => setBookForm((current) => ({ ...current, notionBookUrl: event.target.value }))}
@@ -1403,13 +1449,33 @@ export function ShelfPage() {
               />
             </label>
             <label>
+              Idioma
+              <select
+                onChange={(event) => {
+                  setImportForm((current) => ({ ...current, languageCode: event.target.value as BookLanguageCode }));
+                  setLanguageSuggestion(null);
+                }}
+                value={importForm.languageCode}
+              >
+                {BOOK_LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label>
               Archivo
               <input
                 accept=".pdf,.epub,application/pdf,application/epub+zip"
-                onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                onChange={(event) => void handleImportFileChange(event.target.files?.[0] ?? null)}
                 type="file"
               />
-              <span className="helper-text">Formatos admitidos: PDF y EPUB.</span>
+              <span className="helper-text">
+                {inspectingLanguage
+                  ? "Analizando el idioma..."
+                  : languageSuggestion === "metadata"
+                    ? "Idioma sugerido desde los metadatos del EPUB. Puedes cambiarlo."
+                    : languageSuggestion === "detected"
+                      ? "Idioma sugerido a partir del texto. Puedes cambiarlo."
+                      : "Formatos admitidos: PDF y EPUB."}
+              </span>
             </label>
 
             {createError ? <p className="error-text">{createError}</p> : null}

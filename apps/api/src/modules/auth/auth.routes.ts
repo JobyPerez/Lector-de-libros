@@ -6,7 +6,7 @@ import jwt, { type JwtPayload } from "jsonwebtoken";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
-import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
+import { appEnv, ITALIAN_DEEPGRAM_TTS_MODELS, SPANISH_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
 import { sendPasswordResetEmail } from "../../services/mailer.js";
 import { recordUserActivity } from "../../services/user-activity.js";
 import { encryptOptionalSecret, getUserAiCredentialSummary } from "../../services/user-ai-credentials.js";
@@ -69,14 +69,15 @@ const resetPasswordSchema = z.object({
 const themeModeSchema = z.enum(["light", "dark", "system"]);
 const themePaletteSchema = z.enum(["default", "ocean", "amethyst", "coffee", "graphite"]);
 
-const updateProfileSchema = z.object({
+export const updateProfileSchema = z.object({
   awsAccessKeyId: z.string().trim().min(1).max(500).optional(),
   awsRegion: z.string().trim().min(1).max(100).optional(),
   awsSecretAccessKey: z.string().trim().min(1).max(500).optional(),
   clearAwsCredentials: z.boolean().optional(),
   clearDeepgramApiKey: z.boolean().optional(),
   deepgramApiKey: z.string().trim().min(1).max(1000).optional(),
-  deepgramTtsModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional(),
+  deepgramTtsModel: z.enum(SPANISH_DEEPGRAM_TTS_MODELS).optional(),
+  deepgramTtsModelIt: z.enum(ITALIAN_DEEPGRAM_TTS_MODELS).optional(),
   displayName: z.string().trim().max(120).optional(),
   email: z.string().email(),
   themeMode: themeModeSchema.optional(),
@@ -716,6 +717,7 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
               theme_mode = COALESCE(:themeMode, theme_mode),
               theme_palette = COALESCE(:themePalette, theme_palette),
               deepgram_tts_model = COALESCE(:deepgramTtsModel, deepgram_tts_model),
+              deepgram_tts_model_it = COALESCE(:deepgramTtsModelIt, deepgram_tts_model_it),
               deepgram_api_key_encrypted = CASE
                 WHEN :clearDeepgramApiKey = 1 THEN NULL
                 WHEN :deepgramApiKeyEncrypted IS NOT NULL THEN :deepgramApiKeyEncrypted
@@ -746,6 +748,7 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
           clearDeepgramApiKey: payload.clearDeepgramApiKey ? 1 : 0,
           deepgramApiKeyEncrypted: deepgramApiKeyEncrypted ?? null,
           deepgramTtsModel: payload.deepgramTtsModel ?? null,
+          deepgramTtsModelIt: payload.deepgramTtsModelIt ?? null,
           displayName: payload.displayName?.trim() || null,
           email: payload.email.toLowerCase(),
           themeMode: payload.themeMode ?? null,

@@ -8,6 +8,7 @@ export type UserRole = "ADMIN" | "EDITOR";
 export type UserAiCredentialSummary = {
   awsRegion: string | null;
   deepgramTtsModel: string;
+  deepgramTtsModelIt?: string;
   hasAwsAccessKeyId: boolean;
   hasAwsCredentials: boolean;
   hasAwsSecretAccessKey: boolean;

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type ImageViewerModalProps = {
-  alt?: string;
+  alt?: string | undefined;
   isOpen: boolean;
   onClose: () => void;
   src: string;
-  title?: string;
+  title?: string | undefined;
 };
 
 const MIN_ZOOM = 0.5;

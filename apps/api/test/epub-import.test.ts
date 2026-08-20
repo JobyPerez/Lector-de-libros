@@ -7,7 +7,7 @@ import { load } from "cheerio";
 import { parseEpubBuffer } from "../src/modules/books/epub-import.js";
 import { parseUploadedBook } from "../src/modules/books/book-import.js";
 
-function createEpub(chapterMarkup: string, navigationMarkup?: string): Buffer {
+function createEpub(chapterMarkup: string, navigationMarkup?: string, language?: string): Buffer {
   const archive = new AdmZip();
   archive.addFile("META-INF/container.xml", Buffer.from(`<?xml version="1.0"?>
     <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
@@ -15,7 +15,7 @@ function createEpub(chapterMarkup: string, navigationMarkup?: string): Buffer {
     </container>`));
   archive.addFile("OEBPS/content.opf", Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
     <package xmlns="http://www.idpf.org/2007/opf" version="3.0">
-      <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Prueba</dc:title></metadata>
+      <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Prueba</dc:title>${language ? `<dc:language>${language}</dc:language>` : ""}</metadata>
       <manifest>
         <item id="chapter" href="chapter.xhtml" media-type="application/xhtml+xml" />
         ${navigationMarkup ? '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav" />' : ""}
@@ -64,6 +64,14 @@ test("divide los contenedores estructurales grandes en paginas comodas", async (
   assert.ok(imported.pages.every((page) => page.rawText.length <= 4200));
   assert.ok(imported.pages.every((page) => page.paragraphs.length <= 14));
   assert.ok((imported.outlineEntries?.[0]?.pageNumber ?? 0) > 1);
+});
+
+test("normaliza dc:language y lo conserva como sugerencia de importacion", async () => {
+  const italian = await parseUploadedBook("EPUB", createEpub("<p>Testo</p>", undefined, "it-IT"));
+  const unsupported = await parseEpubBuffer(createEpub("<p>Text</p>", undefined, "en"));
+
+  assert.equal(italian.metadataLanguageCode, "it");
+  assert.equal(unsupported.metadataLanguageCode, undefined);
 });
 
 test("normaliza títulos EPUB con el TOC antes de paginar", async () => {

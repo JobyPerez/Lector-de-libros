@@ -5,6 +5,7 @@ import { decryptSecret, encryptSecret } from "./secret-crypto.js";
 export type UserAiCredentialSummary = {
   awsRegion: string | null;
   deepgramTtsModel: string;
+  deepgramTtsModelIt: string;
   hasAwsAccessKeyId: boolean;
   hasAwsCredentials: boolean;
   hasAwsSecretAccessKey: boolean;
@@ -23,6 +24,7 @@ type UserAiCredentialRow = {
   awsSecretAccessKeyEncrypted: string | null;
   deepgramApiKeyEncrypted: string | null;
   deepgramTtsModel: string | null;
+  deepgramTtsModelIt: string | null;
 };
 
 type DecryptedUserAiCredentials = {
@@ -31,6 +33,7 @@ type DecryptedUserAiCredentials = {
   awsSecretAccessKey: string | null;
   deepgramApiKey: string | null;
   deepgramTtsModel: string;
+  deepgramTtsModelIt: string;
 };
 
 function decryptOptionalSecret(value: string | null): string | null {
@@ -44,6 +47,7 @@ function summarizeUserAiCredentials(credentials: DecryptedUserAiCredentials): Us
   return {
     awsRegion: credentials.awsRegion,
     deepgramTtsModel: credentials.deepgramTtsModel,
+    deepgramTtsModelIt: credentials.deepgramTtsModelIt,
     hasAwsAccessKeyId,
     hasAwsCredentials: Boolean(credentials.awsRegion) && hasAwsAccessKeyId && hasAwsSecretAccessKey,
     hasAwsSecretAccessKey,
@@ -63,6 +67,7 @@ export async function getUserAiCredentials(
         SELECT
           deepgram_api_key_encrypted AS "deepgramApiKeyEncrypted",
           deepgram_tts_model AS "deepgramTtsModel",
+          deepgram_tts_model_it AS "deepgramTtsModelIt",
           aws_region AS "awsRegion",
           aws_access_key_id_encrypted AS "awsAccessKeyIdEncrypted",
           aws_secret_access_key_encrypted AS "awsSecretAccessKeyEncrypted"
@@ -82,7 +87,8 @@ export async function getUserAiCredentials(
       awsRegion: row.awsRegion,
       awsSecretAccessKey: decryptOptionalSecret(row.awsSecretAccessKeyEncrypted),
       deepgramApiKey: decryptOptionalSecret(row.deepgramApiKeyEncrypted),
-      deepgramTtsModel: row.deepgramTtsModel ?? appEnv.deepgramTtsModel
+      deepgramTtsModel: row.deepgramTtsModel ?? appEnv.deepgramTtsModel,
+      deepgramTtsModelIt: row.deepgramTtsModelIt ?? appEnv.deepgramTtsModelIt
     };
 
     return {

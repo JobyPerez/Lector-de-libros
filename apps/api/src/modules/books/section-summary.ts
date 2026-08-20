@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
+import type { BookLanguageCode } from "./book-import.js";
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -53,11 +54,28 @@ const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 const PROVIDER_REQUEST_ATTEMPTS = 3;
 
-export const DEFAULT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume una sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-export const DEFAULT_SECTION_AI_REQUEST_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-export const DEFAULT_BOOK_AI_REQUEST_PROMPT = "Eres editor literario. Resume el libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales y los personajes principales.";
+export function getDefaultSectionSummaryPrompt(languageCode: BookLanguageCode): string {
+  return languageCode === "it"
+    ? "Sei un editor letterario. Riassumi una sezione di un libro in italiano in modo chiaro, fedele e conciso. Non inventare informazioni, non aggiungere opinioni e conserva i fatti o le idee principali."
+    : "Eres editor literario. Resume una sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
+}
 
-const DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT = "Eres editor literario. Recibirás varios resúmenes parciales de una misma sección. Devuelve un único resumen fiel, claro y breve. No inventes detalles y no repitas ideas.";
+export function getDefaultSectionAiRequestPrompt(languageCode: BookLanguageCode): string {
+  return languageCode === "it"
+    ? "Sei un editor letterario. Riassumi questa sezione di un libro in italiano in modo chiaro, fedele e conciso. Non inventare informazioni, non aggiungere opinioni e conserva i fatti o le idee principali."
+    : "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
+}
+
+export function getDefaultBookAiRequestPrompt(languageCode: BookLanguageCode): string {
+  return languageCode === "it"
+    ? "Sei un editor letterario. Riassumi il libro in italiano in modo chiaro, fedele e conciso. Non inventare informazioni, non aggiungere opinioni e conserva i fatti, le idee e i personaggi principali."
+    : "Eres editor literario. Resume el libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales y los personajes principales.";
+}
+
+const DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPTS: Record<BookLanguageCode, string> = {
+  es: "Eres editor literario. Recibirás varios resúmenes parciales de una misma sección. Devuelve un único resumen fiel, claro y breve. No inventes detalles y no repitas ideas.",
+  it: "Sei un editor letterario. Riceverai vari riassunti parziali della stessa sezione. Restituisci un unico riassunto fedele, chiaro e breve. Non inventare dettagli e non ripetere idee."
+};
 
 const SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS = "Regla técnica obligatoria: responde únicamente con JSON válido con la forma exacta {\"summary\":\"texto del resumen\"}. El valor de summary debe ser una cadena de texto preparada para mostrarse en el cuadro de resumen, no un objeto, no una lista y no una estructura anidada.";
 const VISUAL_TYPE_LABELS: Record<AiVisualType, string> = {
@@ -290,15 +308,21 @@ function wait(ms: number) {
   });
 }
 
-async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; model: SummaryAiModelId; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
+async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; languageCode: BookLanguageCode; model: SummaryAiModelId; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
   ensureSummaryConfiguration();
 
   const promptOverride = prompt.promptOverride?.trim();
   const editablePrompt = promptOverride || (prompt.condensed
-    ? DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPT
-    : DEFAULT_SECTION_SUMMARY_PROMPT);
+    ? DEFAULT_SECTION_SUMMARY_CONDENSED_PROMPTS[prompt.languageCode]
+    : getDefaultSectionSummaryPrompt(prompt.languageCode));
   const kind = prompt.kind ?? "TEXT";
-  const systemPrompt = `${editablePrompt}\n\n${kind === "DIAGRAM" ? createDiagramResponseFormatInstructions(prompt.visualType ?? "AUTO") : SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
+  const languageInstruction = prompt.languageCode === "it"
+    ? "Rispondi esclusivamente in italiano."
+    : "Responde exclusivamente en español.";
+  const systemPrompt = `${editablePrompt}\n\n${languageInstruction}\n\n${kind === "DIAGRAM" ? createDiagramResponseFormatInstructions(prompt.visualType ?? "AUTO") : SUMMARY_RESPONSE_FORMAT_INSTRUCTIONS}`;
+  const scopeLabel = prompt.languageCode === "it"
+    ? (prompt.scopeLabel === "Libro" ? "Libro" : "Sezione")
+    : (prompt.scopeLabel ?? "Sección");
 
   const model = prompt.model;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
@@ -312,8 +336,8 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
       {
         role: "user",
         content: prompt.condensed
-          ? `${prompt.scopeLabel ?? "Sección"}: ${prompt.sectionTitle}\n\nCombina estas respuestas parciales en una única respuesta final:\n\n${prompt.text}`
-          : `${prompt.scopeLabel ?? "Sección"}: ${prompt.sectionTitle}\n\nTexto de referencia:\n\n${prompt.text}`
+          ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
+          : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`
       }
     ],
     model,
@@ -436,8 +460,9 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
   }
 }
 
-export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { model?: SummaryAiModelId | undefined; promptOverride?: string | undefined } = {}): Promise<string> {
+export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { languageCode?: BookLanguageCode | undefined; model?: SummaryAiModelId | undefined; promptOverride?: string | undefined } = {}): Promise<string> {
   return generateAiRequestResponse({
+    languageCode: options.languageCode,
     model: options.model,
     paragraphs,
     promptOverride: options.promptOverride,
@@ -448,6 +473,7 @@ export async function generateSectionSummary(sectionTitle: string, paragraphs: s
 
 export async function generateAiRequestResponse(options: {
   kind?: AiRequestKind | undefined;
+  languageCode?: BookLanguageCode | undefined;
   model?: SummaryAiModelId | undefined;
   onProviderRetry?: (progress: ProviderRetryProgress) => void;
   paragraphs: string[];
@@ -458,6 +484,7 @@ export async function generateAiRequestResponse(options: {
 }): Promise<string> {
   const { paragraphs, promptOverride, scopeLabel, title } = options;
   const kind = options.kind ?? "TEXT";
+  const languageCode = options.languageCode ?? "es";
   const visualType = options.visualType ?? "AUTO";
   const model = options.model ?? appEnv.opencodeModel;
   const modelConfiguration = getAiModel(model);
@@ -470,7 +497,7 @@ export async function generateAiRequestResponse(options: {
 
   const chunks = chunkParagraphs(normalizedParagraphs, modelConfiguration.summaryChunkTargetCharacters);
   if (chunks.length === 1) {
-    return requestSummaryChunk({ kind, model, onProviderRetry: options.onProviderRetry, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
+    return requestSummaryChunk({ kind, languageCode, model, onProviderRetry: options.onProviderRetry, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
   }
 
   const partialSummaries: string[] = [];
@@ -478,10 +505,11 @@ export async function generateAiRequestResponse(options: {
     partialSummaries.push(await requestSummaryChunk({
       model,
       kind,
+      languageCode,
       promptOverride,
       onProviderRetry: options.onProviderRetry,
       scopeLabel,
-      sectionTitle: `${title} · fragmento ${index + 1}`,
+      sectionTitle: `${title} · ${languageCode === "it" ? "frammento" : "fragmento"} ${index + 1}`,
       text: chunk,
       visualType
     }));
@@ -490,12 +518,13 @@ export async function generateAiRequestResponse(options: {
   return requestSummaryChunk({
     condensed: true,
     kind,
+    languageCode,
     model,
     onProviderRetry: options.onProviderRetry,
     promptOverride,
     scopeLabel,
     sectionTitle: title,
-    text: partialSummaries.map((summary, index) => `Fragmento ${index + 1}: ${summary}`).join("\n\n"),
+    text: partialSummaries.map((summary, index) => `${languageCode === "it" ? "Frammento" : "Fragmento"} ${index + 1}: ${summary}`).join("\n\n"),
     visualType
   });
 }

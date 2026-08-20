@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import { load } from "cheerio";
 
-import type { ImportedBinaryAsset, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
+import type { BookLanguageCode, ImportedBinaryAsset, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 
 type ManifestItem = {
   href: string;
@@ -153,6 +153,11 @@ function resolveZipPath(baseDirectory: string, relativePath: string): string {
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export function normalizeEpubLanguageCode(value: string | null | undefined): BookLanguageCode | undefined {
+  const primaryLanguage = value?.trim().toLowerCase().split(/[-_]/u)[0];
+  return primaryLanguage === "es" || primaryLanguage === "it" ? primaryLanguage : undefined;
 }
 
 function normalizeHeadingComparison(value: string): string {
@@ -1497,6 +1502,7 @@ export function extractEpubCover(fileBuffer: Buffer): ImportedBinaryAsset | null
 export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
   const parsedArchive = openEpubArchive(fileBuffer);
   const coverImage = extractCoverFromParsedArchive(parsedArchive);
+  const metadataLanguageCode = normalizeEpubLanguageCode(parsedArchive.opfDocument("metadata > dc\\:language, metadata > language").first().text());
   const tocEntries = extractTocEntries(parsedArchive);
 
   const pages: ImportedPage[] = [];
@@ -1568,6 +1574,7 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
 
   return {
     coverImage,
+    ...(metadataLanguageCode ? { metadataLanguageCode } : {}),
     ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
     pages,
     totalPages: pages.length,

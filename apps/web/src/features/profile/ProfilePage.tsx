@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 
-import { deepgramTtsModels, fetchCurrentUser, updateCurrentUserProfile, type DeepgramTtsModel } from "../../app/api";
+import { fetchCurrentUser, updateCurrentUserProfile, type DeepgramTtsModel } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { getDeepgramVoiceOptions, readStoredVoiceModel, writeStoredVoiceModel } from "../../app/book-language";
 import { AVAILABLE_MODES, AVAILABLE_PALETTES, useTheme } from "../../app/theme-provider";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 
@@ -14,16 +15,14 @@ type ProfileFormState = {
   clearAwsCredentials: boolean;
   clearDeepgramApiKey: boolean;
   deepgramApiKey: string;
-  deepgramTtsModel: DeepgramTtsModel;
+  deepgramTtsModelEs: DeepgramTtsModel;
+  deepgramTtsModelIt: DeepgramTtsModel;
   displayName: string;
   email: string;
 };
 
-const defaultDeepgramModel: DeepgramTtsModel = "aura-2-nestor-es";
-
-function isDeepgramTtsModel(value: string): value is DeepgramTtsModel {
-  return (deepgramTtsModels as readonly string[]).includes(value);
-}
+const defaultDeepgramModelEs: DeepgramTtsModel = "aura-2-nestor-es";
+const defaultDeepgramModelIt: DeepgramTtsModel = "aura-2-livia-it";
 
 export function ProfilePage() {
   const accessToken = useAuthStore((state) => state.accessToken);
@@ -36,7 +35,8 @@ export function ProfilePage() {
     clearAwsCredentials: false,
     clearDeepgramApiKey: false,
     deepgramApiKey: "",
-    deepgramTtsModel: defaultDeepgramModel,
+    deepgramTtsModelEs: defaultDeepgramModelEs,
+    deepgramTtsModelIt: readStoredVoiceModel("it") as DeepgramTtsModel,
     displayName: "",
     email: ""
   });
@@ -67,9 +67,12 @@ export function ProfilePage() {
     setForm((current) => ({
       ...current,
       awsRegion: user.aiCredentials?.awsRegion ?? "",
-      deepgramTtsModel: isDeepgramTtsModel(user.aiCredentials?.deepgramTtsModel ?? "")
+      deepgramTtsModelEs: getDeepgramVoiceOptions("es").some((voice) => voice.value === user.aiCredentials?.deepgramTtsModel)
         ? user.aiCredentials!.deepgramTtsModel as DeepgramTtsModel
-        : defaultDeepgramModel,
+        : readStoredVoiceModel("es", defaultDeepgramModelEs) as DeepgramTtsModel,
+      deepgramTtsModelIt: getDeepgramVoiceOptions("it").some((voice) => voice.value === user.aiCredentials?.deepgramTtsModelIt)
+        ? user.aiCredentials!.deepgramTtsModelIt as DeepgramTtsModel
+        : readStoredVoiceModel("it", defaultDeepgramModelIt) as DeepgramTtsModel,
       displayName: user.displayName ?? "",
       email: user.email
     }));
@@ -93,7 +96,8 @@ export function ProfilePage() {
       const response = await updateCurrentUserProfile(accessToken, {
         clearAwsCredentials: form.clearAwsCredentials,
         clearDeepgramApiKey: form.clearDeepgramApiKey,
-        deepgramTtsModel: form.deepgramTtsModel,
+        deepgramTtsModel: form.deepgramTtsModelEs,
+        deepgramTtsModelIt: form.deepgramTtsModelIt,
         displayName: form.displayName,
         email: form.email,
         themeMode: mode,
@@ -105,6 +109,8 @@ export function ProfilePage() {
       });
 
       useAuthStore.setState((previous) => ({ ...previous, user: response.user }));
+      writeStoredVoiceModel("es", form.deepgramTtsModelEs);
+      writeStoredVoiceModel("it", form.deepgramTtsModelIt);
       await profileQuery.refetch();
       setForm((current) => ({
         ...current,
@@ -262,10 +268,18 @@ export function ProfilePage() {
           </label>
 
           <label>
-            Voz por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, deepgramTtsModel: event.target.value as DeepgramTtsModel }))} value={form.deepgramTtsModel}>
-              {deepgramTtsModels.map((model) => <option key={model} value={model}>{model}</option>)}
+            Voz por defecto en español
+            <select onChange={(event) => setForm((current) => ({ ...current, deepgramTtsModelEs: event.target.value as DeepgramTtsModel }))} value={form.deepgramTtsModelEs}>
+              {getDeepgramVoiceOptions("es").map((voice) => <option key={voice.value} value={voice.value}>{voice.label} ({voice.value})</option>)}
             </select>
+          </label>
+
+          <label>
+            Voz por defecto en italiano
+            <select onChange={(event) => setForm((current) => ({ ...current, deepgramTtsModelIt: event.target.value as DeepgramTtsModel }))} value={form.deepgramTtsModelIt}>
+              {getDeepgramVoiceOptions("it").map((voice) => <option key={voice.value} value={voice.value}>{voice.label} ({voice.value})</option>)}
+            </select>
+            <span className="helper-text">Se conserva también en este dispositivo para mantener la preferencia con versiones anteriores del API.</span>
           </label>
 
           <label className="inline-check">

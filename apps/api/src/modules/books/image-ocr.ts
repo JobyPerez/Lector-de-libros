@@ -68,6 +68,8 @@ export const supportedImageRotations = [0, 90, 180, 270] as const;
 
 export type ImageRotation = (typeof supportedImageRotations)[number];
 
+export type OcrLanguage = "es" | "it";
+
 type ChatCompletionResponse = {
   choices?: Array<{
     finish_reason?: string;
@@ -103,6 +105,7 @@ type VisionOcrPrompt = {
 
 type RunOcrOnImageOptions = {
   awsCredentials?: AwsTextractCredentials | null | undefined;
+  language?: OcrLanguage;
   ocrMode?: ImageOcrMode;
   promptOverride?: string;
   rotation?: ImageRotation;
@@ -223,7 +226,7 @@ function emphasizeBiographyLead(text: string): string {
     return text;
   }
 
-  const biographyLeadMatch = text.match(/^([A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'’-]+){1,5})\.(?=\s+[A-ZÁÉÍÓÚÑ][^\n]*\d{4})/u);
+  const biographyLeadMatch = text.match(/^(\p{Lu}[\p{L}'’-]+(?:\s+\p{Lu}[\p{L}'’-]+){1,5})\.(?=\s+\p{Lu}[^\n]*\d{4})/u);
   if (!biographyLeadMatch?.[1]) {
     return text;
   }
@@ -245,7 +248,7 @@ function shouldDemoteHeading(text: string): boolean {
     return true;
   }
 
-  if (/^[A-ZÁÉÍÓÚÑ][\p{L}'’.-]+(?:\s+[A-ZÁÉÍÓÚÑ][\p{L}'’.-]+){0,4}\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u.test(normalizedText)) {
+  if (/^\p{Lu}[\p{L}'’.-]+(?:\s+\p{Lu}[\p{L}'’.-]+){0,4}\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u.test(normalizedText)) {
     return true;
   }
 
@@ -262,7 +265,7 @@ function looksLikeSignatureHeading(text: string): boolean {
     return false;
   }
 
-  return /^[A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+(?:[A-ZÁÉÍÓÚÑ][\p{L}'’-]+|[A-ZÁÉÍÓÚÑ]\.)){1,4}$/u.test(normalizedText);
+  return /^\p{Lu}[\p{L}'’-]+(?:\s+(?:\p{Lu}[\p{L}'’-]+|\p{Lu}\.)){1,4}$/u.test(normalizedText);
 }
 
 function formatStructuredTextBlock(
@@ -289,7 +292,7 @@ function cleanOcrText(rawText: string): string {
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/\s+([,.;:!?])/g, "$1")
-    .replace(/([a-záéíóúñ])\n(?=[a-záéíóúñ])/giu, "$1 ")
+    .replace(/(\p{Ll})\n(?=\p{Ll})/gu, "$1 ")
     .replace(/([\p{L}\p{N}])-\n(?=\p{Ll})/gu, "$1")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -698,9 +701,13 @@ async function preprocessImageBuffer(fileBuffer: Buffer): Promise<Buffer> {
     .toBuffer();
 }
 
-async function runLocalOcrWithTesseract(fileBuffer: Buffer): Promise<OcrPageResult> {
+export function getTesseractLanguages(language: OcrLanguage): "ita+eng" | "spa+eng" {
+  return language === "it" ? "ita+eng" : "spa+eng";
+}
+
+async function runLocalOcrWithTesseract(fileBuffer: Buffer, language: OcrLanguage): Promise<OcrPageResult> {
   const processedBuffer = await preprocessImageBuffer(fileBuffer);
-  const result = await Tesseract.recognize(processedBuffer, "spa+eng", {
+  const result = await Tesseract.recognize(processedBuffer, getTesseractLanguages(language), {
     logger: () => undefined
   });
   const cleanedText = cleanOcrText(result.data.text ?? "");
@@ -794,13 +801,19 @@ async function buildStructuredVisionPage(
   };
 }
 
-function buildVisionOcrPrompt(promptOverride?: string): VisionOcrPrompt {
+export function buildVisionOcrPrompt(language: OcrLanguage, promptOverride?: string): VisionOcrPrompt {
   const normalizedPromptOverride = promptOverride?.trim();
+
+  const system = language === "it"
+    ? "Esegui un OCR strutturato di una pagina di libro in italiano. Restituisci esclusivamente JSON valido con le chiavi rawText, paragraphs e blocks. rawText deve contenere il testo globale ripulito; paragraphs deve contenere il testo ripulito suddiviso in paragrafi; blocks deve contenere elementi type=heading, paragraph o image nell'ordine di lettura. In heading e paragraph conserva grassetto e corsivo usando markdown (**grassetto**, *corsivo*). In image restituisci altText e bbox con x,y,width,height interi tra 0 e 1000 relativi alla pagina ritagliata. Rileva ritratti, illustrazioni o immagini rilevanti del contenuto e restituiscili come blocks di tipo image. I paragrafi devono rispettare il layout reale, non le interruzioni di riga stampate. Non inventare testo. Per gli heading puoi aggiungere alignment con left, center o right solo se l'allineamento è visivamente chiaro; altrimenti omettilo. Firme, dediche manoscritte, nomi firmati e date non devono mai essere classificati come heading; devono essere paragraph. Una firma seguita da una data non è mai un heading."
+    : "Haz OCR estructurado de una página de libro en español. Devuelve solo JSON válido con las claves rawText, paragraphs y blocks. rawText debe contener el texto limpio global; paragraphs debe contener el texto limpio por párrafos; blocks debe contener elementos type=heading, paragraph o image en orden de lectura. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Detecta retratos, ilustraciones o imágenes relevantes del contenido y devuélvelas como blocks de tipo image. Los párrafos deben respetar el layout real, no los saltos de línea impresos. No inventes texto. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Las firmas, dedicatorias manuscritas, nombres firmados y fechas nunca deben clasificarse como heading; deben ir como paragraph. Una firma seguida de una fecha nunca es heading.";
 
   return {
     maxTokens: 8192,
-    system: "Haz OCR estructurado de una página de libro en español. Devuelve solo JSON válido con las claves rawText, paragraphs y blocks. rawText debe contener el texto limpio global; paragraphs debe contener el texto limpio por párrafos; blocks debe contener elementos type=heading, paragraph o image en orden de lectura. En heading y paragraph preserva negrita y cursiva usando markdown (**negrita**, *cursiva*). En image devuelve altText y bbox con x,y,width,height enteros entre 0 y 1000 relativos a la página recortada. Detecta retratos, ilustraciones o imágenes relevantes del contenido y devuélvelas como blocks de tipo image. Los párrafos deben respetar el layout real, no los saltos de línea impresos. No inventes texto. Para headings puedes añadir alignment con left, center o right solo si la alineación es visualmente clara; si no, omítelo. Las firmas, dedicatorias manuscritas, nombres firmados y fechas nunca deben clasificarse como heading; deben ir como paragraph. Una firma seguida de una fecha nunca es heading.",
-    user: normalizedPromptOverride || "Sin instrucciones adicionales del usuario. Aplica únicamente las reglas del mensaje system."
+    system,
+    user: normalizedPromptOverride || (language === "it"
+      ? "Nessuna istruzione aggiuntiva dell'utente. Applica esclusivamente le regole del messaggio system."
+      : "Sin instrucciones adicionales del usuario. Aplica únicamente las reglas del mensaje system.")
   };
 }
 
@@ -809,12 +822,13 @@ const visionOcrMaxTokensCeiling = 16384;
 async function executeVisionOcrRequest(
   croppedBuffer: Buffer,
   requestPayload: VisionImageRequestPayload,
+  language: OcrLanguage,
   promptOverride?: string,
   maxTokensOverride?: number
 ): Promise<OcrPageResult> {
   const model = appEnv.opencodeOcrModel;
   const endpoint = getOpenCodeChatCompletionsEndpoint(model);
-  const prompt = buildVisionOcrPrompt(promptOverride);
+  const prompt = buildVisionOcrPrompt(language, promptOverride);
   const maxTokens = maxTokensOverride ?? prompt.maxTokens;
 
   const response = await fetch(endpoint, {
@@ -906,6 +920,7 @@ async function executeVisionOcrRequest(
       return executeVisionOcrRequest(
         croppedBuffer,
         requestPayload,
+        language,
         promptOverride,
         Math.min(maxTokens * 2, visionOcrMaxTokensCeiling)
       );
@@ -926,7 +941,7 @@ async function executeVisionOcrRequest(
   return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
 }
 
-async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: string, promptOverride?: string): Promise<OcrPageResult> {
+async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: string, language: OcrLanguage, promptOverride?: string): Promise<OcrPageResult> {
   const croppedBuffer = await cropImageBufferToContent(fileBuffer);
 
   try {
@@ -934,13 +949,13 @@ async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: 
       buffer: croppedBuffer,
       mimeType: normalizedMimeType,
       optimized: false
-    }, promptOverride);
+    }, language, promptOverride);
   } catch (error) {
     if (!(error instanceof Error) || !("retryWithOptimizedImage" in error) || !error.retryWithOptimizedImage) {
       throw error;
     }
 
-    return executeVisionOcrRequest(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer), promptOverride);
+    return executeVisionOcrRequest(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer), language, promptOverride);
   }
 }
 
@@ -1118,6 +1133,7 @@ export async function runOcrOnImage(
 ): Promise<OcrPageResult> {
   const ocrMode = options.ocrMode ?? "AUTO";
   const awsCredentials = options.awsCredentials;
+  const language = options.language ?? "es";
   const rotation = options.rotation ?? 0;
   const promptOverride = options.promptOverride?.trim();
   const normalizedMimeType = inferImageMimeType(fileName, mimeType);
@@ -1130,12 +1146,12 @@ export async function runOcrOnImage(
   const rotatedBuffer = await applyImageRotation(fileBuffer, rotation);
 
   if (ocrMode === "LOCAL") {
-    return runLocalOcrWithTesseract(rotatedBuffer);
+    return runLocalOcrWithTesseract(rotatedBuffer, language);
   }
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, promptOverride);
+    return runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, promptOverride);
   }
 
   if (ocrMode === "TEXTRACT") {
@@ -1147,14 +1163,14 @@ export async function runOcrOnImage(
   } catch (textractError) {
     if (hasVisionOcrConfiguration()) {
       try {
-        return await runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, promptOverride);
+        return await runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, promptOverride);
       } catch {
         // fall through to local
       }
     }
 
     try {
-      return await runLocalOcrWithTesseract(rotatedBuffer);
+      return await runLocalOcrWithTesseract(rotatedBuffer, language);
     } catch (localOcrError) {
       throw Object.assign(new Error(`No se pudo extraer texto legible de la imagen ${fileName}. ${textractError instanceof Error ? textractError.message : ""}`.trim()), {
         statusCode: 422

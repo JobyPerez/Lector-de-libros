@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { DEFAULT_AI_MODEL_ID, DEFAULT_OCR_MODEL_ID, ocrModelIdSchema, summaryAiModelIdSchema } from "./ai-models.js";
 
-const allowedDeepgramTtsModels = [
+const spanishDeepgramTtsModels = [
   "aura-2-nestor-es",
   "aura-2-carina-es",
   "aura-2-alvaro-es",
@@ -15,6 +15,58 @@ const allowedDeepgramTtsModels = [
   "aura-2-agustina-es",
   "aura-2-silvia-es"
 ] as const;
+
+const italianDeepgramTtsModels = [
+  "aura-2-melia-it",
+  "aura-2-elio-it",
+  "aura-2-flavio-it",
+  "aura-2-maia-it",
+  "aura-2-cinzia-it",
+  "aura-2-cesare-it",
+  "aura-2-livia-it",
+  "aura-2-perseo-it",
+  "aura-2-dionisio-it",
+  "aura-2-demetra-it"
+] as const;
+
+const allowedDeepgramTtsModels = [...spanishDeepgramTtsModels, ...italianDeepgramTtsModels] as const;
+
+export const TTS_LANGUAGE_CATALOG = [
+  {
+    defaultVoiceModel: "aura-2-nestor-es",
+    label: "Español",
+    languageCode: "es",
+    locale: "es-ES",
+    voices: [
+      { label: "Néstor", languageCode: "es", locale: "es-ES", model: "aura-2-nestor-es" },
+      { label: "Carina", languageCode: "es", locale: "es-ES", model: "aura-2-carina-es" },
+      { label: "Álvaro", languageCode: "es", locale: "es-ES", model: "aura-2-alvaro-es" },
+      { label: "Diana", languageCode: "es", locale: "es-ES", model: "aura-2-diana-es" },
+      { label: "Agustina", languageCode: "es", locale: "es-ES", model: "aura-2-agustina-es" },
+      { label: "Silvia", languageCode: "es", locale: "es-ES", model: "aura-2-silvia-es" }
+    ]
+  },
+  {
+    defaultVoiceModel: "aura-2-livia-it",
+    label: "Italiano",
+    languageCode: "it",
+    locale: "it-IT",
+    voices: [
+      { label: "Melia", languageCode: "it", locale: "it-IT", model: "aura-2-melia-it" },
+      { label: "Elio", languageCode: "it", locale: "it-IT", model: "aura-2-elio-it" },
+      { label: "Flavio", languageCode: "it", locale: "it-IT", model: "aura-2-flavio-it" },
+      { label: "Maia", languageCode: "it", locale: "it-IT", model: "aura-2-maia-it" },
+      { label: "Cinzia", languageCode: "it", locale: "it-IT", model: "aura-2-cinzia-it" },
+      { label: "Cesare", languageCode: "it", locale: "it-IT", model: "aura-2-cesare-it" },
+      { label: "Livia", languageCode: "it", locale: "it-IT", model: "aura-2-livia-it" },
+      { label: "Perseo", languageCode: "it", locale: "it-IT", model: "aura-2-perseo-it" },
+      { label: "Dionisio", languageCode: "it", locale: "it-IT", model: "aura-2-dionisio-it" },
+      { label: "Demetra", languageCode: "it", locale: "it-IT", model: "aura-2-demetra-it" }
+    ]
+  }
+] as const;
+
+export type TtsLanguageCode = typeof TTS_LANGUAGE_CATALOG[number]["languageCode"];
 
 function findWorkspaceRoot(startDirectory: string): string {
   let currentDirectory = startDirectory;
@@ -60,7 +112,8 @@ const environmentSchema = z.object({
   ORACLE_WALLET_LOCATION: z.string().min(1),
   ORACLE_WALLET_PASSWORD: z.string().min(1),
   DEEPGRAM_API_KEY: z.string().min(1).optional(),
-  DEEPGRAM_TTS_MODEL: z.enum(allowedDeepgramTtsModels).default("aura-2-nestor-es"),
+  DEEPGRAM_TTS_MODEL: z.enum(spanishDeepgramTtsModels).default("aura-2-nestor-es"),
+  DEEPGRAM_TTS_MODEL_IT: z.enum(italianDeepgramTtsModels).default("aura-2-livia-it"),
   OPENCODE_GO_API_KEY: z.string().min(1).optional(),
   OPENCODE_MODEL: summaryAiModelIdSchema.default(DEFAULT_AI_MODEL_ID),
   OPENCODE_OCR_MODEL: ocrModelIdSchema.default(DEFAULT_OCR_MODEL_ID),
@@ -100,6 +153,7 @@ export const appEnv = {
   oracleWalletPassword: parsedEnvironment.data.ORACLE_WALLET_PASSWORD,
   deepgramApiKey: parsedEnvironment.data.DEEPGRAM_API_KEY,
   deepgramTtsModel: parsedEnvironment.data.DEEPGRAM_TTS_MODEL,
+  deepgramTtsModelIt: parsedEnvironment.data.DEEPGRAM_TTS_MODEL_IT,
   opencodeGoApiKey: parsedEnvironment.data.OPENCODE_GO_API_KEY,
   opencodeModel: parsedEnvironment.data.OPENCODE_MODEL,
   opencodeOcrModel: parsedEnvironment.data.OPENCODE_OCR_MODEL,
@@ -117,3 +171,5 @@ export const appEnv = {
 };
 
 export const ALLOWED_DEEPGRAM_TTS_MODELS = allowedDeepgramTtsModels;
+export const SPANISH_DEEPGRAM_TTS_MODELS = spanishDeepgramTtsModels;
+export const ITALIAN_DEEPGRAM_TTS_MODELS = italianDeepgramTtsModels;

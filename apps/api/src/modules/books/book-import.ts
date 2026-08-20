@@ -6,8 +6,10 @@ import { parseEpubBuffer } from "./epub-import.js";
 import { parsePdfBuffer } from "./pdf-import.js";
 
 export const supportedBookSourceTypes = ["PDF", "EPUB"] as const;
+export const supportedBookLanguageCodes = ["es", "it"] as const;
 
 export type SupportedBookSourceType = (typeof supportedBookSourceTypes)[number];
+export type BookLanguageCode = (typeof supportedBookLanguageCodes)[number];
 
 export type ImportedPage = {
   editedText?: string | null;
@@ -32,10 +34,16 @@ export type ImportedOutlineEntry = {
 
 export type ImportedDocument = {
   coverImage?: ImportedBinaryAsset | null;
+  metadataLanguageCode?: BookLanguageCode;
   outlineEntries?: ImportedOutlineEntry[];
   pages: ImportedPage[];
   totalPages: number;
   totalParagraphs: number;
+};
+
+const languageMarkers: Record<BookLanguageCode, readonly string[]> = {
+  es: ["aunque", "también", "porque", "para", "pero", "desde", "hasta", "cuando", "donde", "entonces", "había", "tiene"],
+  it: ["anche", "perché", "della", "delle", "degli", "nella", "nelle", "questo", "questa", "sono", "quando", "dove"]
 };
 
 const sentenceBoundaryExpression = /(?<=[.!?;:])\s+/u;
@@ -199,6 +207,39 @@ export function deriveTitleFromFileName(fileName: string): string {
   return baseName.replace(/[_-]+/g, " ").trim();
 }
 
+export function suggestImportedDocumentLanguage(importedDocument: ImportedDocument): { languageCode: BookLanguageCode; source: "detected" | "metadata" } | null {
+  if (importedDocument.metadataLanguageCode) {
+    return { languageCode: importedDocument.metadataLanguageCode, source: "metadata" };
+  }
+
+  const sample = importedDocument.pages
+    .flatMap((page) => page.paragraphs)
+    .join(" ")
+    .normalize("NFC")
+    .toLocaleLowerCase()
+    .slice(0, 30_000);
+  if (!sample) {
+    return null;
+  }
+
+  const scores = Object.fromEntries(
+    supportedBookLanguageCodes.map((languageCode) => [
+      languageCode,
+      languageMarkers[languageCode].reduce((score, marker) => {
+        const matches = sample.match(new RegExp(`\\b${marker}\\b`, "gu"));
+        return score + (matches?.length ?? 0);
+      }, 0)
+    ])
+  ) as Record<BookLanguageCode, number>;
+  const languageCode = scores.it > scores.es ? "it" : "es";
+  const winningScore = scores[languageCode];
+  const losingScore = scores[languageCode === "it" ? "es" : "it"];
+
+  return winningScore >= 3 && winningScore >= losingScore * 1.5
+    ? { languageCode, source: "detected" }
+    : null;
+}
+
 export async function parseUploadedBook(sourceType: SupportedBookSourceType, fileBuffer: Buffer): Promise<ImportedDocument> {
   const importedDocument = sourceType === "PDF"
     ? await parsePdfBuffer(fileBuffer)
@@ -264,6 +305,7 @@ export async function parseUploadedBook(sourceType: SupportedBookSourceType, fil
 
   return {
     coverImage: importedDocument.coverImage ?? null,
+    ...(importedDocument.metadataLanguageCode ? { metadataLanguageCode: importedDocument.metadataLanguageCode } : {}),
     ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
     pages: normalizedPages.map((page) => ({
       ...page,

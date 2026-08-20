@@ -1,4 +1,5 @@
 import { useAuthStore, type SessionUser } from "./auth-store";
+import { DEEPGRAM_TTS_MODELS, type BookLanguageCode } from "./book-language";
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
@@ -292,6 +293,7 @@ export type BookSummary = {
   createdAt?: string;
   currentUserRole?: BookRole;
   lastOpenedAt?: string | null;
+  languageCode: BookLanguageCode;
   notionBookUrl?: string | null;
   ownerDisplayName?: string | null;
   ownerUserId?: string;
@@ -452,14 +454,7 @@ export type DeepgramBalanceSummary = {
   project_name: string;
 };
 
-export const deepgramTtsModels = [
-  "aura-2-nestor-es",
-  "aura-2-carina-es",
-  "aura-2-alvaro-es",
-  "aura-2-diana-es",
-  "aura-2-agustina-es",
-  "aura-2-silvia-es"
-] as const;
+export const deepgramTtsModels = DEEPGRAM_TTS_MODELS;
 
 export type DeepgramTtsModel = (typeof deepgramTtsModels)[number];
 
@@ -474,6 +469,7 @@ export type UpdateProfilePayload = {
   clearDeepgramApiKey?: boolean;
   deepgramApiKey?: string;
   deepgramTtsModel?: DeepgramTtsModel;
+  deepgramTtsModelIt?: DeepgramTtsModel;
   displayName?: string;
   email: string;
   themeMode?: ThemeMode;
@@ -829,7 +825,7 @@ export function fetchBooks(accessToken: string, options?: { scope?: BookScope })
   return request<{ books: BookSummary[] }>(`/books${params}`, { accessToken });
 }
 
-export function createBook(accessToken: string, payload: { authorName?: string; sourceType: "PDF" | "EPUB" | "IMAGES"; synopsis?: string; title: string }) {
+export function createBook(accessToken: string, payload: { authorName?: string; languageCode: BookLanguageCode; sourceType: "PDF" | "EPUB" | "IMAGES"; synopsis?: string; title: string }) {
   return request<{ book: BookSummary }>("/books", { accessToken, body: payload, method: "POST" });
 }
 
@@ -849,8 +845,27 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
+export async function inspectBookImport(accessToken: string, file: File) {
+  const payload = new FormData();
+  payload.append("file", file);
+  const response = await fetchWithAutoRefresh("/books/import/inspect", {
+    accessToken,
+    body: payload,
+    fallbackMessage: "No se pudo analizar el idioma del libro.",
+    headers: createHeaders({ accessToken }),
+    method: "POST"
+  });
+
+  if (!response.ok) {
+    throw await createApiRequestError(response, "No se pudo analizar el idioma del libro.");
+  }
+
+  return response.json() as Promise<{ languageCode: BookLanguageCode | null; source: "detected" | "metadata" | null }>;
+}
+
 export type UpdateBookInput = {
   authorName?: string;
+  languageCode?: BookLanguageCode;
   notionBookUrl?: string | null;
   rating?: number | null;
   readingStatus?: ReadingStatus;

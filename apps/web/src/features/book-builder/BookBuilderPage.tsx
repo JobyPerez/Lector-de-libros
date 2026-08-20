@@ -29,6 +29,7 @@ import {
   type HighlightColor
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, normalizeBookLanguageCode, type BookLanguageCode } from "../../app/book-language";
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { playCompletionSound, prepareCompletionSound, type CompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
@@ -811,7 +812,7 @@ export function BookBuilderPage() {
   const [searchParams] = useSearchParams();
   const accessToken = useAuthStore((state) => state.accessToken);
   const hasAwsCredentials = useAuthStore((state) => state.user?.aiCredentials?.hasAwsCredentials === true);
-  const [createForm, setCreateForm] = useState({ authorName: "", synopsis: "", title: "" });
+  const [createForm, setCreateForm] = useState<{ authorName: string; languageCode: BookLanguageCode; synopsis: string; title: string }>({ authorName: "", languageCode: "es", synopsis: "", title: "" });
   const [selectedCreateFiles, setSelectedCreateFiles] = useState<File[]>([]);
   const [selectedAppendFiles, setSelectedAppendFiles] = useState<File[]>([]);
   const [selectedBookId, setSelectedBookId] = useState("");
@@ -2003,6 +2004,7 @@ export function BookBuilderPage() {
     try {
       const formData = new FormData();
       formData.append("title", createForm.title);
+      formData.append("languageCode", createForm.languageCode);
 
       if (createForm.authorName) {
         formData.append("authorName", createForm.authorName);
@@ -2106,6 +2108,7 @@ export function BookBuilderPage() {
           const progressId = crypto.randomUUID();
           const formData = new FormData();
           formData.append("images", file);
+          formData.append("languageCode", normalizeBookLanguageCode(selectedAppendBook?.languageCode));
           setAppendProgressId(progressId);
           setAppendProgressOffset(completedFiles);
           setAppendImportProgress({
@@ -2198,6 +2201,7 @@ export function BookBuilderPage() {
 
             const skipFormData = new FormData();
             skipFormData.append("images", file);
+            skipFormData.append("languageCode", normalizeBookLanguageCode(selectedAppendBook?.languageCode));
             const skipProgressId = crypto.randomUUID();
             setAppendProgressId(skipProgressId);
             setAppendImportProgress({
@@ -2949,6 +2953,16 @@ export function BookBuilderPage() {
                     />
                   </label>
 
+                  <label>
+                    Idioma
+                    <select
+                      onChange={(event) => setCreateForm((current) => ({ ...current, languageCode: event.target.value as BookLanguageCode }))}
+                      value={createForm.languageCode}
+                    >
+                      {BOOK_LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+
                   <div className="capture-input-grid">
                     <label aria-label="Imágenes del nuevo libro" className="capture-action-card capture-action-card-icon-only" title="Añadir imágenes">
                       <span className="capture-action-icon" aria-hidden="true">
@@ -3100,7 +3114,7 @@ export function BookBuilderPage() {
                 <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
                   {selectedAppendBook && appendReferencePageNumber !== undefined ? (
                     <div className="selected-book-banner append-position-banner">
-                      <span>Las páginas añadidas se insertarán</span>
+                      <span>Las páginas añadidas se procesarán en {getBookLanguageLabel(selectedAppendBook.languageCode)} y se insertarán</span>
                       <div className="append-placement-picker" role="radiogroup" aria-label="Posición respecto a la página actual">
                         <button
                           aria-checked={appendInsertionSide === "before"}

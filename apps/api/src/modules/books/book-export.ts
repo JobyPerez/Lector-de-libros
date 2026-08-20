@@ -6,9 +6,11 @@ import PDFDocument from "pdfkit";
 import sharp from "sharp";
 
 import type { BookOutlineEntry } from "./book-outline.js";
+import type { BookLanguageCode } from "./book-import.js";
 
 type ExportBook = {
   authorName: string | null;
+  languageCode: BookLanguageCode;
   synopsis: string | null;
   title: string;
 };
@@ -74,14 +76,14 @@ function buildFallbackHtml(page: ExportPage): string {
 }
 
 function buildPageDocumentTitle(book: ExportBook, page: ExportPage) {
-  return `${book.title} · Página ${page.pageLabel ?? page.pageNumber}`;
+  return `${book.title} · ${book.languageCode === "it" ? "Pagina" : "Página"} ${page.pageLabel ?? page.pageNumber}`;
 }
 
 function createContentDocument(book: ExportBook, page: ExportPage): string {
   const htmlContent = page.htmlContent ?? buildFallbackHtml(page);
 
   return `<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="${book.languageCode}" xml:lang="${book.languageCode}">
   <head>
     <title>${escapeXml(buildPageDocumentTitle(book, page))}</title>
     <meta charset="utf-8" />
@@ -256,6 +258,8 @@ export async function buildEpubExport(options: {
 }): Promise<Buffer> {
   const archive = new AdmZip();
   const timestamp = new Date().toISOString();
+  const indexLabel = options.book.languageCode === "it" ? "Indice" : "Índice";
+  const coverLabel = options.book.languageCode === "it" ? "Copertina" : "Portada";
   const contentFiles = options.pages.map((page) => ({
     fileName: `OEBPS/page-${String(page.pageNumber).padStart(4, "0")}.xhtml`,
     id: `page-${page.pageNumber}`,
@@ -282,7 +286,7 @@ export async function buildEpubExport(options: {
     coverMediaType = "image/jpeg";
     archive.addFile(coverFileName, normalizedCoverBuffer);
     archive.addFile("OEBPS/cover.xhtml", Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="${options.book.languageCode}" xml:lang="${options.book.languageCode}">
   <head>
     <title>${escapeXml(options.book.title)}</title>
     <meta charset="utf-8" />
@@ -305,7 +309,7 @@ export async function buildEpubExport(options: {
   </head>
   <body>
     <section class="cover-page">
-      <img alt="Portada" src="assets/cover.jpg" />
+      <img alt="${coverLabel}" src="assets/cover.jpg" />
     </section>
   </body>
 </html>`, "utf-8"));
@@ -316,14 +320,14 @@ export async function buildEpubExport(options: {
     .join("");
 
   archive.addFile("OEBPS/nav.xhtml", Buffer.from(`<?xml version="1.0" encoding="utf-8"?>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${options.book.languageCode}" xml:lang="${options.book.languageCode}">
   <head>
-    <title>Índice</title>
+    <title>${indexLabel}</title>
     <meta charset="utf-8" />
   </head>
   <body>
     <nav epub:type="toc" id="toc">
-      <h1>Índice</h1>
+      <h1>${indexLabel}</h1>
       <ol>${navItems}</ol>
     </nav>
   </body>
@@ -349,7 +353,7 @@ export async function buildEpubExport(options: {
     <dc:identifier id="bookid">${escapeXml(options.book.title.toLowerCase().replace(/[^a-z0-9]+/gu, "-") || "lector-book")}</dc:identifier>
     <dc:title>${escapeXml(options.book.title)}</dc:title>
     ${options.book.authorName ? `<dc:creator>${escapeXml(options.book.authorName)}</dc:creator>` : ""}
-    <dc:language>es</dc:language>
+    <dc:language>${options.book.languageCode}</dc:language>
     <meta property="dcterms:modified">${timestamp.replace(/\.\d{3}Z$/u, "Z")}</meta>
     ${coverFileName ? "<meta name=\"cover\" content=\"cover-image\" />" : ""}
   </metadata>

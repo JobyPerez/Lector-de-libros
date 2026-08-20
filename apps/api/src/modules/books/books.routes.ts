@@ -16,17 +16,18 @@ import { recordBookView, recordUserActivity } from "../../services/user-activity
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
-import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookSourceTypes, type SupportedBookSourceType } from "./book-import.js";
+import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, suggestImportedDocumentLanguage, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
-import { DEFAULT_BOOK_AI_REQUEST_PROMPT, DEFAULT_SECTION_AI_REQUEST_PROMPT, DEFAULT_SECTION_SUMMARY_PROMPT, generateAiRequestResponse, generateSectionSummary, type AiRequestKind } from "./section-summary.js";
+import { generateAiRequestResponse, generateSectionSummary, getDefaultBookAiRequestPrompt, getDefaultSectionAiRequestPrompt, getDefaultSectionSummaryPrompt, type AiRequestKind } from "./section-summary.js";
 
 const createBookSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
+  languageCode: z.enum(supportedBookLanguageCodes).default("es"),
   sourceType: z.enum(["PDF", "EPUB", "IMAGES"])
 });
 
@@ -34,6 +35,7 @@ const importBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500).optional(),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
+  languageCode: z.enum(supportedBookLanguageCodes).optional(),
   sourceType: z.enum(supportedBookSourceTypes).optional()
 });
 
@@ -51,6 +53,7 @@ const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
+  languageCode: z.enum(supportedBookLanguageCodes).default("es"),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema
 });
@@ -123,6 +126,7 @@ const updateBookSchema = z.object({
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
   notionBookUrl: z.string().trim().url().max(2000).nullable().optional(),
+  languageCode: z.enum(supportedBookLanguageCodes).optional(),
   readingStatus: z.enum(["READING", "WANT_TO_READ", "READ", "ABANDONED"]).optional(),
   rating: z.number().int().min(1).max(5).nullable().optional(),
   userComments: z.string().trim().max(10000).nullable().optional()
@@ -169,6 +173,7 @@ type ProcessedImagePage = UploadedBinaryFile & {
 type OwnedBookRecord = {
   authorName: string | null;
   bookId: string;
+  languageCode: BookLanguageCode;
   notionBookUrl: string | null;
   readingStatus?: "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
   rating?: number | null;
@@ -842,6 +847,7 @@ async function assembleBookExportDownload(
   const exportPayload = {
     book: {
       authorName: book.authorName,
+      languageCode: book.languageCode,
       synopsis: book.synopsis,
       title: book.title
     },
@@ -1690,6 +1696,7 @@ function ensureImageFiles(files: UploadedBinaryFile[]): UploadedBinaryFile[] {
 async function ocrImageFiles(
   files: UploadedBinaryFile[],
   ocrMode: ImageOcrMode,
+  language: BookLanguageCode,
   promptOverride?: string,
   awsCredentials?: AwsTextractCredentials | null,
   onProgress?: (progress: {
@@ -1725,6 +1732,7 @@ async function ocrImageFiles(
       try {
         ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, {
           awsCredentials,
+          language,
           ocrMode,
           ...(promptOverride ? { promptOverride } : {})
         });
@@ -1786,6 +1794,7 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
         b.book_id AS "bookId",
         b.title AS "title",
         b.author_name AS "authorName",
+        NVL(b.language_code, 'es') AS "languageCode",
         us.notion_book_url AS "notionBookUrl",
         NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
         us.rating AS "rating",
@@ -1823,6 +1832,7 @@ async function findAccessibleBook(
         b.book_id AS "bookId",
         b.title AS "title",
         b.author_name AS "authorName",
+        NVL(b.language_code, 'es') AS "languageCode",
         us.notion_book_url AS "notionBookUrl",
         NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
         us.rating AS "rating",
@@ -3534,6 +3544,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.book_id AS "bookId",
             b.title AS "title",
             b.author_name AS "authorName",
+            NVL(b.language_code, 'es') AS "languageCode",
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
@@ -3613,12 +3624,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const bookResult = await connection.execute(
         `SELECT book_id AS "bookId",
                 title AS "title",
-                author_name AS "authorName"
+                author_name AS "authorName",
+                NVL(language_code, 'es') AS "languageCode"
            FROM books
           WHERE book_id = :bookId`,
         { bookId: params.bookId }
       );
-      const [book] = (bookResult.rows ?? []) as Array<{ bookId: string; title: string; authorName: string | null }>;
+      const [book] = (bookResult.rows ?? []) as Array<{ authorName: string | null; bookId: string; languageCode: BookLanguageCode; title: string }>;
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
@@ -3635,6 +3647,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         book: {
           authorName: book.authorName,
           bookId: book.bookId,
+          languageCode: book.languageCode,
           title: book.title
         },
         hasMore: searchResult.hasMore,
@@ -3666,12 +3679,14 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const nextAuthorName = payload.authorName ?? null;
       const nextSynopsis = payload.synopsis !== undefined ? payload.synopsis : (existingBook.synopsis ?? null);
+      const nextLanguageCode = payload.languageCode ?? existingBook.languageCode;
       const nextNotionBookUrl = payload.notionBookUrl ?? null;
       const nextReadingStatus = payload.readingStatus ?? existingBook.readingStatus ?? "WANT_TO_READ";
       const nextRating = payload.rating !== undefined ? payload.rating : (existingBook.rating ?? null);
       const nextUserComments = payload.userComments !== undefined ? payload.userComments : (existingBook.userComments ?? null);
       const hasMetadataChanges = payload.title !== existingBook.title
         || nextAuthorName !== existingBook.authorName
+        || nextLanguageCode !== existingBook.languageCode
         || (payload.synopsis !== undefined && nextSynopsis !== existingBook.synopsis);
 
       if (hasMetadataChanges && request.bookAccess?.role !== "OWNER") {
@@ -3684,18 +3699,24 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             UPDATE books
             SET title = :title,
                 author_name = :authorName,
-                synopsis = :synopsis
+                synopsis = :synopsis,
+                language_code = :languageCode
             WHERE book_id = :bookId
               AND owner_user_id = :ownerUserId
           `,
           {
             authorName: nextAuthorName,
             bookId: params.bookId,
+            languageCode: nextLanguageCode,
             ownerUserId: request.currentUser.userId,
             synopsis: nextSynopsis,
             title: payload.title
           }
         );
+
+        if (nextLanguageCode !== existingBook.languageCode) {
+          await invalidateBookAudioCache(connection, params.bookId);
+        }
       }
 
       await upsertUserBookSettings(connection, {
@@ -3750,6 +3771,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         book: {
           ...existingBook,
           authorName: request.bookAccess?.role === "OWNER" ? nextAuthorName : existingBook.authorName,
+          languageCode: request.bookAccess?.role === "OWNER" ? nextLanguageCode : existingBook.languageCode,
           notionBookUrl: nextNotionBookUrl,
           rating: nextRating,
           readingStatus: nextReadingStatus,
@@ -3836,6 +3858,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             title,
             author_name,
             synopsis,
+            language_code,
             source_type,
             status
           ) VALUES (
@@ -3844,6 +3867,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             :title,
             :authorName,
             :synopsis,
+            :languageCode,
             :sourceType,
             'DRAFT'
           )
@@ -3851,6 +3875,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         {
           authorName: payload.authorName ?? null,
           bookId,
+          languageCode: payload.languageCode,
           ownerUserId: request.currentUser.userId,
           sourceType: payload.sourceType,
           synopsis: payload.synopsis ?? null,
@@ -3873,6 +3898,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       book: {
         authorName: payload.authorName ?? null,
         bookId,
+        languageCode: payload.languageCode,
         sourceType: payload.sourceType,
         status: "DRAFT",
         synopsis: payload.synopsis ?? null,
@@ -3880,6 +3906,26 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         totalPages: 0,
         totalParagraphs: 0
       }
+    });
+  });
+
+  app.post("/import/inspect", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const uploadedFile = await request.file();
+    if (!uploadedFile) {
+      return reply.status(400).send({ message: "Debes adjuntar un archivo PDF o EPUB." });
+    }
+
+    const sourceType = detectSourceType(uploadedFile.filename, uploadedFile.mimetype);
+    const importedDocument = await parseUploadedBook(sourceType, await readUploadedFile(uploadedFile));
+    const suggestion = suggestImportedDocumentLanguage(importedDocument);
+
+    return reply.send({
+      languageCode: suggestion?.languageCode ?? null,
+      source: suggestion?.source ?? null
     });
   });
 
@@ -3895,6 +3941,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     const rawFields = {
       authorName: readMultipartField(uploadedFile.fields, "authorName"),
+      languageCode: readMultipartField(uploadedFile.fields, "languageCode"),
       sourceType: readMultipartField(uploadedFile.fields, "sourceType"),
       synopsis: readMultipartField(uploadedFile.fields, "synopsis"),
       title: readMultipartField(uploadedFile.fields, "title")
@@ -3903,6 +3950,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const sourceType = detectSourceType(uploadedFile.filename, uploadedFile.mimetype, parsedFields.sourceType);
     const fileBuffer = await readUploadedFile(uploadedFile);
     const importedDocument = await parseUploadedBook(sourceType, fileBuffer);
+    const languageCode = parsedFields.languageCode ?? importedDocument.metadataLanguageCode ?? "es";
     const bookId = randomUUID();
     const originalFileId = randomUUID();
     const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
@@ -3917,6 +3965,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             title,
             author_name,
             synopsis,
+            language_code,
             source_type,
             status,
             total_pages,
@@ -3927,6 +3976,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             :title,
             :authorName,
             :synopsis,
+            :languageCode,
             :sourceType,
             'READY',
             :totalPages,
@@ -3936,6 +3986,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         {
           authorName: parsedFields.authorName ?? null,
           bookId,
+          languageCode,
           ownerUserId: request.currentUser.userId,
           sourceType,
           synopsis: parsedFields.synopsis ?? null,
@@ -4109,6 +4160,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       book: {
         authorName: parsedFields.authorName ?? null,
         bookId,
+        languageCode,
         sourceType,
         status: "READY",
         synopsis: parsedFields.synopsis ?? null,
@@ -4127,6 +4179,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const multipartForm = await collectMultipartForm(request);
     const payload = imageBookFieldsSchema.parse({
       authorName: multipartForm.fields.authorName,
+      languageCode: multipartForm.fields.languageCode,
       ocrMode: multipartForm.fields.ocrMode,
       promptOverride: multipartForm.fields.promptOverride,
       synopsis: multipartForm.fields.synopsis,
@@ -4134,7 +4187,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const aiCredentials = await getUserAiCredentials(request.currentUser.userId);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.promptOverride, {
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.promptOverride, {
       accessKeyId: aiCredentials.awsAccessKeyId,
       region: aiCredentials.awsRegion,
       secretAccessKey: aiCredentials.awsSecretAccessKey
@@ -4151,6 +4204,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             title,
             author_name,
             synopsis,
+            language_code,
             source_type,
             status,
             total_pages,
@@ -4161,6 +4215,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             :title,
             :authorName,
             :synopsis,
+            :languageCode,
             'IMAGES',
             'PROCESSING',
             0,
@@ -4170,6 +4225,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         {
           authorName: payload.authorName ?? null,
           bookId,
+          languageCode: payload.languageCode,
           ownerUserId: request.currentUser.userId,
           synopsis: payload.synopsis ?? null,
           title: payload.title
@@ -4211,6 +4267,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       book: {
         authorName: payload.authorName ?? null,
         bookId,
+        languageCode: payload.languageCode,
         sourceType: "IMAGES",
         status: "READY",
         synopsis: payload.synopsis ?? null,
@@ -4328,6 +4385,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           : await ocrImageFiles(
             [imageFile],
             payload.ocrMode,
+            existingBook.languageCode,
             payload.promptOverride,
             awsCredentials,
             (progress) => {
@@ -4814,6 +4872,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.book_id AS "bookId",
             b.title AS "title",
             b.author_name AS "authorName",
+            NVL(b.language_code, 'es') AS "languageCode",
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
@@ -4876,6 +4935,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.book_id AS "bookId",
             b.title AS "title",
             b.author_name AS "authorName",
+            NVL(b.language_code, 'es') AS "languageCode",
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
@@ -5322,6 +5382,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             region: aiCredentials.awsRegion,
             secretAccessKey: aiCredentials.awsSecretAccessKey
           },
+          language: book.languageCode,
           ocrMode: payload.ocrMode,
           ...(payload.promptOverride ? { promptOverride: payload.promptOverride } : {}),
           rotation: page.sourceImageRotation
@@ -5381,7 +5442,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.send({
         book: { ...book, currentUserRole: request.bookAccess?.role },
-        prompt: DEFAULT_BOOK_AI_REQUEST_PROMPT,
+        prompt: getDefaultBookAiRequestPrompt(book.languageCode),
         requests
       });
     } finally {
@@ -5411,6 +5472,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
+        languageCode: book.languageCode,
         model: body.model,
         onProviderRetry: ({ attempt, maxAttempts }) => {
           setAiRequestRetryProgress(body.progressId, {
@@ -5490,7 +5552,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.send({
         book: { ...book, currentUserRole: request.bookAccess?.role },
-        prompt: DEFAULT_SECTION_AI_REQUEST_PROMPT,
+        prompt: getDefaultSectionAiRequestPrompt(book.languageCode),
         requests,
         section
       });
@@ -5527,6 +5589,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
+        languageCode: book.languageCode,
         model: body.model,
         onProviderRetry: ({ attempt, maxAttempts }) => {
           setAiRequestRetryProgress(body.progressId, {
@@ -5767,7 +5830,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       return reply.send({
-        prompt: DEFAULT_SECTION_SUMMARY_PROMPT,
+        prompt: getDefaultSectionSummaryPrompt(book.languageCode),
         section,
       });
     } finally {
@@ -5801,7 +5864,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const modelId = body.model ?? appEnv.opencodeModel;
-      const summaryText = await generateSectionSummary(section.title, paragraphs, { model: modelId, promptOverride: body.promptOverride });
+      const summaryText = await generateSectionSummary(section.title, paragraphs, { languageCode: book.languageCode, model: modelId, promptOverride: body.promptOverride });
       const existingSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       if (existingSummary) {

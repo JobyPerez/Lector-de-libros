@@ -23,18 +23,27 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import {
+  DEFAULT_DEVICE_VOICE_URI,
+  buildDeviceVoiceOptions,
+  findDeviceVoice,
+  getDeepgramVoiceOptions,
+  getSpeechLanguage,
+  normalizeBookLanguageCode,
+  pickFallbackDeviceVoice,
+  readStoredDeviceVoiceUri,
+  readStoredVoiceModel,
+  writeStoredDeviceVoiceUri,
+  writeStoredVoiceModel
+} from "../../app/book-language";
 import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
-const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
-const READER_DEVICE_VOICE_STORAGE_KEY = "lector.reader.deviceVoiceUri";
 const READER_SPEED_STORAGE_KEY = "lector.reader.playbackRate";
 const DEFAULT_TTS_ENGINE = "deepgram";
-const DEFAULT_DEVICE_VOICE_URI = "";
-const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
 const DEFAULT_PLAYBACK_RATE = 1;
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
@@ -52,22 +61,7 @@ const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: "de
   { description: "Voz local del navegador", label: "Dispositivo", value: "device" }
 ];
 
-const TTS_VOICE_OPTIONS = [
-  { description: "Español peninsular natural", label: "Diana", value: "aura-2-diana-es" },
-  { description: "Español peninsular natural", label: "Néstor", value: "aura-2-nestor-es" },
-  { description: "Español peninsular natural", label: "Carina", value: "aura-2-carina-es" },
-  { description: "Español peninsular natural", label: "Álvaro", value: "aura-2-alvaro-es" },
-  { description: "Español peninsular natural", label: "Agustina", value: "aura-2-agustina-es" },
-  { description: "Español peninsular natural", label: "Silvia", value: "aura-2-silvia-es" }
-] as const;
-
 type TtsEngine = "deepgram" | "device";
-
-type DeviceVoiceOption = {
-  description: string;
-  label: string;
-  value: string;
-};
 
 function excerptPreview(value: string | null | undefined, fallback: string) {
   const normalizedValue = value?.replace(/\s+/gu, " ").trim();
@@ -101,29 +95,6 @@ function readStoredTtsEngine(): TtsEngine {
     : DEFAULT_TTS_ENGINE;
 }
 
-function readStoredDeviceVoiceUri() {
-  if (typeof window === "undefined") {
-    return DEFAULT_DEVICE_VOICE_URI;
-  }
-
-  return window.localStorage.getItem(READER_DEVICE_VOICE_STORAGE_KEY) ?? DEFAULT_DEVICE_VOICE_URI;
-}
-
-function readStoredVoiceModel() {
-  if (typeof window === "undefined") {
-    return DEFAULT_VOICE_MODEL;
-  }
-
-  const storedVoiceModel = window.localStorage.getItem(READER_VOICE_STORAGE_KEY);
-  if (!storedVoiceModel) {
-    return DEFAULT_VOICE_MODEL;
-  }
-
-  return TTS_VOICE_OPTIONS.some((voice) => voice.value === storedVoiceModel)
-    ? storedVoiceModel
-    : DEFAULT_VOICE_MODEL;
-}
-
 function readStoredPlaybackRate() {
   if (typeof window === "undefined") {
     return DEFAULT_PLAYBACK_RATE;
@@ -152,57 +123,6 @@ function getSpeechSynthesisApi() {
   }
 
   return window.speechSynthesis;
-}
-
-function isPeninsularSpanishVoice(voice: SpeechSynthesisVoice) {
-  const normalizedLanguage = voice.lang.trim().toLowerCase();
-  return normalizedLanguage === "es-es" || normalizedLanguage.startsWith("es-es-");
-}
-
-function buildDeviceVoiceOptions(voices: SpeechSynthesisVoice[]): DeviceVoiceOption[] {
-  const uniqueVoices = new Map<string, DeviceVoiceOption>();
-
-  for (const voice of voices) {
-    if (!voice.voiceURI || uniqueVoices.has(voice.voiceURI) || !isPeninsularSpanishVoice(voice)) {
-      continue;
-    }
-
-    const language = voice.lang.trim() || "Sin idioma";
-    const descriptionParts = [language];
-    if (voice.default) {
-      descriptionParts.push("predeterminada");
-    }
-    if (voice.localService) {
-      descriptionParts.push("local");
-    }
-
-    uniqueVoices.set(voice.voiceURI, {
-      description: descriptionParts.join(" · "),
-      label: voice.name,
-      value: voice.voiceURI
-    });
-  }
-
-  return [
-    {
-      description: "Usa la voz predeterminada del dispositivo",
-      label: "Predeterminada",
-      value: DEFAULT_DEVICE_VOICE_URI
-    },
-    ...Array.from(uniqueVoices.values()).sort((left, right) => left.label.localeCompare(right.label, "es"))
-  ];
-}
-
-function findDeviceVoice(voices: SpeechSynthesisVoice[], voiceUri: string) {
-  if (!voiceUri) {
-    return null;
-  }
-
-  return voices.find((voice) => voice.voiceURI === voiceUri && isPeninsularSpanishVoice(voice)) ?? null;
-}
-
-function pickFallbackDeviceVoice(voices: SpeechSynthesisVoice[]) {
-  return voices.find((voice) => isPeninsularSpanishVoice(voice)) ?? null;
 }
 
 function ReaderControlIcon({ children }: { children: ReactNode }) {
@@ -285,6 +205,7 @@ export function SectionSummaryPage() {
   const { bookId = "", chapterId = "" } = useParams();
   const navigate = useNavigate();
   const accessToken = useAuthStore((state) => state.accessToken);
+  const userAiCredentials = useAuthStore((state) => state.user?.aiCredentials);
   const queryClient = useQueryClient();
   const aiModelSelection = useAiModelSelection();
   const isGeneratingRef = useRef(false);
@@ -310,8 +231,8 @@ export function SectionSummaryPage() {
   const [isUpdatingNote, setIsUpdatingNote] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
-  const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
-  const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
+  const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(() => readStoredVoiceModel("es"));
+  const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(() => readStoredDeviceVoiceUri("es"));
   const [playbackRate, setPlaybackRate] = useState<number>(readStoredPlaybackRate);
   const [availableDeviceVoices, setAvailableDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isDevicePaused, setIsDevicePaused] = useState(false);
@@ -387,11 +308,13 @@ export function SectionSummaryPage() {
     }
   });
 
+  const bookLanguageCode = normalizeBookLanguageCode(bookQuery.data?.book.languageCode);
+  const ttsVoiceOptions = getDeepgramVoiceOptions(bookLanguageCode);
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
-  const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
+  const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices, bookLanguageCode), [availableDeviceVoices, bookLanguageCode]);
   const selectedDeviceVoice = useMemo(
-    () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri),
-    [availableDeviceVoices, selectedDeviceVoiceUri]
+    () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri, bookLanguageCode),
+    [availableDeviceVoices, bookLanguageCode, selectedDeviceVoiceUri]
   );
   const summaryText = summaryQuery.data?.summary?.summaryText?.trim() ?? "";
   const summaryParagraphs = useMemo(() => paragraphizeSummary(summaryText), [summaryText]);
@@ -401,6 +324,14 @@ export function SectionSummaryPage() {
   const deepgramBalanceErrorMessage = deepgramBalanceQuery.error instanceof Error
     ? deepgramBalanceQuery.error.message
     : "No se pudo consultar el saldo de Deepgram.";
+
+  useEffect(() => {
+    const profileVoiceModel = bookLanguageCode === "it"
+      ? userAiCredentials?.deepgramTtsModelIt
+      : userAiCredentials?.deepgramTtsModel;
+    setSelectedVoiceModel(readStoredVoiceModel(bookLanguageCode, profileVoiceModel));
+    setSelectedDeviceVoiceUri(readStoredDeviceVoiceUri(bookLanguageCode));
+  }, [bookLanguageCode, userAiCredentials?.deepgramTtsModel, userAiCredentials?.deepgramTtsModelIt]);
 
   const orderedNavigationItems = useMemo<ReaderNavigationListItem[]>(() => {
     const tocItems: ReaderNavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
@@ -568,10 +499,10 @@ export function SectionSummaryPage() {
   }, [isDeviceTtsSupported, selectedTtsEngine]);
 
   useEffect(() => {
-    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
+    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri, bookLanguageCode)) {
       setSelectedDeviceVoiceUri(DEFAULT_DEVICE_VOICE_URI);
     }
-  }, [availableDeviceVoices, selectedDeviceVoiceUri]);
+  }, [availableDeviceVoices, bookLanguageCode, selectedDeviceVoiceUri]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -582,19 +513,11 @@ export function SectionSummaryPage() {
   }, [selectedTtsEngine]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_VOICE_STORAGE_KEY, selectedVoiceModel);
+    writeStoredVoiceModel(bookLanguageCode, selectedVoiceModel);
   }, [selectedVoiceModel]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_DEVICE_VOICE_STORAGE_KEY, selectedDeviceVoiceUri);
+    writeStoredDeviceVoiceUri(bookLanguageCode, selectedDeviceVoiceUri);
   }, [selectedDeviceVoiceUri]);
 
   useEffect(() => {
@@ -1030,9 +953,9 @@ export function SectionSummaryPage() {
       speechSynthesisApi.cancel();
 
       const utterance = new SpeechSynthesisUtterance(summaryText);
-      utterance.lang = "es-ES";
+      utterance.lang = getSpeechLanguage(bookLanguageCode);
       utterance.rate = playbackRate;
-      utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices);
+      utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices, bookLanguageCode);
       utterance.onstart = () => {
         setIsAudioLoading(false);
         setIsAudioPlaying(true);
@@ -1331,7 +1254,7 @@ export function SectionSummaryPage() {
               selectedDeviceVoiceUri={selectedDeviceVoiceUri}
               selectedTtsEngine={selectedTtsEngine}
               selectedVoiceModel={selectedVoiceModel}
-              voiceOptions={TTS_VOICE_OPTIONS}
+              voiceOptions={ttsVoiceOptions}
             />
           </ReaderFloatingAudioPopover>
 

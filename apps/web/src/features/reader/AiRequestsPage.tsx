@@ -33,19 +33,29 @@ import {
   type ReaderTocEntry
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
+import {
+  DEFAULT_DEVICE_VOICE_URI,
+  buildDeviceVoiceOptions,
+  findDeviceVoice,
+  getBookLanguageName,
+  getDeepgramVoiceOptions,
+  getSpeechLanguage,
+  normalizeBookLanguageCode,
+  pickFallbackDeviceVoice,
+  readStoredDeviceVoiceUri,
+  readStoredVoiceModel,
+  writeStoredDeviceVoiceUri,
+  writeStoredVoiceModel
+} from "../../app/book-language";
 import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
-const DEFAULT_VOICE_MODEL = "aura-2-diana-es";
-const READER_VOICE_STORAGE_KEY = "lector.reader.voiceModel";
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
-const READER_DEVICE_VOICE_STORAGE_KEY = "lector.reader.deviceVoiceUri";
 const READER_SPEED_STORAGE_KEY = "lector.reader.playbackRate";
 const DEFAULT_TTS_ENGINE = "deepgram";
-const DEFAULT_DEVICE_VOICE_URI = "";
 const DEFAULT_PLAYBACK_RATE = 1;
 const MIN_PLAYBACK_RATE = 0.8;
 const MAX_PLAYBACK_RATE = 1.35;
@@ -53,10 +63,6 @@ const PLAYBACK_RATE_STEP = 0.05;
 const READER_NAVIGATION_PANEL_ANIMATION_MS = 220;
 const AI_REQUEST_REMOVAL_ANIMATION_MS = 240;
 const AI_REQUEST_CREATION_ANIMATION_MS = 520;
-const CURRENT_SECTION_SUMMARY_PROMPT = "Eres editor literario. Resume esta sección de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-const MULTIPLE_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume estas secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-const ALL_SECTIONS_SUMMARY_PROMPT = "Eres editor literario. Resume las secciones de un libro en español de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.";
-const GRAPHIC_SUMMARY_PROMPT = "Eres editor literario. Crea un resumen gráfico en español que organice las ideas, hechos, personajes o conceptos principales y muestre claramente sus relaciones. Sé fiel al texto, compacto y no inventes información.";
 const AI_VISUAL_TYPE_OPTIONS: Array<{ description: string; label: string; value: AiVisualType }> = [
   { description: "La IA elige según el contenido", label: "Automático", value: "AUTO" },
   { description: "Idea central y ramas", label: "Mapa mental", value: "MIND_MAP" },
@@ -78,22 +84,7 @@ const TTS_ENGINE_OPTIONS: Array<{ description: string; label: string; value: "de
   { description: "Voz local del navegador", label: "Dispositivo", value: "device" }
 ];
 
-const TTS_VOICE_OPTIONS = [
-  { description: "Español peninsular natural", label: "Diana", value: "aura-2-diana-es" },
-  { description: "Español peninsular natural", label: "Néstor", value: "aura-2-nestor-es" },
-  { description: "Español peninsular natural", label: "Carina", value: "aura-2-carina-es" },
-  { description: "Español peninsular natural", label: "Álvaro", value: "aura-2-alvaro-es" },
-  { description: "Español peninsular natural", label: "Agustina", value: "aura-2-agustina-es" },
-  { description: "Español peninsular natural", label: "Silvia", value: "aura-2-silvia-es" }
-] as const;
-
 type TtsEngine = "deepgram" | "device";
-
-type DeviceVoiceOption = {
-  description: string;
-  label: string;
-  value: string;
-};
 
 function excerptPreview(value: string | null | undefined, fallback: string) {
   const normalizedValue = value?.replace(/\s+/gu, " ").trim();
@@ -127,29 +118,6 @@ function readStoredTtsEngine(): TtsEngine {
     : DEFAULT_TTS_ENGINE;
 }
 
-function readStoredDeviceVoiceUri() {
-  if (typeof window === "undefined") {
-    return DEFAULT_DEVICE_VOICE_URI;
-  }
-
-  return window.localStorage.getItem(READER_DEVICE_VOICE_STORAGE_KEY) ?? DEFAULT_DEVICE_VOICE_URI;
-}
-
-function readStoredVoiceModel() {
-  if (typeof window === "undefined") {
-    return DEFAULT_VOICE_MODEL;
-  }
-
-  const storedVoiceModel = window.localStorage.getItem(READER_VOICE_STORAGE_KEY);
-  if (!storedVoiceModel) {
-    return DEFAULT_VOICE_MODEL;
-  }
-
-  return TTS_VOICE_OPTIONS.some((voice) => voice.value === storedVoiceModel)
-    ? storedVoiceModel
-    : DEFAULT_VOICE_MODEL;
-}
-
 function readStoredPlaybackRate() {
   if (typeof window === "undefined") {
     return DEFAULT_PLAYBACK_RATE;
@@ -178,57 +146,6 @@ function getSpeechSynthesisApi() {
   }
 
   return window.speechSynthesis;
-}
-
-function isPeninsularSpanishVoice(voice: SpeechSynthesisVoice) {
-  const normalizedLanguage = voice.lang.trim().toLowerCase();
-  return normalizedLanguage === "es-es" || normalizedLanguage.startsWith("es-es-");
-}
-
-function buildDeviceVoiceOptions(voices: SpeechSynthesisVoice[]): DeviceVoiceOption[] {
-  const uniqueVoices = new Map<string, DeviceVoiceOption>();
-
-  for (const voice of voices) {
-    if (!voice.voiceURI || uniqueVoices.has(voice.voiceURI) || !isPeninsularSpanishVoice(voice)) {
-      continue;
-    }
-
-    const language = voice.lang.trim() || "Sin idioma";
-    const descriptionParts = [language];
-    if (voice.default) {
-      descriptionParts.push("predeterminada");
-    }
-    if (voice.localService) {
-      descriptionParts.push("local");
-    }
-
-    uniqueVoices.set(voice.voiceURI, {
-      description: descriptionParts.join(" · "),
-      label: voice.name,
-      value: voice.voiceURI
-    });
-  }
-
-  return [
-    {
-      description: "Usa la voz predeterminada del dispositivo",
-      label: "Predeterminada",
-      value: DEFAULT_DEVICE_VOICE_URI
-    },
-    ...Array.from(uniqueVoices.values()).sort((left, right) => left.label.localeCompare(right.label, "es"))
-  ];
-}
-
-function findDeviceVoice(voices: SpeechSynthesisVoice[], voiceUri: string) {
-  if (!voiceUri) {
-    return null;
-  }
-
-  return voices.find((voice) => voice.voiceURI === voiceUri && isPeninsularSpanishVoice(voice)) ?? null;
-}
-
-function pickFallbackDeviceVoice(voices: SpeechSynthesisVoice[]) {
-  return voices.find((voice) => isPeninsularSpanishVoice(voice)) ?? null;
 }
 
 function RequestIcon({ children }: { children: ReactNode }) {
@@ -515,6 +432,7 @@ function haveSameUserIds(left: string[], right: string[]) {
 export function AiRequestsPage() {
   const { bookId = "", chapterId } = useParams();
   const accessToken = useAuthStore((state) => state.accessToken);
+  const userAiCredentials = useAuthStore((state) => state.user?.aiCredentials);
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const aiModelSelection = useAiModelSelection();
@@ -567,8 +485,8 @@ export function AiRequestsPage() {
   const [editingNavigationHighlightText, setEditingNavigationHighlightText] = useState("");
   const [isUpdatingNote, setIsUpdatingNote] = useState(false);
   const [selectedTtsEngine, setSelectedTtsEngine] = useState<TtsEngine>(readStoredTtsEngine);
-  const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(readStoredVoiceModel);
-  const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(readStoredDeviceVoiceUri);
+  const [selectedVoiceModel, setSelectedVoiceModel] = useState<string>(() => readStoredVoiceModel("es"));
+  const [selectedDeviceVoiceUri, setSelectedDeviceVoiceUri] = useState<string>(() => readStoredDeviceVoiceUri("es"));
   const [playbackRate, setPlaybackRate] = useState<number>(readStoredPlaybackRate);
   const [availableDeviceVoices, setAvailableDeviceVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [isDevicePaused, setIsDevicePaused] = useState(false);
@@ -867,12 +785,22 @@ export function AiRequestsPage() {
     };
   }, []);
 
+  const bookLanguageCode = normalizeBookLanguageCode(bookQuery.data?.book.languageCode ?? requestsQuery.data?.book.languageCode);
+  const ttsVoiceOptions = getDeepgramVoiceOptions(bookLanguageCode);
   const isDeviceTtsSupported = Boolean(getSpeechSynthesisApi());
-  const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices), [availableDeviceVoices]);
+  const deviceVoiceOptions = useMemo(() => buildDeviceVoiceOptions(availableDeviceVoices, bookLanguageCode), [availableDeviceVoices, bookLanguageCode]);
   const selectedDeviceVoice = useMemo(
-    () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri),
-    [availableDeviceVoices, selectedDeviceVoiceUri]
+    () => findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri, bookLanguageCode),
+    [availableDeviceVoices, bookLanguageCode, selectedDeviceVoiceUri]
   );
+
+  useEffect(() => {
+    const profileVoiceModel = bookLanguageCode === "it"
+      ? userAiCredentials?.deepgramTtsModelIt
+      : userAiCredentials?.deepgramTtsModel;
+    setSelectedVoiceModel(readStoredVoiceModel(bookLanguageCode, profileVoiceModel));
+    setSelectedDeviceVoiceUri(readStoredDeviceVoiceUri(bookLanguageCode));
+  }, [bookLanguageCode, userAiCredentials?.deepgramTtsModel, userAiCredentials?.deepgramTtsModelIt]);
 
   useEffect(() => {
     if (!isDeviceTtsSupported && selectedTtsEngine === "device") {
@@ -881,10 +809,10 @@ export function AiRequestsPage() {
   }, [isDeviceTtsSupported, selectedTtsEngine]);
 
   useEffect(() => {
-    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri)) {
+    if (selectedDeviceVoiceUri && !findDeviceVoice(availableDeviceVoices, selectedDeviceVoiceUri, bookLanguageCode)) {
       setSelectedDeviceVoiceUri(DEFAULT_DEVICE_VOICE_URI);
     }
-  }, [availableDeviceVoices, selectedDeviceVoiceUri]);
+  }, [availableDeviceVoices, bookLanguageCode, selectedDeviceVoiceUri]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -895,19 +823,11 @@ export function AiRequestsPage() {
   }, [selectedTtsEngine]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_VOICE_STORAGE_KEY, selectedVoiceModel);
+    writeStoredVoiceModel(bookLanguageCode, selectedVoiceModel);
   }, [selectedVoiceModel]);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.localStorage.setItem(READER_DEVICE_VOICE_STORAGE_KEY, selectedDeviceVoiceUri);
+    writeStoredDeviceVoiceUri(bookLanguageCode, selectedDeviceVoiceUri);
   }, [selectedDeviceVoiceUri]);
 
   useEffect(() => {
@@ -1006,6 +926,11 @@ export function AiRequestsPage() {
   }, [chapterId, isNavigationPanelVisible]);
 
   const isSectionScope = Boolean(chapterId);
+  const bookLanguageName = getBookLanguageName(bookLanguageCode);
+  const CURRENT_SECTION_SUMMARY_PROMPT = `Eres editor literario. Resume esta sección de un libro en ${bookLanguageName} de manera clara, fiel y compacta. Escribe el resumen en ${bookLanguageName}. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`;
+  const MULTIPLE_SECTIONS_SUMMARY_PROMPT = `Eres editor literario. Resume estas secciones de un libro en ${bookLanguageName} de manera clara, fiel y compacta. Escribe el resumen en ${bookLanguageName}. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`;
+  const ALL_SECTIONS_SUMMARY_PROMPT = `Eres editor literario. Resume las secciones de un libro en ${bookLanguageName} de manera clara, fiel y compacta. Escribe el resumen en ${bookLanguageName}. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`;
+  const GRAPHIC_SUMMARY_PROMPT = `Eres editor literario. Crea un resumen gráfico en ${bookLanguageName} que organice las ideas, hechos, personajes o conceptos principales y muestre claramente sus relaciones. Sé fiel al texto, compacto y no inventes información.`;
   const backToReaderPath = requestsQuery.data?.section
     ? `/books/${bookId}?page=${requestsQuery.data.section.startPageNumber}`
     : `/books/${bookId}`;
@@ -1270,7 +1195,7 @@ export function AiRequestsPage() {
 
     const currentSectionTitle = currentSectionPathTitle ?? "actual";
     setSelectedChapterIds(selectSameLevelPreviousAndCurrentChapterIds());
-    setPromptText(`Eres editor literario. Resume el capítulo o sección «${currentSectionTitle}», teniendo en cuenta los capítulos anteriores solo para las referencias, si las hubiera, o el contexto. Es un libro en español; resume de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`);
+    setPromptText(`Eres editor literario. Resume el capítulo o sección «${currentSectionTitle}», teniendo en cuenta los capítulos anteriores solo para las referencias, si las hubiera, o el contexto. Es un libro en ${bookLanguageName}; escribe el resumen en ${bookLanguageName} de manera clara, fiel y compacta. No inventes información, no añadas opiniones y conserva los hechos o ideas principales.`);
     resetAiRequestFeedback();
   }
 
@@ -1677,9 +1602,9 @@ export function AiRequestsPage() {
       }
 
       const utterance = new SpeechSynthesisUtterance(speechText);
-      utterance.lang = "es-ES";
+      utterance.lang = getSpeechLanguage(bookLanguageCode);
       utterance.rate = playbackRate;
-      utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices);
+      utterance.voice = selectedDeviceVoice ?? pickFallbackDeviceVoice(availableDeviceVoices, bookLanguageCode);
       utterance.onstart = () => {
         setLoadingAudioRequestId(null);
         setPlayingRequestId(request.requestId);
@@ -2181,7 +2106,7 @@ export function AiRequestsPage() {
               selectedDeviceVoiceUri={selectedDeviceVoiceUri}
               selectedTtsEngine={selectedTtsEngine}
               selectedVoiceModel={selectedVoiceModel}
-              voiceOptions={TTS_VOICE_OPTIONS}
+              voiceOptions={ttsVoiceOptions}
             />
           </ReaderFloatingAudioPopover>
 

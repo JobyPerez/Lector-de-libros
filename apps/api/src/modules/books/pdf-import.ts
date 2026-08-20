@@ -53,9 +53,14 @@ type PdfOutlineDocument = {
 
 const sameLineTolerance = 2;
 const minimumFallbackParagraphGap = 14;
-const headingKeywordPattern = /^(cap[ií]tulo|chapter|parte|section|pr[oó]logo|ep[ií]logo|prefacio|introducci[oó]n)\b/iu;
+const headingKeywordPattern = /^(cap[ií]tulo|capitolo|chapter|parte|section|sezione|pr[oó]logo|ep[ií]logo|prefacio|prefazione|introducci[oó]n|introduzione)\b/iu;
 const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
-const signatureLikePattern = /^[A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+(?:[A-ZÁÉÍÓÚÑ][\p{L}'’-]+|[A-ZÁÉÍÓÚÑ]\.)){1,4}$/u;
+const signatureLikePattern = /^\p{Lu}[\p{L}'’-]+(?:\s+(?:\p{Lu}[\p{L}'’-]+|\p{Lu}\.)){1,4}$/u;
+const pageNumberPattern = /^(?:-?\s*\d+\s*-?|P[aá]gina\s*\d+|P[aá]g\.\s*\d+|\d+\s*\/\s*\d+)$/iu;
+
+export function isPdfPageNumberLine(text: string): boolean {
+  return pageNumberPattern.test(text.trim());
+}
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -96,13 +101,13 @@ function computeMedian(values: number[]): number {
 }
 
 function countUppercaseRatio(value: string): number {
-  const uppercaseLetters = value.replace(/[^A-ZÁÉÍÓÚÑ]/gu, "");
-  const totalLetters = value.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñ]/gu, "").length;
-  return totalLetters > 0 ? uppercaseLetters.length / totalLetters : 0;
+  const uppercaseLetters = value.match(/\p{Lu}/gu)?.length ?? 0;
+  const totalLetters = value.match(/\p{L}/gu)?.length ?? 0;
+  return totalLetters > 0 ? uppercaseLetters / totalLetters : 0;
 }
 
 function countTitleCaseWords(words: string[]): number {
-  return words.filter((word) => /^[A-ZÁÉÍÓÚÑ][\p{Ll}\d'’-]*$/u.test(word)).length;
+  return words.filter((word) => /^\p{Lu}[\p{Ll}\d'’-]*$/u.test(word)).length;
 }
 
 function endsWithSentencePunctuation(value: string): boolean {
@@ -123,7 +128,7 @@ function startsNewDialogue(value: string): boolean {
 }
 
 function startsNewSentenceLike(value: string): boolean {
-  return /^["“¿¡A-ZÁÉÍÓÚÑ]/u.test(normalizeWhitespace(value));
+  return /^["“¿¡\p{Lu}]/u.test(normalizeWhitespace(value));
 }
 
 function shouldPreserveLineBreak(previousLine: PdfLine, currentLine: PdfLine, bodyLineWidth: number): boolean {
@@ -138,7 +143,7 @@ function shouldPreserveLineBreak(previousLine: PdfLine, currentLine: PdfLine, bo
   return previousLineIsShort && endsWithSentencePunctuation(previousText) && startsNewSentenceLike(currentText);
 }
 
-function isHeadingLikeText(text: string, allowTitleCase = true): boolean {
+export function isPdfHeadingLikeText(text: string, allowTitleCase = true): boolean {
   const normalized = normalizeWhitespace(text);
   if (!normalized) {
     return false;
@@ -258,7 +263,7 @@ function isStandaloneHeadingLine(lines: PdfLine[], lineIndex: number, metrics: P
   }
 
   const normalizedText = normalizeWhitespace(line.text);
-  if (!isHeadingLikeText(normalizedText, true)) {
+  if (!isPdfHeadingLikeText(normalizedText, true)) {
     return false;
   }
 
@@ -300,7 +305,7 @@ function canExtendHeadingCluster(lines: PdfLine[], lineIndex: number, metrics: P
     return false;
   }
 
-  if (isHeadingLikeText(normalizedText, true)) {
+  if (isPdfHeadingLikeText(normalizedText, true)) {
     return true;
   }
 
@@ -687,11 +692,10 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
     const lines = buildLines(textItems);
     
     // Heurística para eliminar números de página del encabezado y pie de página
-    const pageNumberPattern = /^(?:-?\s*\d+\s*-?|P[aá]gina\s*\d+|P[aá]g\.\s*\d+|\d+\s*\/\s*\d+)$/i;
-    if (lines.length > 0 && pageNumberPattern.test(lines[0]?.text.trim() || "")) {
+    if (lines.length > 0 && isPdfPageNumberLine(lines[0]?.text ?? "")) {
       lines.shift();
     }
-    if (lines.length > 0 && pageNumberPattern.test(lines[lines.length - 1]?.text.trim() || "")) {
+    if (lines.length > 0 && isPdfPageNumberLine(lines[lines.length - 1]?.text ?? "")) {
       lines.pop();
     }
 

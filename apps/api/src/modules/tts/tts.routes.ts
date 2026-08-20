@@ -10,7 +10,12 @@ import oracledb from "oracledb";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
-import { ALLOWED_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
+import {
+  ALLOWED_DEEPGRAM_TTS_MODELS,
+  appEnv,
+  TTS_LANGUAGE_CATALOG,
+  type TtsLanguageCode
+} from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
 import { normalizeTextForDeepgram } from "../../services/paragraph-metrics.js";
 import { getUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
@@ -31,6 +36,10 @@ type TtsParagraphRow = {
   paragraphNumber: number;
   paragraphText: string;
   sequenceNumber: number;
+};
+
+type BookTtsLanguageRow = {
+  languageCode: string | null;
 };
 
 type TtsOfflineParagraphRow = Pick<TtsParagraphRow, "cachedTextChecksum" | "paragraphId" | "paragraphText" | "sequenceNumber">;
@@ -104,6 +113,63 @@ const aiRequestTtsParamsSchema = z.object({
   bookId: z.string().uuid(),
   requestId: z.string().uuid()
 });
+
+export function normalizeTtsLanguageCode(languageCode: string | null | undefined): TtsLanguageCode {
+  const normalizedLanguageCode = languageCode?.trim().toLowerCase().split(/[-_]/u)[0] || "es";
+  const language = TTS_LANGUAGE_CATALOG.find((candidate) => candidate.languageCode === normalizedLanguageCode);
+
+  if (!language) {
+    throw Object.assign(new Error(`El idioma del libro (${languageCode || "sin especificar"}) no admite síntesis de voz.`), {
+      statusCode: 422
+    });
+  }
+
+  return language.languageCode;
+}
+
+function getPreferredTtsVoiceModel(credentials: UserAiCredentials, languageCode: TtsLanguageCode) {
+  return languageCode === "it" ? credentials.deepgramTtsModelIt : credentials.deepgramTtsModel;
+}
+
+export function resolveTtsVoiceModel(
+  bookLanguageCode: string | null | undefined,
+  requestedVoiceModel: string | undefined,
+  credentials: Pick<UserAiCredentials, "deepgramTtsModel" | "deepgramTtsModelIt">
+) {
+  const languageCode = normalizeTtsLanguageCode(bookLanguageCode);
+  const voiceModel = requestedVoiceModel
+    ?? (languageCode === "it" ? credentials.deepgramTtsModelIt : credentials.deepgramTtsModel);
+  const language = TTS_LANGUAGE_CATALOG.find((candidate) => candidate.languageCode === languageCode);
+
+  if (!language?.voices.some((voice) => voice.model === voiceModel)) {
+    throw Object.assign(new Error(`La voz ${voiceModel} no es compatible con el idioma ${languageCode} del libro.`), {
+      statusCode: 422
+    });
+  }
+
+  return { languageCode, voiceModel };
+}
+
+async function fetchBookTtsLanguage(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string
+) {
+  const result = await connection.execute(
+    `
+      SELECT language_code AS "languageCode"
+      FROM books
+      WHERE book_id = :bookId
+    `,
+    { bookId }
+  );
+  const [book] = (result.rows ?? []) as BookTtsLanguageRow[];
+
+  if (!book) {
+    throw Object.assign(new Error("Book not found."), { statusCode: 404 });
+  }
+
+  return book.languageCode;
+}
 
 function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
@@ -801,6 +867,14 @@ async function persistAiRequestAudioBuffer(
 }
 
 export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/tts/config", async (_request, reply) => reply.send({
+    defaults: {
+      es: appEnv.deepgramTtsModel,
+      it: appEnv.deepgramTtsModelIt
+    },
+    languages: TTS_LANGUAGE_CATALOG
+  }));
+
   app.get("/tts/deepgram/balance", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -830,10 +904,11 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
-      const requestedVoiceModel = query.voiceModel ?? credentials.deepgramTtsModel;
       const bookResult = await connection.execute(
         `
-          SELECT title AS "title"
+          SELECT
+            title AS "title",
+            language_code AS "languageCode"
           FROM books
           WHERE book_id = :bookId
         `,
@@ -841,10 +916,11 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           bookId: params.bookId
         }
       );
-      const [book] = (bookResult.rows ?? []) as Array<{ title: string }>;
+      const [book] = (bookResult.rows ?? []) as Array<{ languageCode: string | null; title: string }>;
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
       }
+      const { voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(book.languageCode, query.voiceModel, credentials);
 
       const outline = await resolveBookOutline(connection, params.bookId);
       const sectionIndex = outline.findIndex((entry) => entry.chapterId === params.chapterId);
@@ -955,8 +1031,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
+      const { languageCode, voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
       const deepgramApiKey = requireDeepgramApiKey(credentials);
-      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -1021,7 +1098,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           requestedVoiceModel,
           synthesizedAudio.audioBuffer,
           synthesizedAudio.contentType,
-          requestedVoiceModel === credentials.deepgramTtsModel
+          requestedVoiceModel === getPreferredTtsVoiceModel(credentials, languageCode)
         );
       }
 
@@ -1056,8 +1133,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
+      const { languageCode, voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
       const deepgramApiKey = requireDeepgramApiKey(credentials);
-      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -1147,7 +1225,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             requestedVoiceModel,
             resolvedParagraphAudio.audioBuffer,
             resolvedParagraphAudio.contentType,
-            requestedVoiceModel === credentials.deepgramTtsModel
+            requestedVoiceModel === getPreferredTtsVoiceModel(credentials, languageCode)
           );
         }
 
@@ -1203,8 +1281,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
+      const { voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
       const deepgramApiKey = requireDeepgramApiKey(credentials);
-      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
       const result = await connection.execute(
         `
           SELECT
@@ -1252,7 +1331,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
-      const requestedVoiceModel = payload.voiceModel ?? credentials.deepgramTtsModel;
+      const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
+      const { voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
       const result = await connection.execute(
         `
           SELECT
