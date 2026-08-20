@@ -5278,7 +5278,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const pageEmbeddedImages = extractEmbeddedImageSources(page.htmlContent);
-      const richPage = buildRichPageFromEditableText(payload.editedText, { embeddedImages: pageEmbeddedImages });
+      const richPage = buildRichPageFromEditableText(payload.editedText, {
+        embeddedImages: pageEmbeddedImages,
+        languageCode: book.languageCode
+      });
       const paragraphs = richPage.paragraphs;
 
       if (!richPage.htmlContent) {

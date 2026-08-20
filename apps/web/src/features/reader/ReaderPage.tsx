@@ -604,6 +604,11 @@ function getRichParagraphTextSegments(paragraphNode: HTMLElement): RichParagraph
 }
 
 function extractRichParagraphText(paragraphNode: HTMLElement) {
+  const readerText = paragraphNode.dataset.readerText?.trim();
+  if (readerText) {
+    return readerText;
+  }
+
   return getRichParagraphTextSegments(paragraphNode)
     .map((segment) => segment.kind === "break" ? "\n" : segment.text)
     .join("");

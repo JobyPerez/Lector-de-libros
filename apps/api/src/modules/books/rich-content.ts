@@ -16,6 +16,7 @@ type RichBlock = {
 type RichPageBuildOptions = {
   embeddedImages?: EmbeddedImageSourceMap;
   inferHeadings?: boolean;
+  languageCode?: "es" | "it";
 };
 
 export type StructuredRichBlockInput =
@@ -91,6 +92,14 @@ function buildAlignmentAttributes(alignment: TextAlignment | null): string {
   }
 
   return ` data-text-align="${alignment}" style="text-align: ${alignment};"`;
+}
+
+function buildImageNarration(altText: string, languageCode: RichPageBuildOptions["languageCode"]): string {
+  if (languageCode === "it") {
+    return altText ? `Immagine. ${altText}` : "Immagine.";
+  }
+
+  return altText ? `Imagen. ${altText}` : "Imagen.";
 }
 
 function stripInlineMarkdown(value: string): string {
@@ -221,15 +230,15 @@ function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptio
       return null;
     }
 
-    const hasText = altText.length > 0;
+    const narration = buildImageNarration(altText, options?.languageCode);
 
     return {
       alignment,
       editableText: prependAlignment(`![${altText}](${sourceToken})`, alignment),
-      html: `<figure class="reader-rich-node" role="button" tabindex="0"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
-      includeInParagraphs: hasText,
+      html: `<figure class="reader-rich-node" role="button" tabindex="0" data-reader-text="${escapeHtml(narration)}"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
+      includeInParagraphs: true,
       level: null,
-      text: altText
+      text: narration
     };
   }
 
