@@ -1,7 +1,7 @@
 import AdmZip from "adm-zip";
 import { load } from "cheerio";
 
-import type { BookLanguageCode, ImportedBinaryAsset, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
+import type { BookImportProgressCallback, BookLanguageCode, ImportedBinaryAsset, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 
 type ManifestItem = {
   href: string;
@@ -1499,7 +1499,8 @@ export function extractEpubCover(fileBuffer: Buffer): ImportedBinaryAsset | null
   return extractCoverFromParsedArchive(openEpubArchive(fileBuffer));
 }
 
-export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
+export async function parseEpubBuffer(fileBuffer: Buffer, onProgress?: BookImportProgressCallback): Promise<ImportedDocument> {
+  onProgress?.({ completedUnits: null, message: "Abriendo el EPUB...", progress: 0, totalUnits: null, unit: null });
   const parsedArchive = openEpubArchive(fileBuffer);
   const coverImage = extractCoverFromParsedArchive(parsedArchive);
   const metadataLanguageCode = normalizeEpubLanguageCode(parsedArchive.opfDocument("metadata > dc\\:language, metadata > language").first().text());
@@ -1513,7 +1514,7 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
   };
   const preparedDocuments: PreparedSpineDocument[] = [];
 
-  for (const idReference of parsedArchive.spineItemIds) {
+  for (const [spineIndex, idReference] of parsedArchive.spineItemIds.entries()) {
     const manifestItem = parsedArchive.manifest.get(idReference);
     if (!manifestItem || !/html|xhtml/u.test(manifestItem.mediaType)) {
       continue;
@@ -1537,6 +1538,15 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
     sanitizeDocumentMarkup(document);
 
     preparedDocuments.push({ document, entryPath, inlineStyles });
+
+    onProgress?.({
+      completedUnits: spineIndex + 1,
+      message: `Preparando documento ${spineIndex + 1} de ${parsedArchive.spineItemIds.length}`,
+      progress: parsedArchive.spineItemIds.length > 0 ? (spineIndex + 1) / parsedArchive.spineItemIds.length * 0.48 : 0.48,
+      totalUnits: parsedArchive.spineItemIds.length,
+      unit: "documents"
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   const headingOffsets = preparedDocuments.flatMap((preparedDocument) => normalizeDocumentHeadingsFromToc(preparedDocument, tocEntries));
@@ -1544,7 +1554,7 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
     headingOffsets.map((offset) => [offset, headingOffsets.filter((candidate) => candidate === offset).length])
   ).entries()].sort((left, right) => right[1] - left[1] || Math.abs(left[0]) - Math.abs(right[0]))[0]?.[0] ?? 0;
 
-  for (const preparedDocument of preparedDocuments) {
+  for (const [documentIndex, preparedDocument] of preparedDocuments.entries()) {
     const { document, entryPath, inlineStyles } = preparedDocument;
     applyHeadingLevelOffset(document, dominantHeadingOffset);
 
@@ -1562,8 +1572,24 @@ export async function parseEpubBuffer(fileBuffer: Buffer): Promise<ImportedDocum
       });
       pageEntryPaths.push(entryPath);
     }
+
+    onProgress?.({
+      completedUnits: documentIndex + 1,
+      message: `Construyendo páginas del documento ${documentIndex + 1} de ${preparedDocuments.length}`,
+      progress: 0.48 + (documentIndex + 1) / preparedDocuments.length * 0.46,
+      totalUnits: preparedDocuments.length,
+      unit: "documents"
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
+  onProgress?.({
+    completedUnits: pages.length,
+    message: "Resolviendo enlaces e índice del EPUB...",
+    progress: 0.95,
+    totalUnits: pages.length,
+    unit: "pages"
+  });
   for (const [pageIndex, page] of pages.entries()) {
     page.htmlContent = rewritePageInternalLinks(page.htmlContent, pageEntryPaths[pageIndex] ?? "", pageAnchorLookup);
   }

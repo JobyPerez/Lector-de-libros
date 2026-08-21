@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
+import type { BookImportProgressCallback, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 import { buildRichPageFromParagraphs } from "./rich-content.js";
 
 type PdfTextItem = {
@@ -669,7 +669,8 @@ async function extractPdfOutlineEntries(
   }
 }
 
-export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocument> {
+export async function parsePdfBuffer(fileBuffer: Buffer, onProgress?: BookImportProgressCallback): Promise<ImportedDocument> {
+  onProgress?.({ completedUnits: null, message: "Abriendo el PDF...", progress: 0, totalUnits: null, unit: null });
   const pdfModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const pdfDocument = await pdfModule.getDocument(new Uint8Array(fileBuffer)).promise;
 
@@ -752,8 +753,23 @@ export async function parsePdfBuffer(fileBuffer: Buffer): Promise<ImportedDocume
       paragraphs: richContent.paragraphs,
       rawText: paragraphs.join("\n\n") || lines.map((line) => line.text).join("\n")
     });
+
+    onProgress?.({
+      completedUnits: pageNumber,
+      message: `Procesando página ${pageNumber} de ${pdfDocument.numPages}`,
+      progress: pageNumber / pdfDocument.numPages * 0.94,
+      totalUnits: pdfDocument.numPages,
+      unit: "pages"
+    });
   }
 
+  onProgress?.({
+    completedUnits: pdfDocument.numPages,
+    message: "Construyendo el índice del PDF...",
+    progress: 0.95,
+    totalUnits: pdfDocument.numPages,
+    unit: "pages"
+  });
   const outlineEntries = await extractPdfOutlineEntries(pdfDocument, pages);
 
   return {

@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
-import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBooks, importBook, inspectBookImport, leaveBookShare, updateBook, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
+import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBookImportProgress, fetchBooks, importBook, leaveBookShare, updateBook, type BookImportProgress, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
 import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
@@ -331,10 +331,10 @@ export function ShelfPage() {
     languageCode: "es",
     title: ""
   });
-  const [languageSuggestion, setLanguageSuggestion] = useState<"detected" | "metadata" | null>(null);
-  const [inspectingLanguage, setInspectingLanguage] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [importProgressId, setImportProgressId] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<BookImportProgress | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
   const [bookActionError, setBookActionError] = useState<string | null>(null);
   const [bookActionSuccess, setBookActionSuccess] = useState<string | null>(null);
@@ -370,6 +370,31 @@ export function ShelfPage() {
 
   const hasSharedBooks = (sharedBooksQuery.data?.length ?? 0) > 0;
   const effectiveScope = scope;
+
+  useEffect(() => {
+    if (!accessToken || !importProgressId) {
+      return;
+    }
+
+    let isActive = true;
+    const pollProgress = async () => {
+      try {
+        const response = await fetchBookImportProgress(accessToken, importProgressId);
+        if (isActive) {
+          setImportProgress(response.progress);
+        }
+      } catch {
+        // The first poll can arrive before the import request initializes its progress record.
+      }
+    };
+
+    void pollProgress();
+    const intervalId = window.setInterval(() => void pollProgress(), 800);
+    return () => {
+      isActive = false;
+      window.clearInterval(intervalId);
+    };
+  }, [accessToken, importProgressId]);
 
   function toggleBookDetails(bookId: string) {
     setExpandedBookIds((current) => {
@@ -418,6 +443,9 @@ export function ShelfPage() {
 
     setSubmitting(true);
     setCreateError(null);
+    const progressId = crypto.randomUUID();
+    setImportProgress(null);
+    setImportProgressId(progressId);
 
     try {
       const formData = new FormData();
@@ -432,10 +460,9 @@ export function ShelfPage() {
         formData.append("authorName", importForm.authorName);
       }
 
-      await importBook(accessToken, formData);
+      await importBook(accessToken, formData, { progressId });
 
       setImportForm({ authorName: "", languageCode: "es", title: "" });
-      setLanguageSuggestion(null);
       setSelectedFile(null);
       setViewTransitionDirection("back");
       setIsImportPanelVisible(false);
@@ -444,25 +471,7 @@ export function ShelfPage() {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro.");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function handleImportFileChange(file: File | null) {
-    setSelectedFile(file);
-    setLanguageSuggestion(null);
-    if (!file || !accessToken) return;
-
-    setInspectingLanguage(true);
-    try {
-      const suggestion = await inspectBookImport(accessToken, file);
-      if (suggestion.languageCode) {
-        setImportForm((current) => ({ ...current, languageCode: suggestion.languageCode ?? current.languageCode }));
-        setLanguageSuggestion(suggestion.source);
-      }
-    } catch {
-      // Language inspection is advisory; importing remains available with manual selection.
-    } finally {
-      setInspectingLanguage(false);
+      setImportProgressId(null);
     }
   }
 
@@ -1451,10 +1460,7 @@ export function ShelfPage() {
             <label>
               Idioma
               <select
-                onChange={(event) => {
-                  setImportForm((current) => ({ ...current, languageCode: event.target.value as BookLanguageCode }));
-                  setLanguageSuggestion(null);
-                }}
+                onChange={(event) => setImportForm((current) => ({ ...current, languageCode: event.target.value as BookLanguageCode }))}
                 value={importForm.languageCode}
               >
                 {BOOK_LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -1464,25 +1470,45 @@ export function ShelfPage() {
               Archivo
               <input
                 accept=".pdf,.epub,application/pdf,application/epub+zip"
-                onChange={(event) => void handleImportFileChange(event.target.files?.[0] ?? null)}
+                onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
                 type="file"
               />
-              <span className="helper-text">
-                {inspectingLanguage
-                  ? "Analizando el idioma..."
-                  : languageSuggestion === "metadata"
-                    ? "Idioma sugerido desde los metadatos del EPUB. Puedes cambiarlo."
-                    : languageSuggestion === "detected"
-                      ? "Idioma sugerido a partir del texto. Puedes cambiarlo."
-                      : "Formatos admitidos: PDF y EPUB."}
-              </span>
+              <span className="helper-text">Formatos admitidos: PDF y EPUB. El archivo se procesará al pulsar Importar libro.</span>
             </label>
+
+            {submitting ? (
+              <div aria-live="polite" className="book-import-progress">
+                <div className="book-import-progress-heading">
+                  <strong>{importProgress?.message ?? "Iniciando la importación..."}</strong>
+                  <span>{importProgress?.percentage ?? 0}%</span>
+                </div>
+                <div
+                  aria-label="Progreso de importación"
+                  aria-valuemax={100}
+                  aria-valuemin={0}
+                  aria-valuenow={importProgress?.percentage ?? 0}
+                  className="book-import-progress-track"
+                  role="progressbar"
+                >
+                  <span style={{ width: `${importProgress?.percentage ?? 0}%` }} />
+                </div>
+                {importProgress?.completedUnits !== null && importProgress?.completedUnits !== undefined ? (
+                  <span className="book-import-progress-detail">
+                    {importProgress.unit === "bytes"
+                      ? `${(importProgress.completedUnits / 1024 / 1024).toLocaleString("es-ES", { maximumFractionDigits: 1 })} MB recibidos`
+                      : importProgress.totalUnits
+                        ? `${importProgress.completedUnits} de ${importProgress.totalUnits} ${importProgress.unit === "documents" ? "documentos" : "páginas"}`
+                        : null}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
 
             {createError ? <p className="error-text">{createError}</p> : null}
 
             <div className="import-panel-actions">
               <button className="primary-button" disabled={submitting} type="submit">
-                {submitting ? "Importando..." : "Importar libro"}
+                {submitting ? `Importando... ${importProgress?.percentage ?? 0}%` : "Importar libro"}
               </button>
               <button className="secondary-button" onClick={closeImportPanel} type="button">
                 Cancelar

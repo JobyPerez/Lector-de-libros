@@ -16,7 +16,7 @@ import { recordBookView, recordUserActivity } from "../../services/user-activity
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
-import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, suggestImportedDocumentLanguage, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
+import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
@@ -275,6 +275,19 @@ type ImportImagesProgressRecord = {
   userId: string;
 };
 
+type BookImportProgressRecord = {
+  completedUnits: number | null;
+  errorMessage: string | null;
+  message: string;
+  percentage: number;
+  sourceType: SupportedBookSourceType | null;
+  stage: "completed" | "failed" | "finalizing" | "parsing" | "reading" | "saving";
+  totalUnits: number | null;
+  unit: "bytes" | "documents" | "pages" | null;
+  updatedAt: number;
+  userId: string;
+};
+
 type AiRequestRetryProgressRecord = {
   attempt: number;
   maxAttempts: number;
@@ -434,6 +447,7 @@ type RestoredHighlightRecord = HighlightTextRange & {
 };
 
 const importImagesProgressStore = new Map<string, ImportImagesProgressRecord>();
+const bookImportProgressStore = new Map<string, BookImportProgressRecord>();
 const importImagesCancellationRequests = new Set<string>();
 const importImagesProgressTtlMs = 10 * 60 * 1000;
 const aiRequestRetryProgressStore = new Map<string, AiRequestRetryProgressRecord>();
@@ -454,6 +468,35 @@ function pruneImportImagesProgressStore() {
       importImagesProgressStore.delete(progressId);
       importImagesCancellationRequests.delete(progressId);
     }
+  }
+}
+
+function pruneBookImportProgressStore() {
+  const expiresBefore = Date.now() - importImagesProgressTtlMs;
+  for (const [progressId, progress] of bookImportProgressStore.entries()) {
+    if (progress.updatedAt < expiresBefore) {
+      bookImportProgressStore.delete(progressId);
+    }
+  }
+}
+
+function setBookImportProgress(progressId: string | undefined, progress: BookImportProgressRecord) {
+  if (!progressId) {
+    return;
+  }
+
+  pruneBookImportProgressStore();
+  bookImportProgressStore.set(progressId, { ...progress, updatedAt: Date.now() });
+}
+
+function updateBookImportProgress(progressId: string | undefined, progress: Partial<BookImportProgressRecord>) {
+  if (!progressId) {
+    return;
+  }
+
+  const current = bookImportProgressStore.get(progressId);
+  if (current) {
+    setBookImportProgress(progressId, { ...current, ...progress });
   }
 }
 
@@ -506,13 +549,14 @@ function readMultipartField(fields: MultipartFile["fields"], fieldName: string):
   return fieldValue.value?.trim() || undefined;
 }
 
-async function readUploadedFile(file: MultipartFile, options?: { fileName?: string; maxBytes?: number }): Promise<Buffer> {
+async function readUploadedFile(file: MultipartFile, options?: { fileName?: string; maxBytes?: number; onProgress?: (bytesRead: number) => void }): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let totalBytes = 0;
 
   for await (const chunk of file.file) {
     const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalBytes += bufferChunk.length;
+    options?.onProgress?.(totalBytes);
 
     if (options?.maxBytes && totalBytes > options.maxBytes) {
       throw Object.assign(new Error(
@@ -3425,6 +3469,33 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  app.get("/import/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    pruneBookImportProgressStore();
+    const params = z.object({ progressId: z.string().uuid() }).parse(request.params);
+    const progress = bookImportProgressStore.get(params.progressId);
+
+    if (!progress || progress.userId !== request.currentUser.userId) {
+      return reply.status(404).send({ message: "Progreso no encontrado." });
+    }
+
+    return reply.send({
+      progress: {
+        completedUnits: progress.completedUnits,
+        errorMessage: progress.errorMessage,
+        message: progress.message,
+        percentage: progress.percentage,
+        sourceType: progress.sourceType,
+        stage: progress.stage,
+        totalUnits: progress.totalUnits,
+        unit: progress.unit
+      }
+    });
+  });
+
   app.get("/import-images/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -3909,30 +3980,24 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.post("/import/inspect", { preHandler: authenticateRequest }, async (request, reply) => {
-    if (!request.currentUser) {
-      return reply.status(401).send({ message: "Unauthenticated request." });
-    }
-
-    const uploadedFile = await request.file();
-    if (!uploadedFile) {
-      return reply.status(400).send({ message: "Debes adjuntar un archivo PDF o EPUB." });
-    }
-
-    const sourceType = detectSourceType(uploadedFile.filename, uploadedFile.mimetype);
-    const importedDocument = await parseUploadedBook(sourceType, await readUploadedFile(uploadedFile));
-    const suggestion = suggestImportedDocumentLanguage(importedDocument);
-
-    return reply.send({
-      languageCode: suggestion?.languageCode ?? null,
-      source: suggestion?.source ?? null
-    });
-  });
-
   app.post("/import", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
+
+    const query = z.object({ progressId: z.string().uuid().optional() }).parse(request.query);
+    setBookImportProgress(query.progressId, {
+      completedUnits: 0,
+      errorMessage: null,
+      message: "Recibiendo el archivo...",
+      percentage: 0,
+      sourceType: null,
+      stage: "reading",
+      totalUnits: null,
+      unit: "bytes",
+      updatedAt: Date.now(),
+      userId: request.currentUser.userId
+    });
 
     const uploadedFile = await request.file();
     if (!uploadedFile) {
@@ -3948,13 +4013,50 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     };
     const parsedFields = importBookFieldsSchema.parse(rawFields);
     const sourceType = detectSourceType(uploadedFile.filename, uploadedFile.mimetype, parsedFields.sourceType);
-    const fileBuffer = await readUploadedFile(uploadedFile);
-    const importedDocument = await parseUploadedBook(sourceType, fileBuffer);
+    updateBookImportProgress(query.progressId, { sourceType });
+    const { fileBuffer, importedDocument } = await (async () => {
+      try {
+        const nextFileBuffer = await readUploadedFile(uploadedFile, {
+          onProgress: (bytesRead) => updateBookImportProgress(query.progressId, {
+            completedUnits: bytesRead,
+            message: "Recibiendo el archivo...",
+            percentage: 5,
+            unit: "bytes"
+          })
+        });
+        const nextImportedDocument = await parseUploadedBook(sourceType, nextFileBuffer, (progress) => {
+          updateBookImportProgress(query.progressId, {
+            completedUnits: progress.completedUnits,
+            message: progress.message,
+            percentage: Math.round(10 + progress.progress * 62),
+            stage: "parsing",
+            totalUnits: progress.totalUnits,
+            unit: progress.unit
+          });
+        });
+        return { fileBuffer: nextFileBuffer, importedDocument: nextImportedDocument };
+      } catch (error) {
+        updateBookImportProgress(query.progressId, {
+          errorMessage: error instanceof Error ? error.message : "No se pudo procesar el libro.",
+          message: "La importación ha fallado.",
+          stage: "failed"
+        });
+        throw error;
+      }
+    })();
     const languageCode = parsedFields.languageCode ?? importedDocument.metadataLanguageCode ?? "es";
     const bookId = randomUUID();
     const originalFileId = randomUUID();
     const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
     const connection = await getConnection();
+    updateBookImportProgress(query.progressId, {
+      completedUnits: 0,
+      message: "Preparando el guardado del libro...",
+      percentage: 74,
+      stage: "saving",
+      totalUnits: importedDocument.totalPages,
+      unit: "pages"
+    });
 
     try {
       await connection.execute(
@@ -4067,7 +4169,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       let sequenceNumber = 1;
 
-      for (const page of importedDocument.pages) {
+      for (const [pageIndex, page] of importedDocument.pages.entries()) {
         const pageId = randomUUID();
         await connection.execute(
           `
@@ -4140,8 +4242,20 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
           sequenceNumber += 1;
         }
+
+        updateBookImportProgress(query.progressId, {
+          completedUnits: pageIndex + 1,
+          message: `Guardando página ${pageIndex + 1} de ${importedDocument.totalPages}`,
+          percentage: Math.round(75 + (pageIndex + 1) / importedDocument.totalPages * 22),
+          totalUnits: importedDocument.totalPages
+        });
       }
 
+      updateBookImportProgress(query.progressId, {
+        message: "Finalizando la importación...",
+        percentage: 98,
+        stage: "finalizing"
+      });
       await recordUserActivity(connection, {
         action: "BOOK_IMPORTED",
         bookId,
@@ -4149,8 +4263,21 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
       await connection.commit();
+      updateBookImportProgress(query.progressId, {
+        completedUnits: importedDocument.totalPages,
+        message: "Importación completada.",
+        percentage: 100,
+        stage: "completed",
+        totalUnits: importedDocument.totalPages,
+        unit: "pages"
+      });
     } catch (error) {
       await connection.rollback();
+      updateBookImportProgress(query.progressId, {
+        errorMessage: error instanceof Error ? error.message : "No se pudo importar el libro.",
+        message: "La importación ha fallado.",
+        stage: "failed"
+      });
       throw error;
     } finally {
       await connection.close();

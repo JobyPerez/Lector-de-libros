@@ -829,8 +829,9 @@ export function createBook(accessToken: string, payload: { authorName?: string; 
   return request<{ book: BookSummary }>("/books", { accessToken, body: payload, method: "POST" });
 }
 
-export async function importBook(accessToken: string, payload: FormData) {
-  const response = await fetchWithAutoRefresh("/books/import", {
+export async function importBook(accessToken: string, payload: FormData, options?: { progressId?: string }) {
+  const params = options?.progressId ? `?progressId=${encodeURIComponent(options.progressId)}` : "";
+  const response = await fetchWithAutoRefresh(`/books/import${params}`, {
     accessToken,
     body: payload,
     fallbackMessage: "No se pudo importar el libro.",
@@ -845,22 +846,22 @@ export async function importBook(accessToken: string, payload: FormData) {
   return response.json() as Promise<{ book: BookSummary }>;
 }
 
-export async function inspectBookImport(accessToken: string, file: File) {
-  const payload = new FormData();
-  payload.append("file", file);
-  const response = await fetchWithAutoRefresh("/books/import/inspect", {
+export type BookImportProgress = {
+  completedUnits: number | null;
+  errorMessage: string | null;
+  message: string;
+  percentage: number;
+  sourceType: "EPUB" | "PDF" | null;
+  stage: "completed" | "failed" | "finalizing" | "parsing" | "reading" | "saving";
+  totalUnits: number | null;
+  unit: "bytes" | "documents" | "pages" | null;
+};
+
+export function fetchBookImportProgress(accessToken: string, progressId: string) {
+  return request<{ progress: BookImportProgress }>(`/books/import/progress/${progressId}`, {
     accessToken,
-    body: payload,
-    fallbackMessage: "No se pudo analizar el idioma del libro.",
-    headers: createHeaders({ accessToken }),
-    method: "POST"
+    method: "GET"
   });
-
-  if (!response.ok) {
-    throw await createApiRequestError(response, "No se pudo analizar el idioma del libro.");
-  }
-
-  return response.json() as Promise<{ languageCode: BookLanguageCode | null; source: "detected" | "metadata" | null }>;
 }
 
 export type UpdateBookInput = {

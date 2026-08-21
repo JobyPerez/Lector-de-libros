@@ -41,6 +41,16 @@ export type ImportedDocument = {
   totalParagraphs: number;
 };
 
+export type BookImportParseProgress = {
+  completedUnits: number | null;
+  message: string;
+  progress: number;
+  totalUnits: number | null;
+  unit: "documents" | "pages" | null;
+};
+
+export type BookImportProgressCallback = (progress: BookImportParseProgress) => void;
+
 const languageMarkers: Record<BookLanguageCode, readonly string[]> = {
   es: ["aunque", "también", "porque", "para", "pero", "desde", "hasta", "cuando", "donde", "entonces", "había", "tiene"],
   it: ["anche", "perché", "della", "delle", "degli", "nella", "nelle", "questo", "questa", "sono", "quando", "dove"]
@@ -240,10 +250,22 @@ export function suggestImportedDocumentLanguage(importedDocument: ImportedDocume
     : null;
 }
 
-export async function parseUploadedBook(sourceType: SupportedBookSourceType, fileBuffer: Buffer): Promise<ImportedDocument> {
+export async function parseUploadedBook(
+  sourceType: SupportedBookSourceType,
+  fileBuffer: Buffer,
+  onProgress?: BookImportProgressCallback
+): Promise<ImportedDocument> {
   const importedDocument = sourceType === "PDF"
-    ? await parsePdfBuffer(fileBuffer)
-    : await parseEpubBuffer(fileBuffer);
+    ? await parsePdfBuffer(fileBuffer, onProgress)
+    : await parseEpubBuffer(fileBuffer, onProgress);
+
+  onProgress?.({
+    completedUnits: importedDocument.pages.length,
+    message: "Normalizando el contenido extraído...",
+    progress: 0.98,
+    totalUnits: importedDocument.pages.length,
+    unit: "pages"
+  });
 
   const pageNumberMap = new Map<number, number>();
 
