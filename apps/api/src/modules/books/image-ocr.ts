@@ -5,6 +5,7 @@ import sharp from "sharp";
 import Tesseract from "tesseract.js";
 import { z } from "zod";
 
+import type { OcrModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 import { sanitizeParagraphs } from "./book-import.js";
 import { buildRichPageFromParagraphs, normalizeWhitespace as normalizeRichWhitespace } from "./rich-content.js";
@@ -86,6 +87,22 @@ type ChatCompletionResponse = {
   };
 };
 
+type ResponsesApiResponse = {
+  error?: ChatCompletionResponse["error"];
+  incomplete_details?: {
+    reason?: string;
+  } | null;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+      type?: string;
+    }>;
+    type?: string;
+  }>;
+  output_text?: string;
+  status?: string;
+};
+
 type VisionImageRequestPayload = {
   buffer: Buffer;
   mimeType: string;
@@ -106,6 +123,7 @@ type VisionOcrPrompt = {
 type RunOcrOnImageOptions = {
   awsCredentials?: AwsTextractCredentials | null | undefined;
   language?: OcrLanguage;
+  model?: OcrModelId;
   ocrMode?: ImageOcrMode;
   promptOverride?: string;
   rotation?: ImageRotation;
@@ -165,6 +183,7 @@ const minimumHeightForMarginCrop = 900;
 const optimizedVisionImageTargetBytes = Math.floor(opencodeVisionImageByteLimit * 0.9);
 const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
+const OPENCODE_RESPONSES_ENDPOINT = "https://opencode.ai/zen/v1/responses";
 const optimizedVisionRetryVariants: readonly VisionImageOptimizationVariant[] = [
   { quality: 82 },
   { maxWidth: 2400, quality: 78 },
@@ -313,6 +332,19 @@ function extractAssistantText(content: ChatCompletionResponse["choices"]): strin
   }
 
   return content?.[0]?.message?.reasoning?.trim() ?? "";
+}
+
+export function extractResponsesApiText(payload: ResponsesApiResponse): string {
+  if (payload.output_text?.trim()) {
+    return payload.output_text.trim();
+  }
+
+  return (payload.output ?? [])
+    .flatMap((item) => item.content ?? [])
+    .map((item) => item.text ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
 }
 
 function getOpenCodeChatCompletionsEndpoint(model: string): string {
@@ -823,13 +855,15 @@ async function executeVisionOcrRequest(
   croppedBuffer: Buffer,
   requestPayload: VisionImageRequestPayload,
   language: OcrLanguage,
+  model: OcrModelId,
   promptOverride?: string,
   maxTokensOverride?: number
 ): Promise<OcrPageResult> {
-  const model = appEnv.opencodeOcrModel;
-  const endpoint = getOpenCodeChatCompletionsEndpoint(model);
   const prompt = buildVisionOcrPrompt(language, promptOverride);
   const maxTokens = maxTokensOverride ?? prompt.maxTokens;
+  const usesResponsesApi = model === "muse-spark-1.2-contributor-free";
+  const endpoint = usesResponsesApi ? OPENCODE_RESPONSES_ENDPOINT : getOpenCodeChatCompletionsEndpoint(model);
+  const imageUrl = `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`;
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -837,32 +871,45 @@ async function executeVisionOcrRequest(
       Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      max_tokens: getOpenCodeMaxTokens(model, maxTokens),
-      messages: [
-        {
-          role: "system",
-          content: prompt.system
-        },
-        {
-          role: "user",
-          content: [
+    body: JSON.stringify(usesResponsesApi
+      ? {
+          input: [{
+            content: [
+              { text: prompt.user, type: "input_text" },
+              { image_url: imageUrl, type: "input_image" }
+            ],
+            role: "user"
+          }],
+          instructions: prompt.system,
+          max_output_tokens: maxTokens,
+          model
+        }
+      : {
+          max_tokens: getOpenCodeMaxTokens(model, maxTokens),
+          messages: [
             {
-              type: "text",
-              text: prompt.user
+              role: "system",
+              content: prompt.system
             },
             {
-              type: "image_url",
-              image_url: {
-                url: `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`
-              }
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: prompt.user
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: imageUrl
+                  }
+                }
+              ]
             }
-          ]
-        }
-      ],
-      model,
-      temperature: 0
-    })
+          ],
+          model,
+          temperature: 0
+        })
   });
 
   if (!response.ok) {
@@ -887,7 +934,7 @@ async function executeVisionOcrRequest(
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
-  const payload = (await response.json()) as ChatCompletionResponse;
+  const payload = (await response.json()) as ChatCompletionResponse & ResponsesApiResponse;
   if (payload.error?.message) {
     const errorDetails = extractVisionProviderErrorDetails(payload.error);
     const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
@@ -909,8 +956,10 @@ async function executeVisionOcrRequest(
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
-  const assistantText = extractAssistantText(payload.choices);
-  const finishReason = payload.choices?.[0]?.finish_reason;
+  const assistantText = usesResponsesApi ? extractResponsesApiText(payload) : extractAssistantText(payload.choices);
+  const finishReason = usesResponsesApi && payload.status === "incomplete"
+    ? payload.incomplete_details?.reason === "max_output_tokens" ? "length" : payload.incomplete_details?.reason
+    : payload.choices?.[0]?.finish_reason;
 
   let parsedPayload: z.infer<typeof ocrResponseSchema>;
   try {
@@ -921,6 +970,7 @@ async function executeVisionOcrRequest(
         croppedBuffer,
         requestPayload,
         language,
+        model,
         promptOverride,
         Math.min(maxTokens * 2, visionOcrMaxTokensCeiling)
       );
@@ -941,7 +991,7 @@ async function executeVisionOcrRequest(
   return buildStructuredVisionPage(croppedBuffer, parsedPayload.blocks as VisionStructuredBlock[], paragraphs, rawText);
 }
 
-async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: string, language: OcrLanguage, promptOverride?: string): Promise<OcrPageResult> {
+async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: string, language: OcrLanguage, model: OcrModelId, promptOverride?: string): Promise<OcrPageResult> {
   const croppedBuffer = await cropImageBufferToContent(fileBuffer);
 
   try {
@@ -949,13 +999,13 @@ async function runVisionOcrWithOpenCode(fileBuffer: Buffer, normalizedMimeType: 
       buffer: croppedBuffer,
       mimeType: normalizedMimeType,
       optimized: false
-    }, language, promptOverride);
+    }, language, model, promptOverride);
   } catch (error) {
     if (!(error instanceof Error) || !("retryWithOptimizedImage" in error) || !error.retryWithOptimizedImage) {
       throw error;
     }
 
-    return executeVisionOcrRequest(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer), language, promptOverride);
+    return executeVisionOcrRequest(croppedBuffer, await buildOptimizedVisionImagePayload(croppedBuffer), language, model, promptOverride);
   }
 }
 
@@ -1134,6 +1184,7 @@ export async function runOcrOnImage(
   const ocrMode = options.ocrMode ?? "AUTO";
   const awsCredentials = options.awsCredentials;
   const language = options.language ?? "es";
+  const model = options.model ?? appEnv.opencodeOcrModel;
   const rotation = options.rotation ?? 0;
   const promptOverride = options.promptOverride?.trim();
   const normalizedMimeType = inferImageMimeType(fileName, mimeType);
@@ -1151,7 +1202,7 @@ export async function runOcrOnImage(
 
   if (ocrMode === "VISION") {
     ensureVisionOcrConfiguration();
-    return runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, promptOverride);
+    return runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, model, promptOverride);
   }
 
   if (ocrMode === "TEXTRACT") {
@@ -1163,7 +1214,7 @@ export async function runOcrOnImage(
   } catch (textractError) {
     if (hasVisionOcrConfiguration()) {
       try {
-        return await runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, promptOverride);
+        return await runVisionOcrWithOpenCode(rotatedBuffer, normalizedMimeType, language, model, promptOverride);
       } catch {
         // fall through to local
       }

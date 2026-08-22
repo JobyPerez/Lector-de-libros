@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 
-import { AI_MODELS, SUMMARY_AI_MODEL_IDS } from "../../config/ai-models.js";
+import { AI_MODELS, OCR_MODEL_IDS, SUMMARY_AI_MODEL_IDS } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 
 type AiProvider = "opencode";
@@ -20,6 +20,7 @@ type AiConfigResponse = {
     supportsVision: boolean;
   }>;
   ocrModel: string;
+  ocrModelIds: string[];
   provider: AiProvider;
   summaryModelIds: string[];
 };
@@ -43,6 +44,7 @@ export async function registerAiConfigRoutes(app: FastifyInstance): Promise<void
         supportsVision
       })),
       ocrModel: appEnv.opencodeOcrModel,
+      ocrModelIds: [...OCR_MODEL_IDS],
       provider: "opencode",
       summaryModelIds: [...SUMMARY_AI_MODEL_IDS]
     };

@@ -7,7 +7,7 @@ import type { FastifyPluginAsync } from "fastify";
 import oracledb from "oracledb";
 import { z } from "zod";
 
-import { summaryAiModelIdSchema } from "../../config/ai-models.js";
+import { ocrModelIdSchema, summaryAiModelIdSchema, type OcrModelId } from "../../config/ai-models.js";
 import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
@@ -54,11 +54,13 @@ const imageBookFieldsSchema = z.object({
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
   languageCode: z.enum(supportedBookLanguageCodes).default("es"),
+  ocrModel: ocrModelIdSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema
 });
 
 const importImagesFieldsSchema = z.object({
+  ocrModel: ocrModelIdSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema,
   skipOcr: booleanFormFieldSchema.default(false)
@@ -145,6 +147,7 @@ const updateOcrPageSchema = z.object({
 });
 
 const rerunOcrPageSchema = z.object({
+  ocrModel: ocrModelIdSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
   promptOverride: ocrPromptOverrideSchema
 });
@@ -1741,6 +1744,7 @@ async function ocrImageFiles(
   files: UploadedBinaryFile[],
   ocrMode: ImageOcrMode,
   language: BookLanguageCode,
+  model?: OcrModelId,
   promptOverride?: string,
   awsCredentials?: AwsTextractCredentials | null,
   onProgress?: (progress: {
@@ -1777,6 +1781,7 @@ async function ocrImageFiles(
         ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, {
           awsCredentials,
           language,
+          ...(model ? { model } : {}),
           ocrMode,
           ...(promptOverride ? { promptOverride } : {})
         });
@@ -4307,6 +4312,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const payload = imageBookFieldsSchema.parse({
       authorName: multipartForm.fields.authorName,
       languageCode: multipartForm.fields.languageCode,
+      ocrModel: multipartForm.fields.ocrModel,
       ocrMode: multipartForm.fields.ocrMode,
       promptOverride: multipartForm.fields.promptOverride,
       synopsis: multipartForm.fields.synopsis,
@@ -4314,7 +4320,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const aiCredentials = await getUserAiCredentials(request.currentUser.userId);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.promptOverride, {
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.ocrModel, payload.promptOverride, {
       accessKeyId: aiCredentials.awsAccessKeyId,
       region: aiCredentials.awsRegion,
       secretAccessKey: aiCredentials.awsSecretAccessKey
@@ -4416,6 +4422,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
     const payload = importImagesFieldsSchema.parse({
+      ocrModel: multipartForm.fields.ocrModel,
       ocrMode: multipartForm.fields.ocrMode,
       promptOverride: multipartForm.fields.promptOverride,
       skipOcr: multipartForm.fields.skipOcr
@@ -4513,6 +4520,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             [imageFile],
             payload.ocrMode,
             existingBook.languageCode,
+            payload.ocrModel,
             payload.promptOverride,
             awsCredentials,
             (progress) => {
@@ -5513,6 +5521,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             secretAccessKey: aiCredentials.awsSecretAccessKey
           },
           language: book.languageCode,
+          ...(payload.ocrModel ? { model: payload.ocrModel } : {}),
           ocrMode: payload.ocrMode,
           ...(payload.promptOverride ? { promptOverride: payload.promptOverride } : {}),
           rotation: page.sourceImageRotation

@@ -19,8 +19,10 @@ import {
   uploadBookPageImage,
   updateOcrPage,
   type AppendImagesImportProgress,
+  type AiModelOption,
   type ImageRotation,
   type ImageOcrMode,
+  type OcrModelId,
   type OcrWaitReason,
   type ReaderBookmark,
   type ReaderHighlight,
@@ -310,6 +312,31 @@ function OcrPromptEditor({
         />
       </label>
       <p className="helper-text">{helperText}</p>
+    </div>
+  );
+}
+
+type OcrModelSelectProps = {
+  disabled?: boolean;
+  models: AiModelOption[];
+  onChange: (model: OcrModelId) => void;
+  value: OcrModelId;
+};
+
+function OcrModelSelect({ disabled = false, models, onChange, value }: OcrModelSelectProps) {
+  const selectedModel = models.find((model) => model.id === value);
+
+  return (
+    <div className="ocr-model-select-panel">
+      <label className="ocr-model-select-field">
+        <span>Modelo gratuito de OpenCode</span>
+        <select disabled={disabled} onChange={(event) => onChange(event.target.value as OcrModelId)} value={value}>
+          {models.map((model) => (
+            <option key={model.id} value={model.id}>{model.name}</option>
+          ))}
+        </select>
+      </label>
+      {selectedModel ? <p className="helper-text">{selectedModel.privacyNotice}</p> : null}
     </div>
   );
 }
@@ -857,6 +884,7 @@ export function BookBuilderPage() {
   const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
   const [scannerRequest, setScannerRequest] = useState<{ files: File[]; target: ScannerTarget } | null>(null);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("TEXTRACT");
+  const [ocrModelOverride, setOcrModelOverride] = useState<OcrModelId | null>(null);
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [reviewPromptOverride, setReviewPromptOverride] = useState(defaultVisionOcrEditablePrompt);
@@ -921,7 +949,12 @@ export function BookBuilderPage() {
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
   const aiConfigQuery = useAiConfig();
-  const reviewOcrModelLabel = aiConfigQuery.data?.ocrModel ?? "mimo-v2.5-free";
+  const ocrModelOptions = (aiConfigQuery.data?.ocrModelIds ?? [])
+    .map((modelId) => aiConfigQuery.data?.models.find((model) => model.id === modelId))
+    .filter((model): model is AiModelOption => Boolean(model));
+  const selectedOcrModel = ocrModelOverride ?? (aiConfigQuery.data?.ocrModel as OcrModelId | undefined) ?? "mimo-v2.5-free";
+  const selectedOcrModelOption = ocrModelOptions.find((model) => model.id === selectedOcrModel);
+  const reviewOcrModelLabel = selectedOcrModelOption?.name ?? selectedOcrModel;
   const awsCostQuery = useQuery({
     enabled: Boolean(accessToken) && hasAwsCredentials,
     queryFn: () => fetchAwsCostMonthToDate(accessToken as string),
@@ -2043,6 +2076,7 @@ export function BookBuilderPage() {
       }
 
       const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, {
+        ...(createOcrMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
         ocrMode: createOcrMode,
         ...(createOcrMode === "VISION" && resolveVisionPromptOverride(createPromptOverride)
           ? { promptOverride: resolveVisionPromptOverride(createPromptOverride) }
@@ -2154,6 +2188,7 @@ export function BookBuilderPage() {
           try {
             const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
               ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
+              ...(appendOcrMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
               ocrMode: appendOcrMode,
               ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
                 ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
@@ -2421,6 +2456,7 @@ export function BookBuilderPage() {
 
       setReviewOcrMode(nextMode);
       await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, {
+        ...(nextMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
         ocrMode: nextMode,
         ...(normalizedPromptOverride ? { promptOverride: normalizedPromptOverride } : {})
       }));
@@ -3072,6 +3108,14 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
+                      {createOcrMode === "VISION" && ocrModelOptions.length > 0 ? (
+                        <OcrModelSelect
+                          disabled={isCreating}
+                          models={ocrModelOptions}
+                          onChange={setOcrModelOverride}
+                          value={selectedOcrModel}
+                        />
+                      ) : null}
                       {createOcrMode === "TEXTRACT" ? (
                         <div className="append-placement-cost-row">
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
@@ -3323,6 +3367,14 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
+                      {appendOcrMode === "VISION" && ocrModelOptions.length > 0 ? (
+                        <OcrModelSelect
+                          disabled={isAppending}
+                          models={ocrModelOptions}
+                          onChange={setOcrModelOverride}
+                          value={selectedOcrModel}
+                        />
+                      ) : null}
                       {appendOcrMode === "TEXTRACT" ? (
                         <div className="append-placement-cost-row">
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
@@ -4208,6 +4260,14 @@ export function BookBuilderPage() {
                         <PromptIcon />
                       </button>
                     </div>
+                    {ocrModelOptions.length > 0 ? (
+                      <OcrModelSelect
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        models={ocrModelOptions}
+                        onChange={setOcrModelOverride}
+                        value={selectedOcrModel}
+                      />
+                    ) : null}
                     {isReviewPromptEditorOpen ? (
                       <OcrPromptEditor
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}

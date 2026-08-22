@@ -102,8 +102,9 @@ export function fetchAppVersion(fromCommit: string) {
 
 export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
-export type AiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free" | "mimo-v2.5-free";
-export type SummaryAiModelId = Exclude<AiModelId, "mimo-v2.5-free">;
+export type SummaryAiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free";
+export type OcrModelId = "mimo-v2.5-free" | "x-preview-f-free" | "muse-spark-1.2-contributor-free";
+export type AiModelId = SummaryAiModelId | OcrModelId;
 
 export type AiModelOption = {
   contextWindowTokens: number;
@@ -120,6 +121,7 @@ export type AiConfigResponse = {
   features: AiFeature[];
   models: AiModelOption[];
   ocrModel: AiModelId;
+  ocrModelIds: OcrModelId[];
   provider: "opencode";
   summaryModelIds: SummaryAiModelId[];
 };
@@ -336,6 +338,7 @@ export type ImageOcrMode = "LOCAL" | "VISION" | "TEXTRACT";
 export type ImageRotation = 0 | 90 | 180 | 270;
 
 type ImageOcrRequestOptions = {
+  ocrModel?: OcrModelId | undefined;
   ocrMode?: ImageOcrMode | undefined;
   promptOverride?: string | undefined;
   skipOcr?: boolean | undefined;
@@ -902,6 +905,10 @@ function createImageUploadPayload(payload: FormData, options?: ImageOcrRequestOp
     nextPayload.set("ocrMode", options.ocrMode);
   }
 
+  if (options?.ocrModel) {
+    nextPayload.set("ocrModel", options.ocrModel);
+  }
+
   const normalizedPromptOverride = options?.promptOverride?.trim();
   if (normalizedPromptOverride) {
     nextPayload.set("promptOverride", normalizedPromptOverride);
@@ -932,6 +939,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
 
 export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: {
   afterPage?: number | undefined;
+  ocrModel?: OcrModelId | undefined;
   ocrMode?: ImageOcrMode | undefined;
   progressId?: string | undefined;
   promptOverride?: string | undefined;
@@ -954,6 +962,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
     accessToken,
     body: createImageUploadPayload(payload, {
       ocrMode: options?.ocrMode,
+      ocrModel: options?.ocrModel,
       promptOverride: options?.promptOverride,
       skipOcr: options?.skipOcr
     }),
@@ -1361,6 +1370,7 @@ export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: nu
     accessToken,
     body: {
       ocrMode: payload?.ocrMode ?? "VISION",
+      ...(payload?.ocrModel ? { ocrModel: payload.ocrModel } : {}),
       ...(payload?.promptOverride?.trim() ? { promptOverride: payload.promptOverride.trim() } : {})
     },
     method: "POST"

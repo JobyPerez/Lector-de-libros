@@ -725,6 +725,15 @@
   color: var(--ink);
 }
 
+[data-theme-mode="dark"] .ocr-model-select-panel {
+  background: var(--paper);
+  border-color: var(--border-subtle);
+}
+
+[data-theme-mode="dark"] .ocr-model-select-field {
+  color: var(--ink);
+}
+
 /* DARK MODE READER FLOATING CONTROLS & DOCKS */
 [data-theme-mode="dark"] .reader-floating-controls {
   background: var(--topbar-bg);
@@ -8079,6 +8088,34 @@ textarea {
 .ocr-prompt-editor-field textarea {
   min-height: 7.5rem;
   resize: vertical;
+}
+
+.ocr-model-select-panel {
+  display: grid;
+  gap: 0.45rem;
+  width: 100%;
+  max-width: min(32rem, calc(100vw - 3rem));
+  padding: 0.75rem 0.85rem;
+  border: 1px solid rgba(31, 43, 35, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 253, 247, 0.88);
+}
+
+.ocr-model-select-field {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--forest-800);
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.ocr-model-select-field select {
+  width: 100%;
+}
+
+.ocr-model-select-panel .helper-text {
+  margin: 0;
+  line-height: 1.35;
 }
 
 .review-ocr-option-stack {
