@@ -38,6 +38,7 @@ import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
 import { useAiConfig } from "../../components/AiModelBadge";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
+import { DocumentScannerModal } from "./DocumentScannerModal";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
 function BackIcon() {
@@ -249,6 +250,14 @@ function choosePreferredCameraDevice(devices: MediaDeviceInfo[], currentDeviceId
     })[0];
 }
 
+function documentCameraConstraints(deviceId?: string): MediaTrackConstraints {
+  return {
+    ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
+    height: { ideal: 2160 },
+    width: { ideal: 3840 }
+  };
+}
+
 const defaultVisionOcrEditablePrompt = "";
 
 function resolveVisionPromptOverride(prompt: string): string | undefined {
@@ -417,6 +426,7 @@ function getPostItColorClass(color?: string | null) {
 
 type ReviewTextAlignment = "center" | "left" | "right";
 type AppendInsertionSide = "before" | "after";
+type ScannerTarget = "append" | "create";
 type ReviewImageCropEdge = "bottom" | "left" | "right" | "top";
 type ReviewImageCrop = Record<ReviewImageCropEdge, number>;
 type ReviewCropHandle = "move" | "nw" | "ne" | "se" | "sw";
@@ -845,6 +855,7 @@ export function BookBuilderPage() {
   const [appendCameraStream, setAppendCameraStream] = useState<MediaStream | null>(null);
   const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
   const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
+  const [scannerRequest, setScannerRequest] = useState<{ files: File[]; target: ScannerTarget } | null>(null);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("TEXTRACT");
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
@@ -1518,7 +1529,9 @@ export function BookBuilderPage() {
     const validFiles = files.filter(isSupportedImageFile);
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
-    setSelectedCreateFiles((currentFiles) => [...currentFiles, ...validFiles]);
+    if (validFiles.length > 0) {
+      setScannerRequest({ files: validFiles, target: "create" });
+    }
 
     if (invalidFiles.length > 0) {
       const invalidNames = invalidFiles.map((file) => file.name).join(", ");
@@ -1548,8 +1561,9 @@ export function BookBuilderPage() {
     const validFiles = files.filter(isSupportedImageFile);
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
-    resetAppendResumeState();
-    setSelectedAppendFiles((currentFiles) => [...currentFiles, ...validFiles]);
+    if (validFiles.length > 0) {
+      setScannerRequest({ files: validFiles, target: "append" });
+    }
 
     if (invalidFiles.length > 0) {
       const invalidNames = invalidFiles.map((file) => file.name).join(", ");
@@ -1558,6 +1572,20 @@ export function BookBuilderPage() {
     }
 
     setAppendError(null);
+  }
+
+  function handleScannerComplete(files: File[]) {
+    const target = scannerRequest?.target;
+    setScannerRequest(null);
+
+    if (target === "create") {
+      setSelectedCreateFiles((currentFiles) => [...currentFiles, ...files]);
+      return;
+    }
+    if (target === "append") {
+      resetAppendResumeState();
+      setSelectedAppendFiles((currentFiles) => [...currentFiles, ...files]);
+    }
   }
 
   function handleAppendFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
@@ -1622,7 +1650,7 @@ export function BookBuilderPage() {
     try {
       const initialStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: true
+        video: documentCameraConstraints()
       });
 
       const currentTrack = initialStream.getVideoTracks()[0] ?? null;
@@ -1635,9 +1663,7 @@ export function BookBuilderPage() {
         try {
           const preferredStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
-            video: {
-              deviceId: { exact: preferredDevice.deviceId }
-            }
+            video: documentCameraConstraints(preferredDevice.deviceId)
           });
 
           initialStream.getTracks().forEach((track) => track.stop());
@@ -1677,7 +1703,7 @@ export function BookBuilderPage() {
     try {
       const initialStream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: true
+        video: documentCameraConstraints()
       });
 
       const currentTrack = initialStream.getVideoTracks()[0] ?? null;
@@ -1690,9 +1716,7 @@ export function BookBuilderPage() {
         try {
           const preferredStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
-            video: {
-              deviceId: { exact: preferredDevice.deviceId }
-            }
+            video: documentCameraConstraints(preferredDevice.deviceId)
           });
 
           initialStream.getTracks().forEach((track) => track.stop());
@@ -3490,6 +3514,14 @@ export function BookBuilderPage() {
                 </div>
               </div>
             </div>
+          ) : null}
+
+          {scannerRequest ? (
+            <DocumentScannerModal
+              files={scannerRequest.files}
+              onCancel={() => setScannerRequest(null)}
+              onComplete={handleScannerComplete}
+            />
           ) : null}
         </section>
       ) : null}

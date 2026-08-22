@@ -141,7 +141,24 @@ export default defineConfig(({ mode }) => {
           theme_color: "#264f3d"
         },
         injectRegister: null,
-        registerType: "prompt"
+        registerType: "prompt",
+        workbox: {
+          globIgnores: ["**/opencv-*.js"],
+          runtimeCaching: [
+            {
+              handler: "CacheFirst",
+              options: {
+                cacheName: "opencv-runtime",
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: {
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                  maxEntries: 2
+                }
+              },
+              urlPattern: /\/assets\/opencv-[^/]+\.js$/u
+            }
+          ]
+        }
       })
     ],
     publicDir: resolve(__dirname, "public")
