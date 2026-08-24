@@ -1297,7 +1297,9 @@ export function BookBuilderPage() {
     }
 
     const htmlEditableText = buildEditableTextFromHtmlContent(page.htmlContent);
-    const nextEditedText = reviewPageQuery.data?.book.sourceType === "EPUB" && htmlEditableText
+    const usesHtmlEditableText = reviewPageQuery.data?.book.sourceType === "EPUB"
+      || reviewPageQuery.data?.book.sourceType === "PDF";
+    const nextEditedText = usesHtmlEditableText && htmlEditableText
       ? htmlEditableText
       : page.editedText ?? htmlEditableText ?? page.rawText ?? page.paragraphs.map((paragraph) => paragraph.paragraphText).join("\n");
     setEditedText(nextEditedText);
