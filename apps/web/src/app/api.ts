@@ -235,8 +235,8 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function requestBlob(path: string, accessToken: string): Promise<Blob> {
-  const result = await requestBlobDownload(path, accessToken);
+async function requestBlob(path: string, accessToken: string, signal?: AbortSignal): Promise<Blob> {
+  const result = await requestBlobDownload(path, accessToken, signal);
   return result.blob;
 }
 
@@ -259,12 +259,13 @@ function parseContentDispositionFileName(contentDisposition: string | null): str
   return plainMatch?.[1]?.trim() ?? null;
 }
 
-async function requestBlobDownload(path: string, accessToken: string): Promise<BlobDownload> {
+async function requestBlobDownload(path: string, accessToken: string, signal?: AbortSignal): Promise<BlobDownload> {
   const response = await fetchWithAutoRefresh(path, {
     accessToken,
     fallbackMessage: "La solicitud no se pudo completar.",
     headers: createHeaders({ accessToken }),
-    method: "GET"
+    method: "GET",
+    signal
   });
 
   if (!response.ok) {
@@ -1294,6 +1295,10 @@ export function deleteNote(accessToken: string, bookId: string, noteId: string) 
 export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null) {
   const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
   return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
+}
+
+export function fetchBookContentImage(accessToken: string, bookId: string, assetId: string, signal?: AbortSignal): Promise<Blob> {
+  return requestBlob(`/books/${bookId}/content-images/${encodeURIComponent(assetId)}`, accessToken, signal);
 }
 
 export async function fetchBookCover(accessToken: string, bookId: string, cacheKey?: string | null): Promise<Blob | null> {

@@ -18,6 +18,7 @@ import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
+import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
@@ -137,6 +138,11 @@ const updateBookSchema = z.object({
 const pageParamsSchema = z.object({
   bookId: z.string().uuid(),
   pageNumber: z.coerce.number().int().min(1)
+});
+
+const contentImageParamsSchema = z.object({
+  assetId: z.string().uuid(),
+  bookId: z.string().uuid()
 });
 
 const updateOcrPageSchema = z.object({
@@ -617,6 +623,51 @@ function computeChecksum(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+async function insertContentImageAssets(
+  connection: DatabaseConnection,
+  bookId: string,
+  pageNumber: number,
+  assets: readonly ContentImageAsset[]
+): Promise<void> {
+  for (const asset of assets) {
+    await connection.execute(
+      `
+        INSERT INTO book_files (
+          file_id,
+          book_id,
+          file_kind,
+          file_name,
+          mime_type,
+          page_number,
+          byte_size,
+          checksum_sha256,
+          content_blob
+        ) VALUES (
+          :fileId,
+          :bookId,
+          'CONTENT_IMAGE',
+          :fileName,
+          :mimeType,
+          :pageNumber,
+          :byteSize,
+          :checksumSha256,
+          :contentBlob
+        )
+      `,
+      {
+        bookId,
+        byteSize: asset.buffer.length,
+        checksumSha256: asset.checksum,
+        contentBlob: asset.buffer,
+        fileId: asset.assetId,
+        fileName: asset.fileName,
+        mimeType: asset.mimeType,
+        pageNumber
+      }
+    );
+  }
+}
+
 function buildDownloadFileName(baseName: string, extension: string): string {
   const normalizedBaseName = deriveTitleFromFileName(baseName).replace(/\s+/gu, "-").toLowerCase() || "libro";
   return `${normalizedBaseName}.${extension}`;
@@ -691,8 +742,8 @@ async function findStoredCoverAsset(
         content_blob AS "contentBlob"
       FROM book_files
       WHERE book_id = :bookId
-        AND file_kind IN ('COVER_IMAGE', 'PAGE_IMAGE')
-      ORDER BY CASE WHEN file_kind = 'COVER_IMAGE' THEN 0 ELSE 1 END, NVL(page_number, 0) ASC, created_at ASC
+        AND file_kind IN ('COVER_IMAGE', 'PAGE_IMAGE', 'CONTENT_IMAGE')
+      ORDER BY CASE file_kind WHEN 'COVER_IMAGE' THEN 0 WHEN 'PAGE_IMAGE' THEN 1 ELSE 2 END, NVL(page_number, 0) ASC, created_at ASC
       FETCH FIRST 1 ROWS ONLY
     `,
     {
@@ -849,7 +900,7 @@ async function assembleBookExportDownload(
   book: OwnedBookRecord,
   format: "epub" | "pdf"
 ): Promise<DownloadFilePayload> {
-  const [pagesResult, paragraphsResult, outlineResult, coverAsset] = await Promise.all([
+  const [pagesResult, paragraphsResult, outlineResult, coverAsset, contentImagesResult] = await Promise.all([
     connection.execute(
       `
         SELECT
@@ -874,8 +925,32 @@ async function assembleBookExportDownload(
       { bookId: book.bookId }
     ),
     resolveBookOutline(connection, book.bookId),
-    resolveBookCoverAsset(connection, book)
+    resolveBookCoverAsset(connection, book),
+    connection.execute(
+      `
+        SELECT
+          file_id AS "assetId",
+          mime_type AS "mimeType",
+          content_blob AS "contentBlob"
+        FROM book_files
+        WHERE book_id = :bookId
+          AND file_kind = 'CONTENT_IMAGE'
+      `,
+      { bookId: book.bookId },
+      {
+        fetchInfo: {
+          contentBlob: { type: oracledb.BUFFER }
+        }
+      }
+    )
   ]);
+
+  const contentImages = new Map<string, HydratableContentImage>();
+  for (const row of (contentImagesResult.rows ?? []) as Array<{ assetId: string; contentBlob: Buffer; mimeType: string }>) {
+    if (row.assetId && row.contentBlob && row.mimeType) {
+      contentImages.set(row.assetId, { buffer: row.contentBlob, mimeType: row.mimeType });
+    }
+  }
 
   const paragraphsByPage = new Map<number, Array<{ paragraphText: string }>>();
   for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string }>) {
@@ -885,7 +960,7 @@ async function assembleBookExportDownload(
   }
 
   const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => ({
-    htmlContent: row.htmlContent,
+    htmlContent: row.htmlContent ? hydrateContentImages(row.htmlContent, contentImages) : null,
     pageLabel: row.pageLabel,
     pageNumber: row.pageNumber,
     paragraphs: paragraphsByPage.get(row.pageNumber) ?? []
@@ -3277,6 +3352,13 @@ async function insertProcessedImagePages(
   for (const processedPage of processedPages) {
     const fileId = randomUUID();
     const pageId = randomUUID();
+    const externalized = externalizeContentImages([
+      processedPage.rawText,
+      processedPage.htmlContent ?? "",
+      processedPage.editedText,
+      ...processedPage.paragraphs
+    ]);
+    const externalizedParagraphs = externalized.contents.slice(3);
 
     await connection.execute(
       `
@@ -3340,17 +3422,21 @@ async function insertProcessedImagePages(
       `,
       {
         bookId,
-        editedText: processedPage.editedText,
-        htmlContent: processedPage.htmlContent,
+        editedText: externalized.contents[2] ?? processedPage.editedText,
+        htmlContent: processedPage.htmlContent === null
+          ? null
+          : externalized.contents[1] ?? processedPage.htmlContent,
         ocrStatus: processedPage.ocrStatus ?? "READY",
         pageId,
         pageNumber,
-        rawText: processedPage.rawText,
+        rawText: externalized.contents[0] ?? processedPage.rawText,
         sourceFileId: fileId
       }
     );
 
-    for (const [paragraphIndex, paragraphText] of processedPage.paragraphs.entries()) {
+    await insertContentImageAssets(connection, bookId, pageNumber, externalized.assets);
+
+    for (const [paragraphIndex, paragraphText] of externalizedParagraphs.entries()) {
       const metrics = calculateParagraphReadingMetrics(paragraphText);
       await connection.execute(
         `
@@ -4050,6 +4136,21 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
     })();
     const languageCode = parsedFields.languageCode ?? importedDocument.metadataLanguageCode ?? "es";
+    const externalizedPages = importedDocument.pages.map((page) => {
+      const editedText = page.editedText ?? page.paragraphs.join("\n");
+      const values = [page.rawText, page.htmlContent ?? "", editedText, ...page.paragraphs];
+      const externalized = externalizeContentImages(values);
+      return {
+        ...page,
+        contentImageAssets: externalized.assets,
+        editedText: externalized.contents[2] ?? editedText,
+        htmlContent: page.htmlContent === null || page.htmlContent === undefined
+          ? page.htmlContent
+          : externalized.contents[1] ?? page.htmlContent,
+        paragraphs: externalized.contents.slice(3),
+        rawText: externalized.contents[0] ?? page.rawText
+      };
+    });
     const bookId = randomUUID();
     const originalFileId = randomUUID();
     const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
@@ -4174,7 +4275,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       let sequenceNumber = 1;
 
-      for (const [pageIndex, page] of importedDocument.pages.entries()) {
+      for (const [pageIndex, page] of externalizedPages.entries()) {
         const pageId = randomUUID();
         await connection.execute(
           `
@@ -4198,13 +4299,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           `,
           {
             bookId,
-            editedText: page.editedText ?? page.paragraphs.join("\n"),
+            editedText: page.editedText,
             htmlContent: page.htmlContent ?? null,
             pageId,
             pageNumber: page.pageNumber,
             rawText: page.rawText
           }
         );
+
+        await insertContentImageAssets(connection, bookId, page.pageNumber, page.contentImageAssets);
 
         for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
           const metrics = calculateParagraphReadingMetrics(paragraphText);
@@ -5281,6 +5384,53 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/:bookId/content-images/:assetId", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
+    const params = contentImageParamsSchema.parse(request.params);
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT
+            mime_type AS "mimeType",
+            checksum_sha256 AS "checksum",
+            content_blob AS "contentBlob"
+          FROM book_files
+          WHERE book_id = :bookId
+            AND file_id = :assetId
+            AND file_kind = 'CONTENT_IMAGE'
+        `,
+        params,
+        {
+          fetchInfo: {
+            contentBlob: { type: oracledb.BUFFER }
+          }
+        }
+      );
+
+      const [image] = (result.rows ?? []) as Array<{ checksum?: string | null; contentBlob?: Buffer; mimeType?: string }>;
+      if (!image?.contentBlob || !image.mimeType) {
+        return reply.status(404).send({ message: "Content image not found." });
+      }
+
+      const checksum = image.checksum ?? computeChecksum(image.contentBlob);
+      const etag = `"${checksum}"`;
+      if (request.headers["if-none-match"] === etag) {
+        return reply.status(304).header("ETag", etag).send();
+      }
+
+      return reply
+        .header("Content-Type", image.mimeType)
+        .header("Content-Security-Policy", "default-src 'none'; sandbox")
+        .header("X-Content-Type-Options", "nosniff")
+        .header("ETag", etag)
+        .header("Cache-Control", "private, max-age=31536000, immutable")
+        .send(image.contentBlob);
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.put("/:bookId/pages/:pageNumber/image", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -5423,15 +5573,25 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(422).send({ message: "El contenido editado debe producir al menos un párrafo o una imagen." });
       }
 
+      const externalized = externalizeContentImages([
+        payload.editedText,
+        richPage.htmlContent,
+        richPage.rawText,
+        ...paragraphs
+      ]);
+      const externalizedParagraphs = externalized.contents.slice(3);
+
+      await insertContentImageAssets(connection, params.bookId, params.pageNumber, externalized.assets);
+
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,
-        editedText: payload.editedText,
-        htmlContent: richPage.htmlContent,
+        editedText: externalized.contents[0] ?? payload.editedText,
+        htmlContent: externalized.contents[1] ?? richPage.htmlContent,
         ocrStatus: "READY",
         page,
         pageNumber: params.pageNumber,
-        paragraphs,
-        rawText: richPage.rawText,
+        paragraphs: externalizedParagraphs,
+        rawText: externalized.contents[2] ?? richPage.rawText,
         ...(book.sourceType === "IMAGES" && payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
       });
 
@@ -5528,15 +5688,26 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      const externalized = externalizeContentImages([
+        ocrResult.editedText,
+        ocrResult.htmlContent ?? "",
+        ocrResult.rawText,
+        ...ocrResult.paragraphs
+      ]);
+
+      await insertContentImageAssets(connection, params.bookId, params.pageNumber, externalized.assets);
+
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,
-        editedText: ocrResult.editedText,
-        htmlContent: ocrResult.htmlContent,
+        editedText: externalized.contents[0] ?? ocrResult.editedText,
+        htmlContent: ocrResult.htmlContent === null
+          ? null
+          : externalized.contents[1] ?? ocrResult.htmlContent,
         ocrStatus: "READY",
         page,
         pageNumber: params.pageNumber,
-        paragraphs: ocrResult.paragraphs,
-        rawText: ocrResult.rawText
+        paragraphs: externalized.contents.slice(3),
+        rawText: externalized.contents[2] ?? ocrResult.rawText
       });
 
       await recordUserActivity(connection, {

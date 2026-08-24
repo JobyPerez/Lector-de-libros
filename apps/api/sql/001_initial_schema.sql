@@ -71,7 +71,7 @@ CREATE TABLE book_files (
   checksum_sha256 VARCHAR2(64 CHAR),
   content_blob BLOB NOT NULL,
   created_at TIMESTAMP DEFAULT SYSTIMESTAMP NOT NULL,
-  CONSTRAINT ck_book_files_kind CHECK (file_kind IN ('ORIGINAL_PDF', 'ORIGINAL_EPUB', 'PAGE_IMAGE', 'COVER_IMAGE', 'TTS_AUDIO')),
+  CONSTRAINT ck_book_files_kind CHECK (file_kind IN ('ORIGINAL_PDF', 'ORIGINAL_EPUB', 'PAGE_IMAGE', 'COVER_IMAGE', 'CONTENT_IMAGE', 'TTS_AUDIO')),
   CONSTRAINT fk_book_files_book FOREIGN KEY (book_id) REFERENCES books (book_id) ON DELETE CASCADE
 );
 

@@ -51,6 +51,7 @@ import {
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
+import { useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
 import { createStoredZip } from "./audio-zip";
@@ -1957,6 +1958,8 @@ export function ReaderPage() {
     () => getSynchronizedRichHtmlContent(pageQuery.data?.page.htmlContent ?? null, currentParagraphs),
     [currentParagraphs, pageQuery.data?.page.htmlContent]
   );
+  const hydratedCurrentHtmlContent = useBookContentImageHtml(currentHtmlContent, accessToken, bookId);
+  const hydratedPageTurnHtmlContent = useBookContentImageHtml(pageTurnSnapshot?.htmlContent ?? null, accessToken, bookId);
   const currentParagraph = currentParagraphs.find((paragraph) => paragraph.paragraphNumber === currentParagraphNumber) ?? currentParagraphs[0] ?? null;
   const currentParagraphIndex = currentParagraph
     ? currentParagraphs.findIndex((paragraph) => paragraph.paragraphId === currentParagraph.paragraphId)
@@ -2495,8 +2498,8 @@ export function ReaderPage() {
     ? pageTurnSnapshot.paragraphs
     : currentParagraphs;
   const baseHtmlContent = isPageTurningBackward && pageTurnSnapshot
-    ? pageTurnSnapshot.htmlContent
-    : currentHtmlContent;
+    ? hydratedPageTurnHtmlContent
+    : hydratedCurrentHtmlContent;
   const baseActiveParagraphNumber = isPageTurningBackward && pageTurnSnapshot
     ? pageTurnSnapshot.activeParagraphNumber
     : (currentParagraph?.paragraphNumber ?? null);
@@ -2504,8 +2507,8 @@ export function ReaderPage() {
     ? currentParagraphs
     : (pageTurnSnapshot?.paragraphs ?? []);
   const overlayHtmlContent = isPageTurningBackward
-    ? currentHtmlContent
-    : (pageTurnSnapshot?.htmlContent ?? null);
+    ? hydratedCurrentHtmlContent
+    : hydratedPageTurnHtmlContent;
   const overlayActiveParagraphNumber = isPageTurningBackward
     ? (currentParagraph?.paragraphNumber ?? null)
     : (pageTurnSnapshot?.activeParagraphNumber ?? null);

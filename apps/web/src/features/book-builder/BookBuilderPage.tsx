@@ -38,6 +38,7 @@ import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
+import { useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { useAiConfig } from "../../components/AiModelBadge";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { DocumentScannerModal } from "./DocumentScannerModal";
@@ -2837,6 +2838,7 @@ export function BookBuilderPage() {
     () => buildOcrPreviewHtml(editedText, reviewPageQuery.data?.page.htmlContent ?? null),
     [editedText, reviewPageQuery.data?.page.htmlContent]
   );
+  const hydratedReviewPreviewHtml = useBookContentImageHtml(reviewPreviewHtml, accessToken, reviewBookId);
   const reviewActiveTocEntry = useMemo(() => {
     const tocEntries = reviewNavigationQuery.data?.toc ?? [];
     let activeEntry: ReaderTocEntry | null = null;
@@ -3799,7 +3801,7 @@ export function BookBuilderPage() {
 
               <article className="review-panel">
                 <form className="stack-form review-editor-form" id="ocr-review-form" onSubmit={handleSaveOcr}>
-                  {reviewPreviewHtml ? (
+                  {hydratedReviewPreviewHtml ? (
                     <div>
                       <p className="page-label">Previsualización de la página guardada</p>
                       <article className="reader-prose reader-prose-rich review-preview-panel">
@@ -3810,7 +3812,7 @@ export function BookBuilderPage() {
                         ) : null}
                         <div
                           className="reader-rich-content"
-                          dangerouslySetInnerHTML={{ __html: reviewPreviewHtml }}
+                          dangerouslySetInnerHTML={{ __html: hydratedReviewPreviewHtml }}
                           onClick={(event) => {
                             const target = event.target as HTMLElement | null;
                             const imgElement = target instanceof HTMLImageElement ? target : target?.closest?.("img");

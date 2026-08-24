@@ -1,0 +1,6 @@
+ALTER TABLE book_files DROP CONSTRAINT ck_book_files_kind;
+
+ALTER TABLE book_files ADD CONSTRAINT ck_book_files_kind
+  CHECK (file_kind IN ('ORIGINAL_PDF', 'ORIGINAL_EPUB', 'PAGE_IMAGE', 'COVER_IMAGE', 'CONTENT_IMAGE', 'TTS_AUDIO'));
+
+COMMIT;

@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "backfill:ai-credentials": "tsx src/scripts/backfill-ai-credentials.ts",
     "backfill:paragraph-reading-metrics": "tsx src/scripts/backfill-paragraph-reading-metrics.ts",
+    "migrate:content-images": "tsx src/scripts/migrate-content-images.ts",
     "start": "node dist/server.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
