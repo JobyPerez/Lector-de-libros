@@ -10843,6 +10843,10 @@ textarea {
 
 .shelf-scope-tab.is-active {
   background: var(--forest-700);
+  color: #ffffff;
+}
+
+:root[data-theme-mode="dark"] .shelf-scope-tab.is-active {
   color: #111111;
 }
 
