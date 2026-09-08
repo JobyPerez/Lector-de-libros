@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-import { getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
+import { SUMMARY_AI_MODEL_IDS, getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
+import { getOpenCodeChatCompletionsEndpoint, getOpenCodeRequestHeaders } from "../../config/opencode.js";
 import type { BookLanguageCode } from "./book-import.js";
 
 type ChatCompletionResponse = {
@@ -50,8 +51,6 @@ export type ProviderRetryProgress = {
   maxAttempts: number;
 };
 
-const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
-const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 const PROVIDER_REQUEST_ATTEMPTS = 3;
 
 export function getDefaultSectionSummaryPrompt(languageCode: BookLanguageCode): string {
@@ -101,10 +100,6 @@ function ensureSummaryConfiguration() {
       statusCode: 503
     });
   }
-}
-
-function getOpenCodeChatCompletionsEndpoint(model: string): string {
-  return model.endsWith("-free") ? OPENCODE_ZEN_ENDPOINT : OPENCODE_GO_ENDPOINT;
 }
 
 function getOpenCodeMaxTokens(model: string, requestedMaxTokens: number): number {
@@ -171,6 +166,14 @@ function extractProviderErrorDetails(source: string | ChatCompletionResponse["er
 
 function isContentFilterError(errorMessage: string) {
   return /content_filter|ResponsibleAIPolicyViolation|content management policy|jailbreak/iu.test(errorMessage);
+}
+
+function isModelUnavailableError(errorMessage: string) {
+  return /model is unavailable/iu.test(errorMessage);
+}
+
+function getFallbackSummaryModel(model: SummaryAiModelId): SummaryAiModelId | null {
+  return SUMMARY_AI_MODEL_IDS.find((candidate) => candidate !== model) ?? null;
 }
 
 function parseRetryAfterSeconds(value: string | null): number | null {
@@ -324,37 +327,36 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     ? (prompt.scopeLabel === "Libro" ? "Libro" : "Sezione")
     : (prompt.scopeLabel ?? "Sección");
 
-  const model = prompt.model;
-  const endpoint = getOpenCodeChatCompletionsEndpoint(model);
-  const requestBody = JSON.stringify({
-    max_tokens: getOpenCodeMaxTokens(model, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200),
-    messages: [
-      {
-        role: "system",
-        content: systemPrompt
-      },
-      {
-        role: "user",
-        content: prompt.condensed
-          ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
-          : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`
-      }
-    ],
-    model,
-    temperature: 0.15
-  });
+  let currentModel: SummaryAiModelId = prompt.model;
+  let modelFallbackUsed = false;
 
   let response: Response | null = null;
   let retryAfterSeconds: number | null = null;
 
   for (let attempt = 0; attempt < PROVIDER_REQUEST_ATTEMPTS; attempt += 1) {
+    const endpoint = getOpenCodeChatCompletionsEndpoint(currentModel);
+    const requestBody = JSON.stringify({
+      max_tokens: getOpenCodeMaxTokens(currentModel, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200),
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt
+        },
+        {
+          role: "user",
+          content: prompt.condensed
+            ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
+            : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`
+        }
+      ],
+      model: currentModel,
+      temperature: 0.15
+    });
+
     try {
       response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
-          "Content-Type": "application/json"
-        },
+        headers: getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
         body: requestBody
       });
     } catch {
@@ -393,6 +395,16 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
       }
 
       throw createSummaryRateLimitError(details, retryAfterSeconds);
+    }
+
+    if (!modelFallbackUsed && attempt < PROVIDER_REQUEST_ATTEMPTS - 1 && isModelUnavailableError(normalizedProviderError)) {
+      const fallbackModel = getFallbackSummaryModel(currentModel);
+      if (fallbackModel) {
+        modelFallbackUsed = true;
+        currentModel = fallbackModel;
+        prompt.onProviderRetry?.({ attempt: Math.min(attempt + 2, PROVIDER_REQUEST_ATTEMPTS), maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
+        continue;
+      }
     }
 
     const isTransientProviderError = response.status >= 500 && response.status <= 599;

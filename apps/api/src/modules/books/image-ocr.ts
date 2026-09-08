@@ -7,6 +7,7 @@ import { z } from "zod";
 
 import type { OcrModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
+import { getOpenCodeChatCompletionsEndpoint, getOpenCodeRequestHeaders, OPENCODE_RESPONSES_ENDPOINT } from "../../config/opencode.js";
 import { sanitizeParagraphs } from "./book-import.js";
 import { buildRichPageFromParagraphs, normalizeWhitespace as normalizeRichWhitespace } from "./rich-content.js";
 
@@ -181,9 +182,6 @@ const contentBottomCropRatio = 0.06;
 const opencodeVisionImageByteLimit = 5 * 1024 * 1024;
 const minimumHeightForMarginCrop = 900;
 const optimizedVisionImageTargetBytes = Math.floor(opencodeVisionImageByteLimit * 0.9);
-const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
-const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
-const OPENCODE_RESPONSES_ENDPOINT = "https://opencode.ai/zen/v1/responses";
 const optimizedVisionRetryVariants: readonly VisionImageOptimizationVariant[] = [
   { quality: 82 },
   { maxWidth: 2400, quality: 78 },
@@ -345,10 +343,6 @@ export function extractResponsesApiText(payload: ResponsesApiResponse): string {
     .filter(Boolean)
     .join("\n")
     .trim();
-}
-
-function getOpenCodeChatCompletionsEndpoint(model: string): string {
-  return model.endsWith("-free") ? OPENCODE_ZEN_ENDPOINT : OPENCODE_GO_ENDPOINT;
 }
 
 function getOpenCodeMaxTokens(model: string, requestedMaxTokens: number): number {
@@ -867,10 +861,7 @@ async function executeVisionOcrRequest(
 
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${appEnv.opencodeGoApiKey}`,
-      "Content-Type": "application/json"
-    },
+    headers: getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
     body: JSON.stringify(usesResponsesApi
       ? {
           input: [{
