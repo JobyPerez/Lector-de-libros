@@ -2,7 +2,13 @@ import { z } from "zod";
 
 import { SUMMARY_AI_MODEL_IDS, getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
-import { getOpenCodeChatCompletionsEndpoint, getOpenCodeRequestHeaders } from "../../config/opencode.js";
+import {
+  getOpenCodeChatCompletionsEndpoint,
+  getOpenCodeGeminiEndpoint,
+  getOpenCodeGeminiRequestHeaders,
+  getOpenCodeRequestHeaders,
+  isGeminiModel
+} from "../../config/opencode.js";
 import type { BookLanguageCode } from "./book-import.js";
 
 type ChatCompletionResponse = {
@@ -16,7 +22,30 @@ type ChatCompletionResponse = {
   error?: {
     code?: string | null;
     message?: string | null;
+    type?: string | null;
   } | null;
+};
+
+type GeminiGenerateContentResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+        thought?: boolean;
+      }>;
+      role?: string;
+    };
+    finishReason?: string;
+  }>;
+  error?: {
+    code?: number | string;
+    message?: string;
+    status?: string;
+    type?: string;
+  };
+  promptFeedback?: {
+    blockReason?: string;
+  };
 };
 
 const summaryResponseSchema = z.object({
@@ -141,17 +170,23 @@ function extractJsonPayload(responseText: string): string {
 function extractProviderErrorDetails(source: string | ChatCompletionResponse["error"]): { code: string | null; message: string } {
   if (typeof source !== "string") {
     return {
-      code: source?.code?.trim() || null,
+      code: source?.type?.trim() || source?.code?.trim() || null,
       message: source?.message?.trim() || "OpenCode devolvió un error al generar el resumen."
     };
   }
 
   try {
-    const payload = JSON.parse(source) as ChatCompletionResponse;
+    const payload = JSON.parse(source) as ChatCompletionResponse & { error?: { type?: string }; type?: string };
     if (payload.error?.message) {
       return {
-        code: payload.error.code?.trim() || null,
+        code: payload.error.type?.trim() || payload.error.code?.trim() || null,
         message: payload.error.message.trim()
+      };
+    }
+    if (typeof payload.type === "string" && payload.type.trim()) {
+      return {
+        code: payload.type.trim(),
+        message: source.trim()
       };
     }
   } catch {
@@ -334,29 +369,57 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
   let retryAfterSeconds: number | null = null;
 
   for (let attempt = 0; attempt < PROVIDER_REQUEST_ATTEMPTS; attempt += 1) {
-    const endpoint = getOpenCodeChatCompletionsEndpoint(currentModel);
-    const requestBody = JSON.stringify({
-      max_tokens: getOpenCodeMaxTokens(currentModel, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200),
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt
-        },
-        {
-          role: "user",
-          content: prompt.condensed
-            ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
-            : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`
+    const usesGeminiApi = isGeminiModel(currentModel);
+    const endpoint = usesGeminiApi
+      ? getOpenCodeGeminiEndpoint(currentModel)
+      : getOpenCodeChatCompletionsEndpoint(currentModel);
+
+    const userPromptContent = prompt.condensed
+      ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
+      : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`;
+
+    const maxTokens = getOpenCodeMaxTokens(currentModel, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200);
+
+    const requestBody = JSON.stringify(usesGeminiApi
+      ? {
+          contents: [
+            {
+              parts: [
+                {
+                  text: `${systemPrompt}\n\n${userPromptContent}`
+                }
+              ],
+              role: "user"
+            }
+          ],
+          generationConfig: {
+            maxOutputTokens: maxTokens,
+            ...(kind === "DIAGRAM" ? { responseMimeType: "application/json" } : {}),
+            temperature: 0.15
+          }
         }
-      ],
-      model: currentModel,
-      temperature: 0.15
-    });
+      : {
+          max_tokens: maxTokens,
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt
+            },
+            {
+              role: "user",
+              content: userPromptContent
+            }
+          ],
+          model: currentModel,
+          temperature: 0.15
+        });
 
     try {
       response = await fetch(endpoint, {
         method: "POST",
-        headers: getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
+        headers: usesGeminiApi
+          ? getOpenCodeGeminiRequestHeaders(appEnv.opencodeGoApiKey)
+          : getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
         body: requestBody
       });
     } catch {
@@ -424,9 +487,9 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     }, retryAfterSeconds);
   }
 
-  const payload = (await response.json()) as ChatCompletionResponse;
+  const payload = (await response.json()) as ChatCompletionResponse & GeminiGenerateContentResponse;
   if (payload.error?.message) {
-    const details = extractProviderErrorDetails(payload.error);
+    const details = extractProviderErrorDetails(payload.error as any);
     const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
     if (isContentFilterError(normalizedProviderError)) {
       throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
@@ -441,7 +504,23 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     throw createSummaryProviderError(details);
   }
 
-  const assistantText = extractAssistantText(payload.choices);
+  let assistantText: string;
+  if (isGeminiModel(currentModel)) {
+    const candidate = payload.candidates?.[0];
+    if (payload.promptFeedback?.blockReason || (candidate?.finishReason && !["STOP", "MAX_TOKENS"].includes(candidate.finishReason))) {
+      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
+        statusCode: 422
+      });
+    }
+
+    assistantText = (candidate?.content?.parts || [])
+      .filter((part) => !part.thought && typeof part.text === "string")
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+  } else {
+    assistantText = extractAssistantText(payload.choices);
+  }
 
   try {
     if (kind === "DIAGRAM") {

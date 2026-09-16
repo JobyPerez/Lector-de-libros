@@ -7,7 +7,14 @@ import { z } from "zod";
 
 import type { OcrModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
-import { getOpenCodeChatCompletionsEndpoint, getOpenCodeRequestHeaders, OPENCODE_RESPONSES_ENDPOINT } from "../../config/opencode.js";
+import {
+  getOpenCodeChatCompletionsEndpoint,
+  getOpenCodeGeminiEndpoint,
+  getOpenCodeGeminiRequestHeaders,
+  getOpenCodeRequestHeaders,
+  isGeminiModel,
+  OPENCODE_RESPONSES_ENDPOINT
+} from "../../config/opencode.js";
 import { sanitizeParagraphs } from "./book-import.js";
 import { buildRichPageFromParagraphs, normalizeWhitespace as normalizeRichWhitespace } from "./rich-content.js";
 
@@ -102,6 +109,33 @@ type ResponsesApiResponse = {
   }>;
   output_text?: string;
   status?: string;
+};
+
+type GeminiGenerateContentResponse = {
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+        thought?: boolean;
+      }>;
+      role?: string;
+    };
+    finishReason?: string;
+  }>;
+  error?: {
+    code?: number | string;
+    message?: string;
+    status?: string;
+    type?: string;
+  };
+  promptFeedback?: {
+    blockReason?: string;
+  };
+  usageMetadata?: {
+    candidatesTokenCount?: number;
+    promptTokenCount?: number;
+    totalTokenCount?: number;
+  };
 };
 
 type VisionImageRequestPayload = {
@@ -525,7 +559,7 @@ function createVisionProviderUnavailableError(providerMessage: string, retryAfte
 }
 
 function isVisionProviderUnavailableError(code: string | null, message: string): boolean {
-  return /router\.unavailable/iu.test(`${code ?? ""} ${message}`);
+  return /router\.unavailable/iu.test(`${code ?? ""} ${message}`) || code === "CreditsError" || /CreditsError/iu.test(message);
 }
 
 function extractRetryAfterSeconds(response: Response | null, errorMessage: string): number | null {
@@ -855,52 +889,81 @@ async function executeVisionOcrRequest(
 ): Promise<OcrPageResult> {
   const prompt = buildVisionOcrPrompt(language, promptOverride);
   const maxTokens = maxTokensOverride ?? prompt.maxTokens;
+  const usesGeminiApi = isGeminiModel(model);
   const usesResponsesApi = model === "muse-spark-1.2-contributor-free";
-  const endpoint = usesResponsesApi ? OPENCODE_RESPONSES_ENDPOINT : getOpenCodeChatCompletionsEndpoint(model);
+  const endpoint = usesGeminiApi
+    ? getOpenCodeGeminiEndpoint(model)
+    : usesResponsesApi
+      ? OPENCODE_RESPONSES_ENDPOINT
+      : getOpenCodeChatCompletionsEndpoint(model);
   const imageUrl = `data:${requestPayload.mimeType};base64,${requestPayload.buffer.toString("base64")}`;
 
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
-    body: JSON.stringify(usesResponsesApi
+    headers: usesGeminiApi
+      ? getOpenCodeGeminiRequestHeaders(appEnv.opencodeGoApiKey)
+      : getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
+    body: JSON.stringify(usesGeminiApi
       ? {
-          input: [{
-            content: [
-              { text: prompt.user, type: "input_text" },
-              { image_url: imageUrl, type: "input_image" }
-            ],
-            role: "user"
-          }],
-          instructions: prompt.system,
-          max_output_tokens: maxTokens,
-          model
-        }
-      : {
-          max_tokens: getOpenCodeMaxTokens(model, maxTokens),
-          messages: [
+          contents: [
             {
-              role: "system",
-              content: prompt.system
-            },
-            {
-              role: "user",
-              content: [
+              parts: [
+                { text: `${prompt.system}\n\n${prompt.user}` },
                 {
-                  type: "text",
-                  text: prompt.user
-                },
-                {
-                  type: "image_url",
-                  image_url: {
-                    url: imageUrl
+                  inlineData: {
+                    data: requestPayload.buffer.toString("base64"),
+                    mimeType: requestPayload.mimeType
                   }
                 }
-              ]
+              ],
+              role: "user"
             }
           ],
-          model,
-          temperature: 0
-        })
+          generationConfig: {
+            maxOutputTokens: maxTokens,
+            responseMimeType: "application/json",
+            temperature: 0
+          }
+        }
+      : usesResponsesApi
+        ? {
+            input: [{
+              content: [
+                { text: prompt.user, type: "input_text" },
+                { image_url: imageUrl, type: "input_image" }
+              ],
+              role: "user"
+            }],
+            instructions: prompt.system,
+            max_output_tokens: maxTokens,
+            model
+          }
+        : {
+            max_tokens: getOpenCodeMaxTokens(model, maxTokens),
+            messages: [
+              {
+                role: "system",
+                content: prompt.system
+              },
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: prompt.user
+                  },
+                  {
+                    type: "image_url",
+                    image_url: {
+                      url: imageUrl
+                    }
+                  }
+                ]
+              }
+            ],
+            model,
+            temperature: 0
+          })
   });
 
   if (!response.ok) {
@@ -925,9 +988,9 @@ async function executeVisionOcrRequest(
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
-  const payload = (await response.json()) as ChatCompletionResponse & ResponsesApiResponse;
+  const payload = (await response.json()) as ChatCompletionResponse & ResponsesApiResponse & GeminiGenerateContentResponse;
   if (payload.error?.message) {
-    const errorDetails = extractVisionProviderErrorDetails(payload.error);
+    const errorDetails = extractVisionProviderErrorDetails(payload.error as any);
     const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
 
     if (isVisionRateLimitError(normalizedProviderError)) {
@@ -947,10 +1010,37 @@ async function executeVisionOcrRequest(
     throw createVisionProviderError(errorDetails, requestPayload.optimized);
   }
 
-  const assistantText = usesResponsesApi ? extractResponsesApiText(payload) : extractAssistantText(payload.choices);
-  const finishReason = usesResponsesApi && payload.status === "incomplete"
-    ? payload.incomplete_details?.reason === "max_output_tokens" ? "length" : payload.incomplete_details?.reason
-    : payload.choices?.[0]?.finish_reason;
+  let assistantText: string;
+  let finishReason: string | undefined;
+
+  if (usesGeminiApi) {
+    const candidate = payload.candidates?.[0];
+    if (payload.promptFeedback?.blockReason || (candidate?.finishReason && !["STOP", "MAX_TOKENS"].includes(candidate.finishReason))) {
+      throw Object.assign(new Error("OpenCode bloqueó el OCR por sus políticas de contenido."), {
+        statusCode: 422
+      });
+    }
+
+    if (candidate?.finishReason === "MAX_TOKENS") {
+      finishReason = "length";
+    } else {
+      finishReason = candidate?.finishReason;
+    }
+
+    assistantText = (candidate?.content?.parts || [])
+      .filter((part) => !part.thought && typeof part.text === "string")
+      .map((part) => part.text ?? "")
+      .join("")
+      .trim();
+  } else if (usesResponsesApi) {
+    assistantText = extractResponsesApiText(payload);
+    finishReason = payload.status === "incomplete"
+      ? payload.incomplete_details?.reason === "max_output_tokens" ? "length" : payload.incomplete_details?.reason
+      : payload.choices?.[0]?.finish_reason;
+  } else {
+    assistantText = extractAssistantText(payload.choices);
+    finishReason = payload.choices?.[0]?.finish_reason;
+  }
 
   let parsedPayload: z.infer<typeof ocrResponseSchema>;
   try {

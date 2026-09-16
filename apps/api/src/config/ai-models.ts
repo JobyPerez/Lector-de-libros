@@ -45,12 +45,21 @@ export const AI_MODELS = [
     privacyNotice: "Los prompts y las respuestas pueden utilizarse para entrenar futuros modelos de Meta.",
     summaryChunkTargetCharacters: 1_600_000,
     supportsVision: true
+  },
+  {
+    contextWindowTokens: 1_000_000,
+    description: "Modelo multimodal rápido y eficiente de Google recomendado para OCR y resúmenes.",
+    id: "gemini-3.5-flash-lite",
+    name: "Gemini 3.5 Flash Lite",
+    privacyNotice: "El contenido enviado se procesa a través de la API de OpenCode Zen / Google.",
+    summaryChunkTargetCharacters: 1_600_000,
+    supportsVision: true
   }
 ] as const;
 
 export type AiModelId = (typeof AI_MODELS)[number]["id"];
-export const SUMMARY_AI_MODEL_IDS = ["nemotron-3-ultra-free", "deepseek-v4-flash-free"] as const;
-export const OCR_MODEL_IDS = ["mimo-v2.5-free", "x-preview-f-free", "muse-spark-1.2-contributor-free"] as const;
+export const SUMMARY_AI_MODEL_IDS = ["nemotron-3-ultra-free", "deepseek-v4-flash-free", "gemini-3.5-flash-lite"] as const;
+export const OCR_MODEL_IDS = ["mimo-v2.5-free", "x-preview-f-free", "muse-spark-1.2-contributor-free", "gemini-3.5-flash-lite"] as const;
 export type SummaryAiModelId = (typeof SUMMARY_AI_MODEL_IDS)[number];
 export type OcrModelId = (typeof OCR_MODEL_IDS)[number];
 

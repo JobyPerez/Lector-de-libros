@@ -71,8 +71,17 @@ export function externalizeContentImages(contents: readonly string[]): { assets:
       const mimeType = match[1]?.toLowerCase() ?? "";
       const base64Start = dataImageHeaderPattern.lastIndex;
       let base64End = base64Start;
-      while (base64End < content.length && isBase64Character(content[base64End] ?? "")) {
+      let hasInvalidCharacters = false;
+      while (base64End < content.length && !/[\s"'<>()|`,]/.test(content[base64End] ?? "")) {
+        if (!isBase64Character(content[base64End] ?? "")) {
+          hasInvalidCharacters = true;
+        }
         base64End += 1;
+      }
+
+      if (hasInvalidCharacters) {
+        dataImageHeaderPattern.lastIndex = base64End;
+        continue;
       }
 
       const extension = supportedMimeTypes.get(mimeType);

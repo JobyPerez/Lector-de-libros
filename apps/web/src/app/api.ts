@@ -102,8 +102,8 @@ export function fetchAppVersion(fromCommit: string) {
 
 export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
-export type SummaryAiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free";
-export type OcrModelId = "mimo-v2.5-free" | "x-preview-f-free" | "muse-spark-1.2-contributor-free";
+export type SummaryAiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free" | "gemini-3.5-flash-lite";
+export type OcrModelId = "mimo-v2.5-free" | "x-preview-f-free" | "muse-spark-1.2-contributor-free" | "gemini-3.5-flash-lite";
 export type AiModelId = SummaryAiModelId | OcrModelId;
 
 export type AiModelOption = {
