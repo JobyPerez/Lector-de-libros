@@ -28,17 +28,33 @@ function scanPreviewUrl(scan: PreparedDocumentScan) {
   return scan.source.toDataURL("image/jpeg", 0.84);
 }
 
+type ScannerDragTarget =
+  | { cornerIndex: number; type: "corner" }
+  | { cornerA: number; cornerB: number; edgeIndex: number; type: "edge" }
+  | { type: "polygon" };
+
+type ScannerDragSession = {
+  boundsHeight: number;
+  boundsWidth: number;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startCorners: ScanPoint[];
+  target: ScannerDragTarget;
+};
+
 export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentScannerModalProps) {
   const [fileIndex, setFileIndex] = useState(0);
   const [processedFiles, setProcessedFiles] = useState<File[]>([]);
   const [scan, setScan] = useState<PreparedDocumentScan | null>(null);
   const [corners, setCorners] = useState<ScanPoint[]>([]);
   const [previewUrl, setPreviewUrl] = useState("");
-  const [draggedCorner, setDraggedCorner] = useState<number | null>(null);
+  const [activeDragTarget, setActiveDragTarget] = useState<ScannerDragTarget | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const overlayRef = useRef<SVGSVGElement | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
+  const dragSessionRef = useRef<ScannerDragSession | null>(null);
   const currentFile = files[fileIndex] ?? null;
 
   useEffect(() => {
@@ -107,6 +123,85 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
     };
   }, [isProcessing, processedFiles]);
 
+  useEffect(() => {
+    if (!activeDragTarget) return;
+
+    function handlePointerMove(event: PointerEvent) {
+      const session = dragSessionRef.current;
+      if (!session || event.pointerId !== session.pointerId || !scan) return;
+
+      event.preventDefault();
+
+      const deltaX = session.boundsWidth > 0
+        ? ((event.clientX - session.startClientX) / session.boundsWidth) * scan.source.width
+        : 0;
+      const deltaY = session.boundsHeight > 0
+        ? ((event.clientY - session.startClientY) / session.boundsHeight) * scan.source.height
+        : 0;
+
+      if (session.target.type === "corner") {
+        const cornerIndex = session.target.cornerIndex;
+        const startPoint = session.startCorners[cornerIndex];
+        if (!startPoint) return;
+        const nextX = Math.max(0, Math.min(scan.source.width, startPoint.x + deltaX));
+        const nextY = Math.max(0, Math.min(scan.source.height, startPoint.y + deltaY));
+        setCorners(session.startCorners.map((point, index) =>
+          index === cornerIndex ? { x: nextX, y: nextY } : point
+        ));
+      } else if (session.target.type === "edge") {
+        const cornerA = session.target.cornerA;
+        const cornerB = session.target.cornerB;
+        const pA = session.startCorners[cornerA];
+        const pB = session.startCorners[cornerB];
+        if (!pA || !pB) return;
+
+        const minDeltaX = Math.max(-pA.x, -pB.x);
+        const maxDeltaX = Math.min(scan.source.width - pA.x, scan.source.width - pB.x);
+        const clampedDeltaX = Math.max(minDeltaX, Math.min(maxDeltaX, deltaX));
+
+        const minDeltaY = Math.max(-pA.y, -pB.y);
+        const maxDeltaY = Math.min(scan.source.height - pA.y, scan.source.height - pB.y);
+        const clampedDeltaY = Math.max(minDeltaY, Math.min(maxDeltaY, deltaY));
+
+        setCorners(session.startCorners.map((point, index) =>
+          index === cornerA || index === cornerB
+            ? { x: point.x + clampedDeltaX, y: point.y + clampedDeltaY }
+            : point
+        ));
+      } else if (session.target.type === "polygon") {
+        const minDeltaX = Math.max(...session.startCorners.map((p) => -p.x));
+        const maxDeltaX = Math.min(...session.startCorners.map((p) => scan.source.width - p.x));
+        const clampedDeltaX = Math.max(minDeltaX, Math.min(maxDeltaX, deltaX));
+
+        const minDeltaY = Math.max(...session.startCorners.map((p) => -p.y));
+        const maxDeltaY = Math.min(...session.startCorners.map((p) => scan.source.height - p.y));
+        const clampedDeltaY = Math.max(minDeltaY, Math.min(maxDeltaY, deltaY));
+
+        setCorners(session.startCorners.map((point) => ({
+          x: point.x + clampedDeltaX,
+          y: point.y + clampedDeltaY
+        })));
+      }
+    }
+
+    function handlePointerEnd(event: PointerEvent) {
+      const session = dragSessionRef.current;
+      if (!session || event.pointerId !== session.pointerId) return;
+      dragSessionRef.current = null;
+      setActiveDragTarget(null);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerEnd);
+    window.addEventListener("pointercancel", handlePointerEnd);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+    };
+  }, [activeDragTarget, scan]);
+
   function handleCancel() {
     if (processedFiles.length === 0) {
       onCancel();
@@ -115,6 +210,26 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
     const keepProcessed = window.confirm(`Ya has corregido ${processedFiles.length} ${processedFiles.length === 1 ? "imagen" : "imágenes"}. Pulsa Aceptar para conservarlas o Cancelar para descartar todo el lote.`);
     if (keepProcessed) onComplete(processedFiles);
     else onCancel();
+  }
+
+  function startDrag(target: ScannerDragTarget, event: ReactPointerEvent) {
+    if (!scan || isProcessing) return;
+    const bounds = overlayRef.current?.getBoundingClientRect();
+    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    dragSessionRef.current = {
+      boundsHeight: bounds.height,
+      boundsWidth: bounds.width,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startCorners: corners,
+      target
+    };
+    setActiveDragTarget(target);
   }
 
   function moveCornerWithKeyboard(index: number, event: ReactKeyboardEvent<SVGCircleElement>) {
@@ -129,16 +244,34 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
     } : point));
   }
 
-  function updateDraggedCorner(event: ReactPointerEvent<SVGSVGElement>) {
-    if (draggedCorner === null || !scan) return;
-    const bounds = overlayRef.current?.getBoundingClientRect();
-    if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
+  function moveEdgeWithKeyboard(edgeIndex: number, event: ReactKeyboardEvent<SVGGElement>) {
+    if (!scan || !["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"].includes(event.key)) return;
+    event.preventDefault();
+    const step = (event.shiftKey ? 0.02 : 0.005) * Math.max(scan.source.width, scan.source.height);
+    const deltaX = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+    const deltaY = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+    const cornerA = edgeIndex;
+    const cornerB = (edgeIndex + 1) % 4;
 
-    const nextPoint = {
-      x: Math.max(0, Math.min(scan.source.width, ((event.clientX - bounds.left) / bounds.width) * scan.source.width)),
-      y: Math.max(0, Math.min(scan.source.height, ((event.clientY - bounds.top) / bounds.height) * scan.source.height))
-    };
-    setCorners((current) => current.map((point, index) => index === draggedCorner ? nextPoint : point));
+    setCorners((current) => {
+      const pA = current[cornerA];
+      const pB = current[cornerB];
+      if (!pA || !pB) return current;
+
+      const minDeltaX = Math.max(-pA.x, -pB.x);
+      const maxDeltaX = Math.min(scan.source.width - pA.x, scan.source.width - pB.x);
+      const clampedDeltaX = Math.max(minDeltaX, Math.min(maxDeltaX, deltaX));
+
+      const minDeltaY = Math.max(-pA.y, -pB.y);
+      const maxDeltaY = Math.min(scan.source.height - pA.y, scan.source.height - pB.y);
+      const clampedDeltaY = Math.max(minDeltaY, Math.min(maxDeltaY, deltaY));
+
+      return current.map((point, index) =>
+        index === cornerA || index === cornerB
+          ? { x: point.x + clampedDeltaX, y: point.y + clampedDeltaY }
+          : point
+      );
+    });
   }
 
   function finishFile(file: File) {
@@ -196,6 +329,19 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
   }
 
   const polygonPoints = corners.map((point) => `${point.x},${point.y}`).join(" ");
+  const baseDimension = scan ? Math.max(scan.source.width, scan.source.height) : 1000;
+  const cornerRadius = baseDimension * 0.018;
+  const edgeHitboxWidth = Math.max(28, baseDimension * 0.055);
+  const edgePillWidth = Math.max(36, baseDimension * 0.046);
+  const edgePillHeight = Math.max(14, baseDimension * 0.018);
+  const edgePillRadius = edgePillHeight / 2;
+
+  const edges = corners.length === 4 ? [
+    { cornerA: 0, cornerB: 1, edgeIndex: 0, label: "Borde superior" },
+    { cornerA: 1, cornerB: 2, edgeIndex: 1, label: "Borde derecho" },
+    { cornerA: 2, cornerB: 3, edgeIndex: 2, label: "Borde inferior" },
+    { cornerA: 3, cornerB: 0, edgeIndex: 3, label: "Borde izquierdo" }
+  ] : [];
 
   return createPortal(
     <div className="camera-capture-backdrop document-scanner-backdrop" role="presentation">
@@ -216,11 +362,8 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
             <div className="document-scanner-stage">
               <img alt="Página pendiente de corregir" draggable={false} src={previewUrl} />
               <svg
-                aria-label="Marco de la página. Arrastra sus cuatro esquinas para ajustarlo."
+                aria-label="Marco de la página. Arrastra las esquinas, los bordes o el interior para ajustarlo."
                 className="document-scanner-overlay"
-                onPointerCancel={() => setDraggedCorner(null)}
-                onPointerMove={updateDraggedCorner}
-                onPointerUp={() => setDraggedCorner(null)}
                 ref={overlayRef}
                 role="group"
                 viewBox={`0 0 ${scan.source.width} ${scan.source.height}`}
@@ -230,24 +373,81 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
                   d={`M 0 0 H ${scan.source.width} V ${scan.source.height} H 0 Z M ${corners.map((point) => `${point.x} ${point.y}`).join(" L ")} Z`}
                   fillRule="evenodd"
                 />
-                <polygon className="document-scanner-polygon" points={polygonPoints} />
-                {corners.map((point, index) => (
-                  <circle
-                    aria-label={`Esquina ${index + 1}. Usa las flechas para ajustar; mantén Mayúsculas para mover más rápido.`}
-                    className="document-scanner-handle"
-                    cx={point.x}
-                    cy={point.y}
-                    key={index}
-                    onKeyDown={(event) => moveCornerWithKeyboard(index, event)}
-                    onPointerDown={(event) => {
-                      event.currentTarget.setPointerCapture(event.pointerId);
-                      setDraggedCorner(index);
-                    }}
-                    r={Math.max(scan.source.width, scan.source.height) * 0.018}
-                    role="button"
-                    tabIndex={0}
-                  />
-                ))}
+                <polygon
+                  aria-label="Marco completo. Arrastra con el dedo o ratón para mover toda la selección."
+                  className={`document-scanner-polygon${activeDragTarget?.type === "polygon" ? " is-active" : ""}`}
+                  onPointerDown={(event) => startDrag({ type: "polygon" }, event)}
+                  points={polygonPoints}
+                  role="button"
+                  tabIndex={-1}
+                />
+                {edges.map((edge) => {
+                  const pA = corners[edge.cornerA];
+                  const pB = corners[edge.cornerB];
+                  if (!pA || !pB) return null;
+                  const midX = (pA.x + pB.x) / 2;
+                  const midY = (pA.y + pB.y) / 2;
+                  const angle = Math.atan2(pB.y - pA.y, pB.x - pA.x) * (180 / Math.PI);
+                  const isEdgeActive = activeDragTarget?.type === "edge" && activeDragTarget.edgeIndex === edge.edgeIndex;
+
+                  return (
+                    <g key={edge.edgeIndex}>
+                      <line
+                        aria-hidden="true"
+                        className="document-scanner-edge-hitbox"
+                        onPointerDown={(event) => startDrag({ cornerA: edge.cornerA, cornerB: edge.cornerB, edgeIndex: edge.edgeIndex, type: "edge" }, event)}
+                        strokeWidth={edgeHitboxWidth}
+                        x1={pA.x}
+                        x2={pB.x}
+                        y1={pA.y}
+                        y2={pB.y}
+                      />
+                      <g
+                        aria-label={`${edge.label}. Usa las flechas para ajustar; mantén Mayúsculas para mover más rápido.`}
+                        className={`document-scanner-edge-handle${isEdgeActive ? " is-active" : ""}`}
+                        onKeyDown={(event) => moveEdgeWithKeyboard(edge.edgeIndex, event)}
+                        onPointerDown={(event) => startDrag({ cornerA: edge.cornerA, cornerB: edge.cornerB, edgeIndex: edge.edgeIndex, type: "edge" }, event)}
+                        role="button"
+                        tabIndex={0}
+                        transform={`translate(${midX} ${midY}) rotate(${angle})`}
+                      >
+                        <rect
+                          className="document-scanner-edge-pill"
+                          height={edgePillHeight}
+                          rx={edgePillRadius}
+                          ry={edgePillRadius}
+                          width={edgePillWidth}
+                          x={-edgePillWidth / 2}
+                          y={-edgePillHeight / 2}
+                        />
+                        <line
+                          className="document-scanner-edge-pill-line"
+                          x1={-edgePillWidth * 0.18}
+                          x2={edgePillWidth * 0.18}
+                          y1={0}
+                          y2={0}
+                        />
+                      </g>
+                    </g>
+                  );
+                })}
+                {corners.map((point, index) => {
+                  const isCornerActive = activeDragTarget?.type === "corner" && activeDragTarget.cornerIndex === index;
+                  return (
+                    <circle
+                      aria-label={`Esquina ${index + 1}. Usa las flechas para ajustar; mantén Mayúsculas para mover más rápido.`}
+                      className={`document-scanner-handle${isCornerActive ? " is-active" : ""}`}
+                      cx={point.x}
+                      cy={point.y}
+                      key={index}
+                      onKeyDown={(event) => moveCornerWithKeyboard(index, event)}
+                      onPointerDown={(event) => startDrag({ cornerIndex: index, type: "corner" }, event)}
+                      r={cornerRadius}
+                      role="button"
+                      tabIndex={0}
+                    />
+                  );
+                })}
               </svg>
             </div>
           ) : (

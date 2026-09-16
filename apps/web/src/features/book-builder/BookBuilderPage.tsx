@@ -457,7 +457,7 @@ type AppendInsertionSide = "before" | "after";
 type ScannerTarget = "append" | "create";
 type ReviewImageCropEdge = "bottom" | "left" | "right" | "top";
 type ReviewImageCrop = Record<ReviewImageCropEdge, number>;
-type ReviewCropHandle = "move" | "nw" | "ne" | "se" | "sw";
+type ReviewCropHandle = "move" | "nw" | "ne" | "se" | "sw" | "n" | "s" | "e" | "w";
 type ReviewCropRect = {
   height: number;
   width: number;
@@ -616,19 +616,19 @@ function resizeReviewCropRect(
   let nextRight = startRight;
   let nextBottom = startBottom;
 
-  if (handle === "nw" || handle === "sw") {
+  if (handle === "nw" || handle === "sw" || handle === "w") {
     nextLeft = Math.min(Math.max(startRect.x + deltaXPercent, 0), startRight - minimumSize);
   }
 
-  if (handle === "ne" || handle === "se") {
+  if (handle === "ne" || handle === "se" || handle === "e") {
     nextRight = Math.max(Math.min(startRight + deltaXPercent, 100), startRect.x + minimumSize);
   }
 
-  if (handle === "nw" || handle === "ne") {
+  if (handle === "nw" || handle === "ne" || handle === "n") {
     nextTop = Math.min(Math.max(startRect.y + deltaYPercent, 0), startBottom - minimumSize);
   }
 
-  if (handle === "sw" || handle === "se") {
+  if (handle === "sw" || handle === "se" || handle === "s") {
     nextBottom = Math.max(Math.min(startBottom + deltaYPercent, 100), startRect.y + minimumSize);
   }
 
@@ -3728,10 +3728,18 @@ export function BookBuilderPage() {
                           >
                             <div className="review-crop-selection-grid" />
                             <span className="review-crop-selection-label">Marco de recorte</span>
+                            <div aria-hidden="true" className="review-crop-edge-bar review-crop-edge-bar-n" onPointerDown={(event) => startReviewCropDrag("n", event)} />
+                            <div aria-hidden="true" className="review-crop-edge-bar review-crop-edge-bar-s" onPointerDown={(event) => startReviewCropDrag("s", event)} />
+                            <div aria-hidden="true" className="review-crop-edge-bar review-crop-edge-bar-e" onPointerDown={(event) => startReviewCropDrag("e", event)} />
+                            <div aria-hidden="true" className="review-crop-edge-bar review-crop-edge-bar-w" onPointerDown={(event) => startReviewCropDrag("w", event)} />
                             <button aria-label="Ajustar esquina superior izquierda" className="review-crop-handle review-crop-handle-nw" onPointerDown={(event) => startReviewCropDrag("nw", event)} type="button" />
                             <button aria-label="Ajustar esquina superior derecha" className="review-crop-handle review-crop-handle-ne" onPointerDown={(event) => startReviewCropDrag("ne", event)} type="button" />
                             <button aria-label="Ajustar esquina inferior derecha" className="review-crop-handle review-crop-handle-se" onPointerDown={(event) => startReviewCropDrag("se", event)} type="button" />
                             <button aria-label="Ajustar esquina inferior izquierda" className="review-crop-handle review-crop-handle-sw" onPointerDown={(event) => startReviewCropDrag("sw", event)} type="button" />
+                            <button aria-label="Ajustar borde superior" className="review-crop-edge-handle review-crop-edge-handle-n" onPointerDown={(event) => startReviewCropDrag("n", event)} type="button" />
+                            <button aria-label="Ajustar borde derecho" className="review-crop-edge-handle review-crop-edge-handle-e" onPointerDown={(event) => startReviewCropDrag("e", event)} type="button" />
+                            <button aria-label="Ajustar borde inferior" className="review-crop-edge-handle review-crop-edge-handle-s" onPointerDown={(event) => startReviewCropDrag("s", event)} type="button" />
+                            <button aria-label="Ajustar borde izquierdo" className="review-crop-edge-handle review-crop-edge-handle-w" onPointerDown={(event) => startReviewCropDrag("w", event)} type="button" />
                           </div>
                         </div>
                       </div>

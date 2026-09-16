@@ -8727,6 +8727,73 @@ textarea {
   stroke: #7cf2ac;
   stroke-width: 5;
   vector-effect: non-scaling-stroke;
+  cursor: grab;
+  touch-action: none;
+  transition: fill 140ms ease, stroke 140ms ease;
+}
+
+.document-scanner-polygon:hover {
+  fill: rgba(89, 211, 143, 0.14);
+}
+
+.document-scanner-polygon.is-active,
+.document-scanner-polygon:active {
+  cursor: grabbing;
+  fill: rgba(89, 211, 143, 0.22);
+  stroke: #52e18d;
+}
+
+.document-scanner-edge-hitbox {
+  cursor: grab;
+  fill: none;
+  stroke: transparent;
+  touch-action: none;
+}
+
+.document-scanner-edge-hitbox:active {
+  cursor: grabbing;
+}
+
+.document-scanner-edge-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.document-scanner-edge-handle:focus {
+  outline: none;
+}
+
+.document-scanner-edge-handle:active,
+.document-scanner-edge-handle.is-active {
+  cursor: grabbing;
+}
+
+.document-scanner-edge-pill {
+  fill: #fffdf7;
+  stroke: #2ecb72;
+  stroke-width: 5;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 2px 5px rgba(10, 26, 17, 0.35));
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+
+.document-scanner-edge-handle:hover .document-scanner-edge-pill,
+.document-scanner-edge-handle:active .document-scanner-edge-pill,
+.document-scanner-edge-handle.is-active .document-scanner-edge-pill {
+  fill: #d8ffe7;
+  stroke: #1bb25c;
+}
+
+.document-scanner-edge-handle:focus .document-scanner-edge-pill {
+  fill: #fff1a8;
+  stroke: #ffcf45;
+}
+
+.document-scanner-edge-pill-line {
+  stroke: #243d30;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .document-scanner-handle {
@@ -8735,9 +8802,12 @@ textarea {
   stroke: #2ecb72;
   stroke-width: 7;
   vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 2px 6px rgba(10, 26, 17, 0.4));
+  transition: fill 120ms ease, stroke 120ms ease;
 }
 
-.document-scanner-handle:active {
+.document-scanner-handle:active,
+.document-scanner-handle.is-active {
   cursor: grabbing;
   fill: #d8ffe7;
 }
@@ -9040,6 +9110,102 @@ textarea {
   left: -0.5rem;
   bottom: -0.5rem;
   cursor: nesw-resize;
+}
+
+.review-crop-edge-handle {
+  position: absolute;
+  border: none;
+  border-radius: 999px;
+  background: #fffdf8;
+  box-shadow: 0 0 0 2px rgba(36, 61, 48, 0.86), 0 4px 12px rgba(15, 11, 8, 0.25);
+  touch-action: none;
+  z-index: 3;
+  padding: 0;
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.review-crop-edge-handle:hover,
+.review-crop-edge-handle:active {
+  background: #d8ffe7;
+  box-shadow: 0 0 0 2px #2ecb72, 0 4px 12px rgba(15, 11, 8, 0.25);
+}
+
+.review-crop-edge-handle:focus {
+  outline: none;
+  background: #fff1a8;
+  box-shadow: 0 0 0 2px #ffcf45, 0 4px 12px rgba(15, 11, 8, 0.25);
+}
+
+.review-crop-edge-handle-n,
+.review-crop-edge-handle-s {
+  width: 2.1rem;
+  height: 0.625rem;
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+
+.review-crop-edge-handle-n {
+  top: -0.3125rem;
+}
+
+.review-crop-edge-handle-s {
+  bottom: -0.3125rem;
+}
+
+.review-crop-edge-handle-e,
+.review-crop-edge-handle-w {
+  width: 0.625rem;
+  height: 2.1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+
+.review-crop-edge-handle-e {
+  right: -0.3125rem;
+}
+
+.review-crop-edge-handle-w {
+  left: -0.3125rem;
+}
+
+.review-crop-edge-bar {
+  position: absolute;
+  touch-action: none;
+  z-index: 2;
+}
+
+.review-crop-edge-bar-n {
+  top: -0.75rem;
+  left: 1.25rem;
+  right: 1.25rem;
+  height: 1.5rem;
+  cursor: ns-resize;
+}
+
+.review-crop-edge-bar-s {
+  bottom: -0.75rem;
+  left: 1.25rem;
+  right: 1.25rem;
+  height: 1.5rem;
+  cursor: ns-resize;
+}
+
+.review-crop-edge-bar-e {
+  right: -0.75rem;
+  top: 1.25rem;
+  bottom: 1.25rem;
+  width: 1.5rem;
+  cursor: ew-resize;
+}
+
+.review-crop-edge-bar-w {
+  left: -0.75rem;
+  top: 1.25rem;
+  bottom: 1.25rem;
+  width: 1.5rem;
+  cursor: ew-resize;
 }
 
 .review-crop-action-button {
