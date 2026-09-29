@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBookImportProgress, fetchBooks, importBook, leaveBookShare, updateBook, type BookImportProgress, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
 import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
@@ -153,6 +153,64 @@ function normalizeSearchText(value: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
+}
+
+const SHELF_ANCHOR_BOOK_ID_KEY = "lector.shelf.anchorBookId";
+const SHELF_ANCHOR_SCROLL_Y_KEY = "lector.shelf.anchorScrollY";
+const SHELF_ANCHOR_RETURN_TO_KEY = "lector.shelf.anchorReturnTo";
+
+type ShelfLocationState = {
+  shelfAnchorBookId?: string;
+  shelfReturnTo?: string;
+};
+
+function isValidShelfReturnTo(value: string | null | undefined): value is string {
+  if (!value || !value.startsWith("/")) {
+    return false;
+  }
+  if (value.startsWith("/books") || value.startsWith("/search") || value.startsWith("/profile") || value.startsWith("/builder") || value.startsWith("/users") || value.startsWith("/login")) {
+    return false;
+  }
+  return true;
+}
+
+function readShelfAnchorFromSession(): string | null {
+  try {
+    return window.sessionStorage.getItem(SHELF_ANCHOR_BOOK_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function readShelfReturnToFromSession(): string | null {
+  try {
+    const stored = window.sessionStorage.getItem(SHELF_ANCHOR_RETURN_TO_KEY);
+    return isValidShelfReturnTo(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeShelfAnchorToSession(bookId: string, returnTo: string) {
+  try {
+    window.sessionStorage.setItem(SHELF_ANCHOR_BOOK_ID_KEY, bookId);
+    window.sessionStorage.setItem(SHELF_ANCHOR_SCROLL_Y_KEY, String(window.scrollY));
+    if (isValidShelfReturnTo(returnTo)) {
+      window.sessionStorage.setItem(SHELF_ANCHOR_RETURN_TO_KEY, returnTo);
+    }
+  } catch {
+    // sessionStorage puede no estar disponible; el state de navegación sigue funcionando.
+  }
+}
+
+function clearShelfAnchorFromSession() {
+  try {
+    window.sessionStorage.removeItem(SHELF_ANCHOR_BOOK_ID_KEY);
+    window.sessionStorage.removeItem(SHELF_ANCHOR_SCROLL_Y_KEY);
+    window.sessionStorage.removeItem(SHELF_ANCHOR_RETURN_TO_KEY);
+  } catch {
+    // Sin almacenamiento no hay nada que limpiar.
+  }
 }
 
 function StarIcon({ filled }: { filled: boolean }) {
@@ -315,6 +373,7 @@ export function ShelfPage() {
   const queryClient = useQueryClient();
   const accessToken = useAuthStore((state) => state.accessToken);
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlShelfQuery = searchParams.get("q")?.trim() ?? "";
   const [shelfSearchQuery, setShelfSearchQuery] = useState(urlShelfQuery);
@@ -460,13 +519,19 @@ export function ShelfPage() {
         formData.append("authorName", importForm.authorName);
       }
 
-      await importBook(accessToken, formData, { progressId });
+      const importResponse = await importBook(accessToken, formData, { progressId });
 
       setImportForm({ authorName: "", languageCode: "es", title: "" });
       setSelectedFile(null);
       setViewTransitionDirection("back");
       setIsImportPanelVisible(false);
-      await booksQuery.refetch();
+      await queryClient.invalidateQueries({ queryKey: ["books"] });
+      try {
+        await booksQuery.refetch();
+      } catch {
+        // La navegación a lectura no depende del refetch de la estantería.
+      }
+      navigate(`/books/${importResponse.book.bookId}`);
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro.");
     } finally {
@@ -526,6 +591,87 @@ export function ShelfPage() {
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isCreateMenuOpen, isSearchMenuOpen]);
+
+  const shelfLocationState = (location.state as ShelfLocationState | null) ?? null;
+  const shelfAnchorBookIdFromState = shelfLocationState?.shelfAnchorBookId ?? null;
+  const shelfReturnToFromState = isValidShelfReturnTo(shelfLocationState?.shelfReturnTo)
+    ? (shelfLocationState?.shelfReturnTo as string)
+    : null;
+
+  useEffect(() => {
+    if (booksQuery.isLoading || booksQuery.isError) {
+      return;
+    }
+
+    // La transición animada de rutas mantiene esta pantalla montada unos ms
+    // como pantalla de salida con la location YA actualizada (p. ej. /books/:id).
+    // No restaurar ni redirigir en ese caso: rompería la entrada al lector.
+    if (location.pathname !== "/") {
+      return;
+    }
+
+    const anchorBookId = shelfAnchorBookIdFromState ?? readShelfAnchorFromSession();
+    if (!anchorBookId) {
+      return;
+    }
+
+    // Si el ancla viene con una pestaña/búsqueda concreta (p. ej. Compartidos)
+    // y estamos en otra, volver a esa URL antes de buscar el elemento.
+    if (shelfReturnToFromState) {
+      const currentShelfUrl = location.pathname + location.search;
+      if (currentShelfUrl !== shelfReturnToFromState) {
+        navigate(shelfReturnToFromState, { replace: true, state: { shelfAnchorBookId: anchorBookId } });
+        return;
+      }
+    }
+
+    let isCancelled = false;
+    const restoreTimeoutId = window.setTimeout(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      const anchorElement = document.getElementById(`shelf-book-${anchorBookId}`);
+      if (anchorElement) {
+        anchorElement.scrollIntoView({ block: "center", behavior: "auto" });
+        clearShelfAnchorFromSession();
+        if (shelfAnchorBookIdFromState) {
+          navigate(location.pathname + location.search, { replace: true });
+        }
+        return;
+      }
+
+      // El libro no está en el scope actual (p. ej. se volvió a "/" estando en
+      // "Compartidos"). "Todos" incluye propios y compartidos: cambiar y reintentar.
+      const booksInScope = booksQuery.data ?? [];
+      const isAnchorInScope = booksInScope.some((book) => book.bookId === anchorBookId);
+      if (!isAnchorInScope && effectiveScope !== "all") {
+        setSearchParams((current) => {
+          const nextParams = new URLSearchParams(current);
+          nextParams.set("scope", "all");
+          return nextParams;
+        });
+        return;
+      }
+
+      try {
+        const savedScrollY = window.sessionStorage.getItem(SHELF_ANCHOR_SCROLL_Y_KEY);
+        if (savedScrollY !== null) {
+          const parsedScrollY = Number(savedScrollY);
+          if (Number.isFinite(parsedScrollY) && parsedScrollY > 0) {
+            window.scrollTo(0, parsedScrollY);
+          }
+        }
+      } catch {
+        // Si no se puede restaurar el scroll, se deja la posición actual.
+      }
+    }, 60);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(restoreTimeoutId);
+    };
+  }, [booksQuery.data, booksQuery.isError, booksQuery.isLoading, effectiveScope, location.pathname, location.search, navigate, setSearchParams, shelfAnchorBookIdFromState, shelfReturnToFromState]);
 
   function handleShelfSearchChange(value: string) {
     setShelfSearchQuery(value);
@@ -882,9 +1028,17 @@ export function ShelfPage() {
         data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
         data-expanded={isExpanded ? "true" : undefined}
         data-removing={removalState}
+        id={`shelf-book-${book.bookId}`}
         key={book.bookId}
       >
-        <Link aria-disabled={isBookRemoving} className="book-card-link shelf-book-link" tabIndex={isBookRemoving ? -1 : undefined} to={`/books/${book.bookId}`}>
+        <Link
+          aria-disabled={isBookRemoving}
+          className="book-card-link shelf-book-link"
+          onClick={() => writeShelfAnchorToSession(book.bookId, location.pathname + location.search)}
+          state={{ shelfAnchorBookId: book.bookId, shelfReturnTo: location.pathname + location.search }}
+          tabIndex={isBookRemoving ? -1 : undefined}
+          to={`/books/${book.bookId}`}
+        >
           <div className="shelf-book-cover-shell">
             <ShelfBookCover accessToken={accessToken} book={book} />
           </div>

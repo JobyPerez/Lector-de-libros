@@ -291,7 +291,31 @@ type ActiveSearchTarget = {
 
 type ReaderNavigationState = {
   returnTo?: string;
+  shelfAnchorBookId?: string;
+  shelfReturnTo?: string;
 };
+
+const SHELF_ANCHOR_BOOK_ID_KEY = "lector.shelf.anchorBookId";
+const SHELF_ANCHOR_RETURN_TO_KEY = "lector.shelf.anchorReturnTo";
+
+function isValidShelfReturnTo(value: string | null | undefined): value is string {
+  if (!value || !value.startsWith("/")) {
+    return false;
+  }
+  if (value.startsWith("/books") || value.startsWith("/search") || value.startsWith("/profile") || value.startsWith("/builder") || value.startsWith("/users") || value.startsWith("/login")) {
+    return false;
+  }
+  return true;
+}
+
+function readShelfReturnToFromSession(): string | null {
+  try {
+    const stored = window.sessionStorage.getItem(SHELF_ANCHOR_RETURN_TO_KEY);
+    return isValidShelfReturnTo(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
 
 function createPageTurnSnapshot(pageNumber: number, paragraphs: ParagraphContent[], htmlContent: string | null, activeParagraphNumber: number | null): PageTurnSnapshot {
   return {
@@ -1324,7 +1348,27 @@ export function ReaderPage() {
   const navigationState = (location.state as ReaderNavigationState | null) ?? null;
   const readerReturnTo = navigationState?.returnTo?.trim() ?? "";
   const isReturningToGlobalSearch = readerReturnTo.startsWith("/search");
+  const shelfAnchorBookId = bookId;
+  const shelfReturnToFromState = isValidShelfReturnTo(navigationState?.shelfReturnTo)
+    ? (navigationState?.shelfReturnTo as string)
+    : null;
+  const shelfReturnTo = shelfReturnToFromState ?? readShelfReturnToFromSession() ?? "/";
   const shouldRestoreScreenWakeLock = isScreenLockEnabled || isAudioPlaying || isAudioLoading || hasActivePlaybackSession || autoPlay;
+
+  useEffect(() => {
+    if (!bookId) {
+      return;
+    }
+
+    try {
+      window.sessionStorage.setItem(SHELF_ANCHOR_BOOK_ID_KEY, bookId);
+      if (shelfReturnToFromState) {
+        window.sessionStorage.setItem(SHELF_ANCHOR_RETURN_TO_KEY, shelfReturnToFromState);
+      }
+    } catch {
+      // Sin sessionStorage el botón Volver sigue pasando el ancla por state.
+    }
+  }, [bookId, shelfReturnToFromState]);
 
   useEffect(() => {
     progressHydratedRef.current = false;
@@ -1684,14 +1728,24 @@ export function ReaderPage() {
     }
 
     const savedProgress = progressQuery.data?.progress;
-    if (!savedProgress || progressHydratedRef.current) {
+    if (progressHydratedRef.current) {
       return;
     }
 
-    progressHydratedRef.current = true;
-    setCurrentPageNumber(savedProgress.currentPageNumber);
-    setCurrentParagraphNumber(savedProgress.currentParagraphNumber);
-  }, [bookId, navigate, progressQuery.data?.progress, requestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
+    if (savedProgress) {
+      progressHydratedRef.current = true;
+      setCurrentPageNumber(savedProgress.currentPageNumber);
+      setCurrentParagraphNumber(savedProgress.currentParagraphNumber);
+      return;
+    }
+
+    if (progressQuery.isSuccess || progressQuery.isError) {
+      // Sin progreso guardado (libro nuevo o compartido sin progreso propio):
+      // hidratar igual en la pág. 1 para que la URL ?page= aparezca y el
+      // sincronizado de página funcione igual que en los propios.
+      progressHydratedRef.current = true;
+    }
+  }, [bookId, navigate, progressQuery.data?.progress, progressQuery.isError, progressQuery.isSuccess, requestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
 
   useEffect(() => {
     if (!pendingRouteNavigationRef.current) {
@@ -1772,6 +1826,12 @@ export function ReaderPage() {
 
   useEffect(() => {
     if (!progressHydratedRef.current || !Number.isInteger(currentPageNumber) || currentPageNumber < 1) {
+      return;
+    }
+
+    // La transición animada mantiene el lector montado como pantalla de salida
+    // con la location ya en la estantería: no contaminar su URL con ?page=.
+    if (!location.pathname.startsWith("/books/")) {
       return;
     }
 
@@ -4534,13 +4594,13 @@ export function ReaderPage() {
             search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=0`
           });
         } else {
-          navigate("/");
+          navigate(shelfReturnTo, { state: { shelfAnchorBookId } });
         }
         return;
       }
 
       if (response.nextPageNumber === null) {
-        navigate("/");
+        navigate(shelfReturnTo, { state: { shelfAnchorBookId } });
         return;
       }
 
@@ -4910,8 +4970,9 @@ export function ReaderPage() {
           aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
           className={buttonClassName}
           onClick={onAction}
+          state={isReturningToGlobalSearch ? undefined : { shelfAnchorBookId, shelfReturnTo }}
           title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
-          to={isReturningToGlobalSearch ? readerReturnTo : "/"}
+          to={isReturningToGlobalSearch ? readerReturnTo : shelfReturnTo}
         >
           {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
         </Link> : null}

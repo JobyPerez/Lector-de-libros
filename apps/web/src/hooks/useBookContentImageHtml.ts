@@ -4,6 +4,11 @@ import { fetchBookContentImage } from "../app/api";
 
 const contentImageReferencePattern = /lector-content-image:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/giu;
 
+// Píxel transparente de 1x1: evita que el navegador intente resolver el esquema
+// personalizado `lector-content-image:` (ERR_UNKNOWN_URL_SCHEME) mientras las
+// imágenes se descargan e hidratan como blob URLs.
+const PENDING_CONTENT_IMAGE_PLACEHOLDER = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+
 export function getBookContentImageAssetIds(htmlContent: string | null | undefined): string[] {
   if (!htmlContent) {
     return [];
@@ -20,6 +25,10 @@ export function getBookContentImageAssetIds(htmlContent: string | null | undefin
 
 export function replaceBookContentImageReferences(htmlContent: string, imageUrls: ReadonlyMap<string, string>): string {
   return htmlContent.replace(contentImageReferencePattern, (reference, assetId: string) => imageUrls.get(assetId) ?? reference);
+}
+
+export function replacePendingBookContentImageReferences(htmlContent: string): string {
+  return htmlContent.replace(contentImageReferencePattern, PENDING_CONTENT_IMAGE_PLACEHOLDER);
 }
 
 type HydratedImageUrls = {
@@ -74,10 +83,20 @@ export function useBookContentImageHtml(
   }, [accessToken, assetIdsKey, bookId]);
 
   return useMemo(() => {
-    if (!htmlContent || hydratedImageUrls?.contextKey !== contextKey) {
+    if (!htmlContent) {
       return htmlContent;
     }
 
-    return replaceBookContentImageReferences(htmlContent, hydratedImageUrls.urls);
-  }, [contextKey, htmlContent, hydratedImageUrls]);
+    if (hydratedImageUrls?.contextKey === contextKey) {
+      return replaceBookContentImageReferences(htmlContent, hydratedImageUrls.urls);
+    }
+
+    if (assetIds.length === 0) {
+      return htmlContent;
+    }
+
+    // Hidratación pendiente (descargando blobs): sustituir por placeholder para
+    // que el esquema personalizado nunca llegue al DOM como src.
+    return replacePendingBookContentImageReferences(htmlContent);
+  }, [assetIds.length, contextKey, htmlContent, hydratedImageUrls]);
 }
