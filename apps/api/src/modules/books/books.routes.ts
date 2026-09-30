@@ -15,7 +15,7 @@ import { calculateParagraphReadingMetrics } from "../../services/paragraph-metri
 import { recordBookView, recordUserActivity } from "../../services/user-activity.js";
 import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
-import { buildEpubExport, buildPdfExport } from "./book-export.js";
+import { buildEpubExport, buildImagePdfExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
@@ -85,7 +85,7 @@ const downloadTokenParamsSchema = z.object({
 });
 
 const createDownloadTokenSchema = z.object({
-  format: z.enum(["epub", "pdf"]).optional(),
+  format: z.enum(["epub", "pdf", "pdf-images"]).optional(),
   kind: z.enum(["export", "original"])
 });
 
@@ -200,7 +200,7 @@ type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
 type DownloadTokenRecord = {
   bookId: string;
   expiresAt: number;
-  format?: "epub" | "pdf";
+  format?: "epub" | "pdf" | "pdf-images";
   kind: "export" | "original";
   userId: string;
 };
@@ -886,7 +886,7 @@ async function buildOwnedBookExportDownload(
   connection: DatabaseConnection,
   bookId: string,
   userId: string,
-  format: "epub" | "pdf"
+  format: "epub" | "pdf" | "pdf-images"
 ): Promise<DownloadFilePayload | null> {
   const book = await findOwnedBook(connection, bookId, userId);
   if (!book) {
@@ -898,8 +898,36 @@ async function buildOwnedBookExportDownload(
 async function assembleBookExportDownload(
   connection: DatabaseConnection,
   book: OwnedBookRecord,
-  format: "epub" | "pdf"
+  format: "epub" | "pdf" | "pdf-images"
 ): Promise<DownloadFilePayload> {
+  if (format === "pdf-images") {
+    if (book.sourceType !== "IMAGES") {
+      throw Object.assign(new Error("El PDF de imágenes solo está disponible para libros creados desde imágenes."), { statusCode: 409 });
+    }
+
+    const result = await connection.execute(
+      `
+        SELECT p.page_number AS "pageNumber", f.content_blob AS "buffer"
+        FROM book_pages p
+        LEFT JOIN book_files f ON f.file_id = p.source_file_id
+          AND f.book_id = p.book_id AND f.file_kind = 'PAGE_IMAGE'
+        WHERE p.book_id = :bookId
+        ORDER BY p.page_number ASC
+      `,
+      { bookId: book.bookId },
+      { fetchInfo: { buffer: { type: oracledb.BUFFER } } }
+    );
+
+    return {
+      buffer: await buildImagePdfExport({
+        title: book.title,
+        pages: (result.rows ?? []) as Array<{ buffer: Buffer | null; pageNumber: number }>
+      }),
+      fileName: buildDownloadFileName(`${book.title}-imagenes`, "pdf"),
+      mimeType: "application/pdf"
+    };
+  }
+
   const [pagesResult, paragraphsResult, outlineResult, coverAsset, contentImagesResult] = await Promise.all([
     connection.execute(
       `
@@ -1034,7 +1062,7 @@ async function buildAccessibleBookExportDownload(
   connection: DatabaseConnection,
   bookId: string,
   userId: string,
-  format: "epub" | "pdf"
+  format: "epub" | "pdf" | "pdf-images"
 ): Promise<DownloadFilePayload | null> {
   const book = await findAccessibleBook(connection, bookId, userId);
   if (!book) {
@@ -6376,7 +6404,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     const params = z.object({
       bookId: z.string().uuid(),
-      format: z.enum(["epub", "pdf"])
+      format: z.enum(["epub", "pdf", "pdf-images"])
     }).parse(request.params);
     const connection = await getConnection();
 

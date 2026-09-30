@@ -1329,7 +1329,7 @@ export async function uploadBookPageImage(accessToken: string, bookId: string, p
   }
 }
 
-export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf") {
+export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf" | "pdf-images") {
   return requestBlobDownload(`/books/${bookId}/export/${format}`, accessToken);
 }
 
@@ -1337,7 +1337,7 @@ export function downloadOriginalBook(accessToken: string, bookId: string) {
   return requestBlobDownload(`/books/${bookId}/download-original`, accessToken);
 }
 
-export async function createBookDownloadUrl(accessToken: string, bookId: string, payload: { format?: "epub" | "pdf"; kind: "export" | "original" }) {
+export async function createBookDownloadUrl(accessToken: string, bookId: string, payload: { format?: "epub" | "pdf" | "pdf-images"; kind: "export" | "original" }) {
   const response = await fetchWithAutoRefresh(`/books/${bookId}/download-token`, {
     accessToken,
     body: JSON.stringify(payload),

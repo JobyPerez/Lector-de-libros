@@ -368,6 +368,39 @@ export async function buildEpubExport(options: {
   return archive.toBuffer();
 }
 
+export async function buildImagePdfExport(options: {
+  title: string;
+  pages: Array<{ buffer: Buffer | null; pageNumber: number }>;
+}): Promise<Buffer> {
+  if (options.pages.length === 0 || options.pages.some((page) => !page.buffer?.length)) {
+    throw Object.assign(new Error("No se puede generar el PDF: faltan imágenes de las páginas."), { statusCode: 409 });
+  }
+
+  const document = new PDFDocument({ autoFirstPage: false, info: { Title: options.title } });
+  const chunks: Buffer[] = [];
+  document.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+
+  // Keep rendering failures on the same promise as PDF stream failures.
+  return new Promise<Buffer>((resolve, reject) => {
+    document.on("end", () => resolve(Buffer.concat(chunks)));
+    document.on("error", reject);
+
+    void (async () => {
+      for (const page of options.pages) {
+        const { data, info } = await sharp(page.buffer!).rotate().png().toBuffer({ resolveWithObject: true });
+        const width = 595.28;
+        const height = width * info.height / info.width;
+        document.addPage({ margin: 0, size: [width, height] });
+        document.image(data, 0, 0, { width, height });
+      }
+      document.end();
+    })().catch((error) => {
+      reject(error);
+      document.end();
+    });
+  });
+}
+
 export async function buildPdfExport(options: {
   book: ExportBook;
   coverAsset: ExportCoverAsset;

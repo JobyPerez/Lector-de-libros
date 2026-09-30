@@ -397,9 +397,9 @@ export function ShelfPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [bookActionError, setBookActionError] = useState<string | null>(null);
   const [bookActionSuccess, setBookActionSuccess] = useState<string | null>(null);
-  const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<"epub" | "pdf" | "pdf-images" | null>(null);
   const [exportingBookId, setExportingBookId] = useState<string | null>(null);
-  const [exportingFormatCard, setExportingFormatCard] = useState<"epub" | "pdf" | null>(null);
+  const [exportingFormatCard, setExportingFormatCard] = useState<"epub" | "pdf" | "pdf-images" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
@@ -772,7 +772,7 @@ export function ShelfPage() {
     resetBookForm();
   }
 
-  async function handleDownloadExport(format: "epub" | "pdf") {
+  async function handleDownloadExport(format: "epub" | "pdf" | "pdf-images") {
     if (!accessToken || !editingBook) {
       return;
     }
@@ -811,7 +811,7 @@ export function ShelfPage() {
     }
   }
 
-  async function handleExportFromCard(book: BookSummary, format: "epub" | "pdf") {
+  async function handleExportFromCard(book: BookSummary, format: "epub" | "pdf" | "pdf-images") {
     if (!accessToken) {
       return;
     }
@@ -1201,7 +1201,7 @@ export function ShelfPage() {
                     role="menuitem"
                     type="button"
                   >
-                    {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB"}
+                    {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB (OCR)"}
                   </button>
                   <button
                     className="menu-item book-card-download-option"
@@ -1214,7 +1214,21 @@ export function ShelfPage() {
                     role="menuitem"
                     type="button"
                   >
-                    {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF"}
+                    {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF (OCR)"}
+                  </button>
+                  <button
+                    className="menu-item book-card-download-option"
+                    disabled={exportingBookId === book.bookId}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      void handleExportFromCard(book, "pdf-images");
+                    }}
+                    role="menuitem"
+                    title="Descargar las imágenes guardadas con sus recortes actuales"
+                    type="button"
+                  >
+                    {exportingBookId === book.bookId && exportingFormatCard === "pdf-images" ? "Exportando imágenes..." : "PDF de imágenes"}
                   </button>
                 </div>
               ) : null}
@@ -1568,6 +1582,14 @@ export function ShelfPage() {
                   {exportingFormat === "pdf" ? "Exportando PDF..." : "Exportar PDF"}
                 </span>
               </button>
+              {editingBook?.sourceType === "IMAGES" ? (
+                <button className="secondary-button" disabled={exportingFormat !== null} onClick={() => void handleDownloadExport("pdf-images")} title="Descargar las imágenes guardadas con sus recortes actuales" type="button">
+                  <span className="export-button-content">
+                    <DownloadIcon />
+                    {exportingFormat === "pdf-images" ? "Exportando imágenes..." : "PDF de imágenes"}
+                  </span>
+                </button>
+              ) : null}
               <button className="secondary-button" onClick={handleCancelOrBack} type="button">
                 Cancelar
               </button>
