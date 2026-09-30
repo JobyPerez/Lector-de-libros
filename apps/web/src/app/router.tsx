@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { BrowserRouter, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigationType, useOutlet } from "react-router-dom";
+import { createBrowserRouter, createRoutesFromElements, NavLink, Navigate, Outlet, Route, RouterProvider, useLocation, useNavigationType, useOutlet } from "react-router-dom";
 import { registerSW } from "virtual:pwa-register";
 
 import { fetchAppVersion, fetchCurrentUser, type AppVersionCommit, type AppVersionResponse } from "./api";
@@ -16,6 +16,7 @@ import { SearchPage } from "../features/search/SearchPage";
 import { ShelfPage } from "../features/shelf/ShelfPage";
 import { UsersAdminPage } from "../features/users/UsersAdminPage";
 import { ThemeProvider } from "./theme-provider";
+import { confirmPendingNavigation } from "../hooks/useUnsavedChanges";
 
 const queryClient = new QueryClient();
 const routerBaseName = import.meta.env.BASE_URL.replace(/\/$/, "") || "/";
@@ -557,7 +558,11 @@ function ProtectedShell() {
           ) : null}
         </nav>
         <div className="topbar-actions">
-          <ProfileMenu onLogout={clearSession} user={user} />
+          <ProfileMenu onLogout={() => {
+            if (confirmPendingNavigation()) {
+              clearSession();
+            }
+          }} user={user} />
         </div>
       </header>
       <main>
@@ -577,46 +582,48 @@ function StartupHydrator() {
   return null;
 }
 
+const router = createBrowserRouter(createRoutesFromElements(
+  <>
+    <Route
+      path="/login"
+      element={(
+        <PublicOnlyRoute>
+          <LoginPage />
+        </PublicOnlyRoute>
+      )}
+    />
+    <Route
+      path="/reset-password"
+      element={(
+        <PublicOnlyRoute>
+          <ResetPasswordPage />
+        </PublicOnlyRoute>
+      )}
+    />
+    <Route element={<ProtectedShell />}>
+      <Route path="/" element={<ShelfPage />} />
+      <Route path="/search" element={<SearchPage />} />
+      <Route path="/profile" element={<ProfilePage />} />
+      <Route path="/books/:bookId" element={<ReaderPage />} />
+      <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
+      <Route path="/books/:bookId/sections/:chapterId/ai-requests" element={<AiRequestsPage />} />
+      <Route path="/books/:bookId/sections/:chapterId/summary" element={<AiRequestsPage />} />
+      <Route path="/builder" element={<BookBuilderPage />} />
+      <Route element={<AdminOnlyRoute />}>
+        <Route path="/users" element={<UsersAdminPage />} />
+      </Route>
+    </Route>
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </>
+), { basename: routerBaseName });
+
 export function AppRouter() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <AppUpdateGate />
-        <BrowserRouter basename={routerBaseName}>
-          <StartupHydrator />
-          <Routes>
-            <Route
-              path="/login"
-              element={(
-                <PublicOnlyRoute>
-                  <LoginPage />
-                </PublicOnlyRoute>
-              )}
-            />
-            <Route
-              path="/reset-password"
-              element={(
-                <PublicOnlyRoute>
-                  <ResetPasswordPage />
-                </PublicOnlyRoute>
-              )}
-            />
-            <Route element={<ProtectedShell />}>
-              <Route path="/" element={<ShelfPage />} />
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/profile" element={<ProfilePage />} />
-              <Route path="/books/:bookId" element={<ReaderPage />} />
-              <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
-              <Route path="/books/:bookId/sections/:chapterId/ai-requests" element={<AiRequestsPage />} />
-              <Route path="/books/:bookId/sections/:chapterId/summary" element={<AiRequestsPage />} />
-              <Route path="/builder" element={<BookBuilderPage />} />
-              <Route element={<AdminOnlyRoute />}>
-                <Route path="/users" element={<UsersAdminPage />} />
-              </Route>
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </BrowserRouter>
+        <StartupHydrator />
+        <RouterProvider router={router} />
       </ThemeProvider>
     </QueryClientProvider>
   );

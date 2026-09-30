@@ -41,6 +41,7 @@ import { ImageViewerModal } from "../../components/ImageViewerModal";
 import { useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { useAiConfig } from "../../components/AiModelBadge";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
+import { useUnsavedChanges } from "../../hooks/useUnsavedChanges";
 import { DocumentScannerModal } from "./DocumentScannerModal";
 import { buildEditableTextFromHtmlContent, buildOcrPreviewHtml } from "./ocr-preview";
 
@@ -2532,13 +2533,7 @@ export function BookBuilderPage() {
   }
 
   function changeReviewPage(delta: -1 | 1) {
-    const totalPages = selectedReviewBook?.totalPages ?? 0;
-    setReviewPageNumber((currentPage) => {
-      const nextPage = currentPage + delta;
-      return Math.min(Math.max(nextPage, 1), Math.max(totalPages, 1));
-    });
-    setReviewMessage(null);
-    setReviewError(null);
+    jumpToReviewPage(reviewPageNumber + delta);
   }
 
   function rotateReviewImage(direction: -1 | 1) {
@@ -2601,7 +2596,12 @@ export function BookBuilderPage() {
 
   function jumpToReviewPage(pageNumber: number) {
     const totalPages = selectedReviewBook?.totalPages ?? 0;
-    setReviewPageNumber(Math.min(Math.max(pageNumber, 1), Math.max(totalPages, 1)));
+    const nextPage = Math.min(Math.max(pageNumber, 1), Math.max(totalPages, 1));
+    if (nextPage !== reviewPageNumber && !confirmDiscardReviewChanges()) {
+      setReviewPageJumpValue(String(reviewPageNumber));
+      return;
+    }
+    setReviewPageNumber(nextPage);
     setReviewMessage(null);
     setReviewError(null);
     setIsReviewIndexVisible(false);
@@ -2828,6 +2828,8 @@ export function BookBuilderPage() {
   const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
   const isReviewDirty = editedText !== originalEditedText || hasPendingReviewImageEdits;
+  const hasPendingReviewCrop = isReviewCropMode && !equalReviewImageCrop(reviewRectToCrop(reviewCropDraft), reviewImageCrop);
+  const confirmDiscardReviewChanges = useUnsavedChanges(isReviewOnlyMode && (isReviewDirty || hasPendingReviewCrop));
   const reviewEditorKindLabel = selectedReviewBook?.sourceType === "EPUB" ? "texto" : "OCR";
   const reviewPageBookmarkCount = reviewAnnotationsQuery.data?.bookmarks.length ?? 0;
   const reviewPageHighlightCount = reviewAnnotationsQuery.data?.highlights.length ?? 0;
