@@ -8427,6 +8427,8 @@ textarea {
 
 .append-ocr-lock-dialog {
   width: min(26rem, 100%);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
   display: grid;
   gap: 1rem;
   padding: 1.15rem;
@@ -10092,6 +10094,8 @@ textarea {
   .reader-page-jump-input {
     width: 3ch;
     min-width: 3ch;
+    /* Avoid focus zoom on mobile browsers without disabling pinch zoom. */
+    font-size: max(16px, 1rem);
   }
 
   .reader-float-button {

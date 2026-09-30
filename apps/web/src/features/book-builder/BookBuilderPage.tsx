@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import {
@@ -3418,7 +3419,7 @@ export function BookBuilderPage() {
             ) : null}
           </div>
 
-          {isAppending ? (
+          {isAppending ? createPortal(
             <div className="append-ocr-lock-backdrop" role="presentation">
               <div aria-label="Añadiendo páginas" aria-modal="true" className="append-ocr-lock-dialog" role="dialog">
                 <div className="append-ocr-lock-header">
@@ -3471,7 +3472,8 @@ export function BookBuilderPage() {
                   </button>
                 )}
               </div>
-            </div>
+            </div>,
+            document.body
           ) : null}
 
           {isCreateCameraModalOpen ? (
