@@ -18,7 +18,11 @@ export function getOpenCodeGeminiEndpoint(model: string): string {
 }
 
 export function getOpenCodeChatCompletionsEndpoint(model: string): string {
-  return model.endsWith("-free") ? OPENCODE_ZEN_ENDPOINT : OPENCODE_GO_ENDPOINT;
+  // Los resúmenes usan Zen de pago por uso (https://opencode.ai/docs/zen/):
+  // deepseek-v4-flash, glm-5.3-flash, etc. van a /zen/v1, no a /zen/go/v1.
+  // Se mantiene OPENCODE_GO_ENDPOINT solo para un futuro uso con suscripción Go.
+  // Los antiguos "-free" también iban a /zen/v1 pero están bloqueados fuera de OpenCode.
+  return OPENCODE_ZEN_ENDPOINT;
 }
 
 export function getOpenCodeRequestHeaders(apiKey: string | undefined): Record<string, string> {

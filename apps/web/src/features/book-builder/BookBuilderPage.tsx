@@ -332,13 +332,14 @@ function OcrModelSelect({ disabled = false, models, onChange, value }: OcrModelS
   return (
     <div className="ocr-model-select-panel">
       <label className="ocr-model-select-field">
-        <span>Modelo gratuito de OpenCode</span>
+        <span>Modelo de OCR con IA (OpenCode Zen)</span>
         <select disabled={disabled} onChange={(event) => onChange(event.target.value as OcrModelId)} value={value}>
           {models.map((model) => (
-            <option key={model.id} value={model.id}>{model.name}</option>
+            <option key={model.id} value={model.id}>{model.name} · {model.pricing}</option>
           ))}
         </select>
       </label>
+      {selectedModel ? <p className="helper-text">{selectedModel.description} {selectedModel.pricing}.</p> : null}
       {selectedModel ? <p className="helper-text">{selectedModel.privacyNotice}</p> : null}
     </div>
   );
@@ -955,7 +956,7 @@ export function BookBuilderPage() {
   const ocrModelOptions = (aiConfigQuery.data?.ocrModelIds ?? [])
     .map((modelId) => aiConfigQuery.data?.models.find((model) => model.id === modelId))
     .filter((model): model is AiModelOption => Boolean(model));
-  const selectedOcrModel = ocrModelOverride ?? (aiConfigQuery.data?.ocrModel as OcrModelId | undefined) ?? "mimo-v2.5-free";
+  const selectedOcrModel = ocrModelOverride ?? (aiConfigQuery.data?.ocrModel as OcrModelId | undefined) ?? "gemini-3.5-flash-lite";
   const selectedOcrModelOption = ocrModelOptions.find((model) => model.id === selectedOcrModel);
   const reviewOcrModelLabel = selectedOcrModelOption?.name ?? selectedOcrModel;
   const awsCostQuery = useQuery({
@@ -3139,7 +3140,7 @@ export function BookBuilderPage() {
                       ) : null}
                     </div>
                     {createOcrMode === "VISION" ? (
-                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. Gratuito.</span>
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. De pago.</span>
                     ) : createOcrMode === "TEXTRACT" ? (
                       <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
                     ) : (
@@ -3398,7 +3399,7 @@ export function BookBuilderPage() {
                       ) : null}
                     </div>
                     {appendOcrMode === "VISION" ? (
-                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. Gratuito.</span>
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. De pago.</span>
                     ) : appendOcrMode === "TEXTRACT" ? (
                       <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
                     ) : (
@@ -4261,7 +4262,7 @@ export function BookBuilderPage() {
                       >
                         <strong>IA: {reviewOcrModelLabel}</strong>
                         <ul className="review-ocr-option-list">
-                          <li>Gratuito.</li>
+                          <li>{selectedOcrModelOption?.pricing ?? "De pago."}</li>
                         </ul>
                       </button>
                       <button

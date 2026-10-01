@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { AI_MODELS, OCR_MODEL_IDS, SUMMARY_AI_MODEL_IDS } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 
-type AiProvider = "opencode";
+type AiProvider = "opencode" | "google" | "multi";
 
 type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
@@ -16,7 +16,9 @@ type AiConfigResponse = {
     description: string;
     id: string;
     name: string;
+    pricing: string;
     privacyNotice: string;
+    provider: string;
     supportsVision: boolean;
   }>;
   ocrModel: string;
@@ -29,23 +31,28 @@ const AI_FEATURES: AiFeature[] = ["ocr-vision", "section-summary", "ai-requests"
 
 export async function registerAiConfigRoutes(app: FastifyInstance): Promise<void> {
   app.get("/ai-config", async () => {
-    const configured = Boolean(appEnv.opencodeGoApiKey);
+    const hasOpenCodeKey = Boolean(appEnv.opencodeGoApiKey);
+    const hasGoogleKey = Boolean(appEnv.geminiApiKey);
+    const configured = hasOpenCodeKey || hasGoogleKey;
+    const provider: AiProvider = hasOpenCodeKey && hasGoogleKey ? "multi" : hasGoogleKey ? "google" : "opencode";
 
     const response: AiConfigResponse = {
       configured,
       defaultModel: appEnv.opencodeModel,
       features: AI_FEATURES,
-      models: AI_MODELS.map(({ contextWindowTokens, description, id, name, privacyNotice, supportsVision }) => ({
+      models: AI_MODELS.map(({ contextWindowTokens, description, id, name, pricing, privacyNotice, provider: modelProvider, supportsVision }) => ({
         contextWindowTokens,
         description,
         id,
         name,
+        pricing,
         privacyNotice,
+        provider: modelProvider,
         supportsVision
       })),
       ocrModel: appEnv.opencodeOcrModel,
       ocrModelIds: [...OCR_MODEL_IDS],
-      provider: "opencode",
+      provider,
       summaryModelIds: [...SUMMARY_AI_MODEL_IDS]
     };
 

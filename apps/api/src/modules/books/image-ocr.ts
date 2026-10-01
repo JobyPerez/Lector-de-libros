@@ -890,7 +890,7 @@ async function executeVisionOcrRequest(
   const prompt = buildVisionOcrPrompt(language, promptOverride);
   const maxTokens = maxTokensOverride ?? prompt.maxTokens;
   const usesGeminiApi = isGeminiModel(model);
-  const usesResponsesApi = model === "muse-spark-1.2-contributor-free";
+  const usesResponsesApi = model === "gpt-5.4-nano" || model === "gpt-5.4-mini";
   const endpoint = usesGeminiApi
     ? getOpenCodeGeminiEndpoint(model)
     : usesResponsesApi
@@ -929,14 +929,19 @@ async function executeVisionOcrRequest(
         ? {
             input: [{
               content: [
-                { text: prompt.user, type: "input_text" },
+                {
+                  text: `${prompt.user}\n\n${language === "it" ? "Restituisci esclusivamente JSON valido." : "Devuelve solo JSON válido."}`,
+                  type: "input_text"
+                },
                 { image_url: imageUrl, type: "input_image" }
               ],
               role: "user"
             }],
             instructions: prompt.system,
             max_output_tokens: maxTokens,
-            model
+            model,
+            reasoning: { effort: "none" },
+            text: { format: { type: "json_object" } }
           }
         : {
             max_tokens: getOpenCodeMaxTokens(model, maxTokens),

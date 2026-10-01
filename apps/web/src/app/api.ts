@@ -102,8 +102,8 @@ export function fetchAppVersion(fromCommit: string) {
 
 export type AiFeature = "ocr-vision" | "section-summary" | "ai-requests";
 
-export type SummaryAiModelId = "nemotron-3-ultra-free" | "deepseek-v4-flash-free" | "gemini-3.5-flash-lite";
-export type OcrModelId = "mimo-v2.5-free" | "x-preview-f-free" | "muse-spark-1.2-contributor-free" | "gemini-3.5-flash-lite";
+export type SummaryAiModelId = "deepseek-v4-flash" | "glm-5.3-flash" | "gemini-3.5-flash-lite" | "gemini-2.5-flash-lite-google";
+export type OcrModelId = "gemini-3.5-flash-lite" | "gpt-5.4-nano" | "gpt-5.4-mini";
 export type AiModelId = SummaryAiModelId | OcrModelId;
 
 export type AiModelOption = {
@@ -111,7 +111,9 @@ export type AiModelOption = {
   description: string;
   id: AiModelId;
   name: string;
+  pricing: string;
   privacyNotice: string;
+  provider: string;
   supportsVision: boolean;
 };
 
@@ -122,7 +124,7 @@ export type AiConfigResponse = {
   models: AiModelOption[];
   ocrModel: AiModelId;
   ocrModelIds: OcrModelId[];
-  provider: "opencode";
+  provider: string;
   summaryModelIds: SummaryAiModelId[];
 };
 

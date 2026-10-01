@@ -3,6 +3,12 @@ import { z } from "zod";
 import { SUMMARY_AI_MODEL_IDS, getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 import {
+  getGoogleAiNativeModelId,
+  getGoogleAiRequestHeaders,
+  GOOGLE_AI_OPENAI_ENDPOINT,
+  isGoogleAiModel
+} from "../../config/google-ai.js";
+import {
   getOpenCodeChatCompletionsEndpoint,
   getOpenCodeGeminiEndpoint,
   getOpenCodeGeminiRequestHeaders,
@@ -123,7 +129,15 @@ function createDiagramResponseFormatInstructions(visualType: AiVisualType) {
   return `Regla técnica obligatoria: responde únicamente con JSON válido con la forma {\"type\":\"CONCEPT_MAP\",\"title\":\"título\",\"summary\":\"síntesis accesible\",\"nodes\":[{\"id\":\"id_unico\",\"label\":\"concepto\",\"detail\":\"explicación opcional\",\"category\":\"grupo opcional\",\"date\":\"fecha opcional\",\"metric\":\"dato destacado opcional\"}],\"edges\":[{\"from\":\"id_origen\",\"to\":\"id_destino\",\"label\":\"relación opcional\"}]}. Crea ${VISUAL_TYPE_LABELS[visualType]}. ${typeRule} Usa entre 2 y 24 nodos, identificadores breves con letras, números, guion o guion bajo, y solo referencias a nodos existentes. Mantén el orden narrativo en nodes para cronologías e infografías. No incluyas Markdown, HTML ni Mermaid.`;
 }
 
-function ensureSummaryConfiguration() {
+function ensureSummaryConfiguration(model: SummaryAiModelId) {
+  if (isGoogleAiModel(model)) {
+    if (!appEnv.geminiApiKey) {
+      throw Object.assign(new Error("El resumen con Google AI Studio no está disponible en este entorno. Configura GEMINI_API_KEY para usar este modo."), {
+        statusCode: 503
+      });
+    }
+    return;
+  }
   if (!appEnv.opencodeGoApiKey) {
     throw Object.assign(new Error("El resumen con IA no está disponible en este entorno. Configura OpenCode para usar este modo."), {
       statusCode: 503
@@ -167,11 +181,11 @@ function extractJsonPayload(responseText: string): string {
   return responseText.trim();
 }
 
-function extractProviderErrorDetails(source: string | ChatCompletionResponse["error"]): { code: string | null; message: string } {
+function extractProviderErrorDetails(source: string | ChatCompletionResponse["error"], providerLabel = "OpenCode"): { code: string | null; message: string } {
   if (typeof source !== "string") {
     return {
       code: source?.type?.trim() || source?.code?.trim() || null,
-      message: source?.message?.trim() || "OpenCode devolvió un error al generar el resumen."
+      message: source?.message?.trim() || `${providerLabel} devolvió un error al generar el resumen.`
     };
   }
 
@@ -195,7 +209,7 @@ function extractProviderErrorDetails(source: string | ChatCompletionResponse["er
 
   return {
     code: null,
-    message: source.trim() || "OpenCode devolvió un error al generar el resumen."
+    message: source.trim() || `${providerLabel} devolvió un error al generar el resumen.`
   };
 }
 
@@ -243,12 +257,12 @@ function isRateLimitError(statusCode: number | null, errorMessage: string) {
   return statusCode === 429 || /rate limit|too many requests|UserByModelByMinute/iu.test(errorMessage);
 }
 
-function createSummaryRateLimitError(details: { code: string | null; message: string }, retryAfterSeconds: number | null) {
+function createSummaryRateLimitError(details: { code: string | null; message: string }, retryAfterSeconds: number | null, providerLabel = "OpenCode") {
   const waitMessage = retryAfterSeconds
     ? ` Espera ${retryAfterSeconds} segundos antes de intentarlo de nuevo.`
     : " Espera un momento antes de intentarlo de nuevo.";
 
-  return Object.assign(new Error(`OpenCode ha alcanzado el límite temporal de peticiones.${waitMessage}`), {
+  return Object.assign(new Error(`${providerLabel} ha alcanzado el límite temporal de peticiones.${waitMessage}`), {
     code: "AI_RATE_LIMIT",
     providerCode: details.code,
     retryAfterSeconds: retryAfterSeconds ?? undefined,
@@ -257,9 +271,9 @@ function createSummaryRateLimitError(details: { code: string | null; message: st
   });
 }
 
-function createSummaryProviderError(details: { code: string | null; message: string }, transient = false) {
+function createSummaryProviderError(details: { code: string | null; message: string }, transient = false, providerLabel = "OpenCode") {
   const retrySuggestion = transient ? " Prueba de nuevo o selecciona DeepSeek V4 Flash si el proveedor de NVIDIA continúa inestable." : "";
-  return Object.assign(new Error(`Error de OpenCode al generar la respuesta: ${details.message}.${retrySuggestion}`), {
+  return Object.assign(new Error(`Error de ${providerLabel} al generar la respuesta: ${details.message}.${retrySuggestion}`), {
     providerCode: details.code,
     retryable: transient,
     statusCode: 502
@@ -347,7 +361,7 @@ function wait(ms: number) {
 }
 
 async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; languageCode: BookLanguageCode; model: SummaryAiModelId; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
-  ensureSummaryConfiguration();
+  ensureSummaryConfiguration(prompt.model);
 
   const promptOverride = prompt.promptOverride?.trim();
   const editablePrompt = promptOverride || (prompt.condensed
@@ -369,10 +383,16 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
   let retryAfterSeconds: number | null = null;
 
   for (let attempt = 0; attempt < PROVIDER_REQUEST_ATTEMPTS; attempt += 1) {
-    const usesGeminiApi = isGeminiModel(currentModel);
-    const endpoint = usesGeminiApi
-      ? getOpenCodeGeminiEndpoint(currentModel)
-      : getOpenCodeChatCompletionsEndpoint(currentModel);
+    // Google AI Studio directo tiene prioridad: su id también empieza por "gemini-"
+    // pero no usa el endpoint GenerateContent de OpenCode Zen.
+    const usesGoogleAi = isGoogleAiModel(currentModel);
+    const providerLabel = usesGoogleAi ? "Google AI Studio" : "OpenCode";
+    const usesGeminiApi = !usesGoogleAi && isGeminiModel(currentModel);
+    const endpoint = usesGoogleAi
+      ? GOOGLE_AI_OPENAI_ENDPOINT
+      : usesGeminiApi
+        ? getOpenCodeGeminiEndpoint(currentModel)
+        : getOpenCodeChatCompletionsEndpoint(currentModel);
 
     const userPromptContent = prompt.condensed
       ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
@@ -410,16 +430,19 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
               content: userPromptContent
             }
           ],
-          model: currentModel,
+          // En Google AI Studio se envía el id nativo del modelo.
+          model: usesGoogleAi ? getGoogleAiNativeModelId(currentModel) : currentModel,
           temperature: 0.15
         });
 
     try {
       response = await fetch(endpoint, {
         method: "POST",
-        headers: usesGeminiApi
-          ? getOpenCodeGeminiRequestHeaders(appEnv.opencodeGoApiKey)
-          : getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
+        headers: usesGoogleAi
+          ? getGoogleAiRequestHeaders(appEnv.geminiApiKey)
+          : usesGeminiApi
+            ? getOpenCodeGeminiRequestHeaders(appEnv.opencodeGoApiKey)
+            : getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
         body: requestBody
       });
     } catch {
@@ -428,7 +451,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
         await wait(750 * (attempt + 1));
         continue;
       }
-      throw Object.assign(new Error("Se interrumpió la conexión entre la API y OpenCode al generar la respuesta."), {
+      throw Object.assign(new Error(`Se interrumpió la conexión entre la API y ${providerLabel} al generar la respuesta.`), {
         code: "AI_PROVIDER_NETWORK",
         retryable: true,
         statusCode: 502
@@ -440,12 +463,12 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     }
 
     const errorBody = await response.text();
-    const details = extractProviderErrorDetails(errorBody);
+    const details = extractProviderErrorDetails(errorBody, providerLabel);
     const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
     retryAfterSeconds = parseRetryAfterSeconds(response.headers.get("retry-after")) ?? parseRetryWaitFromMessage(normalizedProviderError);
 
     if (isContentFilterError(normalizedProviderError)) {
-      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
+      throw Object.assign(new Error(`${providerLabel} bloqueó el resumen por sus políticas de contenido.`), {
         statusCode: 422
       });
     }
@@ -457,7 +480,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
         continue;
       }
 
-      throw createSummaryRateLimitError(details, retryAfterSeconds);
+      throw createSummaryRateLimitError(details, retryAfterSeconds, providerLabel);
     }
 
     if (!modelFallbackUsed && attempt < PROVIDER_REQUEST_ATTEMPTS - 1 && isModelUnavailableError(normalizedProviderError)) {
@@ -477,35 +500,36 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
       continue;
     }
 
-    throw createSummaryProviderError(details, isTransientProviderError);
+    throw createSummaryProviderError(details, isTransientProviderError, providerLabel);
   }
 
+  const finalProviderLabel = isGoogleAiModel(currentModel) ? "Google AI Studio" : "OpenCode";
   if (!response?.ok) {
     throw createSummaryRateLimitError({
       code: null,
-      message: "OpenCode no aceptó la petición por límite temporal."
-    }, retryAfterSeconds);
+      message: `${finalProviderLabel} no aceptó la petición por límite temporal.`
+    }, retryAfterSeconds, finalProviderLabel);
   }
 
   const payload = (await response.json()) as ChatCompletionResponse & GeminiGenerateContentResponse;
   if (payload.error?.message) {
-    const details = extractProviderErrorDetails(payload.error as any);
+    const details = extractProviderErrorDetails(payload.error as any, finalProviderLabel);
     const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
     if (isContentFilterError(normalizedProviderError)) {
-      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
+      throw Object.assign(new Error(`${finalProviderLabel} bloqueó el resumen por sus políticas de contenido.`), {
         statusCode: 422
       });
     }
 
     if (isRateLimitError(null, normalizedProviderError)) {
-      throw createSummaryRateLimitError(details, parseRetryWaitFromMessage(normalizedProviderError));
+      throw createSummaryRateLimitError(details, parseRetryWaitFromMessage(normalizedProviderError), finalProviderLabel);
     }
 
-    throw createSummaryProviderError(details);
+    throw createSummaryProviderError(details, false, finalProviderLabel);
   }
 
   let assistantText: string;
-  if (isGeminiModel(currentModel)) {
+  if (!isGoogleAiModel(currentModel) && isGeminiModel(currentModel)) {
     const candidate = payload.candidates?.[0];
     if (payload.promptFeedback?.blockReason || (candidate?.finishReason && !["STOP", "MAX_TOKENS"].includes(candidate.finishReason))) {
       throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
@@ -545,7 +569,8 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
 
     return summaryText;
   } catch {
-    throw Object.assign(new Error(`OpenCode devolvió una respuesta inválida al generar el resumen. Respuesta: ${assistantText.slice(0, 400)}`), {
+    const invalidProviderLabel = isGoogleAiModel(currentModel) ? "Google AI Studio" : "OpenCode";
+    throw Object.assign(new Error(`${invalidProviderLabel} devolvió una respuesta inválida al generar el resumen. Respuesta: ${assistantText.slice(0, 400)}`), {
       statusCode: 502
     });
   }

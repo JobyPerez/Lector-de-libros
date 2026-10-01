@@ -75,10 +75,10 @@ export function AiModelSelector({ disabled = false, models, onChange, value }: A
       <span>Modelo de IA</span>
       <select disabled={disabled} onChange={(event) => onChange(event.target.value as SummaryAiModelId)} value={value}>
         {models.map((model) => (
-          <option key={model.id} value={model.id}>{model.name}</option>
+          <option key={model.id} value={model.id}>{model.name} · {model.pricing}</option>
         ))}
       </select>
-      {selectedModel ? <span className="subdued">{selectedModel.description}</span> : null}
+      {selectedModel ? <span className="subdued">{selectedModel.description} ({selectedModel.pricing}).</span> : null}
       {selectedModel ? <span className="ai-model-privacy-notice">{selectedModel.privacyNotice}</span> : null}
     </label>
   );
