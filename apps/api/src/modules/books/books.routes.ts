@@ -7,13 +7,12 @@ import type { FastifyPluginAsync } from "fastify";
 import oracledb from "oracledb";
 import { z } from "zod";
 
-import { ocrModelIdSchema, summaryAiModelIdSchema, type OcrModelId } from "../../config/ai-models.js";
 import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
 import { calculateParagraphReadingMetrics } from "../../services/paragraph-metrics.js";
 import { recordBookView, recordUserActivity } from "../../services/user-activity.js";
-import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
+import { getEffectiveUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildImagePdfExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
@@ -21,7 +20,10 @@ import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry
 import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
-import { buildRichPageFromEditableText, extractEmbeddedImageSources, normalizeWhitespace } from "./rich-content.js";
+import { buildRichPageFromEditableText, extractEmbeddedImageSources, hasValidReadingBlockMarkers, normalizeWhitespace } from "./rich-content.js";
+import { matchParagraphsWithExplicitIds } from "./paragraph-ids.js";
+import { annotatePageElementHtml, geometrySchema, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml, type ParagraphElementMetadata } from "./page-elements.js";
+import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualPageDocument } from "./visual-document.js";
 import { generateAiRequestResponse, generateSectionSummary, getDefaultBookAiRequestPrompt, getDefaultSectionAiRequestPrompt, getDefaultSectionSummaryPrompt, type AiRequestKind } from "./section-summary.js";
 
 const createBookSchema = z.object({
@@ -50,18 +52,21 @@ const booleanFormFieldSchema = z.preprocess(
   z.boolean()
 );
 
+const customOcrModelSchema = z.string().trim().min(1).max(255);
+const customSummaryModelSchema = z.string().trim().min(1).max(255);
+
 const imageBookFieldsSchema = z.object({
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
   languageCode: z.enum(supportedBookLanguageCodes).default("es"),
-  ocrModel: ocrModelIdSchema.optional(),
+  ocrModel: customOcrModelSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema
 });
 
 const importImagesFieldsSchema = z.object({
-  ocrModel: ocrModelIdSchema.optional(),
+  ocrModel: customOcrModelSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema,
   skipOcr: booleanFormFieldSchema.default(false)
@@ -102,14 +107,14 @@ const sectionParamsSchema = z.object({
 });
 
 const sectionSummaryGenerationSchema = z.object({
-  model: summaryAiModelIdSchema.optional(),
+  model: customSummaryModelSchema.optional(),
   promptOverride: z.string().trim().min(1).max(4000).optional()
 });
 
 const aiRequestPayloadSchema = z.object({
   chapterIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
   kind: z.enum(["TEXT", "DIAGRAM"]).default("TEXT"),
-  model: summaryAiModelIdSchema.optional(),
+  model: customSummaryModelSchema.optional(),
   progressId: z.string().uuid().optional(),
   promptText: z.string().trim().min(1).max(4000),
   visualType: z.enum(["AUTO", "MIND_MAP", "CONCEPT_MAP", "TIMELINE", "INFOGRAPHIC", "FLOWCHART", "RELATIONSHIPS"]).default("AUTO")
@@ -146,14 +151,18 @@ const contentImageParamsSchema = z.object({
 });
 
 const updateOcrPageSchema = z.object({
-  editedText: z.string().trim().min(1).max(50000),
+  expectedUpdatedAt: z.string().min(1).max(100).optional(),
+  editedText: z.string().trim().min(1).max(50000).refine(hasValidReadingBlockMarkers, { message: "Marcador :::block invalido o duplicado." }),
+  paragraphIds: z.array(z.string().min(1).max(80).nullable()).optional(),
+  paragraphMetadata: z.array(paragraphElementMetadataSchema).optional(),
   sourceImageRotation: z.coerce.number().int().refine((value): value is ImageRotation => supportedImageRotations.includes(value as ImageRotation), {
     message: "La rotación debe ser 0, 90, 180 o 270 grados."
   }).optional()
 });
 
 const rerunOcrPageSchema = z.object({
-  ocrModel: ocrModelIdSchema.optional(),
+  expectedUpdatedAt: z.string().min(1).max(100).optional(),
+  ocrModel: customOcrModelSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
   promptOverride: ocrPromptOverrideSchema
 });
@@ -164,6 +173,17 @@ const updateImageRotationSchema = z.object({
   })
 });
 
+const updatePageElementsSchema = z.object({
+  elements: z.array(paragraphElementMetadataSchema.extend({ paragraphId: z.string().min(1).max(80) })).min(1)
+    .refine((elements) => new Set(elements.map((element) => element.paragraphId)).size === elements.length, { message: "paragraphId duplicado." }),
+  expectedUpdatedAt: z.string().min(1).max(100)
+}).strict();
+
+const updateVisualDocumentSchema = z.object({
+  document: visualPageDocumentSchema,
+  expectedUpdatedAt: z.string().min(1).max(100)
+}).strict();
+
 type UploadedBinaryFile = {
   buffer: Buffer;
   fieldName: string;
@@ -172,6 +192,7 @@ type UploadedBinaryFile = {
 };
 
 type ProcessedImagePage = UploadedBinaryFile & {
+  paragraphMetadata?: ParagraphElementMetadata[];
   editedText: string;
   htmlContent: string | null;
   ocrStatus?: string;
@@ -196,6 +217,62 @@ type OwnedBookRecord = {
 };
 
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
+
+export type StoredOcrMarginCandidate = {
+  pageNumber: number;
+  paragraphText: string;
+  geometryJson: string | null;
+};
+
+export function inferRepeatedOcrMarginHints(
+  rows: readonly StoredOcrMarginCandidate[],
+  targetPageNumber: number,
+  title: string
+): { headers: string[]; footers: string[] } {
+  const candidates = new Map<string, { text: string; pages: Set<number> }>();
+  for (const row of rows) {
+    if (row.pageNumber === targetPageNumber || !Number.isInteger(row.pageNumber) || row.pageNumber < 1) continue;
+    const text = row.paragraphText.trim();
+    if (!text || text.length > 120 || /[\r\n]/u.test(text)) continue;
+    const key = text.normalize("NFD").replace(/[\u0300-\u036f]/gu, "").toLowerCase().replace(/\s+/gu, " ");
+    if (/\b(?:capitulo|prologo|epilogo|parte|introduccion|prefacio|indice|apendice|anexo|chapter|prologue|epilogue|part)\b/u.test(key)) continue;
+    // Legacy JSON or boxes must not prevent the page's OCR from running.
+    let storedGeometry: unknown;
+    try {
+      storedGeometry = row.geometryJson ? JSON.parse(row.geometryJson) : null;
+    } catch {
+      continue;
+    }
+    const geometry = geometrySchema.safeParse(storedGeometry);
+    if (!geometry.success) continue;
+    const { top, height } = geometry.data.bbox;
+    if (top > 0.12 || top + height > 0.15 + Number.EPSILON || height > 0.035) continue;
+    const candidate = candidates.get(key) ?? { text, pages: new Set<number>() };
+    candidate.pages.add(row.pageNumber);
+    candidates.set(key, candidate);
+  }
+  const footer = title.trim();
+  return {
+    headers: [...candidates.values()].filter(({ pages }) => pages.size >= 2).map(({ text }) => text),
+    footers: footer && footer.length <= 120 && !/[\r\n]/u.test(footer) ? [footer] : []
+  };
+}
+
+async function collectBookOcrMarginHints(connection: DatabaseConnection, bookId: string, pageNumber: number, title: string) {
+  const result = await connection.execute(`
+    SELECT page_number AS "pageNumber",
+      DBMS_LOB.SUBSTR(paragraph_text, 120, 1) AS "paragraphText",
+      DBMS_LOB.SUBSTR(geometry_json, 4000, 1) AS "geometryJson"
+    FROM book_paragraphs
+    WHERE book_id = :bookId
+      AND page_number <> :pageNumber
+      AND DBMS_LOB.GETLENGTH(paragraph_text) <= 120
+      AND geometry_json IS NOT NULL
+    ORDER BY page_number, paragraph_number
+    FETCH FIRST 1500 ROWS ONLY
+  `, { bookId, pageNumber });
+  return inferRepeatedOcrMarginHints((result.rows ?? []) as StoredOcrMarginCandidate[], pageNumber, title);
+}
 
 type DownloadTokenRecord = {
   bookId: string;
@@ -244,6 +321,8 @@ function consumeDownloadToken(token: string): DownloadTokenRecord | null {
 }
 
 type BookPageRecord = {
+  visualDocumentJson?: string | null;
+  sourceHtmlContent?: string | null;
   editedText: string | null;
   hasSourceImage: number;
   htmlContent: string | null;
@@ -324,6 +403,7 @@ type BookSectionContext = {
 };
 
 type StoredSectionSummaryRecord = {
+  isStale: boolean;
   chapterId: string;
   createdAt: string;
   endPageNumber: number;
@@ -342,6 +422,7 @@ type StoredSectionSummaryRecord = {
 type AiRequestScopeType = "BOOK" | "SECTION";
 
 type StoredAiRequestRecord = {
+  isStale: boolean;
   author: {
     displayName: string | null;
     userId: string;
@@ -375,7 +456,7 @@ type StoredAiRequestRow = Omit<StoredAiRequestRecord, "author" | "isOwnedByCurre
   authorUsername: string;
 };
 
-type PageParagraphRecord = {
+type PageParagraphRecord = ParagraphElementMetadata & {
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
@@ -934,7 +1015,8 @@ async function assembleBookExportDownload(
         SELECT
           page_number AS "pageNumber",
           page_label AS "pageLabel",
-          html_content AS "htmlContent"
+          html_content AS "htmlContent",
+          visual_document_json AS "visualDocumentJson"
         FROM book_pages
         WHERE book_id = :bookId
         ORDER BY page_number ASC
@@ -945,7 +1027,14 @@ async function assembleBookExportDownload(
       `
         SELECT
           page_number AS "pageNumber",
-          paragraph_text AS "paragraphText"
+          paragraph_text AS "paragraphText",
+          paragraph_number AS "paragraphNumber",
+          is_active AS "active",
+          element_role AS "role",
+          read_aloud AS "readAloud",
+          include_in_toc AS "includeInToc",
+          image_width_pct AS "imageWidth",
+          geometry_json AS "geometryJson"
         FROM book_paragraphs
         WHERE book_id = :bookId
         ORDER BY sequence_number ASC
@@ -980,19 +1069,24 @@ async function assembleBookExportDownload(
     }
   }
 
-  const paragraphsByPage = new Map<number, Array<{ paragraphText: string }>>();
-  for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string }>) {
+  const paragraphsByPage = new Map<number, Array<ParagraphElementMetadata & { paragraphText: string; paragraphNumber: number; active: boolean }>>();
+  for (const row of (paragraphsResult.rows ?? []) as Array<{ pageNumber: number; paragraphText: string; paragraphNumber: number;
+    active: number; role: ParagraphElementMetadata["role"]; readAloud: number; includeInToc: number | null; imageWidth: number | null; geometryJson: string | null }>) {
     const bucket = paragraphsByPage.get(row.pageNumber) ?? [];
-    bucket.push({ paragraphText: row.paragraphText });
+    bucket.push({ ...row, active: row.active !== 0, readAloud: row.readAloud !== 0, role: row.role ?? "body",
+      includeInToc: row.includeInToc == null ? null : Boolean(row.includeInToc),
+      geometry: row.geometryJson ? paragraphElementMetadataSchema.shape.geometry.parse(JSON.parse(row.geometryJson)) : null });
     paragraphsByPage.set(row.pageNumber, bucket);
   }
 
-  const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => ({
-    htmlContent: row.htmlContent ? hydrateContentImages(row.htmlContent, contentImages) : null,
-    pageLabel: row.pageLabel,
-    pageNumber: row.pageNumber,
-    paragraphs: paragraphsByPage.get(row.pageNumber) ?? []
-  }));
+  const pages = ((pagesResult.rows ?? []) as Array<{ htmlContent: string | null; visualDocumentJson: string | null; pageLabel: string | null; pageNumber: number }>).map((row) => {
+    const paragraphs = paragraphsByPage.get(row.pageNumber) ?? [];
+    const htmlContent = row.visualDocumentJson
+      ? renderVisualDocument(visualPageDocumentSchema.parse(JSON.parse(row.visualDocumentJson)), { languageCode: book.languageCode }).htmlContent
+      : projectActivePageHtml(annotatePageElementHtml(row.htmlContent, paragraphs), paragraphs);
+    return { htmlContent: htmlContent ? hydrateContentImages(htmlContent, contentImages) : null,
+      pageLabel: row.pageLabel, pageNumber: row.pageNumber, paragraphs: paragraphs.filter((paragraph) => paragraph.active !== false) };
+  });
 
   const exportPayload = {
     book: {
@@ -1094,7 +1188,15 @@ async function listPageParagraphs(
         paragraph_id AS "paragraphId",
         paragraph_number AS "paragraphNumber",
         sequence_number AS "sequenceNumber",
-        paragraph_text AS "paragraphText"
+        paragraph_text AS "paragraphText",
+        word_count AS "wordCount",
+        tts_character_count AS "characterCount",
+        element_role AS "role",
+        read_aloud AS "readAloud",
+        is_active AS "active",
+        include_in_toc AS "includeInToc",
+        image_width_pct AS "imageWidth",
+        geometry_json AS "geometryJson"
       FROM book_paragraphs
       WHERE book_id = :bookId
         AND page_number = :pageNumber
@@ -1106,7 +1208,15 @@ async function listPageParagraphs(
     }
   );
 
-  return (result.rows ?? []) as PageParagraphRecord[];
+  return ((result.rows ?? []) as Array<PageParagraphRecord & { readAloud: boolean | number; geometryJson?: string | null }>).map(({ geometryJson, ...row }) => ({
+    ...row,
+    role: row.role ?? "body",
+    readAloud: row.readAloud === undefined || row.readAloud === null ? true : Boolean(row.readAloud),
+    active: row.active === undefined || row.active === null ? true : Boolean(row.active),
+    includeInToc: row.includeInToc == null ? null : Boolean(row.includeInToc),
+    imageWidth: row.imageWidth ?? null,
+    geometry: geometryJson ? paragraphElementMetadataSchema.shape.geometry.parse(JSON.parse(geometryJson)) : null
+  }));
 }
 
 async function searchOwnedBookParagraphs(
@@ -1149,6 +1259,7 @@ async function searchOwnedBookParagraphs(
         INNER JOIN books b
           ON b.book_id = bp.book_id
         WHERE bp.book_id = :bookId
+          AND bp.is_active = 1
           AND ${searchCondition}
       )
       WHERE row_number > :offset
@@ -1212,6 +1323,7 @@ async function searchOwnedLibraryParagraphs(
         INNER JOIN books b
           ON b.book_id = bp.book_id
         WHERE b.owner_user_id = :ownerUserId
+          AND bp.is_active = 1
           AND ${searchCondition}
       )
       WHERE row_number > :offset
@@ -1478,7 +1590,7 @@ function matchReplacementParagraphs(
       continue;
     }
 
-    const fallbackParagraph = replacementParagraphs[existingParagraph.paragraphNumber - 1];
+    const fallbackParagraph = replacementParagraphs.find((paragraph) => paragraph.paragraphNumber === existingParagraph.paragraphNumber);
     if (!fallbackParagraph || usedReplacementIds.has(fallbackParagraph.paragraphId)) {
       continue;
     }
@@ -1847,9 +1959,10 @@ async function ocrImageFiles(
   files: UploadedBinaryFile[],
   ocrMode: ImageOcrMode,
   language: BookLanguageCode,
-  model?: OcrModelId,
+  model?: string,
   promptOverride?: string,
   awsCredentials?: AwsTextractCredentials | null,
+  opencodeApiKey?: string | null,
   onProgress?: (progress: {
     completedFiles: number;
     currentFileIndex: number;
@@ -1886,6 +1999,7 @@ async function ocrImageFiles(
           language,
           ...(model ? { model } : {}),
           ocrMode,
+          ...(opencodeApiKey ? { opencodeApiKey } : {}),
           ...(promptOverride ? { promptOverride } : {})
         });
         break;
@@ -1925,6 +2039,7 @@ async function ocrImageFiles(
       editedText: ocrResult.editedText,
       htmlContent: ocrResult.htmlContent,
       paragraphs: ocrResult.paragraphs,
+      ...("paragraphMetadata" in ocrResult ? { paragraphMetadata: ocrResult.paragraphMetadata as ParagraphElementMetadata[] } : {}),
       rawText: ocrResult.rawText
     });
 
@@ -2072,6 +2187,7 @@ async function findParagraphBoundary(
       WHERE book_id = :bookId
         AND page_number = :pageNumber
         AND paragraph_number = :paragraphNumber
+        AND is_active = 1
     `,
     {
       bookId,
@@ -2098,6 +2214,7 @@ async function findLastParagraphBoundary(
         sequence_number AS "sequenceNumber"
       FROM book_paragraphs
       WHERE book_id = :bookId
+        AND is_active = 1
         AND (:startSequenceNumber IS NULL OR sequence_number >= :startSequenceNumber)
         AND (:endSequenceNumber IS NULL OR sequence_number <= :endSequenceNumber)
       ORDER BY sequence_number DESC
@@ -2114,13 +2231,35 @@ async function findLastParagraphBoundary(
   return boundary ?? null;
 }
 
+async function resolveCanonicalChapterId(
+  connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, chapterId: string
+): Promise<string> {
+  const result = await connection.execute(`SELECT bp.visual_document_json AS "visualDocumentJson"
+    FROM book_pages bp JOIN book_paragraphs p ON p.page_id = bp.page_id AND p.book_id = bp.book_id
+    WHERE p.book_id = :bookId AND p.paragraph_id = :chapterId`, { bookId, chapterId });
+  const stored = result.rows?.[0]?.visualDocumentJson as string | null | undefined;
+  if (!stored) return chapterId;
+  const document = visualPageDocumentSchema.parse(JSON.parse(stored));
+  const visit = (node: VisualPageDocument["layout"]): string | null => {
+    if (node.type === "block") return null;
+    if (node.content?.kind === "heading" && node.content.includeInToc
+      && node.children.some((child) => child.type === "block" && child.blockId === chapterId)) {
+      const anchor = node.children.find((child) => child.type === "block" && document.blocks.find((block) => block.id === child.blockId)?.active);
+      return anchor?.type === "block" ? anchor.blockId : null;
+    }
+    for (const child of node.children) { const anchor = visit(child); if (anchor) return anchor; }
+    return null;
+  };
+  return visit(document.layout) ?? chapterId;
+}
+
 async function resolveBookSectionContext(
   connection: Awaited<ReturnType<typeof getConnection>>,
   bookId: string,
   chapterId: string
 ): Promise<BookSectionContext | null> {
   const outline = await resolveBookOutline(connection, bookId);
-  let resolvedChapterId = chapterId;
+  let resolvedChapterId = await resolveCanonicalChapterId(connection, bookId, chapterId);
   let sectionIndex = outline.findIndex((entry) => entry.chapterId === resolvedChapterId);
   if (sectionIndex === -1) {
     const aliasResult = await connection.execute(
@@ -2129,7 +2268,7 @@ async function resolveBookSectionContext(
        WHERE book_id = :bookId AND old_chapter_id = :chapterId`,
       { bookId, chapterId }
     );
-    resolvedChapterId = aliasResult.rows?.[0]?.chapterId as string | undefined ?? chapterId;
+    resolvedChapterId = await resolveCanonicalChapterId(connection, bookId, aliasResult.rows?.[0]?.chapterId as string | undefined ?? chapterId);
     sectionIndex = outline.findIndex((entry) => entry.chapterId === resolvedChapterId);
   }
   if (sectionIndex === -1) {
@@ -2216,7 +2355,8 @@ async function findStoredSectionSummary(
         start_sequence_number AS "startSequenceNumber",
         end_sequence_number AS "endSequenceNumber",
         model_id AS "modelId",
-        summary_text AS "summaryText",
+        CASE WHEN is_stale = 1 THEN TO_CLOB('El contenido ha cambiado. Regenera el resumen.') ELSE summary_text END AS "summaryText",
+        is_stale AS "isStale",
         TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
         TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
       FROM user_book_section_summaries
@@ -2232,7 +2372,7 @@ async function findStoredSectionSummary(
   );
 
   const [summary] = (result.rows ?? []) as StoredSectionSummaryRecord[];
-  return summary ?? null;
+  return summary ? { ...summary, isStale: Boolean(summary.isStale) } : null;
 }
 
 async function findGeneratedSectionSummaryFallback(
@@ -2254,7 +2394,8 @@ async function findGeneratedSectionSummaryFallback(
         start_sequence_number AS "startSequenceNumber",
         end_sequence_number AS "endSequenceNumber",
         model_id AS "modelId",
-        summary_text AS "summaryText",
+        CASE WHEN is_stale = 1 THEN TO_CLOB('El contenido ha cambiado. Regenera el resumen.') ELSE summary_text END AS "summaryText",
+        is_stale AS "isStale",
         TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "createdAt",
         TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"') AS "updatedAt"
       FROM user_book_section_summaries
@@ -2282,18 +2423,25 @@ async function findGeneratedSectionSummaryFallback(
   );
 
   const [summary] = (result.rows ?? []) as StoredSectionSummaryRecord[];
-  return summary ?? null;
+  return summary ? { ...summary, isStale: Boolean(summary.isStale) } : null;
 }
 
 async function findStoredSectionSummaryForSection(
   connection: Awaited<ReturnType<typeof getConnection>>,
   bookId: string,
   userId: string,
-  section: BookSectionContext
+  section: BookSectionContext,
+  requestedChapterId?: string
 ): Promise<StoredSectionSummaryRecord | null> {
   const exactSummary = await findStoredSectionSummary(connection, bookId, section.chapterId, userId);
   if (exactSummary) {
     return exactSummary;
+  }
+
+  if (requestedChapterId && requestedChapterId !== section.chapterId
+    && await resolveCanonicalChapterId(connection, bookId, requestedChapterId) === section.chapterId) {
+    const memberSummary = await findStoredSectionSummary(connection, bookId, requestedChapterId, userId);
+    if (memberSummary) return memberSummary;
   }
 
   return findGeneratedSectionSummaryFallback(connection, bookId, userId, section);
@@ -2310,6 +2458,7 @@ async function listSectionParagraphTexts(
         paragraph_text AS "paragraphText"
       FROM book_paragraphs
       WHERE book_id = :bookId
+        AND is_active = 1
         AND sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
       ORDER BY sequence_number ASC
     `,
@@ -2333,12 +2482,21 @@ async function listBookParagraphTexts(
         paragraph_text AS "paragraphText"
       FROM book_paragraphs
       WHERE book_id = :bookId
+        AND is_active = 1
       ORDER BY sequence_number ASC
     `,
     { bookId }
   );
 
   return ((paragraphsResult.rows ?? []) as Array<{ paragraphText: string }>).map((row) => row.paragraphText).filter(Boolean);
+}
+
+async function findBookContentVersion(connection: DatabaseConnection, bookId: string, lock = false): Promise<string> {
+  const result = await connection.execute(`SELECT TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6') AS "version"
+    FROM books WHERE book_id = :bookId${lock ? " FOR UPDATE" : ""}`, { bookId });
+  const version = result.rows?.[0]?.version as string | undefined;
+  if (!version) throw Object.assign(new Error("Book not found."), { statusCode: 404 });
+  return version;
 }
 
 function normalizeSelectedSectionChapterIds(currentChapterId: string, selectedChapterIds?: string[]): string[] {
@@ -2361,7 +2519,7 @@ async function resolveSelectedSectionContexts(
     });
   }
 
-  const requestedChapterIds = new Set(normalizedChapterIds);
+  const requestedChapterIds = new Set(await Promise.all(normalizedChapterIds.map((id) => resolveCanonicalChapterId(connection, bookId, id))));
   const orderedChapterIds = (await resolveBookOutline(connection, bookId))
     .map((entry) => entry.chapterId)
     .filter((chapterId) => requestedChapterIds.has(chapterId));
@@ -2442,7 +2600,8 @@ async function listAiRequests(
           ar.request_kind AS "kind",
           ar.model_id AS "modelId",
           ar.prompt_text AS "promptText",
-          ar.response_text AS "responseText",
+          CASE WHEN ar.is_stale = 1 THEN TO_CLOB('El contenido ha cambiado. Genera una nueva respuesta.') ELSE ar.response_text END AS "responseText",
+          ar.is_stale AS "isStale",
           ar.user_id AS "authorUserId",
           u.username AS "authorUsername",
           u.display_name AS "authorDisplayName",
@@ -2509,7 +2668,8 @@ async function listAiRequests(
           ar.request_kind AS "kind",
           ar.model_id AS "modelId",
           ar.prompt_text AS "promptText",
-          ar.response_text AS "responseText",
+          CASE WHEN ar.is_stale = 1 THEN TO_CLOB('El contenido ha cambiado. Genera una nueva respuesta.') ELSE ar.response_text END AS "responseText",
+          ar.is_stale AS "isStale",
           ar.user_id AS "authorUserId",
           u.username AS "authorUsername",
           u.display_name AS "authorDisplayName",
@@ -2559,6 +2719,7 @@ async function listAiRequests(
     const isOwnedByCurrentUser = authorUserId === options.userId;
     return {
       ...row,
+      isStale: Boolean(row.isStale),
       author: { displayName: authorDisplayName, userId: authorUserId, username: authorUsername },
       isOwnedByCurrentUser,
       ...(isOwnedByCurrentUser ? { sharedWithUserIds: sharesByRequestId.get(row.requestId) ?? [] } : {}),
@@ -2652,7 +2813,8 @@ async function createAiRequest(
         request_kind,
         model_id,
         prompt_text,
-        response_text
+        response_text,
+        is_stale
       ) VALUES (
         :requestId,
         :userId,
@@ -2669,7 +2831,8 @@ async function createAiRequest(
         :kind,
         :modelId,
         :promptText,
-        :responseText
+        :responseText,
+        0
       )
     `,
     {
@@ -2705,11 +2868,13 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         raw_text AS "rawText",
         html_content AS "htmlContent",
         edited_text AS "editedText",
+        visual_document_json AS "visualDocumentJson",
+        source_html_content AS "sourceHtmlContent",
         source_image_rotation AS "sourceImageRotation",
         page_label AS "pageLabel",
         page_type AS "pageType",
         ocr_status AS "ocrStatus",
-        updated_at AS "updatedAt",
+        TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6') AS "updatedAt",
         CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
       FROM book_pages
       WHERE book_id = :bookId
@@ -3082,10 +3247,15 @@ export async function replaceBookPageParagraphs(
     page: BookPageRecord;
     pageNumber: number;
     paragraphs: string[];
+    paragraphIds?: (string | null)[];
+    paragraphMetadata?: ParagraphElementMetadata[];
+    requestedParagraphIds?: string[];
+    visualDocument?: VisualPageDocument;
     rawText: string;
     sourceImageRotation?: ImageRotation;
   }
 ): Promise<void> {
+  const suppliedMetadata = options.paragraphMetadata === undefined ? undefined : normalizeParagraphMetadata(options.paragraphMetadata, options.paragraphs.length);
   const existingParagraphs = await listPageParagraphs(connection, options.bookId, options.pageNumber);
   const pageBookmarks = await listPageBookmarks(connection, options.bookId, options.pageNumber);
   const pageHighlights = await listPageHighlights(connection, options.bookId, options.pageNumber);
@@ -3109,51 +3279,112 @@ export async function replaceBookPageParagraphs(
     const metrics = calculateParagraphReadingMetrics(paragraphText);
     return {
       characterCount: metrics.characterCount,
-      paragraphId: randomUUID(),
+      paragraphId: options.requestedParagraphIds?.[paragraphIndex] ?? randomUUID(),
       paragraphNumber: paragraphIndex + 1,
       paragraphText,
       sequenceNumber: previousParagraphCount + paragraphIndex + 1,
       wordCount: metrics.wordCount
     };
   }) satisfies ReplacementParagraphRecord[];
-  const paragraphMatches = matchReplacementParagraphs(existingParagraphs, replacementParagraphs);
+  if (options.requestedParagraphIds !== undefined) {
+    if (options.requestedParagraphIds.length !== replacementParagraphs.length || new Set(options.requestedParagraphIds).size !== replacementParagraphs.length) {
+      throw Object.assign(new Error("requestedParagraphIds debe contener un ID unico por parrafo."), { statusCode: 400 });
+    }
+    const claimed = await connection.execute(`SELECT paragraph_id AS "paragraphId" FROM book_paragraphs
+      WHERE paragraph_id IN (${options.requestedParagraphIds.map((_, index) => `:id${index}`).join(",") || "NULL"})`,
+    Object.fromEntries(options.requestedParagraphIds.map((id, index) => [`id${index}`, id])));
+    const existingIds = new Set(existingParagraphs.map((paragraph) => paragraph.paragraphId));
+    if ((claimed.rows ?? []).some((row: { paragraphId: string }) => !existingIds.has(row.paragraphId))) {
+      throw Object.assign(new Error("Un ID ya pertenece a otro parrafo."), { statusCode: 400 });
+    }
+  }
+  const explicitIds = options.requestedParagraphIds?.map((id) => existingParagraphs.some((paragraph) => paragraph.paragraphId === id) ? id : null) ?? options.paragraphIds;
+  const paragraphMatches = matchParagraphsWithExplicitIds(existingParagraphs, replacementParagraphs, explicitIds,
+    options.requestedParagraphIds ? () => new Map() : matchReplacementParagraphs);
   for (const [existingParagraphId, replacementParagraph] of paragraphMatches) {
     replacementParagraph.paragraphId = existingParagraphId;
   }
+  if (!options.visualDocument) {
+    for (const previous of existingParagraphs) {
+      if (previous.active !== false || paragraphMatches.has(previous.paragraphId)) continue;
+      const metrics = calculateParagraphReadingMetrics(previous.paragraphText);
+      const replacement = { ...metrics, paragraphId: previous.paragraphId, paragraphText: previous.paragraphText,
+        paragraphNumber: replacementParagraphs.length + 1, sequenceNumber: previousParagraphCount + replacementParagraphs.length + 1 };
+      replacementParagraphs.push(replacement);
+      paragraphMatches.set(previous.paragraphId, replacement);
+      suppliedMetadata?.push(previous);
+    }
+  }
+  const progressRemapBinds: Record<string, number> = {};
+  const progressRemapCases: string[] = [];
+  for (const existingParagraph of existingParagraphs) {
+    const replacement = paragraphMatches.get(existingParagraph.paragraphId);
+    if (!replacement) continue;
+    const index = progressRemapCases.length;
+    progressRemapBinds[`oldParagraph${index}`] = existingParagraph.paragraphNumber;
+    progressRemapBinds[`newParagraph${index}`] = replacement.paragraphNumber;
+    progressRemapCases.push(`WHEN :oldParagraph${index} THEN :newParagraph${index}`);
+  }
+  const clampedProgressParagraph = "GREATEST(1, LEAST(current_paragraph_number, :replacementCount))";
+  const progressParagraphExpression = progressRemapCases.length > 0
+    ? `CASE current_paragraph_number ${progressRemapCases.join(" ")} ELSE ${clampedProgressParagraph} END`
+    : clampedProgressParagraph;
   const delta = replacementParagraphs.length - currentParagraphCount;
 
   await invalidateBookAudioCache(connection, options.bookId);
 
-  await connection.execute(
-    `
-      DELETE FROM user_notes
-      WHERE book_id = :bookId
-        AND page_number = :pageNumber
-    `,
-    {
-      bookId: options.bookId,
-      pageNumber: options.pageNumber
-    }
-  );
-
-  await connection.execute(
-    `
-      DELETE FROM book_paragraphs
-      WHERE book_id = :bookId
-        AND page_number = :pageNumber
-    `,
-    {
-      bookId: options.bookId,
-      pageNumber: options.pageNumber
-    }
-  );
+  if (!options.visualDocument) {
+    await connection.execute(
+      `
+        DELETE FROM user_notes
+        WHERE book_id = :bookId
+          AND page_number = :pageNumber
+      `,
+      {
+        bookId: options.bookId,
+        pageNumber: options.pageNumber
+      }
+    );
+    await connection.execute(
+      `
+        DELETE FROM book_paragraphs
+        WHERE book_id = :bookId
+          AND page_number = :pageNumber
+      `,
+      {
+        bookId: options.bookId,
+        pageNumber: options.pageNumber
+      }
+    );
+  } else {
+    // Negative positions reserve the existing rows without cascading their annotations.
+    await connection.execute(`UPDATE book_paragraphs SET paragraph_number = -paragraph_number, sequence_number = -sequence_number
+      WHERE book_id = :bookId AND page_number = :pageNumber`, { bookId: options.bookId, pageNumber: options.pageNumber });
+  }
 
   await shiftSubsequentSequenceNumbers(connection, options.bookId, options.pageNumber, delta);
   await shiftSubsequentAnnotationSequenceNumbers(connection, options.bookId, options.pageNumber, delta);
 
   for (const replacementParagraph of replacementParagraphs) {
+    const previous = existingParagraphs.find((paragraph) => paragraph.paragraphId === replacementParagraph.paragraphId);
+    const supplied = suppliedMetadata?.[replacementParagraph.paragraphNumber - 1];
+    const metadata = supplied ?? {
+      role: previous?.role ?? "body", readAloud: previous?.readAloud ?? true, geometry: previous?.geometry ?? null
+    };
+    const active = supplied?.active ?? previous?.active ?? true;
+    const includeInToc = supplied?.includeInToc !== undefined ? supplied.includeInToc : previous?.includeInToc ?? null;
+    const imageWidth = supplied?.imageWidth !== undefined ? supplied.imageWidth : previous?.imageWidth ?? null;
+    const geometry = options.sourceImageRotation !== undefined && options.sourceImageRotation !== options.page.sourceImageRotation ? null
+      : metadata.geometry === undefined ? previous?.geometry ?? null : metadata.geometry;
     await connection.execute(
-      `
+      options.visualDocument && previous ? `
+        UPDATE book_paragraphs SET paragraph_number = :paragraphNumber, sequence_number = :sequenceNumber,
+          paragraph_text = :paragraphText, word_count = :wordCount, tts_character_count = :characterCount,
+          element_role = :elementRole, read_aloud = :readAloud, geometry_json = :geometryJson,
+          is_active = :active, include_in_toc = :includeInToc, image_width_pct = :imageWidth,
+          page_number = :pageNumber, page_id = :pageId
+        WHERE paragraph_id = :paragraphId AND book_id = :bookId
+      ` : `
         INSERT INTO book_paragraphs (
           paragraph_id,
           book_id,
@@ -3163,7 +3394,7 @@ export async function replaceBookPageParagraphs(
           sequence_number,
           paragraph_text,
           word_count,
-          tts_character_count
+          tts_character_count, element_role, read_aloud, geometry_json, is_active, include_in_toc, image_width_pct
         ) VALUES (
           :paragraphId,
           :bookId,
@@ -3173,40 +3404,72 @@ export async function replaceBookPageParagraphs(
           :sequenceNumber,
           :paragraphText,
           :wordCount,
-          :characterCount
+          :characterCount, :elementRole, :readAloud, :geometryJson, :active, :includeInToc, :imageWidth
         )
       `,
       {
         bookId: options.bookId,
+        elementRole: metadata.role,
+        readAloud: metadata.readAloud ? 1 : 0,
+        active: active ? 1 : 0,
+        includeInToc: includeInToc == null ? null : includeInToc ? 1 : 0,
+        imageWidth,
+        geometryJson: geometry ? JSON.stringify(geometry) : null,
         characterCount: replacementParagraph.characterCount,
         pageId: options.page.pageId,
         pageNumber: options.pageNumber,
         paragraphId: replacementParagraph.paragraphId,
         paragraphNumber: replacementParagraph.paragraphNumber,
-        paragraphText: replacementParagraph.paragraphText,
+        paragraphText: replacementParagraph.paragraphText || " ",
         sequenceNumber: replacementParagraph.sequenceNumber,
         wordCount: replacementParagraph.wordCount
       }
     );
   }
 
-  if (pageBookmarks.length > 0) {
-    await restorePageBookmarks(connection, options.bookId, pageBookmarks, paragraphMatches, replacementParagraphs);
-  }
+  if (options.visualDocument) {
+    const usedRanges = new Map<string, HighlightTextRange[]>();
+    for (const highlight of pageHighlights) {
+      const replacement = paragraphMatches.get(highlight.paragraphId);
+      if (!replacement || replacement.paragraphText === highlight.paragraphText) continue;
+      const ranges = usedRanges.get(replacement.paragraphId) ?? [];
+      const range = findReplacementHighlightRange(highlight, replacement, ranges);
+      if (!range) continue;
+      ranges.push(range);
+      usedRanges.set(replacement.paragraphId, ranges);
+      await connection.execute(`UPDATE user_highlights SET char_start = :charStart, char_end = :charEnd,
+        highlighted_text = :highlightedText WHERE book_id = :bookId AND highlight_id = :highlightId`, {
+        bookId: options.bookId, highlightId: highlight.highlightId, charStart: range.charStart, charEnd: range.charEnd,
+        highlightedText: replacement.paragraphText.slice(range.charStart, range.charEnd)
+      });
+    }
+    for (const [paragraphId, replacement] of paragraphMatches) {
+      for (const table of ["user_bookmarks", "user_highlights", "user_notes"]) {
+        await connection.execute(`UPDATE ${table} SET paragraph_number = :paragraphNumber, sequence_number = :sequenceNumber
+          WHERE book_id = :bookId AND paragraph_id = :paragraphId`, { bookId: options.bookId, paragraphId,
+          paragraphNumber: replacement.paragraphNumber, sequenceNumber: replacement.sequenceNumber });
+      }
+    }
+  } else {
+    if (pageBookmarks.length > 0) {
+      await restorePageBookmarks(connection, options.bookId, pageBookmarks, paragraphMatches, replacementParagraphs);
+    }
 
-  const restoredHighlights = pageHighlights.length > 0
-    ? await restorePageHighlights(connection, options.bookId, pageHighlights, paragraphMatches, replacementParagraphs)
-    : new Map<string, RestoredHighlightRecord>();
+    const restoredHighlights = pageHighlights.length > 0
+      ? await restorePageHighlights(connection, options.bookId, pageHighlights, paragraphMatches, replacementParagraphs)
+      : new Map<string, RestoredHighlightRecord>();
 
-  if (pageNotes.length > 0) {
-    await restorePageNotes(connection, options.bookId, pageNotes, paragraphMatches, replacementParagraphs, restoredHighlights);
+    if (pageNotes.length > 0) {
+      await restorePageNotes(connection, options.bookId, pageNotes, paragraphMatches, replacementParagraphs, restoredHighlights);
+    }
   }
 
   const pageUpdateAssignments = [
     "raw_text = :rawText",
     "html_content = :htmlContent",
     "edited_text = :editedText",
-    "ocr_status = :ocrStatus"
+    "ocr_status = :ocrStatus",
+    "visual_document_json = :visualDocumentJson"
   ];
 
   const pageUpdateBinds: Record<string, string | null | ImageRotation> = {
@@ -3214,7 +3477,8 @@ export async function replaceBookPageParagraphs(
     htmlContent: options.htmlContent,
     ocrStatus: options.ocrStatus,
     pageId: options.page.pageId,
-    rawText: options.rawText
+    rawText: options.rawText,
+    visualDocumentJson: options.visualDocument ? JSON.stringify(options.visualDocument) : null
   };
 
   if (options.sourceImageRotation !== undefined) {
@@ -3263,7 +3527,7 @@ export async function replaceBookPageParagraphs(
       UPDATE user_book_progress
       SET current_paragraph_number = CASE
             WHEN :replacementCount = 0 THEN 1
-            ELSE LEAST(current_paragraph_number, :replacementCount)
+            ELSE ${progressParagraphExpression}
           END,
           current_sequence_number = CASE
             WHEN :replacementCount = 0 THEN GREATEST(
@@ -3273,7 +3537,7 @@ export async function replaceBookPageParagraphs(
                 :previousParagraphCount + 1
               )
             )
-            ELSE :previousParagraphCount + LEAST(current_paragraph_number, :replacementCount)
+            ELSE :previousParagraphCount + (${progressParagraphExpression})
           END,
           audio_offset_ms = 0
       WHERE book_id = :bookId
@@ -3283,7 +3547,8 @@ export async function replaceBookPageParagraphs(
       bookId: options.bookId,
       pageNumber: options.pageNumber,
       previousParagraphCount,
-      replacementCount: replacementParagraphs.length
+      replacementCount: replacementParagraphs.length,
+      ...progressRemapBinds
     }
   );
 
@@ -3464,8 +3729,10 @@ async function insertProcessedImagePages(
 
     await insertContentImageAssets(connection, bookId, pageNumber, externalized.assets);
 
+    const paragraphMetadata = normalizeParagraphMetadata(processedPage.paragraphMetadata, externalizedParagraphs.length);
     for (const [paragraphIndex, paragraphText] of externalizedParagraphs.entries()) {
       const metrics = calculateParagraphReadingMetrics(paragraphText);
+      const metadata = paragraphMetadata[paragraphIndex]!;
       await connection.execute(
         `
           INSERT INTO book_paragraphs (
@@ -3477,7 +3744,7 @@ async function insertProcessedImagePages(
             sequence_number,
             paragraph_text,
             word_count,
-            tts_character_count
+            tts_character_count, element_role, read_aloud, geometry_json
           ) VALUES (
             :paragraphId,
             :bookId,
@@ -3487,12 +3754,15 @@ async function insertProcessedImagePages(
             :sequenceNumber,
             :paragraphText,
             :wordCount,
-            :characterCount
+            :characterCount, :elementRole, :readAloud, :geometryJson
           )
         `,
         {
           bookId,
           characterCount: metrics.characterCount,
+          elementRole: metadata.role,
+          readAloud: metadata.readAloud ? 1 : 0,
+          geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
           pageId,
           pageNumber,
           paragraphId: randomUUID(),
@@ -3744,9 +4014,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.status AS "status",
             b.total_pages AS "totalPages",
             b.total_paragraphs AS "totalParagraphs",
-            (SELECT NVL(SUM(bp.word_count), 0) FROM book_paragraphs bp WHERE bp.book_id = b.book_id) AS "totalWords",
+            (SELECT NVL(SUM(bp.word_count), 0) FROM book_paragraphs bp WHERE bp.book_id = b.book_id AND bp.is_active = 1) AS "totalWords",
             b.created_at AS "createdAt",
-            b.updated_at AS "updatedAt",
+            TO_CHAR(b.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6"Z"') AS "updatedAt",
             b.owner_user_id AS "ownerUserId",
             owner.username AS "ownerUsername",
             owner.display_name AS "ownerDisplayName",
@@ -4337,8 +4607,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
         await insertContentImageAssets(connection, bookId, page.pageNumber, page.contentImageAssets);
 
+        const paragraphMetadata = normalizeParagraphMetadata(page.paragraphMetadata, page.paragraphs.length);
         for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
           const metrics = calculateParagraphReadingMetrics(paragraphText);
+          const metadata = paragraphMetadata[paragraphIndex]!;
           await connection.execute(
             `
               INSERT INTO book_paragraphs (
@@ -4350,7 +4622,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 sequence_number,
                 paragraph_text,
                 word_count,
-                tts_character_count
+                tts_character_count, element_role, read_aloud, geometry_json
               ) VALUES (
                 :paragraphId,
                 :bookId,
@@ -4360,12 +4632,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 :sequenceNumber,
                 :paragraphText,
                 :wordCount,
-                :characterCount
+                :characterCount, :elementRole, :readAloud, :geometryJson
               )
             `,
             {
               bookId,
               characterCount: metrics.characterCount,
+              elementRole: metadata.role,
+              readAloud: metadata.readAloud ? 1 : 0,
+              geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
               pageId,
               pageNumber: page.pageNumber,
               paragraphId: randomUUID(),
@@ -4450,12 +4725,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       title: multipartForm.fields.title
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
-    const aiCredentials = await getUserAiCredentials(request.currentUser.userId);
-    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.ocrModel, payload.promptOverride, {
+    const aiCredentials = await getEffectiveUserAiCredentials(request.currentUser.userId);
+    const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.ocrModel ?? aiCredentials.opencodeOcrModel ?? undefined, payload.promptOverride, {
       accessKeyId: aiCredentials.awsAccessKeyId,
       region: aiCredentials.awsRegion,
       secretAccessKey: aiCredentials.awsSecretAccessKey
-    });
+    }, aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey);
     const connection = await getConnection();
     const bookId = randomUUID();
 
@@ -4585,7 +4860,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       insertionStartPageNumber = requestedInsertionAfterPage + 1;
       nextAfterPage = requestedInsertionAfterPage;
       latestBook = existingBook;
-      const aiCredentials = await getUserAiCredentials(currentUser.userId, connection);
+      const aiCredentials = await getEffectiveUserAiCredentials(currentUser.userId, connection);
       const awsCredentials = {
         accessKeyId: aiCredentials.awsAccessKeyId,
         region: aiCredentials.awsRegion,
@@ -4651,9 +4926,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             [imageFile],
             payload.ocrMode,
             existingBook.languageCode,
-            payload.ocrModel,
+            payload.ocrModel ?? aiCredentials.opencodeOcrModel ?? undefined,
             payload.promptOverride,
             awsCredentials,
+            aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey,
             (progress) => {
               if (!progressId) {
                 return;
@@ -5149,7 +5425,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.total_pages AS "totalPages",
             b.total_paragraphs AS "totalParagraphs",
             b.created_at AS "createdAt",
-            b.updated_at AS "updatedAt",
+            TO_CHAR(b.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6"Z"') AS "updatedAt",
             b.owner_user_id AS "ownerUserId",
             b.share_user_annotations AS "shareUserAnnotations",
             owner.username AS "ownerUsername",
@@ -5192,6 +5468,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = pageParamsSchema.parse(request.params);
+    const query = z.object({ includeInactive: z.enum(["true", "false"]).optional() }).parse(request.query);
+    const includeInactive = query.includeInactive === "true";
+    if (includeInactive && request.bookAccess?.role !== "OWNER" && request.bookAccess?.role !== "EDITOR") {
+      return reply.status(403).send({ message: "Esta accion requiere rol EDITOR o superior." });
+    }
     const connection = await getConnection();
 
     try {
@@ -5210,7 +5491,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             b.source_type AS "sourceType",
             b.status AS "status",
             b.total_pages AS "totalPages",
-            b.total_paragraphs AS "totalParagraphs"
+            b.total_paragraphs AS "totalParagraphs",
+            TO_CHAR(b.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6"Z"') AS "updatedAt"
           FROM books b
           LEFT JOIN user_book_settings us
             ON us.book_id = b.book_id
@@ -5240,27 +5522,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
       await connection.commit();
 
-      const pageResult = await connection.execute(
-        `
-          SELECT
-            paragraph_id AS "paragraphId",
-            paragraph_number AS "paragraphNumber",
-            sequence_number AS "sequenceNumber",
-            paragraph_text AS "paragraphText",
-            word_count AS "wordCount",
-            tts_character_count AS "characterCount"
-          FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND page_number = :pageNumber
-          ORDER BY paragraph_number ASC
-        `,
-        {
-          bookId: params.bookId,
-          pageNumber: params.pageNumber
-        }
-      );
-
-      const paragraphs = (pageResult.rows ?? []) as Array<Record<string, unknown>>;
+      const allParagraphs = await listPageParagraphs(connection, params.bookId, params.pageNumber);
+      const paragraphs = includeInactive ? allParagraphs : allParagraphs.filter((paragraph) => paragraph.active !== false);
+      const hasInactive = allParagraphs.some((paragraph) => paragraph.active === false);
+      const visualDocument = pageRecord.visualDocumentJson ? visualPageDocumentSchema.parse(JSON.parse(pageRecord.visualDocumentJson))
+        : includeInactive || hasInactive ? buildVisualDocumentFromPage(pageRecord, allParagraphs) : null;
+      const rendered = visualDocument ? renderVisualDocument(visualDocument, { includeInactive, languageCode: book.languageCode as BookLanguageCode }) : null;
+      const projectedText = paragraphs.map((paragraph) => paragraph.paragraphText).join("\n");
       const readingOffsetResult = await connection.execute(
         `
           SELECT
@@ -5269,6 +5537,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           FROM book_paragraphs
           WHERE book_id = :bookId
             AND page_number < :pageNumber
+            AND read_aloud = 1
+            AND is_active = 1
         `,
         {
           bookId: params.bookId,
@@ -5285,9 +5555,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         hasNextPage: params.pageNumber < Number(book.totalPages ?? 0),
         hasPreviousPage: params.pageNumber > 1,
         page: {
-          editedText: pageRecord.editedText,
+          editedText: rendered?.editedText ?? (hasInactive && !includeInactive ? projectedText : pageRecord.editedText),
           hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
-          htmlContent: pageRecord.htmlContent,
+          htmlContent: rendered?.htmlContent ?? (includeInactive ? annotatePageElementHtml(pageRecord.htmlContent, allParagraphs)
+            : projectActivePageHtml(annotatePageElementHtml(pageRecord.htmlContent, allParagraphs), allParagraphs)),
+          hasVisualDocument: Boolean(pageRecord.visualDocumentJson),
+          ...(includeInactive ? { visualDocument, sourceHtmlContent: visualDocument ? visualSourceHtml(pageRecord.sourceHtmlContent ?? pageRecord.htmlContent, allParagraphs, visualDocument) : pageRecord.sourceHtmlContent ?? pageRecord.htmlContent } : {}),
           ocrStatus: pageRecord.ocrStatus,
           pageLabel: pageRecord.pageLabel,
           pageType: pageRecord.pageType,
@@ -5296,10 +5569,160 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           sourceFileId: pageRecord.sourceFileId,
           sourceImageRotation: pageRecord.sourceImageRotation,
           updatedAt: pageRecord.updatedAt,
-          rawText: pageRecord.rawText,
+          rawText: rendered?.rawText ?? (hasInactive && !includeInactive ? projectedText : pageRecord.rawText),
           paragraphs
         }
       });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/:bookId/pages/:pageNumber/visual-document", { preHandler: [authenticateRequest, requireBookRole("EDITOR")], bodyLimit: maximumUploadedImageBytes * 2 }, async (request, reply) => {
+    if (!request.currentUser) return reply.status(401).send({ message: "Unauthenticated request." });
+    const params = pageParamsSchema.parse(request.params);
+    const parsed = updateVisualDocumentSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ message: parsed.error.message });
+    const { document, expectedUpdatedAt } = parsed.data;
+    const connection = await getConnection();
+    try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) return reply.status(404).send({ message: "Page not found." });
+      if (page.updatedAt !== expectedUpdatedAt) return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
+      const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
+      if (!book) return reply.status(404).send({ message: "Book not found." });
+      const paragraphs = await listPageParagraphs(connection, params.bookId, params.pageNumber);
+      const ids = new Set(document.blocks.map((block) => block.id));
+      if (paragraphs.some((paragraph) => !ids.has(paragraph.paragraphId))) {
+        return reply.status(400).send({ message: "Conserva todos los IDs existentes. Para anular un bloque usa active:false." });
+      }
+      const binds = Object.fromEntries(document.blocks.map((block, index) => [`id${index}`, block.id]));
+      const claimed = await connection.execute(`SELECT paragraph_id AS "paragraphId", page_id AS "pageId" FROM book_paragraphs
+        WHERE paragraph_id IN (${document.blocks.map((_, index) => `:id${index}`).join(",") || "NULL"})`, binds);
+      if ((claimed.rows ?? []).some((row: { pageId: string }) => row.pageId !== page.pageId)) {
+        return reply.status(400).send({ message: "Un ID ya pertenece a otro parrafo." });
+      }
+      const internalSources = document.blocks.flatMap((block) => block.source?.startsWith("lector-content-image:") ? [block.source.slice(21)] : []);
+      for (const assetId of new Set(internalSources)) {
+        const asset = await connection.execute("SELECT file_id FROM book_files WHERE file_id = :assetId AND book_id = :bookId AND file_kind = 'CONTENT_IMAGE'", { assetId, bookId: params.bookId });
+        if (!asset.rows?.length) return reply.status(400).send({ message: "La imagen debe pertenecer a este libro." });
+      }
+      const cropBlocks = document.blocks.filter((block) => block.source === "page-crop");
+      const sourceSnapshot = visualSourceHtml(page.sourceHtmlContent ?? page.htmlContent, paragraphs, document);
+      if (cropBlocks.length) {
+        if (book.sourceType !== "IMAGES" || !page.sourceFileId) return reply.status(409).send({ message: "Los recortes requieren una pagina con imagen de un libro IMAGES." });
+        const imageResult = await connection.execute(`SELECT content_blob AS "buffer" FROM book_files
+          WHERE file_id = :fileId AND book_id = :bookId AND file_kind = 'PAGE_IMAGE'`,
+        { fileId: page.sourceFileId, bookId: params.bookId }, { fetchInfo: { buffer: { type: oracledb.BUFFER } } });
+        const buffer = imageResult.rows?.[0]?.buffer as Buffer | undefined;
+        if (!buffer) return reply.status(409).send({ message: "No se encuentra la imagen de la pagina." });
+        for (const block of cropBlocks) {
+          const crop = await cropVisualPageImage(buffer, block.geometry!, page.sourceImageRotation);
+          block.source = `data:image/png;base64,${crop.toString("base64")}`;
+        }
+      }
+      const images = externalizeContentImages(document.blocks.map((block) => block.source ?? ""));
+      document.blocks.forEach((block, index) => { if (block.source !== undefined) block.source = images.contents[index]!; });
+      const rendered = renderVisualDocument(document, { languageCode: book.languageCode });
+      const previous = page.visualDocumentJson ? visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson)) : null;
+      if (!previous || JSON.stringify(previous) !== JSON.stringify(document)) {
+        await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId AND is_stale = 0", { bookId: params.bookId });
+        await connection.execute("UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId AND is_stale = 0", { bookId: params.bookId });
+      }
+      await insertContentImageAssets(connection, params.bookId, params.pageNumber, images.assets);
+      if (page.sourceHtmlContent == null && sourceSnapshot) {
+        await connection.execute("UPDATE book_pages SET source_html_content = :source WHERE page_id = :pageId AND source_html_content IS NULL", { source: sourceSnapshot, pageId: page.pageId });
+      }
+      await replaceBookPageParagraphs(connection, { ...params, ...rendered, page, ocrStatus: "READY",
+        requestedParagraphIds: rendered.paragraphIds, visualDocument: document });
+      const saved = await findBookPage(connection, params.bookId, params.pageNumber);
+      const updatedAt = saved!.updatedAt;
+      await connection.commit();
+      return reply.send({ updatedAt, document });
+    } catch (error) {
+      await connection.rollback();
+      if ((error as { errorNum?: number }).errorNum === 1) return reply.status(409).send({ message: "Un ID fue utilizado por otra edicion. Recarga antes de guardar." });
+      throw error;
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.patch("/:bookId/pages/:pageNumber/elements", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, async (request, reply) => {
+    if (!request.currentUser) return reply.status(401).send({ message: "Unauthenticated request." });
+    const params = pageParamsSchema.parse(request.params);
+    const parsed = updatePageElementsSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ message: parsed.error.message });
+    const payload = parsed.data;
+    const connection = await getConnection();
+    try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) return reply.status(404).send({ message: "Page not found." });
+      if (page.updatedAt !== payload.expectedUpdatedAt) return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
+      const paragraphs = await listPageParagraphs(connection, params.bookId, params.pageNumber);
+      if (payload.elements.some((element) => !paragraphs.some((paragraph) => paragraph.paragraphId === element.paragraphId))) {
+        return reply.status(400).send({ message: "Todos los parrafos deben pertenecer a esta pagina." });
+      }
+      const document = page.visualDocumentJson ? visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson)) : null;
+      if (document) {
+        for (const element of payload.elements) {
+          const block = document.blocks.find((block) => block.id === element.paragraphId)!;
+          block.role = element.role; block.readAloud = element.readAloud;
+          if (element.active !== undefined) block.active = element.active;
+          if (element.includeInToc !== undefined) block.includeInToc = element.includeInToc ?? (block.kind === "heading" && (block.headingLevel ?? 2) <= 3);
+          if (element.imageWidth !== undefined) {
+            if (element.imageWidth === null) delete block.imageWidth;
+            else block.imageWidth = element.imageWidth;
+          }
+          if (element.geometry !== undefined) block.geometry = element.geometry;
+        }
+        const valid = visualPageDocumentSchema.safeParse(document);
+        if (!valid.success) return reply.status(400).send({ message: valid.error.message });
+        renderVisualDocument(document);
+      } else if (payload.elements.some((element) => element.active === true
+        && !paragraphs.find((paragraph) => paragraph.paragraphId === element.paragraphId)!.paragraphText.trim())) {
+        return reply.status(400).send({ message: "Un bloque activo debe contener texto legible." });
+      }
+      for (const element of payload.elements) {
+        const previous = paragraphs.find((paragraph) => paragraph.paragraphId === element.paragraphId)!;
+        const geometry = element.geometry === undefined
+          ? previous.geometry
+          : element.geometry;
+        await connection.execute(`
+          UPDATE book_paragraphs SET element_role = :elementRole, read_aloud = :readAloud,
+            geometry_json = :geometryJson, is_active = :active, include_in_toc = :includeInToc,
+            image_width_pct = :imageWidth
+          WHERE book_id = :bookId AND page_id = :pageId AND paragraph_id = :paragraphId
+        `, {
+          bookId: params.bookId, pageId: page.pageId, paragraphId: element.paragraphId,
+          elementRole: element.role, readAloud: element.readAloud ? 1 : 0,
+          active: (element.active ?? previous.active ?? true) ? 1 : 0,
+          includeInToc: (element.includeInToc === undefined ? previous.includeInToc : element.includeInToc) == null ? null
+            : (element.includeInToc ?? previous.includeInToc) ? 1 : 0,
+          imageWidth: element.imageWidth === undefined ? previous.imageWidth ?? null : element.imageWidth,
+          geometryJson: geometry ? JSON.stringify(geometry) : null
+        });
+      }
+      if (document) {
+        await connection.execute("UPDATE book_pages SET visual_document_json = :document WHERE page_id = :pageId", { document: JSON.stringify(document), pageId: page.pageId });
+      }
+      if (payload.elements.some((element) => element.active !== undefined && element.active !== (paragraphs.find((paragraph) => paragraph.paragraphId === element.paragraphId)!.active ?? true))) {
+        await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+        await connection.execute("UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+      }
+      await connection.execute("UPDATE book_pages SET ocr_status = ocr_status WHERE page_id = :pageId", { pageId: page.pageId });
+      await connection.execute("UPDATE books SET status = status WHERE book_id = :bookId", { bookId: params.bookId });
+      await invalidateBookAudioCache(connection, params.bookId);
+      const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
+      await connection.commit();
+      return reply.send({ updatedAt: updatedPage!.updatedAt });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -5324,6 +5747,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La orientación manual solo está disponible para libros creados desde imágenes." });
       }
 
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
         return reply.status(404).send({ message: "Page not found." });
@@ -5344,6 +5769,16 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           rotation: payload.rotation
         }
       );
+
+      if (page.sourceImageRotation !== payload.rotation) {
+        await connection.execute("UPDATE book_paragraphs SET geometry_json = NULL WHERE book_id = :bookId AND page_number = :pageNumber", params);
+        if (page.visualDocumentJson) {
+          const document = visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson));
+          document.blocks.forEach((block) => { block.geometry = null; });
+          await connection.execute("UPDATE book_pages SET visual_document_json = :document WHERE page_id = :pageId", { document: JSON.stringify(document), pageId: page.pageId });
+        }
+      }
+      await connection.execute("UPDATE books SET status = status WHERE book_id = :bookId", { bookId: params.bookId });
 
       await recordUserActivity(connection, {
         action: "PAGE_IMAGE_ROTATED",
@@ -5371,6 +5806,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = pageParamsSchema.parse(request.params);
+    const query = z.object({ original: z.enum(["true", "false"]).optional() }).parse(request.query);
     const connection = await getConnection();
 
     try {
@@ -5382,13 +5818,20 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           FROM books b
           JOIN book_pages bp
             ON bp.book_id = b.book_id
+          LEFT JOIN book_files original
+            ON :original = 1
+            AND original.book_id = bp.book_id
+            AND original.file_kind = 'ORIGINAL_PAGE_IMAGE'
+            AND original.file_name = bp.source_file_id
           JOIN book_files bf
-            ON bf.file_id = bp.source_file_id
+            ON bf.file_id = COALESCE(original.file_id, bp.source_file_id)
+            AND bf.book_id = bp.book_id
           WHERE b.book_id = :bookId
             AND bp.page_number = :pageNumber
         `,
         {
           bookId: params.bookId,
+          original: query.original === "true" ? 1 : 0,
           pageNumber: params.pageNumber
         },
         {
@@ -5481,6 +5924,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ message: "Debes adjuntar una imagen válida para la página." });
     }
 
+    // Read fields after consuming the file, including fields sent after its bytes.
+    const versionField = uploadedFile.fields?.expectedUpdatedAt;
+    const parsedVersion = z.object({ value: z.string().min(1).max(100) }).optional().safeParse(
+      Array.isArray(versionField) ? versionField[0] : versionField
+    );
+    if (!parsedVersion.success) return reply.status(400).send({ message: parsedVersion.error.message });
+    const expectedUpdatedAt = parsedVersion.data?.value;
     const connection = await getConnection();
 
     try {
@@ -5493,6 +5943,16 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La edición de imagen solo está disponible para libros creados desde imágenes." });
       }
 
+      // Match deletion's lock order so edits cannot race with page renumbering.
+      await connection.execute(
+        "SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE",
+        { bookId: params.bookId }
+      );
+      await connection.execute(
+        "SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE",
+        { bookId: params.bookId, pageNumber: params.pageNumber }
+      );
+
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
         return reply.status(404).send({ message: "Page not found." });
@@ -5501,6 +5961,38 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (!page.sourceFileId) {
         return reply.status(409).send({ message: "Esta página no tiene imagen original para guardar una versión recortada." });
       }
+
+      if (expectedUpdatedAt !== undefined && page.updatedAt !== expectedUpdatedAt) {
+        return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
+      }
+
+      // The stable source-file key survives renumbering; bytes are copied only once.
+      await connection.execute(
+        `
+          INSERT INTO book_files (
+            file_id, book_id, file_kind, file_name, mime_type, page_number,
+            byte_size, checksum_sha256, content_blob
+          )
+          SELECT :snapshotId, source.book_id, 'ORIGINAL_PAGE_IMAGE', source.file_id,
+                 source.mime_type, :pageNumber, source.byte_size, source.checksum_sha256, source.content_blob
+          FROM book_files source
+          WHERE source.book_id = :bookId
+            AND source.file_id = :fileId
+            AND source.file_kind = 'PAGE_IMAGE'
+            AND NOT EXISTS (
+              SELECT 1 FROM book_files original
+              WHERE original.book_id = source.book_id
+                AND original.file_kind = 'ORIGINAL_PAGE_IMAGE'
+                AND original.file_name = source.file_id
+            )
+        `,
+        {
+          snapshotId: randomUUID(),
+          bookId: params.bookId,
+          pageNumber: params.pageNumber,
+          fileId: page.sourceFileId
+        }
+      );
 
       await connection.execute(
         `
@@ -5512,6 +6004,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               content_blob = :contentBlob
           WHERE book_id = :bookId
             AND file_id = :fileId
+            AND file_kind = 'PAGE_IMAGE'
         `,
         {
           bookId: params.bookId,
@@ -5535,6 +6028,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
+      await connection.execute("UPDATE book_paragraphs SET geometry_json = NULL WHERE book_id = :bookId AND page_number = :pageNumber", params);
+      if (page.visualDocumentJson) {
+        const document = visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson));
+        document.blocks.forEach((block) => { block.geometry = null; });
+        await connection.execute("UPDATE book_pages SET visual_document_json = :document WHERE page_id = :pageId", { document: JSON.stringify(document), pageId: page.pageId });
+      }
+
       await connection.execute(
         `
           UPDATE books
@@ -5554,9 +6054,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
       await connection.commit();
 
-      return reply.status(204).send();
+      return reply.send({ updatedAt: updatedPage!.updatedAt });
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -5571,7 +6072,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = pageParamsSchema.parse(request.params);
-    const payload = updateOcrPageSchema.parse(request.body);
+    const parsedPayload = updateOcrPageSchema.safeParse(request.body);
+    if (!parsedPayload.success) {
+      return reply.status(400).send({ message: parsedPayload.error.message });
+    }
+    const payload = parsedPayload.data;
 
     const connection = await getConnection();
 
@@ -5585,11 +6090,16 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La edición de páginas solo está disponible para libros PDF, EPUB o creados desde imágenes." });
       }
 
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
         return reply.status(404).send({ message: "Page not found." });
       }
 
+      if (payload.expectedUpdatedAt !== undefined && page.updatedAt !== payload.expectedUpdatedAt) {
+        return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
+      }
       const pageEmbeddedImages = extractEmbeddedImageSources(page.htmlContent);
       const richPage = buildRichPageFromEditableText(payload.editedText, {
         embeddedImages: pageEmbeddedImages,
@@ -5602,7 +6112,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const externalized = externalizeContentImages([
-        payload.editedText,
+        richPage.editedText,
         richPage.htmlContent,
         richPage.rawText,
         ...paragraphs
@@ -5619,6 +6129,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         page,
         pageNumber: params.pageNumber,
         paragraphs: externalizedParagraphs,
+        ...(payload.paragraphIds !== undefined ? { paragraphIds: payload.paragraphIds } : {}),
+        ...(payload.paragraphMetadata !== undefined ? { paragraphMetadata: payload.paragraphMetadata } : {}),
         rawText: externalized.contents[2] ?? richPage.rawText,
         ...(book.sourceType === "IMAGES" && payload.sourceImageRotation !== undefined ? { sourceImageRotation: payload.sourceImageRotation } : {})
       });
@@ -5631,9 +6143,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
       await connection.commit();
 
-      return reply.status(204).send();
+      return reply.send({ updatedAt: updatedPage!.updatedAt });
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -5661,6 +6174,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "El OCR manual solo está disponible para libros creados desde imágenes." });
       }
 
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
         return reply.status(404).send({ message: "Page not found." });
@@ -5668,6 +6183,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       if (!page.sourceFileId) {
         return reply.status(409).send({ message: "Esta página no tiene imagen original para volver a reconocer el OCR." });
+      }
+
+      if (payload.expectedUpdatedAt !== undefined && page.updatedAt !== payload.expectedUpdatedAt) {
+        return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
 
       const sourceFileResult = await connection.execute(
@@ -5696,8 +6215,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Source image not found." });
       }
 
-      const aiCredentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const aiCredentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
 
+      const marginHints = await collectBookOcrMarginHints(connection, params.bookId, params.pageNumber, book.title);
       const ocrResult = await runOcrOnImage(
         sourceFile.contentBlob,
         sourceFile.fileName ?? `page-${params.pageNumber}.png`,
@@ -5709,12 +6229,19 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             secretAccessKey: aiCredentials.awsSecretAccessKey
           },
           language: book.languageCode,
-          ...(payload.ocrModel ? { model: payload.ocrModel } : {}),
+          marginHints,
+          ...(payload.ocrModel ?? aiCredentials.opencodeOcrModel ? { model: (payload.ocrModel ?? aiCredentials.opencodeOcrModel) as string } : {}),
           ocrMode: payload.ocrMode,
+          ...((aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey) ? { opencodeApiKey: (aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey) as string } : {}),
           ...(payload.promptOverride ? { promptOverride: payload.promptOverride } : {}),
           rotation: page.sourceImageRotation
         }
       );
+
+      const currentPage = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!currentPage || currentPage.updatedAt !== page.updatedAt) {
+        return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
+      }
 
       const externalized = externalizeContentImages([
         ocrResult.editedText,
@@ -5735,6 +6262,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         page,
         pageNumber: params.pageNumber,
         paragraphs: externalized.contents.slice(3),
+        ...("paragraphMetadata" in ocrResult ? { paragraphMetadata: ocrResult.paragraphMetadata as ParagraphElementMetadata[] } : {}),
         rawText: externalized.contents[2] ?? ocrResult.rawText
       });
 
@@ -5747,9 +6275,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
       await connection.commit();
 
-      return reply.status(204).send();
+      return reply.send({ updatedAt: updatedPage!.updatedAt });
     } catch (error) {
       await connection.rollback();
       throw error;
@@ -5803,15 +6332,17 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const contentVersion = await findBookContentVersion(connection, params.bookId);
       const paragraphs = await listBookParagraphTexts(connection, params.bookId);
       if (paragraphs.length === 0) {
         return reply.status(422).send({ message: "El libro no tiene texto suficiente para enviar una petición a la IA." });
       }
 
+      const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         languageCode: book.languageCode,
-        model: body.model,
+        model: body.model ?? effectiveAi.opencodeSummaryModel ?? undefined,
         onProviderRetry: ({ attempt, maxAttempts }) => {
           setAiRequestRetryProgress(body.progressId, {
             attempt,
@@ -5821,14 +6352,18 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         },
         paragraphs,
         promptOverride: body.promptText,
+        providerKeys: { geminiApiKey: effectiveAi.geminiApiKey, opencodeApiKey: effectiveAi.opencodeSummaryApiKey ?? effectiveAi.opencodeApiKey },
         scopeLabel: "Libro",
         title: book.title,
         visualType: body.visualType
       });
+      if (await findBookContentVersion(connection, params.bookId, true) !== contentVersion) {
+        return reply.status(409).send({ message: "El contenido ha cambiado durante la generacion. Repite la peticion." });
+      }
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
         kind: body.kind,
-        modelId: body.model ?? appEnv.opencodeModel,
+        modelId: body.model ?? effectiveAi.opencodeSummaryModel ?? appEnv.opencodeModel,
         promptText: body.promptText,
         responseText,
         scopeType: "BOOK",
@@ -5914,6 +6449,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const contentVersion = await findBookContentVersion(connection, params.bookId);
       const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
       if (!section) {
         return reply.status(404).send({ message: "Section not found." });
@@ -5925,10 +6461,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(422).send({ message: "Los capítulos seleccionados no tienen texto suficiente para enviar una petición a la IA." });
       }
 
+      const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         languageCode: book.languageCode,
-        model: body.model,
+        model: body.model ?? effectiveAi.opencodeSummaryModel ?? undefined,
         onProviderRetry: ({ attempt, maxAttempts }) => {
           setAiRequestRetryProgress(body.progressId, {
             attempt,
@@ -5938,14 +6475,18 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         },
         paragraphs,
         promptOverride: body.promptText,
+        providerKeys: { geminiApiKey: effectiveAi.geminiApiKey, opencodeApiKey: effectiveAi.opencodeSummaryApiKey ?? effectiveAi.opencodeApiKey },
         scopeLabel: "Sección",
         title: createSelectedSectionsAiTitle(selectedSections),
         visualType: body.visualType
       });
+      if (await findBookContentVersion(connection, params.bookId, true) !== contentVersion) {
+        return reply.status(409).send({ message: "El contenido ha cambiado durante la generacion. Repite la peticion." });
+      }
       const requestId = await createAiRequest(connection, {
         bookId: params.bookId,
         kind: body.kind,
-        modelId: body.model ?? appEnv.opencodeModel,
+        modelId: body.model ?? effectiveAi.opencodeSummaryModel ?? appEnv.opencodeModel,
         promptText: formatSectionAiRequestPromptText(body.promptText, selectedSections),
         responseText,
         scopeType: "SECTION",
@@ -6123,9 +6664,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Section not found." });
       }
 
-      const storedSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
+      const storedSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section, params.chapterId);
       const isStale = Boolean(storedSummary) && (
-        storedSummary?.startSequenceNumber !== section.startSequenceNumber
+        storedSummary?.isStale
+        || storedSummary?.startSequenceNumber !== section.startSequenceNumber
         || storedSummary?.endSequenceNumber !== section.endSequenceNumber
         || storedSummary?.sectionTitle !== section.title
       );
@@ -6138,7 +6680,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               isStale,
               modelId: storedSummary.modelId,
               summaryId: storedSummary.summaryId,
-              summaryText: storedSummary.summaryText,
+               summaryText: isStale ? "El contenido ha cambiado. Regenera el resumen." : storedSummary.summaryText,
               updatedAt: storedSummary.updatedAt
             }
           : null
@@ -6191,6 +6733,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      const contentVersion = await findBookContentVersion(connection, params.bookId);
       const section = await resolveBookSectionContext(connection, params.bookId, params.chapterId);
       if (!section) {
         return reply.status(404).send({ message: "Section not found." });
@@ -6201,8 +6744,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(422).send({ message: "La sección no tiene texto suficiente para resumirse." });
       }
 
-      const modelId = body.model ?? appEnv.opencodeModel;
-      const summaryText = await generateSectionSummary(section.title, paragraphs, { languageCode: book.languageCode, model: modelId, promptOverride: body.promptOverride });
+      const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
+      const modelId = body.model ?? effectiveAi.opencodeSummaryModel ?? appEnv.opencodeModel;
+      const summaryText = await generateSectionSummary(section.title, paragraphs, { languageCode: book.languageCode, model: modelId, promptOverride: body.promptOverride, providerKeys: { geminiApiKey: effectiveAi.geminiApiKey, opencodeApiKey: effectiveAi.opencodeSummaryApiKey ?? effectiveAi.opencodeApiKey } });
+      if (await findBookContentVersion(connection, params.bookId, true) !== contentVersion) {
+        return reply.status(409).send({ message: "El contenido ha cambiado durante la generacion. Repite la peticion." });
+      }
       const existingSummary = await findStoredSectionSummaryForSection(connection, params.bookId, request.currentUser.userId, section);
 
       if (existingSummary) {
@@ -6219,7 +6766,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               start_sequence_number = :startSequenceNumber,
               end_sequence_number = :endSequenceNumber,
               model_id = :modelId,
-              summary_text = :summaryText
+              summary_text = :summaryText,
+              is_stale = 0
             WHERE summary_id = :summaryId
           `,
           {
@@ -6252,7 +6800,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               start_sequence_number,
               end_sequence_number,
               model_id,
-              summary_text
+              summary_text,
+              is_stale
             ) VALUES (
               :summaryId,
               :userId,
@@ -6266,12 +6815,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               :startSequenceNumber,
               :endSequenceNumber,
               :modelId,
-              :summaryText
+              :summaryText,
+              0
             )
           `,
           {
             bookId: params.bookId,
-            chapterId: params.chapterId,
+            chapterId: section.chapterId,
             endPageNumber: section.endPageNumber,
             endParagraphNumber: section.endParagraphNumber,
             endSequenceNumber: section.endSequenceNumber,

@@ -7,6 +7,7 @@ import { fetchAppVersion, fetchCurrentUser, type AppVersionCommit, type AppVersi
 import { useAuthStore, type SessionUser } from "./auth-store";
 import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
+import { AiSettingsPage } from "../features/ai-settings/AiSettingsPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { AiRequestsPage } from "../features/reader/AiRequestsPage";
@@ -474,7 +475,10 @@ function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUs
             <span>{roleLabel}</span>
           </div>
           <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/profile">
-            Editar perfil
+            Perfil
+          </NavLink>
+          <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/ai-settings">
+            Configuración IA
           </NavLink>
           <button className="danger-button" onClick={() => {
             setIsOpen(false);
@@ -604,6 +608,7 @@ const router = createBrowserRouter(createRoutesFromElements(
       <Route path="/" element={<ShelfPage />} />
       <Route path="/search" element={<SearchPage />} />
       <Route path="/profile" element={<ProfilePage />} />
+      <Route path="/ai-settings" element={<AiSettingsPage />} />
       <Route path="/books/:bookId" element={<ReaderPage />} />
       <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
       <Route path="/books/:bookId/sections/:chapterId/ai-requests" element={<AiRequestsPage />} />

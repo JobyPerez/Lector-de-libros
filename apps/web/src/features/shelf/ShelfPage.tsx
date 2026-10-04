@@ -468,15 +468,26 @@ export function ShelfPage() {
   }
 
   function selectScope(nextScope: BookScope) {
-    setSearchParams((current) => {
-      const nextParams = new URLSearchParams(current);
-      if (nextScope === "mine") {
-        nextParams.delete("scope");
-      } else {
-        nextParams.set("scope", nextScope);
-      }
-      return nextParams;
-    });
+    // Selección manual del usuario: tiene prioridad sobre cualquier
+    // restauración pendiente de volver del lector. Limpiar el ancla evita
+    // que el efecto de restauración fuerce de vuelta a "Todos".
+    clearShelfAnchorFromSession();
+    const nextParams = new URLSearchParams(searchParams);
+    if (nextScope === "mine") {
+      nextParams.delete("scope");
+    } else {
+      nextParams.set("scope", nextScope);
+    }
+    const nextSearch = nextParams.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch ? `?${nextSearch}` : ""
+      },
+      // state: null limpia el shelfAnchorBookId de una vuelta del lector,
+      // para que el efecto no lo reinterprete como restauración pendiente.
+      { state: null }
+    );
   }
 
   const booksQuery = useQuery({
@@ -610,6 +621,11 @@ export function ShelfPage() {
       return;
     }
 
+    // Solo una vuelta real desde el lector (state con shelfAnchorBookId)
+    // puede forzar cambios de scope. Un ancla residual solo en sessionStorage
+    // (volver vía topbar, recarga, pestaña vieja) nunca debe secuestrar los
+    // clics manuales en "Mis libros" / "Compartidos conmigo".
+    const isReturnNavigation = shelfAnchorBookIdFromState !== null;
     const anchorBookId = shelfAnchorBookIdFromState ?? readShelfAnchorFromSession();
     if (!anchorBookId) {
       return;
@@ -617,7 +633,8 @@ export function ShelfPage() {
 
     // Si el ancla viene con una pestaña/búsqueda concreta (p. ej. Compartidos)
     // y estamos en otra, volver a esa URL antes de buscar el elemento.
-    if (shelfReturnToFromState) {
+    // Solo aplica a vueltas reales desde el lector.
+    if (isReturnNavigation && shelfReturnToFromState) {
       const currentShelfUrl = location.pathname + location.search;
       if (currentShelfUrl !== shelfReturnToFromState) {
         navigate(shelfReturnToFromState, { replace: true, state: { shelfAnchorBookId: anchorBookId } });
@@ -643,15 +660,29 @@ export function ShelfPage() {
 
       // El libro no está en el scope actual (p. ej. se volvió a "/" estando en
       // "Compartidos"). "Todos" incluye propios y compartidos: cambiar y reintentar.
+      // SOLO en vueltas reales desde el lector; nunca por un ancla residual.
       const booksInScope = booksQuery.data ?? [];
       const isAnchorInScope = booksInScope.some((book) => book.bookId === anchorBookId);
-      if (!isAnchorInScope && effectiveScope !== "all") {
-        setSearchParams((current) => {
-          const nextParams = new URLSearchParams(current);
-          nextParams.set("scope", "all");
-          return nextParams;
-        });
+      if (isReturnNavigation && !isAnchorInScope && effectiveScope !== "all") {
+        const nextParams = new URLSearchParams(location.search);
+        nextParams.set("scope", "all");
+        const nextSearch = nextParams.toString();
+        navigate(
+          {
+            pathname: location.pathname,
+            search: nextSearch ? `?${nextSearch}` : ""
+          },
+          { replace: true, state: { shelfAnchorBookId: anchorBookId } }
+        );
         return;
+      }
+
+      // Ancla no encontrada (libro borrado, sin acceso, filtro de búsqueda o
+      // ancla residual de otra sesión): limpiar para no dejar a la usuaria
+      // atrapada rebotando a "Todos" en cada clic de pestaña.
+      clearShelfAnchorFromSession();
+      if (shelfAnchorBookIdFromState) {
+        navigate(location.pathname + location.search, { replace: true });
       }
 
       try {
@@ -664,6 +695,11 @@ export function ShelfPage() {
         }
       } catch {
         // Si no se puede restaurar el scroll, se deja la posición actual.
+      }
+      try {
+        window.sessionStorage.removeItem(SHELF_ANCHOR_SCROLL_Y_KEY);
+      } catch {
+        // Sin almacenamiento no hay nada que limpiar.
       }
     }, 60);
 

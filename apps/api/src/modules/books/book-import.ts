@@ -4,6 +4,7 @@ import { load } from "cheerio";
 
 import { parseEpubBuffer } from "./epub-import.js";
 import { parsePdfBuffer } from "./pdf-import.js";
+import { normalizeParagraphMetadata, type ParagraphElementMetadata } from "./page-elements.js";
 
 export const supportedBookSourceTypes = ["PDF", "EPUB"] as const;
 export const supportedBookLanguageCodes = ["es", "it"] as const;
@@ -12,6 +13,7 @@ export type SupportedBookSourceType = (typeof supportedBookSourceTypes)[number];
 export type BookLanguageCode = (typeof supportedBookLanguageCodes)[number];
 
 export type ImportedPage = {
+  paragraphMetadata?: ParagraphElementMetadata[];
   editedText?: string | null;
   htmlContent?: string | null;
   pageNumber: number;
@@ -174,6 +176,19 @@ export function sanitizeParagraphs(paragraphs: string[]): string[] {
     .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
 }
 
+export function normalizeImportedPageParagraphs(page: ImportedPage, sourceType: SupportedBookSourceType): { paragraphs: string[]; paragraphMetadata?: ParagraphElementMetadata[] } {
+  const normalized = page.paragraphs.map((paragraph) => sourceType === "EPUB"
+    ? [normalizeWhitespacePreservingLineBreaks(paragraph)].filter((text) => normalizeWhitespace(text).length > 0)
+    : sanitizeParagraphs([paragraph]));
+  if (page.paragraphMetadata !== undefined && normalized.some((paragraphs) => paragraphs.length !== 1)) {
+    throw Object.assign(new Error("La normalizacion cambia la alineacion de paragraphMetadata."), { statusCode: 400 });
+  }
+  const paragraphs = normalized.flat();
+  return { paragraphs, ...(page.paragraphMetadata === undefined ? {} : {
+    paragraphMetadata: normalizeParagraphMetadata(page.paragraphMetadata, paragraphs.length)
+  }) };
+}
+
 function remapInternalPageLinks(htmlContent: string | null, pageNumberMap: Map<number, number>): string | null {
   if (!htmlContent) {
     return null;
@@ -271,12 +286,10 @@ export async function parseUploadedBook(
 
   const normalizedPages = importedDocument.pages
     .map((page) => ({
+      ...normalizeImportedPageParagraphs(page, sourceType),
       originalPageNumber: page.pageNumber,
       editedText: page.editedText?.trim() || null,
       htmlContent: page.htmlContent?.trim() || null,
-      paragraphs: sourceType === "EPUB"
-        ? page.paragraphs.map(normalizeWhitespacePreservingLineBreaks).filter((paragraph) => normalizeWhitespace(paragraph).length > 0)
-        : sanitizeParagraphs(page.paragraphs),
       rawText: page.rawText.trim()
     }))
     .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
@@ -288,6 +301,7 @@ export async function parseUploadedBook(
         pageNumberMap.set(page.originalPageNumber, normalizedPageNumber);
         return normalizedPageNumber;
       })(),
+      ...(page.paragraphMetadata === undefined ? {} : { paragraphMetadata: normalizeParagraphMetadata(page.paragraphMetadata, page.paragraphs.length) }),
       paragraphs: page.paragraphs,
       rawText: page.rawText
     }));

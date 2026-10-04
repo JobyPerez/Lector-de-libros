@@ -50,6 +50,7 @@ import {
 import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
+import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
@@ -1917,6 +1918,7 @@ export function AiRequestsPage() {
           </div>
         ) : null}
         {submitError ? <p className="error-text" role="alert">{submitError}</p> : null}
+        {submitError ? <AiMissingBanner error={new Error(submitError)} /> : null}
         {submitStatus ? <p className="subdued" role="status">{submitStatus}</p> : null}
         <div className="reader-note-editor-actions">
           <button
@@ -1951,6 +1953,7 @@ export function AiRequestsPage() {
           {deleteError ? <p className="error-text">{deleteError}</p> : null}
           {shareError ? <p className="error-text">{shareError}</p> : null}
           {audioError ? <p className="error-text">{audioError}</p> : null}
+          {audioError ? <AiMissingBanner error={new Error(audioError)} /> : null}
           {navigationError ? <p className="error-text">{navigationError}</p> : null}
         </section>
       ) : null}

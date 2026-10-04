@@ -8,7 +8,7 @@ let refreshSessionPromise: Promise<AuthResponse> | null = null;
 type ApiOptions = {
   accessToken?: string | null;
   body?: unknown;
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   signal?: AbortSignal;
 };
 
@@ -347,6 +347,47 @@ type ImageOcrRequestOptions = {
   skipOcr?: boolean | undefined;
 };
 
+export type PageElementRole = "body" | "heading" | "image" | "imageCaption" | "header" | "footer" | "pageNumber";
+export type PageElementGeometry = { bbox: { left: number; top: number; width: number; height: number } };
+export type ParagraphElementMetadata = {
+  role: PageElementRole;
+  readAloud: boolean;
+  geometry?: PageElementGeometry | null | undefined;
+  active?: boolean;
+  includeInToc?: boolean | null;
+  imageWidth?: number | null;
+};
+
+export type VisualBlock = {
+  id: string;
+  kind: "text" | "heading" | "image";
+  text: string;
+  role: PageElementRole;
+  active: boolean;
+  readAloud: boolean;
+  includeInToc: boolean;
+  source?: string;
+  sourceKey?: string;
+  headingLevel?: number;
+  imageWidth?: number;
+  fontScale?: number;
+  alignment?: "left" | "center" | "right";
+  geometry?: PageElementGeometry | null;
+};
+export type VisualCompositeContent = {
+  kind: "text" | "heading";
+  separator: "space" | "line" | "paragraph";
+  includeInToc: boolean;
+  headingLevel?: number;
+  alignment?: "left" | "center" | "right";
+  fontScale?: number;
+  origins?: { leafId: string; parentId: string; index: number; weight?: number }[];
+};
+export type VisualLayoutNode =
+  | { id: string; type: "block"; blockId: string }
+  | { id: string; type: "row" | "column"; children: VisualLayoutNode[]; weights?: number[]; gap?: number; content?: VisualCompositeContent };
+export type VisualPageDocument = { version: 1; blocks: VisualBlock[]; layout: VisualLayoutNode };
+
 export type ParagraphContent = {
   characterCount: number;
   paragraphId: string;
@@ -354,6 +395,12 @@ export type ParagraphContent = {
   paragraphText: string;
   sequenceNumber: number;
   wordCount: number;
+  role?: PageElementRole;
+  readAloud?: boolean;
+  geometry?: PageElementGeometry | null;
+  active?: boolean;
+  includeInToc?: boolean | null;
+  imageWidth?: number | null;
 };
 
 export type BookSearchResult = {
@@ -473,13 +520,64 @@ export type UpdateProfilePayload = {
   awsSecretAccessKey?: string;
   clearAwsCredentials?: boolean;
   clearDeepgramApiKey?: boolean;
+  clearGeminiApiKey?: boolean;
+  clearOpencodeApiKey?: boolean;
   deepgramApiKey?: string;
   deepgramTtsModel?: DeepgramTtsModel;
   deepgramTtsModelIt?: DeepgramTtsModel;
   displayName?: string;
   email: string;
+  geminiApiKey?: string;
+  opencodeApiKey?: string;
+  opencodeOcrModel?: string;
+  opencodeOcrVisibleModels?: string[];
+  opencodeSummaryModel?: string;
+  opencodeSummaryVisibleModels?: string[];
   themeMode?: ThemeMode;
   themePalette?: ThemePalette;
+};
+
+export type AiSettingsUpdatePayload = Partial<Omit<UpdateProfilePayload, "displayName" | "themeMode" | "themePalette">> & {
+  email?: string;
+};
+
+export type SharedIaType = "AWS" | "OPENCODE_OCR" | "OPENCODE_SUMMARY" | "GOOGLE" | "DEEPGRAM";
+
+export type AiShareMatrixEntry = {
+  recipientUserId: string;
+  iaType: SharedIaType;
+  sharerUserId: string;
+  sharerUsername: string;
+};
+
+export type AiSettingsResponse = {
+  settings: SessionUser["aiCredentials"] & {
+    shareAws: boolean;
+    shareOpencode: boolean;
+    shareGoogle: boolean;
+    shareDeepgram: boolean;
+  };
+  effectiveModels: {
+    ocrModel: string;
+    summaryModel: string;
+  };
+  isAdmin: boolean;
+};
+
+export type OpencodeTopModel = {
+  id: string;
+  name: string;
+  description: string;
+  contextWindowTokens: number;
+  pricing: string;
+  supportsVision: boolean;
+};
+
+export type OpencodeTopModelsResponse = {
+  models: OpencodeTopModel[];
+  source: "live" | "curated";
+  purpose?: "ocr" | "summary";
+  warning?: string;
 };
 
 function decodeBase64Url(value: string): string {
@@ -652,6 +750,9 @@ export type BookPageResponse = {
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   page: {
+    visualDocument?: VisualPageDocument | null;
+    hasVisualDocument?: boolean;
+    sourceHtmlContent?: string | null;
     editedText: string | null;
     hasSourceImage: boolean;
     htmlContent: string | null;
@@ -694,6 +795,7 @@ export type ReadingProgress = {
 
 export type ReaderAudioOptions = {
   paragraphCount?: number;
+  endSequenceNumber?: number;
   signal?: AbortSignal;
   voiceModel?: string;
 };
@@ -824,6 +926,42 @@ export function updateCurrentUserProfile(accessToken: string, payload: UpdatePro
     body: payload,
     method: "PUT"
   });
+}
+
+export function fetchAiSettings(accessToken: string) {
+  return request<AiSettingsResponse>("/ai-settings", { accessToken });
+}
+
+export function updateAiSettings(accessToken: string, payload: AiSettingsUpdatePayload) {
+  return request<{ settings: AiSettingsResponse["settings"] }>("/ai-settings", {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function updateAiShareFlags(accessToken: string, payload: { shareAws: boolean; shareOpencode: boolean; shareGoogle: boolean; shareDeepgram: boolean }) {
+  return request<{ settings: AiSettingsResponse["settings"] }>("/ai-settings/share", {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function fetchAiShares(accessToken: string) {
+  return request<{ myShares?: AiShareMatrixEntry[]; received?: AiShareMatrixEntry[] }>("/ai-settings/shares", { accessToken });
+}
+
+export function updateAiShare(accessToken: string, payload: { recipientUserId: string; iaType: SharedIaType; shared: boolean }) {
+  return request<{ myShares: AiShareMatrixEntry[] }>("/ai-settings/shares", {
+    accessToken,
+    body: payload,
+    method: "PUT"
+  });
+}
+
+export function fetchOpencodeTopModels(accessToken: string, purpose: "ocr" | "summary") {
+  return request<OpencodeTopModelsResponse>(`/ai-settings/opencode-models?purpose=${encodeURIComponent(purpose)}`, { accessToken });
 }
 
 export function fetchBooks(accessToken: string, options?: { scope?: BookScope }) {
@@ -1103,8 +1241,17 @@ export function setShareUserAnnotations(accessToken: string, bookId: string, ena
   });
 }
 
-export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number) {
-  return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}`, { accessToken });
+export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number, options?: { includeInactive?: boolean }) {
+  return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}${options?.includeInactive ? "?includeInactive=true" : ""}`, { accessToken });
+}
+
+export function saveVisualPageDocument(accessToken: string, bookId: string, pageNumber: number, payload: {
+  document: VisualPageDocument;
+  expectedUpdatedAt: string;
+}) {
+  return request<{ updatedAt: string; document: VisualPageDocument }>(`/books/${bookId}/pages/${pageNumber}/visual-document`, {
+    accessToken, body: payload, method: "PUT"
+  });
 }
 
 export function fetchBookSearch(accessToken: string, bookId: string, query: string, options?: { caseSensitive?: boolean; limit?: number; offset?: number }) {
@@ -1147,8 +1294,8 @@ export function fetchGlobalBookSearch(accessToken: string, query: string, option
   return request<GlobalBookSearchResponse>(`/books/search?${searchParams.toString()}`, { accessToken });
 }
 
-export function fetchPageAnnotations(accessToken: string, bookId: string, pageNumber: number) {
-  return request<ReaderPageAnnotations>(`/books/${bookId}/annotations?pageNumber=${encodeURIComponent(String(pageNumber))}`, { accessToken });
+export function fetchPageAnnotations(accessToken: string, bookId: string, pageNumber: number, options?: { includeInactive?: boolean }) {
+  return request<ReaderPageAnnotations>(`/books/${bookId}/annotations?pageNumber=${encodeURIComponent(String(pageNumber))}${options?.includeInactive ? "&includeInactive=true" : ""}`, { accessToken });
 }
 
 export function fetchReaderNavigation(accessToken: string, bookId: string) {
@@ -1294,9 +1441,11 @@ export function deleteNote(accessToken: string, bookId: string, noteId: string) 
   });
 }
 
-export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null) {
-  const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
-  return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query}`, accessToken);
+export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null, original = false) {
+  const query = new URLSearchParams();
+  if (cacheKey) query.set("v", cacheKey);
+  if (original) query.set("original", "true");
+  return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query.size ? `?${query}` : ""}`, accessToken);
 }
 
 export function fetchBookContentImage(accessToken: string, bookId: string, assetId: string, signal?: AbortSignal): Promise<Blob> {
@@ -1329,6 +1478,7 @@ export async function uploadBookPageImage(accessToken: string, bookId: string, p
   if (!response.ok) {
     throw await createApiRequestError(response, "No se pudo guardar la imagen editada de la página.");
   }
+  return response.json() as Promise<{ updatedAt: string }>;
 }
 
 export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf" | "pdf-images") {
@@ -1356,11 +1506,20 @@ export async function createBookDownloadUrl(accessToken: string, bookId: string,
   return `${apiBaseUrl}/books/download/${encodeURIComponent(result.token)}`;
 }
 
-export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; sourceImageRotation?: ImageRotation }) {
-  return request<void>(`/books/${bookId}/pages/${pageNumber}/ocr`, {
+export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; expectedUpdatedAt?: string; paragraphIds?: (string | null)[]; paragraphMetadata?: ParagraphElementMetadata[]; sourceImageRotation?: ImageRotation }) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/ocr`, {
     accessToken,
     body: payload,
     method: "PUT"
+  });
+}
+
+export function updatePageElements(accessToken: string, bookId: string, pageNumber: number, payload: {
+  expectedUpdatedAt: string;
+  elements: (ParagraphElementMetadata & { paragraphId: string })[];
+}) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/elements`, {
+    accessToken, body: payload, method: "PATCH"
   });
 }
 
@@ -1372,11 +1531,12 @@ export function updateBookPageImageRotation(accessToken: string, bookId: string,
   });
 }
 
-export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: ImageOcrRequestOptions) {
-  return request<void>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr`, {
+export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: ImageOcrRequestOptions & { expectedUpdatedAt?: string }) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr`, {
     accessToken,
     body: {
       ocrMode: payload?.ocrMode ?? "VISION",
+      ...(payload?.expectedUpdatedAt ? { expectedUpdatedAt: payload.expectedUpdatedAt } : {}),
       ...(payload?.ocrModel ? { ocrModel: payload.ocrModel } : {}),
       ...(payload?.promptOverride?.trim() ? { promptOverride: payload.promptOverride.trim() } : {})
     },
@@ -1422,6 +1582,7 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
     accessToken,
     body: JSON.stringify({
       paragraphCount: options.paragraphCount,
+      endSequenceNumber: options.endSequenceNumber,
       startSequenceNumber,
       voiceModel: options.voiceModel
     }),
@@ -1437,7 +1598,10 @@ export async function requestParagraphAudioBlock(accessToken: string, bookId: st
 
   return {
     blob: await response.blob(),
-    paragraphs: parseAudioBlockParagraphs(response)
+    paragraphs: parseAudioBlockParagraphs(response),
+    nextSequenceNumber: response.headers.has("X-Reader-Tts-Next-Sequence")
+      ? Number(response.headers.get("X-Reader-Tts-Next-Sequence")) || null
+      : undefined
   };
 }
 

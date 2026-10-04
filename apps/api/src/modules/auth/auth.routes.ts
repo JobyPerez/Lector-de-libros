@@ -9,7 +9,7 @@ import { getConnection } from "../../config/database.js";
 import { appEnv, ITALIAN_DEEPGRAM_TTS_MODELS, SPANISH_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
 import { sendPasswordResetEmail } from "../../services/mailer.js";
 import { recordUserActivity } from "../../services/user-activity.js";
-import { encryptOptionalSecret, getUserAiCredentialSummary } from "../../services/user-ai-credentials.js";
+import { encryptOptionalSecret, getUserAiCredentialSummary, serializeVisibleModels } from "../../services/user-ai-credentials.js";
 
 export type UserRole = "ADMIN" | "EDITOR";
 export type ThemeMode = "light" | "dark" | "system";
@@ -75,11 +75,19 @@ export const updateProfileSchema = z.object({
   awsSecretAccessKey: z.string().trim().min(1).max(500).optional(),
   clearAwsCredentials: z.boolean().optional(),
   clearDeepgramApiKey: z.boolean().optional(),
+  clearGeminiApiKey: z.boolean().optional(),
+  clearOpencodeApiKey: z.boolean().optional(),
   deepgramApiKey: z.string().trim().min(1).max(1000).optional(),
   deepgramTtsModel: z.enum(SPANISH_DEEPGRAM_TTS_MODELS).optional(),
   deepgramTtsModelIt: z.enum(ITALIAN_DEEPGRAM_TTS_MODELS).optional(),
   displayName: z.string().trim().max(120).optional(),
   email: z.string().email(),
+  geminiApiKey: z.string().trim().min(1).max(1000).optional(),
+  opencodeApiKey: z.string().trim().min(1).max(1000).optional(),
+  opencodeOcrModel: z.string().trim().min(1).max(255).optional(),
+  opencodeOcrVisibleModels: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
+  opencodeSummaryModel: z.string().trim().min(1).max(255).optional(),
+  opencodeSummaryVisibleModels: z.array(z.string().trim().min(1).max(255)).max(50).optional(),
   themeMode: themeModeSchema.optional(),
   themePalette: themePaletteSchema.optional()
 });
@@ -703,14 +711,127 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const payload = updateProfileSchema.parse(request.body);
+    const currentUserId = request.currentUser.userId;
     const connection = await getConnection();
     const deepgramApiKeyEncrypted = encryptOptionalSecret(payload.deepgramApiKey);
     const awsAccessKeyIdEncrypted = encryptOptionalSecret(payload.awsAccessKeyId);
     const awsSecretAccessKeyEncrypted = encryptOptionalSecret(payload.awsSecretAccessKey);
+    const opencodeApiKeyEncrypted = encryptOptionalSecret(payload.opencodeApiKey);
+    const geminiApiKeyEncrypted = encryptOptionalSecret(payload.geminiApiKey);
+    const opencodeOcrVisibleModels = payload.opencodeOcrVisibleModels ? serializeVisibleModels(payload.opencodeOcrVisibleModels) : null;
+    const opencodeSummaryVisibleModels = payload.opencodeSummaryVisibleModels ? serializeVisibleModels(payload.opencodeSummaryVisibleModels) : null;
 
     try {
-      await connection.execute(
+      const fullUpdate = async () => connection.execute(
         `
+          UPDATE users
+          SET display_name = :displayName,
+              email = :email,
+              theme_mode = COALESCE(:themeMode, theme_mode),
+              theme_palette = COALESCE(:themePalette, theme_palette),
+              deepgram_tts_model = COALESCE(:deepgramTtsModel, deepgram_tts_model),
+              deepgram_tts_model_it = COALESCE(:deepgramTtsModelIt, deepgram_tts_model_it),
+              deepgram_api_key_encrypted = CASE
+                WHEN :clearDeepgramApiKey = 1 THEN NULL
+                WHEN :deepgramApiKeyEncrypted IS NOT NULL THEN :deepgramApiKeyEncrypted
+                ELSE deepgram_api_key_encrypted
+              END,
+              aws_region = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsRegion IS NOT NULL THEN :awsRegion
+                ELSE aws_region
+              END,
+              aws_access_key_id_encrypted = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsAccessKeyIdEncrypted IS NOT NULL THEN :awsAccessKeyIdEncrypted
+                ELSE aws_access_key_id_encrypted
+              END,
+              aws_secret_access_key_encrypted = CASE
+                WHEN :clearAwsCredentials = 1 THEN NULL
+                WHEN :awsSecretAccessKeyEncrypted IS NOT NULL THEN :awsSecretAccessKeyEncrypted
+                ELSE aws_secret_access_key_encrypted
+              END,
+              opencode_api_key_encrypted = CASE
+                WHEN :clearOpencodeApiKey = 1 THEN NULL
+                WHEN :opencodeApiKeyEncrypted IS NOT NULL THEN :opencodeApiKeyEncrypted
+                ELSE opencode_api_key_encrypted
+              END,
+              gemini_api_key_encrypted = CASE
+                WHEN :clearGeminiApiKey = 1 THEN NULL
+                WHEN :geminiApiKeyEncrypted IS NOT NULL THEN :geminiApiKeyEncrypted
+                ELSE gemini_api_key_encrypted
+              END,
+              opencode_ocr_model = COALESCE(:opencodeOcrModel, opencode_ocr_model),
+              opencode_summary_model = COALESCE(:opencodeSummaryModel, opencode_summary_model)
+          WHERE user_id = :userId
+        `,
+        {
+          awsAccessKeyIdEncrypted: awsAccessKeyIdEncrypted ?? null,
+          awsRegion: payload.awsRegion ?? null,
+          awsSecretAccessKeyEncrypted: awsSecretAccessKeyEncrypted ?? null,
+          clearAwsCredentials: payload.clearAwsCredentials ? 1 : 0,
+          clearDeepgramApiKey: payload.clearDeepgramApiKey ? 1 : 0,
+          clearGeminiApiKey: payload.clearGeminiApiKey ? 1 : 0,
+          clearOpencodeApiKey: payload.clearOpencodeApiKey ? 1 : 0,
+          deepgramApiKeyEncrypted: deepgramApiKeyEncrypted ?? null,
+          deepgramTtsModel: payload.deepgramTtsModel ?? null,
+          deepgramTtsModelIt: payload.deepgramTtsModelIt ?? null,
+          displayName: payload.displayName?.trim() || null,
+          email: payload.email.toLowerCase(),
+          geminiApiKeyEncrypted: geminiApiKeyEncrypted ?? null,
+          opencodeApiKeyEncrypted: opencodeApiKeyEncrypted ?? null,
+          opencodeOcrModel: payload.opencodeOcrModel ?? null,
+          opencodeSummaryModel: payload.opencodeSummaryModel ?? null,
+          themeMode: payload.themeMode ?? null,
+          themePalette: payload.themePalette ?? null,
+          userId: currentUserId
+        },
+        { autoCommit: true }
+      );
+
+      const updateVisibleModelsClobs = async () => {
+        // Las columnas opencode_*_visible_models son CLOB: no se pueden mezclar
+        // con binds VARCHAR2 dentro de un COALESCE (ORA-00932). Se actualizan
+        // por separado con asignación directa, que sí permite VARCHAR2 -> CLOB.
+        if (opencodeOcrVisibleModels !== null) {
+          try {
+            await connection.execute(
+              `UPDATE users SET opencode_ocr_visible_models = :visibleModels WHERE user_id = :userId`,
+              { userId: currentUserId, visibleModels: opencodeOcrVisibleModels },
+              { autoCommit: true }
+            );
+          } catch (clobError) {
+            const message = clobError instanceof Error ? clobError.message : String(clobError);
+            if (!/ORA-00904/i.test(message)) {
+              throw clobError;
+            }
+          }
+        }
+        if (opencodeSummaryVisibleModels !== null) {
+          try {
+            await connection.execute(
+              `UPDATE users SET opencode_summary_visible_models = :visibleModels WHERE user_id = :userId`,
+              { userId: currentUserId, visibleModels: opencodeSummaryVisibleModels },
+              { autoCommit: true }
+            );
+          } catch (clobError) {
+            const message = clobError instanceof Error ? clobError.message : String(clobError);
+            if (!/ORA-00904/i.test(message)) {
+              throw clobError;
+            }
+          }
+        }
+      };
+
+      try {
+        await fullUpdate();
+      } catch (updateError) {
+        const message = updateError instanceof Error ? updateError.message : String(updateError);
+        if (!/ORA-00904/i.test(message)) {
+          throw updateError;
+        }
+        await connection.execute(
+          `
           UPDATE users
           SET display_name = :displayName,
               email = :email,
@@ -740,32 +861,35 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
               END
           WHERE user_id = :userId
         `,
-        {
-          awsAccessKeyIdEncrypted: awsAccessKeyIdEncrypted ?? null,
-          awsRegion: payload.awsRegion ?? null,
-          awsSecretAccessKeyEncrypted: awsSecretAccessKeyEncrypted ?? null,
-          clearAwsCredentials: payload.clearAwsCredentials ? 1 : 0,
-          clearDeepgramApiKey: payload.clearDeepgramApiKey ? 1 : 0,
-          deepgramApiKeyEncrypted: deepgramApiKeyEncrypted ?? null,
-          deepgramTtsModel: payload.deepgramTtsModel ?? null,
-          deepgramTtsModelIt: payload.deepgramTtsModelIt ?? null,
-          displayName: payload.displayName?.trim() || null,
-          email: payload.email.toLowerCase(),
-          themeMode: payload.themeMode ?? null,
-          themePalette: payload.themePalette ?? null,
-          userId: request.currentUser.userId
-        },
-        { autoCommit: true }
-      );
+          {
+            awsAccessKeyIdEncrypted: awsAccessKeyIdEncrypted ?? null,
+            awsRegion: payload.awsRegion ?? null,
+            awsSecretAccessKeyEncrypted: awsSecretAccessKeyEncrypted ?? null,
+            clearAwsCredentials: payload.clearAwsCredentials ? 1 : 0,
+            clearDeepgramApiKey: payload.clearDeepgramApiKey ? 1 : 0,
+            deepgramApiKeyEncrypted: deepgramApiKeyEncrypted ?? null,
+            deepgramTtsModel: payload.deepgramTtsModel ?? null,
+            deepgramTtsModelIt: payload.deepgramTtsModelIt ?? null,
+            displayName: payload.displayName?.trim() || null,
+            email: payload.email.toLowerCase(),
+            themeMode: payload.themeMode ?? null,
+            themePalette: payload.themePalette ?? null,
+            userId: currentUserId
+          },
+          { autoCommit: true }
+        );
+      }
+
+      await updateVisibleModelsClobs();
 
       await recordUserActivity(connection, {
         action: "PROFILE_UPDATED",
         ipAddress: request.ip ?? null,
         userAgent: request.headers["user-agent"] ?? null,
-        userId: request.currentUser.userId
+        userId: currentUserId
       });
 
-      const user = await findUserById(request.currentUser.userId, connection);
+      const user = await findUserById(currentUserId, connection);
       if (!user) {
         return reply.status(404).send({ message: "User not found." });
       }

@@ -1,0 +1,23 @@
+.reading-blocks-editor { display: grid; gap: 1rem; min-width: 0; }
+.reading-block-card { border: 1px solid var(--border-color, #a5a5a566); border-radius: .75rem; padding: 1rem; min-width: 0; }
+.reading-block-card header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; margin-bottom: .75rem; }
+.reading-block-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.reading-block-actions button { font: inherit; color: inherit; background: transparent; border: 1px solid #8888; border-radius: .35rem; padding: .4rem .6rem; min-height: 2.5rem; cursor: pointer; }
+.reading-block-actions button:disabled { opacity: .4; cursor: default; }
+.reading-blocks-editor button:focus-visible, .reading-blocks-editor textarea:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.reading-block-card label { display: grid; gap: .5rem; }
+.reading-block-card .reading-block-row-control { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
+.reading-blocks-editor input[type="checkbox"] { width: 1.05rem; height: 1.05rem; flex: 0 0 auto; margin: 0; padding: 0; border-radius: .15rem; }
+.reading-block-row-control input:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.reading-block-card .ocr-editor { width: 100%; min-height: 7rem; box-sizing: border-box; }
+.reading-block-preview { overflow-wrap: anywhere; margin-top: .75rem; }
+.reading-block-preview img { max-width: 100%; height: auto; }
+.reading-block-announcement:empty { display: none; }
+.review-preview-panel .reader-reading-block { border-left: 2px solid #8886; padding-left: .75rem; margin-block: 1rem; }
+.review-preview-panel .reader-reading-block::before { content: "Bloque " attr(data-reading-block-number); display: block; font: 600 .75rem sans-serif; opacity: .65; }
+.review-preview-panel .reader-reading-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); align-items: stretch; gap: 1rem; margin-block: 1rem; }
+.review-preview-panel .reader-reading-row > .reader-reading-block { min-width: 0; margin-block: 0; overflow-wrap: anywhere; }
+.review-preview-panel .reader-reading-row img { max-width: 100%; height: auto; }
+.reading-block-card .reading-block-preview .reader-reading-block { border: 0; padding: 0; margin: 0; }
+.reading-block-card .reading-block-preview .reader-reading-block::before { content: none; }
+@media (max-width: 600px) { .reading-block-card { padding: .65rem; } .reading-block-actions { width: 100%; } .review-preview-panel .reader-reading-row { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); } }

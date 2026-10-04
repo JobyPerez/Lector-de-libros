@@ -1,3 +1,5 @@
+import { parseReadingBlocks, readingBlockMarker } from "./reading-blocks";
+
 type TextAlignment = "center" | "left" | "right";
 
 const headingPattern = /^(#{1,6})\s+(.+)$/u;
@@ -6,10 +8,6 @@ const alignmentPattern = /^::(left|center|right)::\s*([\s\S]+)$/u;
 const embeddedImageSourcePattern = /^embedded-image-\d+$/u;
 const readerLinkPattern = /\[([^\]]+)\]\(reader-page-(\d+)-paragraph-(\d+)\)/gu;
 const editableImageSelector = "figure.reader-rich-node img, figure.reader-rich-node image, .reader-rich-node img, .reader-rich-node image, .epub-page-body img, .epub-page-body image";
-
-type RichBlock = {
-  html: string;
-};
 
 function escapeHtml(value: string): string {
   return value
@@ -99,7 +97,7 @@ function extractEmbeddedImageSources(htmlContent: string | null | undefined): Ma
       continue;
     }
 
-    embeddedImages.set(`embedded-image-${imageIndex}`, source);
+    if (!source.startsWith("blob:")) embeddedImages.set(`embedded-image-${imageIndex}`, source);
     imageIndex += 1;
   }
 
@@ -117,6 +115,12 @@ function extractNodeEditableText(node: Node): string {
 
   if (node.tagName.toLowerCase() === "br") {
     return "\n";
+  }
+
+  const tag = node.tagName.toLowerCase();
+  if (tag === "strong" || tag === "b" || tag === "em" || tag === "i") {
+    const marker = tag === "strong" || tag === "b" ? "**" : "*";
+    return `${marker}${Array.from(node.childNodes).map(extractNodeEditableText).join("")}${marker}`;
   }
 
   if (node.tagName.toLowerCase() === "a") {
@@ -177,6 +181,13 @@ function buildEditableImageBlock(image: Element, imageIndexes: Map<Element, numb
 }
 
 function buildEditableBlocksFromElement(node: Element, imageIndexes: Map<Element, number>): string[] {
+  if (node.matches("section.reader-reading-block")) {
+    const id = node.getAttribute("data-reading-block-id");
+    const rowId = node.getAttribute("data-reading-row-id") ?? node.closest(".reader-reading-row")?.getAttribute("data-reading-row-id");
+    const marker = `:::block ${id}${rowId ? ` row=${rowId}` : ""}`;
+    const content = Array.from(node.children).flatMap((child) => buildEditableBlocksFromElement(child, imageIndexes));
+    return id && readingBlockMarker.test(marker) ? [marker, ...content] : content;
+  }
   const tagName = node.tagName.toLowerCase();
   if (tagName === "style" || tagName === "script") {
     return [];
@@ -197,7 +208,7 @@ function buildEditableBlocksFromElement(node: Element, imageIndexes: Map<Element
       : [buildEditableTextBlock(node)].filter((block): block is string => Boolean(block));
   }
 
-  const containsEditableStructure = Boolean(node.querySelector("img, image, figure, .reader-rich-node"));
+  const containsEditableStructure = Boolean(node.querySelector("img, image, figure, .reader-rich-node, .reader-reading-block"));
   if (!containsEditableStructure) {
     const block = buildEditableTextBlock(node);
     return block ? [block] : [];
@@ -229,8 +240,8 @@ function buildEditableBlocksFromElement(node: Element, imageIndexes: Map<Element
       continue;
     }
 
-    const childContainsEditableStructure = child.matches("img, image, figure, .reader-rich-node")
-      || Boolean(child.querySelector("img, image, figure, .reader-rich-node"));
+    const childContainsEditableStructure = child.matches("img, image, figure, .reader-rich-node, .reader-reading-block")
+      || Boolean(child.querySelector("img, image, figure, .reader-rich-node, .reader-reading-block"));
     if (childContainsEditableStructure) {
       flushText();
       blocks.push(...buildEditableBlocksFromElement(child, imageIndexes));
@@ -275,7 +286,7 @@ export function buildEditableTextFromHtmlContent(htmlContent: string | null | un
 
 function resolveImageSource(source: string, embeddedImages: Map<string, string>): string {
   const normalizedSource = source.trim();
-  if (!normalizedSource) {
+  if (!normalizedSource || normalizedSource.startsWith("blob:")) {
     return "";
   }
 
@@ -339,31 +350,48 @@ function buildBlockFromParagraph(paragraph: string, embeddedImages: Map<string, 
   };
 }
 
-export function buildOcrPreviewHtml(editedText: string, persistedHtmlContent?: string | null): string | null {
-  const paragraphCandidates = editedText
-    .replace(/\r/g, "")
-    .split(/\n/u)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
-
+export function buildOcrPreviewHtml(editedText: string, persistedHtmlContent?: string | null, options?: { singleAtom?: boolean }): string | null {
   const embeddedImages = extractEmbeddedImageSources(persistedHtmlContent);
-  const blocks = paragraphCandidates
-    .map((paragraph) => buildBlockFromParagraph(paragraph, embeddedImages))
-    .filter((block): block is { html: string; isText: boolean } => block !== null);
-
-  if (blocks.length === 0) {
-    return null;
+  if (options?.singleAtom) {
+    return buildBlockFromParagraph(editedText, embeddedImages)?.html ?? null;
   }
-
   let paragraphCounter = 1;
-  const finalizedBlocks = blocks.map((block) => {
-    if (!block.isText) {
-      return block;
+  let previousRowId: string | undefined;
+  const sections: string[] = [];
+  parseReadingBlocks(editedText).forEach((readingBlock, index) => {
+    const html = readingBlock.text.split("\n").map((line) => buildBlockFromParagraph(line, embeddedImages))
+      .filter((block) => block !== null).map((block) => {
+        return block.html.replace('class="reader-rich-node"', `class="reader-rich-node" data-paragraph-number="${paragraphCounter++}"`);
+      }).join("");
+    if (previousRowId && previousRowId !== readingBlock.rowId) sections.push("</div>");
+    if (readingBlock.rowId && previousRowId !== readingBlock.rowId) {
+      sections.push(`<div class="reader-reading-row" data-reading-row-id="${escapeHtml(readingBlock.rowId)}">`);
     }
-    const htmlWithParagraphNumber = block.html.replace('class="reader-rich-node"', `class="reader-rich-node" data-paragraph-number="${paragraphCounter}"`);
-    paragraphCounter += 1;
-    return { ...block, html: htmlWithParagraphNumber };
+    sections.push(`<section class="reader-reading-block" data-reading-block-number="${index + 1}"${readingBlock.id ? ` data-reading-block-id="${escapeHtml(readingBlock.id)}"` : ""}${readingBlock.rowId ? ` data-reading-row-id="${escapeHtml(readingBlock.rowId)}"` : ""}>${html}</section>`);
+    previousRowId = readingBlock.rowId;
   });
+  if (previousRowId) sections.push("</div>");
+  return paragraphCounter === 1 ? null : `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${sections.join("")}</div></div>`;
+}
 
-  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${finalizedBlocks.map((block) => block.html).join("")}</div></div>`;
+export function stabilizeEmbeddedImages(text: string, persistedHtmlContent?: string | null): string {
+  const sources = extractEmbeddedImageSources(persistedHtmlContent);
+  return text.replace(/(!\[[^\]\n]*\]\()(embedded-image-\d+)(\))/gu, (_match, prefix: string, token: string, suffix: string) => {
+    const source = sources.get(token);
+    if (!source) throw new Error(`No se pudo resolver la imagen ${token} desde el HTML persistido.`);
+    return `${prefix}${source}${suffix}`;
+  }).replace(/!\[[^\]\n]*\]\(blob:[^)]+\)/gu, () => {
+    throw new Error("No se pueden guardar imagenes con una URL blob temporal.");
+  });
+}
+
+export function compactEmbeddedImagesForSave(text: string, persistedHtmlContent?: string | null): string {
+  const tokens = new Map<string, string>();
+  for (const [token, source] of extractEmbeddedImageSources(persistedHtmlContent)) {
+    if (source.startsWith("data:") && !tokens.has(source)) tokens.set(source, token);
+  }
+  return text.replace(/(!\[[^\]\n]*\]\()([^\n]+?)(\))/gu, (match, prefix: string, source: string, suffix: string) => {
+    const token = tokens.get(source);
+    return token ? `${prefix}${token}${suffix}` : match;
+  });
 }

@@ -1,7 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import { getConnection } from "../../config/database.js";
-import { getUserAiCredentials } from "../../services/user-ai-credentials.js";
+import { getEffectiveUserAiCredentials } from "../../services/user-ai-credentials.js";
 import { getAwsMonthToDateSpend } from "../../services/aws-cost.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 
@@ -15,14 +15,15 @@ export const registerAwsCostRoutes: FastifyPluginAsync = async (app) => {
 
     let credentials;
     try {
-      credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
     } finally {
       await connection.close();
     }
 
-    if (!credentials.hasAwsCredentials || !credentials.awsAccessKeyId || !credentials.awsSecretAccessKey) {
+    if (!credentials.awsAccessKeyId || !credentials.awsSecretAccessKey) {
       return reply.status(409).send({
-        message: "AWS no esta configurado. Configura tus credenciales en tu perfil para consultar el gasto."
+        code: "MISSING_AWS",
+        message: "AWS no está configurado. Rellena tus credenciales en Configuración IA (/ai-settings) o usa las compartidas del administrador."
       });
     }
 

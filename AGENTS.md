@@ -11,8 +11,9 @@ Antes de decidir cualquier paso de despliegue o reinicio, lee el fichero `.env` 
 
 ## `ENTORNO=servidor` y `DESPLIEGUE=produccion`
 
-1. Si el cambio afecta al frontend en `client/src` o a cualquier recurso que requiera regenerar `client/dist`, ejecuta primero `npm run build:client` desde la raíz del workspace.
-2. Después de cualquier cambio en este repositorio, ejecuta `pm2 restart conejolector-api` desde la raíz del workspace. Este comando solo reinicia los procesos existentes; no ejecuta build, install ni pull.
+1. Si el cambio afecta al frontend en `apps/web/src` o a cualquier recurso que requiera regenerar `apps/web/dist`, ejecuta primero `npm run build:client` desde la raíz del workspace.
+2. Si el cambio afecta a la API en `apps/api/src`, ejecuta `npm run build --workspace @lector/api` antes del reinicio: PM2 ejecuta `apps/api/dist/server.js`, no el código TypeScript fuente.
+3. Después de cualquier cambio en este repositorio, ejecuta `pm2 restart conejolector-api` desde la raíz del workspace. Este comando solo reinicia los procesos existentes; no ejecuta build, install ni pull.
 4. No des una tarea por terminada si alguno de esos pasos falla; informa el error al usuario.
 
 ## `ENTORNO=servidor` y `DESPLIEGUE=desarrollo`

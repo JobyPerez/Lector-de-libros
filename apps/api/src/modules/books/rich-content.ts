@@ -1,10 +1,13 @@
 import { load } from "cheerio";
+import { normalizeParagraphMetadata, type ParagraphElementMetadata } from "./page-elements.js";
 
 type EmbeddedImageSourceMap = Map<string, string>;
 
 type TextAlignment = "center" | "left" | "right";
 
 type RichBlock = {
+  readingBlockId?: string;
+  readingRowId?: string;
   alignment: TextAlignment | null;
   editableText: string;
   html: string;
@@ -13,7 +16,8 @@ type RichBlock = {
   text: string;
 };
 
-type RichPageBuildOptions = {
+export type RichPageBuildOptions = {
+  paragraphMetadata?: ParagraphElementMetadata[];
   embeddedImages?: EmbeddedImageSourceMap;
   inferHeadings?: boolean;
   languageCode?: "es" | "it";
@@ -41,6 +45,26 @@ const alignmentPattern = /^::(left|center|right)::\s*([\s\S]+)$/u;
 const readerLinkPattern = /\[([^\]]+)\]\(reader-page-(\d+)-paragraph-(\d+)\)/gu;
 const headingKeywordPattern = /^(cap[ií]tulo|chapter|parte|section|pr[oó]logo|ep[ií]logo|prefacio|introducci[oó]n)\b/iu;
 const embeddedImageSourcePattern = /^embedded-image-\d+$/u;
+const readingBlockMarkerPattern = /^:::block ([a-zA-Z0-9_-]{1,80})(?: row=([a-zA-Z0-9_-]{1,80}))?$/u;
+
+export function hasValidReadingBlockMarkers(editedText: string): boolean {
+  const ids = new Set<string>();
+  const rows = new Set<string>();
+  let currentRow: string | undefined;
+  return editedText.replace(/\r/g, "").split("\n").every((line) => {
+    const trimmed = line.trim();
+    if (!/^:::block(?:\s|$)/u.test(trimmed)) return true;
+    const match = trimmed.match(readingBlockMarkerPattern);
+    const id = match?.[1];
+    if (!id || ids.has(id)) return false;
+    const row = match?.[2];
+    if (row !== currentRow && row && rows.has(row)) return false;
+    if (row) rows.add(row);
+    currentRow = row;
+    ids.add(id);
+    return true;
+  });
+}
 const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
 const signatureLikePattern = /^[A-ZÁÉÍÓÚÑ][\p{L}'’-]+(?:\s+(?:[A-ZÁÉÍÓÚÑ][\p{L}'’-]+|[A-ZÁÉÍÓÚÑ]\.)){1,4}$/u;
 
@@ -234,7 +258,7 @@ function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptio
 
     return {
       alignment,
-      editableText: prependAlignment(`![${altText}](${sourceToken})`, alignment),
+      editableText: prependAlignment(`![${altText}](${resolvedSource})`, alignment),
       html: `<figure class="reader-rich-node" role="button" tabindex="0" data-reader-text="${escapeHtml(narration)}"${buildAlignmentAttributes(alignment)}><img alt="${escapeHtml(altText)}" src="${escapeHtml(resolvedSource)}" />${altText ? `<figcaption>${escapeHtml(altText)}</figcaption>` : ""}</figure>`,
       includeInParagraphs: true,
       level: null,
@@ -289,11 +313,34 @@ function buildBlockFromParagraph(paragraph: string, options?: RichPageBuildOptio
 }
 
 function wrapRichPageHtml(blocks: RichBlock[]): string | null {
-  if (blocks.length === 0) {
+  if (!blocks.some((block) => block.includeInParagraphs)) {
     return null;
   }
 
-  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${blocks.map((block) => block.html).join("")}</div></div>`;
+  const groups: Array<{ id: string; row?: string; html: string }> = [];
+  const explicitIds = new Set(blocks.map((block) => block.readingBlockId));
+  let implicitId = "page";
+  for (let suffix = 1; explicitIds.has(implicitId); suffix += 1) implicitId = `page-${suffix}`;
+  for (const block of blocks) {
+    if (block.readingBlockId !== undefined) {
+      groups.push({ id: block.readingBlockId, ...(block.readingRowId ? { row: block.readingRowId } : {}), html: "" });
+      continue;
+    }
+    if (groups.length === 0) groups.push({ id: implicitId, html: "" });
+    groups[groups.length - 1]!.html += block.html;
+  }
+  let html = "";
+  let currentRow: string | undefined;
+  for (const [index, group] of groups.entries()) {
+    if (group.row !== currentRow) {
+      if (currentRow) html += "</div>";
+      if (group.row) html += `<div class="reader-reading-row" data-reading-row-id="${escapeHtml(group.row)}">`;
+      currentRow = group.row;
+    }
+    html += `<section class="reader-reading-block" data-reading-block-id="${escapeHtml(group.id)}" data-reading-block-number="${index + 1}"${group.row ? ` data-reading-row-id="${escapeHtml(group.row)}"` : ""}>${group.html}</section>`;
+  }
+  if (currentRow) html += "</div>";
+  return `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${html}</div></div>`;
 }
 
 function finalizeRichBlocks(blocks: RichBlock[]) {
@@ -343,12 +390,32 @@ export function extractEmbeddedImageSources(htmlContent: string | null | undefin
 export function buildRichPageFromParagraphs(
   paragraphs: string[],
   options?: RichPageBuildOptions
-): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string } {
-  const blocks = paragraphs
-    .map((paragraph, index) => buildBlockFromParagraph(paragraph, options, index))
-    .filter((block): block is RichBlock => block !== null);
+): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string; paragraphMetadata?: ParagraphElementMetadata[] } {
+  if (!hasValidReadingBlockMarkers(paragraphs.join("\n"))) {
+    throw new Error("Invalid or duplicate reading block marker.");
+  }
+  const blocks: RichBlock[] = [];
+  let paragraphIndex = 0;
+  for (const paragraph of paragraphs) {
+    const marker = paragraph.trim().match(readingBlockMarkerPattern);
+    const id = marker?.[1];
+    if (id) {
+      const row = marker?.[2];
+      blocks.push({ readingBlockId: id, ...(row ? { readingRowId: row } : {}), alignment: null, editableText: `:::block ${id}${row ? ` row=${row}` : ""}`, html: "", includeInParagraphs: false, level: null, text: "" });
+      continue;
+    }
+    const block = buildBlockFromParagraph(paragraph, options, paragraphIndex);
+    if (block) {
+      blocks.push(block);
+      paragraphIndex += 1;
+    }
+  }
 
-  return finalizeRichBlocks(blocks);
+  const page = finalizeRichBlocks(blocks);
+  return options?.paragraphMetadata === undefined ? page : {
+    ...page,
+    paragraphMetadata: normalizeParagraphMetadata(options.paragraphMetadata, page.paragraphs.length)
+  };
 }
 
 export function buildRichPageFromStructuredBlocks(
@@ -374,7 +441,7 @@ export function buildRichPageFromStructuredBlocks(
 export function buildRichPageFromEditableText(
   editedText: string,
   options?: RichPageBuildOptions
-): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string } {
+): { editedText: string; htmlContent: string | null; paragraphs: string[]; rawText: string; paragraphMetadata?: ParagraphElementMetadata[] } {
   return buildRichPageFromParagraphs(splitEditableTextIntoBlocks(editedText), {
     ...options,
     inferHeadings: false

@@ -39,6 +39,7 @@ import {
 import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
+import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
 
 const READER_TTS_ENGINE_STORAGE_KEY = "lector.reader.ttsEngine";
@@ -1178,6 +1179,7 @@ export function SectionSummaryPage() {
       {generationError ? (
         <section className="panel reader-section-summary-panel">
           <p className="error-text">{generationError}</p>
+          <AiMissingBanner error={new Error(generationError)} />
         </section>
       ) : null}
 
@@ -1213,6 +1215,7 @@ export function SectionSummaryPage() {
       {audioError ? (
         <section className="panel reader-section-summary-panel">
           <p className="error-text">{audioError}</p>
+          <AiMissingBanner error={new Error(audioError)} />
         </section>
       ) : null}
 

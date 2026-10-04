@@ -18,7 +18,7 @@ import {
 } from "../../config/env.js";
 import { requireBookRole } from "../../services/book-access.js";
 import { normalizeTextForDeepgram } from "../../services/paragraph-metrics.js";
-import { getUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
+import { getEffectiveUserAiCredentials, type UserAiCredentials } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { resolveBookOutline } from "../books/book-outline.js";
 
@@ -31,10 +31,12 @@ type TtsParagraphRow = {
   legacyAudioBlob?: Buffer;
   legacyAudioFileId?: string | null;
   legacyAudioMimeType?: string | null;
+  isActive: number;
   pageNumber: number;
   paragraphId: string;
   paragraphNumber: number;
   paragraphText: string;
+  readAloud: number;
   sequenceNumber: number;
 };
 
@@ -90,9 +92,13 @@ const DEEPGRAM_TTS_RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 50
 const execFileAsync = promisify(execFile);
 
 const ttsBlockRequestSchema = z.object({
+  endSequenceNumber: z.coerce.number().int().min(1).optional(),
   paragraphCount: z.coerce.number().int().min(1).max(MAX_TTS_BLOCK_PARAGRAPH_COUNT).default(DEFAULT_TTS_BLOCK_PARAGRAPH_COUNT),
   startSequenceNumber: z.coerce.number().int().min(1),
   voiceModel: z.enum(ALLOWED_DEEPGRAM_TTS_MODELS).optional()
+}).refine((payload) => payload.endSequenceNumber === undefined || payload.endSequenceNumber >= payload.startSequenceNumber, {
+  message: "endSequenceNumber must be at or after startSequenceNumber.",
+  path: ["endSequenceNumber"]
 });
 
 const sectionSummaryTtsParamsSchema = z.object({
@@ -127,7 +133,7 @@ export function normalizeTtsLanguageCode(languageCode: string | null | undefined
   return language.languageCode;
 }
 
-function getPreferredTtsVoiceModel(credentials: UserAiCredentials, languageCode: TtsLanguageCode) {
+function getPreferredTtsVoiceModel(credentials: Pick<UserAiCredentials, "deepgramTtsModel" | "deepgramTtsModelIt">, languageCode: TtsLanguageCode) {
   return languageCode === "it" ? credentials.deepgramTtsModelIt : credentials.deepgramTtsModel;
 }
 
@@ -364,7 +370,8 @@ function getCachedParagraphAudio(paragraph: TtsParagraphRow, voiceModel: string)
 
 async function fetchDeepgramJson(path: string, apiKey: string) {
   if (!apiKey) {
-    throw Object.assign(new Error("Configura tu clave de Deepgram en tu perfil para usar este servicio."), {
+    throw Object.assign(new Error("Te falta la clave de Deepgram para el audio de lectura. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador."), {
+      code: "MISSING_DEEPGRAM",
       statusCode: 503
     });
   }
@@ -515,9 +522,10 @@ async function fetchDeepgramProjectBalanceUsd(projectId: string, apiKey: string)
   });
 }
 
-function requireDeepgramApiKey(credentials: UserAiCredentials): string {
+function requireDeepgramApiKey(credentials: Pick<UserAiCredentials, "deepgramApiKey">): string {
   if (!credentials.deepgramApiKey) {
-    throw Object.assign(new Error("Configura tu clave de Deepgram en tu perfil para generar audio."), {
+    throw Object.assign(new Error("Te falta la clave de Deepgram para el audio de lectura. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador."), {
+      code: "MISSING_DEEPGRAM",
       statusCode: 503
     });
   }
@@ -880,7 +888,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
 
-    const credentials = await getUserAiCredentials(request.currentUser.userId);
+    const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId);
     const deepgramApiKey = requireDeepgramApiKey(credentials);
     const project = await fetchDeepgramProject(deepgramApiKey);
     const balanceUsd = await fetchDeepgramProjectBalanceUsd(project.projectId, deepgramApiKey);
@@ -903,7 +911,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const bookResult = await connection.execute(
         `
           SELECT
@@ -945,6 +953,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             ON cache.paragraph_id = bp.paragraph_id
             AND cache.voice_model = :voiceModel
           WHERE bp.book_id = :bookId
+            AND bp.is_active = 1
+            AND bp.read_aloud = 1
             AND bp.sequence_number >= :startSequenceNumber
             ${nextSection ? "AND bp.sequence_number < :endSequenceNumber" : ""}
           ORDER BY bp.sequence_number ASC
@@ -1009,7 +1019,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         chapterId: params.chapterId,
         endSequenceNumber: paragraphs.at(-1)?.sequenceNumber ?? section.sequenceNumber,
         estimatedCostUsd: estimateDeepgramAura2CostUsd(missingCharacters),
+        empty: paragraphs.length === 0,
         missingCharacters,
+        paragraphCount: paragraphs.length,
         startSequenceNumber: section.sequenceNumber,
         title: section.title,
         totalCharacters,
@@ -1030,10 +1042,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
       const { languageCode, voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
-      const deepgramApiKey = requireDeepgramApiKey(credentials);
       const result = await connection.execute(
         `
           SELECT
@@ -1043,6 +1054,8 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             bp.paragraph_number AS "paragraphNumber",
             bp.sequence_number AS "sequenceNumber",
             bp.paragraph_text AS "paragraphText",
+            bp.is_active AS "isActive",
+            bp.read_aloud AS "readAloud",
             cache.file_id AS "cachedAudioFileId",
             cache.text_checksum_sha256 AS "cachedTextChecksum",
             cached_bf.mime_type AS "cachedAudioMimeType",
@@ -1080,6 +1093,12 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       if (!paragraph) {
         return reply.status(404).send({ message: "Paragraph not found." });
       }
+      if (paragraph.isActive === 0) {
+        return reply.status(409).send({ message: "Este elemento no esta activo." });
+      }
+      if (paragraph.readAloud === 0) {
+        return reply.status(409).send({ message: "Este elemento no admite lectura en voz alta." });
+      }
 
       const cachedParagraphAudio = getCachedParagraphAudio(paragraph, requestedVoiceModel);
       let didMutateCache = false;
@@ -1091,6 +1110,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           contentType: cachedParagraphAudio.contentType
         };
       } else {
+        const deepgramApiKey = requireDeepgramApiKey(credentials);
         const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel, deepgramApiKey);
         resolvedParagraphAudio = await persistParagraphAudioBuffer(
           connection,
@@ -1132,10 +1152,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
       const { languageCode, voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
-      const deepgramApiKey = requireDeepgramApiKey(credentials);
       const result = await connection.execute(
         `
           SELECT
@@ -1163,12 +1182,17 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           LEFT JOIN book_files legacy_bf
             ON legacy_bf.file_id = bp.audio_file_id
           WHERE bp.book_id = :bookId
-            AND bp.sequence_number BETWEEN :startSequenceNumber AND :endSequenceNumber
+            AND bp.is_active = 1
+            AND bp.read_aloud = 1
+            AND bp.sequence_number >= :startSequenceNumber
+            ${payload.endSequenceNumber !== undefined ? "AND bp.sequence_number <= :endSequenceNumber" : ""}
           ORDER BY bp.sequence_number ASC
+          FETCH FIRST :paragraphCount ROWS ONLY
         `,
         {
           bookId: params.bookId,
-          endSequenceNumber: payload.startSequenceNumber + payload.paragraphCount - 1,
+          ...(payload.endSequenceNumber !== undefined ? { endSequenceNumber: payload.endSequenceNumber } : {}),
+          paragraphCount: payload.paragraphCount,
           startSequenceNumber: payload.startSequenceNumber,
           voiceModel: requestedVoiceModel
         },
@@ -1185,6 +1209,19 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "No se encontraron párrafos para este bloque." });
       }
 
+      const nextResult = await connection.execute(
+        `
+          SELECT MIN(sequence_number) AS "nextSequenceNumber"
+          FROM book_paragraphs
+          WHERE book_id = :bookId
+            AND is_active = 1
+            AND read_aloud = 1
+            AND sequence_number > :lastSequenceNumber
+        `,
+        { bookId: params.bookId, lastSequenceNumber: paragraphs.at(-1)!.sequenceNumber }
+      );
+      const [nextParagraph] = (nextResult.rows ?? []) as Array<{ nextSequenceNumber: number | null }>;
+
       const resolvedParagraphs = await Promise.all(paragraphs.map(async (paragraph) => {
         const cachedParagraphAudio = getCachedParagraphAudio(paragraph, requestedVoiceModel);
         if (cachedParagraphAudio) {
@@ -1197,7 +1234,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           };
         }
 
-        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel, deepgramApiKey);
+        const synthesizedAudio = await synthesizeTextWithDeepgram(paragraph.paragraphText, requestedVoiceModel, requireDeepgramApiKey(credentials));
         return {
           audioBuffer: synthesizedAudio.audioBuffer,
           cacheSource: null,
@@ -1245,6 +1282,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .header("Content-Type", contentType ?? "audio/mpeg")
         .header("Cache-Control", "private, max-age=3600")
+        .header("X-Reader-Tts-Next-Sequence", nextParagraph?.nextSequenceNumber ?? "")
         .header(
           "X-Reader-Tts-Paragraphs",
           encodeHeaderPayload(
@@ -1280,10 +1318,9 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
       const { voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
-      const deepgramApiKey = requireDeepgramApiKey(credentials);
       const result = await connection.execute(
         `
           SELECT
@@ -1292,6 +1329,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
           JOIN books b
             ON b.book_id = uss.book_id
           WHERE uss.book_id = :bookId
+            AND uss.is_stale = 0
             AND uss.chapter_id = :chapterId
             AND uss.user_id = :userId
         `,
@@ -1307,7 +1345,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Summary not found." });
       }
 
-      const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel, deepgramApiKey);
+      const synthesizedAudio = await synthesizeTextWithDeepgram(summary.summaryText, requestedVoiceModel, requireDeepgramApiKey(credentials));
 
       return reply
         .header("Content-Type", synthesizedAudio.contentType)
@@ -1330,7 +1368,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
-      const credentials = await getUserAiCredentials(request.currentUser.userId, connection);
+      const credentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
       const bookLanguageCode = await fetchBookTtsLanguage(connection, params.bookId);
       const { voiceModel: requestedVoiceModel } = resolveTtsVoiceModel(bookLanguageCode, payload.voiceModel, credentials);
       const result = await connection.execute(
@@ -1354,6 +1392,7 @@ export const registerTtsRoutes: FastifyPluginAsync = async (app) => {
             ON cached_bf.file_id = cache.file_id
           WHERE ar.request_id = :requestId
             AND ar.book_id = :bookId
+            AND ar.is_stale = 0
             AND (
               ar.user_id = :userId
               OR EXISTS (

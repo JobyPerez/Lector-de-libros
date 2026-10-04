@@ -10194,6 +10194,10 @@ textarea {
     border-radius: 28px;
   }
 
+  .review-floating-ocr-menu {
+    position: static;
+  }
+
   .review-floating-status {
     min-width: auto;
     order: -1;
@@ -11695,4 +11699,73 @@ textarea {
     bottom: 4.25rem;
     font-size: 0.8rem;
   }
+}
+
+.ai-model-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.ai-model-check-list li {
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+  padding: 0.6rem 0.8rem;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.ai-model-check-list .inline-check {
+  align-items: flex-start;
+}
+
+.aws-cost-row {
+  margin: 0.5rem 0;
+}
+
+.ai-share-split-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.ai-share-matrix {
+  margin-top: 1.5rem;
+}
+
+.ai-share-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 12px;
+}
+
+.ai-share-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.ai-share-table th,
+.ai-share-table td {
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.ai-share-table thead th {
+  background: rgba(0, 0, 0, 0.03);
+  white-space: nowrap;
+}
+
+.ai-share-table tbody tr:last-child th,
+.ai-share-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.ai-share-table input[type="checkbox"] {
+  width: 1.1rem;
+  height: 1.1rem;
 }

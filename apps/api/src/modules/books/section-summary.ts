@@ -129,17 +129,24 @@ function createDiagramResponseFormatInstructions(visualType: AiVisualType) {
   return `Regla técnica obligatoria: responde únicamente con JSON válido con la forma {\"type\":\"CONCEPT_MAP\",\"title\":\"título\",\"summary\":\"síntesis accesible\",\"nodes\":[{\"id\":\"id_unico\",\"label\":\"concepto\",\"detail\":\"explicación opcional\",\"category\":\"grupo opcional\",\"date\":\"fecha opcional\",\"metric\":\"dato destacado opcional\"}],\"edges\":[{\"from\":\"id_origen\",\"to\":\"id_destino\",\"label\":\"relación opcional\"}]}. Crea ${VISUAL_TYPE_LABELS[visualType]}. ${typeRule} Usa entre 2 y 24 nodos, identificadores breves con letras, números, guion o guion bajo, y solo referencias a nodos existentes. Mantén el orden narrativo en nodes para cronologías e infografías. No incluyas Markdown, HTML ni Mermaid.`;
 }
 
-function ensureSummaryConfiguration(model: SummaryAiModelId) {
+export type AiProviderKeys = {
+  geminiApiKey?: string | null | undefined;
+  opencodeApiKey?: string | null | undefined;
+};
+
+export function ensureSummaryConfiguration(model: string, keys?: AiProviderKeys) {
   if (isGoogleAiModel(model)) {
-    if (!appEnv.geminiApiKey) {
-      throw Object.assign(new Error("El resumen con Google AI Studio no está disponible en este entorno. Configura GEMINI_API_KEY para usar este modo."), {
+    if (!(keys?.geminiApiKey ?? appEnv.geminiApiKey)) {
+      throw Object.assign(new Error("Te falta la clave de Google para los resúmenes. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador."), {
+        code: "MISSING_GOOGLE",
         statusCode: 503
       });
     }
     return;
   }
-  if (!appEnv.opencodeGoApiKey) {
-    throw Object.assign(new Error("El resumen con IA no está disponible en este entorno. Configura OpenCode para usar este modo."), {
+  if (!(keys?.opencodeApiKey ?? appEnv.opencodeGoApiKey)) {
+    throw Object.assign(new Error("Te falta la clave de OpenCode para los resúmenes. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador."), {
+      code: "MISSING_OPENCODE",
       statusCode: 503
     });
   }
@@ -221,7 +228,7 @@ function isModelUnavailableError(errorMessage: string) {
   return /model is unavailable/iu.test(errorMessage);
 }
 
-function getFallbackSummaryModel(model: SummaryAiModelId): SummaryAiModelId | null {
+function getFallbackSummaryModel(model: string): string | null {
   return SUMMARY_AI_MODEL_IDS.find((candidate) => candidate !== model) ?? null;
 }
 
@@ -360,8 +367,8 @@ function wait(ms: number) {
   });
 }
 
-async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; languageCode: BookLanguageCode; model: SummaryAiModelId; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
-  ensureSummaryConfiguration(prompt.model);
+async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiRequestKind; languageCode: BookLanguageCode; model: string; onProviderRetry?: ((progress: ProviderRetryProgress) => void) | undefined; promptOverride?: string | undefined; providerKeys?: AiProviderKeys | undefined; scopeLabel?: string; sectionTitle: string; text: string; visualType?: AiVisualType }) {
+  ensureSummaryConfiguration(prompt.model, prompt.providerKeys);
 
   const promptOverride = prompt.promptOverride?.trim();
   const editablePrompt = promptOverride || (prompt.condensed
@@ -376,7 +383,7 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     ? (prompt.scopeLabel === "Libro" ? "Libro" : "Sezione")
     : (prompt.scopeLabel ?? "Sección");
 
-  let currentModel: SummaryAiModelId = prompt.model;
+  let currentModel: string = prompt.model;
   let modelFallbackUsed = false;
 
   let response: Response | null = null;
@@ -436,13 +443,15 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
         });
 
     try {
+      const effectiveOpencodeKey = prompt.providerKeys?.opencodeApiKey ?? appEnv.opencodeGoApiKey;
+      const effectiveGeminiKey = prompt.providerKeys?.geminiApiKey ?? appEnv.geminiApiKey;
       response = await fetch(endpoint, {
         method: "POST",
         headers: usesGoogleAi
-          ? getGoogleAiRequestHeaders(appEnv.geminiApiKey)
+          ? getGoogleAiRequestHeaders(effectiveGeminiKey)
           : usesGeminiApi
-            ? getOpenCodeGeminiRequestHeaders(appEnv.opencodeGoApiKey)
-            : getOpenCodeRequestHeaders(appEnv.opencodeGoApiKey),
+            ? getOpenCodeGeminiRequestHeaders(effectiveOpencodeKey)
+            : getOpenCodeRequestHeaders(effectiveOpencodeKey),
         body: requestBody
       });
     } catch {
@@ -576,12 +585,13 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
   }
 }
 
-export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { languageCode?: BookLanguageCode | undefined; model?: SummaryAiModelId | undefined; promptOverride?: string | undefined } = {}): Promise<string> {
+export async function generateSectionSummary(sectionTitle: string, paragraphs: string[], options: { languageCode?: BookLanguageCode | undefined; model?: string | undefined; promptOverride?: string | undefined; providerKeys?: AiProviderKeys | undefined } = {}): Promise<string> {
   return generateAiRequestResponse({
     languageCode: options.languageCode,
     model: options.model,
     paragraphs,
     promptOverride: options.promptOverride,
+    providerKeys: options.providerKeys,
     scopeLabel: "Sección",
     title: sectionTitle
   });
@@ -590,10 +600,11 @@ export async function generateSectionSummary(sectionTitle: string, paragraphs: s
 export async function generateAiRequestResponse(options: {
   kind?: AiRequestKind | undefined;
   languageCode?: BookLanguageCode | undefined;
-  model?: SummaryAiModelId | undefined;
+  model?: string | undefined;
   onProviderRetry?: (progress: ProviderRetryProgress) => void;
   paragraphs: string[];
   promptOverride?: string | undefined;
+  providerKeys?: AiProviderKeys | undefined;
   scopeLabel: "Libro" | "Sección";
   title: string;
   visualType?: AiVisualType | undefined;
@@ -612,8 +623,9 @@ export async function generateAiRequestResponse(options: {
   }
 
   const chunks = chunkParagraphs(normalizedParagraphs, modelConfiguration.summaryChunkTargetCharacters);
+  const providerKeys = options.providerKeys;
   if (chunks.length === 1) {
-    return requestSummaryChunk({ kind, languageCode, model, onProviderRetry: options.onProviderRetry, promptOverride, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
+    return requestSummaryChunk({ kind, languageCode, model, onProviderRetry: options.onProviderRetry, promptOverride, providerKeys, scopeLabel, sectionTitle: title, text: chunks[0] ?? normalizedParagraphs.join("\n\n"), visualType });
   }
 
   const partialSummaries: string[] = [];
@@ -623,6 +635,7 @@ export async function generateAiRequestResponse(options: {
       kind,
       languageCode,
       promptOverride,
+      providerKeys,
       onProviderRetry: options.onProviderRetry,
       scopeLabel,
       sectionTitle: `${title} · ${languageCode === "it" ? "frammento" : "fragmento"} ${index + 1}`,
@@ -638,6 +651,7 @@ export async function generateAiRequestResponse(options: {
     model,
     onProviderRetry: options.onProviderRetry,
     promptOverride,
+    providerKeys,
     scopeLabel,
     sectionTitle: title,
     text: partialSummaries.map((summary, index) => `${languageCode === "it" ? "Frammento" : "Fragmento"} ${index + 1}: ${summary}`).join("\n\n"),

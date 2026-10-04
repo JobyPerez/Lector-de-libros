@@ -71,7 +71,7 @@ test("envia imagenes OCR a Zen con el protocolo de cada modelo", async (t) => {
   const previousKey = appEnv.opencodeGoApiKey;
   appEnv.opencodeGoApiKey = "test-key";
   t.after(() => { appEnv.opencodeGoApiKey = previousKey; });
-  const image = await sharp({ create: { width: 100, height: 100, channels: 3, background: "white" } }).png().toBuffer();
+  const image = await sharp({ create: { width: 100, height: 1000, channels: 3, background: "white" } }).png().toBuffer();
   const text = JSON.stringify({ paragraphs: ["Texto reconocido."], rawText: "Texto reconocido." });
 
   for (const model of OCR_MODEL_IDS) {

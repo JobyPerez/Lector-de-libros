@@ -103,6 +103,6 @@ export const aiModelIdSchema = z.enum(AI_MODELS.map((model) => model.id) as [AiM
 export const summaryAiModelIdSchema = z.enum(SUMMARY_AI_MODEL_IDS);
 export const ocrModelIdSchema = z.enum(OCR_MODEL_IDS);
 
-export function getAiModel(modelId: AiModelId) {
-  return AI_MODELS.find((model) => model.id === modelId) ?? AI_MODELS[0];
+export function getAiModel(modelId: string) {
+  return AI_MODELS.find((model) => model.id === modelId) ?? AI_MODELS[0]!;
 }

@@ -32,6 +32,8 @@ async function buildReaderReadingMetrics(
         tts_character_count AS "characterCount"
       FROM book_paragraphs
       WHERE book_id = :bookId
+        AND is_active = 1
+        AND read_aloud = 1
       ORDER BY sequence_number ASC
     `,
     { bookId }
@@ -48,7 +50,8 @@ async function buildReaderReadingMetrics(
   }
 
   const bookMetrics = { characterCount, wordCount };
-  const sequenceAfterBook = (paragraphMetrics.at(-1)?.sequenceNumber ?? 0) + 1;
+  // A muted final heading still needs a valid, empty section interval.
+  const sequenceAfterBook = Math.max(paragraphMetrics.at(-1)?.sequenceNumber ?? 0, outline.at(-1)?.sequenceNumber ?? 0) + 1;
   totalsBeforeSequence.set(sequenceAfterBook, bookMetrics);
   const getTotalsBeforeSequence = (sequenceNumber: number) => {
     const exactTotals = totalsBeforeSequence.get(sequenceNumber);
@@ -134,7 +137,11 @@ const noteParamsSchema = z.object({
   noteId: z.string().uuid()
 });
 
-const annotationsQuerySchema = z.object({
+const navigationQuerySchema = z.object({
+  includeInactive: z.enum(["true", "false"]).optional().transform((value) => value === "true")
+});
+
+const annotationsQuerySchema = navigationQuerySchema.extend({
   pageNumber: z.coerce.number().int().min(1)
 });
 
@@ -390,6 +397,7 @@ async function findParagraphLocation(
       FROM book_paragraphs
       WHERE book_id = :bookId
         AND paragraph_id = :paragraphId
+        AND is_active = 1
     `,
     {
       bookId,
@@ -425,6 +433,12 @@ async function findOwnedHighlight(
       WHERE book_id = :bookId
         AND highlight_id = :highlightId
         AND user_id = :userId
+        AND EXISTS (
+          SELECT 1 FROM book_paragraphs bp
+          WHERE bp.book_id = user_highlights.book_id
+            AND bp.paragraph_id = user_highlights.paragraph_id
+            AND bp.is_active = 1
+        )
     `,
     {
       bookId,
@@ -525,7 +539,8 @@ async function listBookmarksShared(
   userId: string,
   bookId: string,
   pageNumber: number | undefined,
-  shareUserAnnotations: boolean
+  shareUserAnnotations: boolean,
+  includeInactive = false
 ): Promise<BookmarkRecord[]> {
   const result = await connection.execute(
     `
@@ -548,6 +563,12 @@ async function listBookmarksShared(
       FROM user_bookmarks b
       JOIN users u ON u.user_id = b.user_id
       WHERE b.book_id = :bookId
+        AND (:includeInactive = 1 OR EXISTS (
+          SELECT 1 FROM book_paragraphs bp
+          WHERE bp.book_id = b.book_id
+            AND bp.paragraph_id = b.paragraph_id
+            AND bp.is_active = 1
+        ))
         AND (:pageNumber IS NULL OR b.page_number = :pageNumber)
         AND (
           b.user_id = :userId
@@ -578,6 +599,7 @@ async function listBookmarksShared(
     `,
     {
       bookId,
+      includeInactive: includeInactive ? 1 : 0,
       pageNumber: pageNumber ?? null,
       shareAll: shareUserAnnotations ? 1 : 0,
       userId
@@ -660,7 +682,8 @@ async function listHighlightsShared(
   userId: string,
   bookId: string,
   pageNumber: number | undefined,
-  shareUserAnnotations: boolean
+  shareUserAnnotations: boolean,
+  includeInactive = false
 ): Promise<HighlightRecord[]> {
   const result = await connection.execute(
     `
@@ -682,6 +705,12 @@ async function listHighlightsShared(
       FROM user_highlights h
       JOIN users u ON u.user_id = h.user_id
       WHERE h.book_id = :bookId
+        AND (:includeInactive = 1 OR EXISTS (
+          SELECT 1 FROM book_paragraphs bp
+          WHERE bp.book_id = h.book_id
+            AND bp.paragraph_id = h.paragraph_id
+            AND bp.is_active = 1
+        ))
         AND (:pageNumber IS NULL OR h.page_number = :pageNumber)
         AND (
           h.user_id = :userId
@@ -715,6 +744,7 @@ async function listHighlightsShared(
     `,
     {
       bookId,
+      includeInactive: includeInactive ? 1 : 0,
       pageNumber: pageNumber ?? null,
       shareAll: shareUserAnnotations ? 1 : 0,
       userId
@@ -769,7 +799,8 @@ async function listNotesShared(
   userId: string,
   bookId: string,
   pageNumber: number | undefined,
-  shareUserAnnotations: boolean
+  shareUserAnnotations: boolean,
+  includeInactive = false
 ): Promise<NoteRecord[]> {
   const result = await connection.execute(
     `
@@ -801,6 +832,20 @@ async function listNotesShared(
       LEFT JOIN user_highlights h
         ON h.highlight_id = n.highlight_id
       WHERE n.book_id = :bookId
+        AND (:includeInactive = 1 OR (
+          (n.paragraph_id IS NULL OR EXISTS (
+            SELECT 1 FROM book_paragraphs bp
+            WHERE bp.book_id = n.book_id
+              AND bp.paragraph_id = n.paragraph_id
+              AND bp.is_active = 1
+          ))
+          AND (n.highlight_id IS NULL OR EXISTS (
+            SELECT 1 FROM book_paragraphs bp
+            WHERE bp.book_id = n.book_id
+              AND bp.paragraph_id = h.paragraph_id
+              AND bp.is_active = 1
+          ))
+        ))
         AND (:pageNumber IS NULL OR n.page_number = :pageNumber)
         AND (
           n.user_id = :userId
@@ -831,6 +876,7 @@ async function listNotesShared(
     `,
     {
       bookId,
+      includeInactive: includeInactive ? 1 : 0,
       pageNumber: pageNumber ?? null,
       shareAll: shareUserAnnotations ? 1 : 0,
       userId
@@ -852,6 +898,10 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
 
     const params = bookParamsSchema.parse(request.params);
     const query = annotationsQuerySchema.parse(request.query);
+    if (query.includeInactive) {
+      await requireBookRole("EDITOR")(request, reply);
+      if (reply.sent) return;
+    }
     const connection = await getConnection();
 
     try {
@@ -865,9 +915,9 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       const shareAll = isAuthorish && book.shareUserAnnotations;
 
       const [bookmarks, highlights, notes] = await Promise.all([
-        listBookmarksShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll),
-        listHighlightsShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll),
-        listNotesShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll)
+        listBookmarksShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll, query.includeInactive),
+        listHighlightsShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll, query.includeInactive),
+        listNotesShared(connection, request.currentUser.userId, params.bookId, query.pageNumber, shareAll, query.includeInactive)
       ]);
 
       return reply.send({ bookmarks, highlights, notes, shareUserAnnotations: book.shareUserAnnotations });
@@ -882,6 +932,11 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = bookParamsSchema.parse(request.params);
+    const query = navigationQuerySchema.parse(request.query);
+    if (query.includeInactive) {
+      await requireBookRole("EDITOR")(request, reply);
+      if (reply.sent) return;
+    }
     const connection = await getConnection();
 
     try {
@@ -895,9 +950,9 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
       const shareAll = isAuthorish && book.shareUserAnnotations;
 
       const [bookmarks, highlights, notes, resolvedOutline] = await Promise.all([
-        listBookmarksShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
-        listHighlightsShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
-        listNotesShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll),
+        listBookmarksShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll, query.includeInactive),
+        listHighlightsShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll, query.includeInactive),
+        listNotesShared(connection, request.currentUser.userId, params.bookId, undefined, shareAll, query.includeInactive),
         resolveBookOutlineWithSource(connection, params.bookId)
       ]);
       const readingMetrics = await buildReaderReadingMetrics(connection, params.bookId, resolvedOutline.outline);

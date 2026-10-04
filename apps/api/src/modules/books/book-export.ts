@@ -19,7 +19,7 @@ type ExportPage = {
   htmlContent: string | null;
   pageLabel: string | null;
   pageNumber: number;
-  paragraphs: Array<{ paragraphText: string }>;
+  paragraphs: Array<{ paragraphText: string; paragraphNumber?: number; active?: boolean | number }>;
 };
 
 type ExportCoverAsset = {
@@ -32,6 +32,7 @@ type RenderBlock = {
   alignment?: "center" | "justify" | "left" | "right";
   level?: number;
   source?: string;
+  imageWidthPct?: number;
   text?: string;
   type: "blockquote" | "heading" | "image" | "list-item" | "paragraph";
 };
@@ -69,7 +70,9 @@ function normalizeWhitespace(value: string): string {
 
 function buildFallbackHtml(page: ExportPage): string {
   const body = page.paragraphs
-    .map((paragraph, index) => `<p class="reader-rich-node" data-paragraph-number="${index + 1}" role="button" tabindex="0">${escapeXml(paragraph.paragraphText)}</p>`)
+    .map((paragraph, index) => paragraph.active === false || paragraph.active === 0
+      ? ""
+      : `<p class="reader-rich-node" data-paragraph-number="${paragraph.paragraphNumber ?? index + 1}" role="button" tabindex="0">${escapeXml(paragraph.paragraphText)}</p>`)
     .join("");
 
   return `<div class="epub-page-shell"><div class="epub-page-body">${body}</div></div>`;
@@ -79,8 +82,22 @@ function buildPageDocumentTitle(book: ExportBook, page: ExportPage) {
   return `${book.title} · ${book.languageCode === "it" ? "Pagina" : "Página"} ${page.pageLabel ?? page.pageNumber}`;
 }
 
+function getActivePageHtml(page: ExportPage): string {
+  const html = page.htmlContent ?? buildFallbackHtml(page);
+  const document = load(html, null, false);
+  const inactiveElements = document("[data-is-active], [data-active]").filter((_, node) => {
+    return ["data-is-active", "data-active"].some((attribute) => {
+      const value = document(node).attr(attribute)?.trim().toLowerCase();
+      return value === "false" || value === "0";
+    });
+  });
+  if (inactiveElements.length === 0) return html;
+  inactiveElements.remove();
+  return document.html();
+}
+
 function createContentDocument(book: ExportBook, page: ExportPage): string {
-  const htmlContent = page.htmlContent ?? buildFallbackHtml(page);
+  const htmlContent = getActivePageHtml(page);
 
   return `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="${book.languageCode}" xml:lang="${book.languageCode}">
@@ -95,7 +112,7 @@ function createContentDocument(book: ExportBook, page: ExportPage): string {
 }
 
 function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
-  const html = page.htmlContent ?? buildFallbackHtml(page);
+  const html = getActivePageHtml(page);
   const document = load(html);
   let root = document(".epub-page-body").first();
   if (root.length === 0) {
@@ -154,7 +171,13 @@ function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
     if (tagName === "img") {
       const source = element.attr("src")?.trim();
       if (source) {
-        blocks.push({ source, type: "image" });
+        const widthAttribute = element.attr("data-image-width") ?? element.closest("[data-image-width]").attr("data-image-width");
+        const imageWidthPct = Number(widthAttribute?.trim().replace(/%$/u, ""));
+        blocks.push({
+          source,
+          type: "image",
+          ...(Number.isFinite(imageWidthPct) && imageWidthPct > 0 && imageWidthPct <= 100 ? { imageWidthPct } : {})
+        });
       }
       return;
     }
@@ -226,7 +249,7 @@ function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
           const [, mimeMetadata, dataPart] = block.source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/u) ?? [];
           if (mimeMetadata && dataPart) {
             const imageBuffer = Buffer.from(dataPart, "base64");
-            const maxWidth = document.page.width - 100;
+            const maxWidth = (document.page.width - 100) * (block.imageWidthPct ?? 100) / 100;
             const maxHeight = document.page.height * 0.35;
             document.image(imageBuffer, {
               fit: [maxWidth, maxHeight],

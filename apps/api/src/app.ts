@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { getDatabaseStatus } from "./config/database.js";
 import { appEnv } from "./config/env.js";
 import { registerAiConfigRoutes } from "./modules/ai-config/ai-config.routes.js";
+import { registerAiSettingsRoutes } from "./modules/ai-settings/ai-settings.routes.js";
 import { registerAppVersionRoutes } from "./modules/app-version/app-version.routes.js";
 import { registerAnnotationRoutes } from "./modules/annotations/annotations.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
@@ -24,6 +25,7 @@ export function buildApp(): FastifyInstance {
 
   void app.register(cors, {
     origin: appEnv.webOrigin,
+    exposedHeaders: ["X-Reader-Tts-Paragraphs", "X-Reader-Tts-Next-Sequence"],
     credentials: true
   });
 
@@ -50,6 +52,7 @@ export function buildApp(): FastifyInstance {
   void app.register(registerAnnotationRoutes);
   void app.register(registerAppVersionRoutes);
   void app.register(registerAiConfigRoutes);
+  void app.register(registerAiSettingsRoutes);
   void app.register(registerAuthRoutes, { prefix: "/auth" });
   void app.register(registerBookRoutes, { prefix: "/books" });
   void app.register(registerSharingRoutes, { prefix: "/books" });
