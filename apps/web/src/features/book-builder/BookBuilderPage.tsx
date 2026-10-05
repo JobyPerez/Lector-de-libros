@@ -268,6 +268,27 @@ function documentCameraConstraints(deviceId?: string): MediaTrackConstraints {
 
 const defaultVisionOcrEditablePrompt = "";
 
+const imageFileNameCollator = new Intl.Collator("es", { numeric: true, sensitivity: "base" });
+
+function sortImageFilesByNameNatural(files: File[]): File[] {
+  return [...files].sort((left, right) => imageFileNameCollator.compare(left.name, right.name));
+}
+
+function moveFileInList(files: File[], fromIndex: number, toIndex: number): File[] {
+  if (fromIndex < 0 || toIndex < 0 || fromIndex >= files.length || toIndex >= files.length || fromIndex === toIndex) {
+    return files;
+  }
+
+  const nextFiles = [...files];
+  const [moved] = nextFiles.splice(fromIndex, 1);
+  if (!moved) {
+    return files;
+  }
+
+  nextFiles.splice(toIndex, 0, moved);
+  return nextFiles;
+}
+
 function resolveVisionPromptOverride(prompt: string): string | undefined {
   const normalizedPrompt = prompt.trim();
   if (!normalizedPrompt || normalizedPrompt === defaultVisionOcrEditablePrompt) {
@@ -1536,7 +1557,7 @@ export function BookBuilderPage() {
   }
 
   function createFiles(files: File[]) {
-    const validFiles = files.filter(isSupportedImageFile);
+    const validFiles = sortImageFilesByNameNatural(files.filter(isSupportedImageFile));
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
     if (validFiles.length > 0) {
@@ -1568,7 +1589,7 @@ export function BookBuilderPage() {
   }
 
   function appendFiles(files: File[]) {
-    const validFiles = files.filter(isSupportedImageFile);
+    const validFiles = sortImageFilesByNameNatural(files.filter(isSupportedImageFile));
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
     if (validFiles.length > 0) {
@@ -1845,6 +1866,35 @@ export function BookBuilderPage() {
   function removeCreateFile(indexToRemove: number) {
     setSelectedCreateFiles((currentFiles) => currentFiles.filter((_, index) => index !== indexToRemove));
     setCreateError(null);
+  }
+
+  function moveCreateFile(fromIndex: number, direction: -1 | 1) {
+    if (isCreating) {
+      return;
+    }
+
+    setSelectedCreateFiles((currentFiles) => moveFileInList(currentFiles, fromIndex, fromIndex + direction));
+  }
+
+  function moveAppendFile(fromIndex: number, direction: -1 | 1) {
+    if (isAppending) {
+      return;
+    }
+
+    const completedFiles = Math.min(appendResumeState?.completedFiles ?? 0, selectedAppendFiles.length);
+    const toIndex = fromIndex + direction;
+    if (fromIndex < completedFiles || toIndex < completedFiles) {
+      return;
+    }
+
+    setSelectedAppendFiles((currentFiles) => {
+      const completed = Math.min(appendResumeState?.completedFiles ?? 0, currentFiles.length);
+      if (fromIndex < completed || toIndex < completed) {
+        return currentFiles;
+      }
+
+      return moveFileInList(currentFiles, fromIndex, toIndex);
+    });
   }
 
   function clearAppendCancelHold() {
@@ -3021,7 +3071,27 @@ export function BookBuilderPage() {
                     <div className="file-pill-list file-pill-list-append">
                       {selectedCreateFiles.map((file, index) => (
                         <span className="file-pill file-pill-removable" key={`${file.name}-${index}`}>
-                          <span>{file.name}</span>
+                          <span>{`${index + 1}. ${file.name}`}</span>
+                          <button
+                            aria-label={`Subir ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isCreating || index === 0}
+                            onClick={() => moveCreateFile(index, -1)}
+                            title="Subir en el orden"
+                            type="button"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            aria-label={`Bajar ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isCreating || index === selectedCreateFiles.length - 1}
+                            onClick={() => moveCreateFile(index, 1)}
+                            title="Bajar en el orden"
+                            type="button"
+                          >
+                            ↓
+                          </button>
                           <button
                             aria-label={`Eliminar ${file.name}`}
                             className="file-pill-remove"
@@ -3034,6 +3104,9 @@ export function BookBuilderPage() {
                         </span>
                       ))}
                     </div>
+                  ) : null}
+                  {selectedCreateFiles.length > 1 ? (
+                    <p className="helper-text">Se ordenan por nombre al seleccionarlas. Usa ↑ ↓ para cambiar el orden de las páginas.</p>
                   ) : null}
 
                   {selectedCreateFiles.length > 0 ? (
@@ -3153,7 +3226,7 @@ export function BookBuilderPage() {
                           ].filter(Boolean).join(" ")}
                           key={`${file.name}-${index}`}
                         >
-                          <span>{file.name}</span>
+                          <span>{`${index + 1}. ${file.name}`}</span>
                           {appendCompletedFileCount > index ? (
                             <span className="file-pill-status file-pill-status-completed">Hecho</span>
                           ) : null}
@@ -3163,6 +3236,26 @@ export function BookBuilderPage() {
                           {isAppending && appendProgressStage === "waiting" && appendCurrentFileIndex === index ? (
                             <span className="file-pill-status">Espera {appendImportProgress?.waitSecondsRemaining ?? 0} s</span>
                           ) : null}
+                          <button
+                            aria-label={`Subir ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isAppending || index <= appendCompletedFileCount}
+                            onClick={() => moveAppendFile(index, -1)}
+                            title="Subir en el orden"
+                            type="button"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            aria-label={`Bajar ${file.name}`}
+                            className="file-pill-remove"
+                            disabled={isAppending || index < appendCompletedFileCount || index === selectedAppendFiles.length - 1}
+                            onClick={() => moveAppendFile(index, 1)}
+                            title="Bajar en el orden"
+                            type="button"
+                          >
+                            ↓
+                          </button>
                           <button
                             aria-label={`Eliminar ${file.name}`}
                             className="file-pill-remove"
@@ -3175,6 +3268,9 @@ export function BookBuilderPage() {
                         </span>
                       ))}
                     </div>
+                  ) : null}
+                  {selectedAppendFiles.length > 1 ? (
+                    <p className="helper-text">Se ordenan por nombre al seleccionarlas. Usa ↑ ↓ para cambiar el orden de las páginas.</p>
                   ) : null}
 
                   {appendResumeState && appendResumeState.completedFiles > 0 && !isAppending ? (
