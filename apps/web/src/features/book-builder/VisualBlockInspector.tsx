@@ -50,12 +50,11 @@ const roles: { value: PageElementRole; label: string }[] = [
   { value: "imageCaption", label: "Pie de imagen" }, { value: "header", label: "Cabecera" }, { value: "footer", label: "Pie de pagina" }, { value: "pageNumber", label: "Numero de pagina" }
 ];
 
-export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry, onClose, disabled, geometryDisabled }: {
+export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry, disabled, geometryDisabled }: {
   doc: VisualPageDocument;
   selectedId: string | null;
   onChange: (doc: VisualPageDocument) => void;
   onMarkGeometry: (id: string) => void;
-  onClose: () => void;
   disabled: boolean;
   geometryDisabled: boolean;
 }) {
@@ -97,7 +96,7 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
   const containers = nodes.filter((item): item is VisualContainer => item.type !== "block" && !item.content && (!node || !flattenVisualLayout(node).some((descendant) => descendant.id === item.id)));
   const target = containers.find((item) => item.id === destination);
   return <section className="visual-inspector" aria-label="Inspector del elemento seleccionado">
-    <header><h3>{block ? `Bloque ${number}` : node ? node.type === "row" ? "Fila" : "Columna" : "Inspector"}</h3><button type="button" aria-label="Cerrar inspector" onClick={onClose}>Cerrar</button></header>
+    <header><h3>{block ? `Bloque ${number}` : node ? node.type === "row" ? "Fila" : "Columna" : "Inspector"}</h3></header>
     {!node ? <p>Selecciona una zona del original o un bloque de la preview.</p> : <fieldset disabled={disabled}>
       {block ? <>
         <label>Tipo<select value={block.kind} onChange={(event) => {
@@ -137,7 +136,7 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
           onChange({ ...doc, layout: updateVisualNode(doc.layout, node.id, (item) => ({ ...item, weights } as VisualContainer)) });
         }} /></label>)}
          <div className="visual-actions">{(["row", "column"] as const).map((type) => <button type="button" key={type} onClick={() => onChange({ ...doc, layout: updateVisualNode(doc.layout, node.id, (item) => { const parent = item as VisualContainer; return { ...parent, children: [...parent.children, { id: crypto.randomUUID(), type, children: [], gap: 12 }], ...(parent.weights ? { weights: [...parent.weights, 1] } : {}) }; }) })}>Anadir {type === "row" ? "fila" : "columna"}</button>)}</div>
-         {node.id !== doc.layout.id ? <button type="button" onClick={() => { onChange(ungroupVisualNode(doc, node.id)); onClose(); }}>{node.children.length ? "Desagrupar" : "Quitar contenedor vacio"}</button> : null}
+          {node.id !== doc.layout.id ? <button type="button" onClick={() => onChange(ungroupVisualNode(doc, node.id))}>{node.children.length ? "Desagrupar" : "Quitar contenedor vacio"}</button> : null}
       </> : null}
       <div className="visual-actions">{(["row", "column"] as const).map((type) => <button key={type} type="button" onClick={() => onChange({ ...doc, layout: updateVisualNode(doc.layout, node.id, (item) => ({ id: crypto.randomUUID(), type, children: [item], gap: 12 })) })}>Agrupar en {type === "row" ? "fila" : "columna"}</button>)}</div>
       {node.id !== doc.layout.id ? <div className="visual-move-controls">

@@ -27,8 +27,8 @@ function FragmentEditor({ block, index, onChange, onMark, geometryDisabled }: {
   </section>;
 }
 
-export function VisualCompositeInspector({ doc, node, onChange, onClose, onMarkGeometry, disabled, geometryDisabled }: {
-  doc: VisualPageDocument; node: VisualContainer; onChange: (doc: VisualPageDocument) => void; onClose: () => void;
+export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, disabled, geometryDisabled }: {
+  doc: VisualPageDocument; node: VisualContainer; onChange: (doc: VisualPageDocument) => void;
   onMarkGeometry: (id: string) => void; disabled: boolean; geometryDisabled: boolean;
 }) {
   const [destination, setDestination] = useState("");
@@ -47,7 +47,7 @@ export function VisualCompositeInspector({ doc, node, onChange, onClose, onMarkG
     onChange({ ...doc, blocks: doc.blocks.map((block) => ids.has(block.id) ? { ...block, ...patch } : block) });
   }
   return <section className="visual-inspector" aria-label="Inspector del contenido unido">
-    <header><h3>Bloque {number} unido ({members.length} fragmentos)</h3><button type="button" onClick={onClose}>Cerrar</button></header>
+    <header><h3>Bloque {number} unido ({members.length} fragmentos)</h3></header>
     <fieldset disabled={disabled}>
       <label>Tipo del bloque unido<select value={content.kind} onChange={(event) => patch({ kind: event.target.value as "text" | "heading", includeInToc: event.target.value === "heading" })}><option value="text">Cuerpo de texto</option><option value="heading">Titulo</option></select></label>
       <label>Separacion del contenido<select value={content.separator} onChange={(event) => patch({ separator: event.target.value as VisualCompositeContent["separator"] })}><option value="space">Espacio</option><option value="line">Salto de linea</option><option value="paragraph">Separacion de parrafos</option></select></label>
@@ -62,7 +62,7 @@ export function VisualCompositeInspector({ doc, node, onChange, onClose, onMarkG
       <label>Escala de fuente: {content.fontScale ?? 1}<input type="range" min={0.5} max={3} step={0.05} value={content.fontScale ?? 1} onChange={(event) => patch({ fontScale: Number(event.target.value) })} /></label>
       <p className="helper-text">Una sola unidad visual. Los textos, zonas y preferencias originales se conservan por fragmento.</p>
       {members.map((member, index) => <FragmentEditor key={member.id} block={member} index={index} onChange={(patch) => onChange(updateVisualBlock(doc, member.id, patch))} onMark={() => onMarkGeometry(member.id)} geometryDisabled={geometryDisabled} />)}
-      <button type="button" onClick={() => { onChange(separateVisualContent(doc, node.id)); onClose(); }}>Separar contenido</button>
+      <button type="button" onClick={() => onChange(separateVisualContent(doc, node.id))}>Separar contenido</button>
       {node.id !== doc.layout.id ? <div className="visual-move-controls">
         <label>Mover bloque unido a...<select value={target?.id ?? ""} onChange={(event) => { setDestination(event.target.value); setPosition(1); }}><option value="">Elegir destino</option>{containers.map((container, index) => <option key={container.id} value={container.id}>{container.id === doc.layout.id ? "Raiz" : `${container.type === "row" ? "Fila" : "Columna"} ${index + 1}`}</option>)}</select></label>
         <label>Posicion en el destino<input type="number" min={1} max={(target?.children.length ?? 0) + 1} value={position} onChange={(event) => setPosition(Number(event.target.value))} /></label>

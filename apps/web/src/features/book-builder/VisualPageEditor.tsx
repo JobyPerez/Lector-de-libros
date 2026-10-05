@@ -8,15 +8,94 @@ import { VisualCompositeInspector } from "./VisualCompositeInspector";
 import { appendVisualBlock, applyVisualPreset, compositeForBlock, createVisualBlock, flattenVisualLayout, importedVisualSourceHtml, isCenteredFooterRow, mergeVisualBlocks, moveVisualNode, orderedVisualBlocks, renderVisualBlockHtml, renderVisualCompositeHtml, safeVisualImageSource, updateVisualBlock, visualDocumentSaveError, visualUnits, type VisualContainer, type VisualPreset } from "./visual-page";
 import "./visual-page.css";
 
-function EditorDialog({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
+function PreviewIcon({ name }: { name: "edit" | "drag" | "zoom" | "undo" | "redo" | "page" | "row" | "column" | "inactive" }) {
+  return <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    {name === "edit" ? <><path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z" /><path d="M13 20h7" /></> : null}
+    {name === "drag" ? <>{[6, 12, 18].map((cy) => <Fragment key={cy}><circle cx="9" cy={cy} r="1" fill="currentColor" /><circle cx="15" cy={cy} r="1" fill="currentColor" /></Fragment>)}</> : null}
+    {name === "zoom" ? <><circle cx="10" cy="10" r="6" /><path d="m15 15 5 5M7 10h6M10 7v6" /></> : null}
+    {name === "undo" || name === "redo" ? <g transform={name === "redo" ? "translate(24 0) scale(-1 1)" : undefined}><path d="m8 4-5 5 5 5M3 9h10a7 7 0 0 1 7 7v4" /></g> : null}
+    {name === "page" ? <><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8zM14 3v5h5M9 12h6M9 16h6" /></> : null}
+    {name === "row" || name === "column" ? <g transform={name === "column" ? "rotate(90 12 12)" : undefined}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M12 4v16" /></g> : null}
+    {name === "inactive" ? <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /><path d="m3 3 18 18" /></> : null}
+  </svg>;
+}
+
+function EditorDialog({ title, children, onClose, className = "" }: { title: string; children: ReactNode; onClose: () => void; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { const dialog = ref.current; dialog?.showModal(); return () => dialog?.close(); }, []);
-  return createPortal(<dialog ref={ref} className="visual-dialog" aria-label={title} onCancel={(event) => { event.preventDefault(); onClose(); }}>
+  useEffect(() => {
+    const dialog = ref.current;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const { scrollX, scrollY } = window;
+    const root = document.documentElement;
+    const { overflow, scrollbarGutter } = root.style;
+    root.style.scrollbarGutter = "stable";
+    root.style.overflow = "hidden";
+    dialog?.showModal();
+    dialog?.focus({ preventScroll: true });
+    window.scrollTo({ left: scrollX, top: scrollY, behavior: "instant" });
+    return () => {
+      dialog?.close();
+      root.style.overflow = overflow;
+      root.style.scrollbarGutter = scrollbarGutter;
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      window.scrollTo({ left: scrollX, top: scrollY, behavior: "instant" });
+    };
+  }, []);
+  return createPortal(<dialog ref={ref} tabIndex={-1} className={`visual-dialog ${className}`} aria-label={title} onCancel={(event) => { event.preventDefault(); onClose(); }}>
     <header><h2>{title}</h2><button type="button" onClick={onClose}>Cerrar</button></header>{children}
   </dialog>, document.body);
 }
 
-function VisualAtom({ block, imageSrc, number, selected, onSelect, onAmplify, accessToken, bookId, multiple }: { block: VisualBlock; imageSrc: string | null; number: number; selected: boolean; onSelect: (modifiers?: { ctrlKey: boolean; metaKey: boolean }) => void; onAmplify: (image: { src: string; alt: string }) => void; accessToken: string | null; bookId: string; multiple: boolean }) {
+function VisualInspectorDialog({ doc, initialSelectedId, sourceImage, disabled, geometryDisabled, stale, onAccept, onCancel }: {
+  doc: VisualPageDocument; initialSelectedId: string; sourceImage: string | null; disabled: boolean; geometryDisabled: boolean; stale: boolean;
+  onAccept: (doc: VisualPageDocument, selectedId: string) => void; onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState(doc);
+  const [selectedId, setSelectedId] = useState(initialSelectedId);
+  const [marking, setMarking] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const geometryRef = useRef<HTMLDivElement>(null);
+  const nodes = flattenVisualLayout(draft.layout);
+  const composite = nodes.find((node): node is VisualContainer => node.id === selectedId && node.type !== "block" && Boolean(node.content));
+  useEffect(() => { if (disabled || geometryDisabled || stale) setMarking(null); }, [disabled, geometryDisabled, stale]);
+  useEffect(() => {
+    if (marking) { geometryRef.current?.focus({ preventScroll: true }); geometryRef.current?.scrollIntoView({ block: "nearest" }); }
+  }, [marking]);
+  function changeDraft(next: VisualPageDocument) {
+    setDraft(next);
+    setError(null);
+    if (!next.blocks.some((block) => block.id === selectedId) && !flattenVisualLayout(next.layout).some((node) => node.id === selectedId)) {
+      const node = nodes.find((node) => node.id === selectedId);
+      const child = node ? flattenVisualLayout(node).find((node) => node.type === "block") : null;
+      setSelectedId(child?.type === "block" ? compositeForBlock(next, child.blockId)?.id ?? child.blockId : next.layout.id);
+    }
+  }
+  function accept() {
+    if (disabled || stale || marking) return;
+    const validationError = visualDocumentSaveError(draft);
+    if (validationError) { setError(validationError); return; }
+    onAccept(draft, selectedId);
+  }
+  return <EditorDialog title={composite ? "Editar bloque unido" : draft.blocks.some((block) => block.id === selectedId) ? "Editar bloque" : "Editar distribucion"} className="visual-edit-dialog" onClose={onCancel}>
+    <div className="visual-edit-body">
+      {marking && sourceImage ? <div className="visual-edit-geometry" ref={geometryRef} tabIndex={-1}>
+        <p role="status">Arrastra un rectangulo sobre el original para marcar la zona. <button type="button" onClick={() => setMarking(null)}>Cancelar marcado</button></p>
+        <PageElementOverlay imageSrc={sourceImage} elements={orderedVisualBlocks(draft).map((block, index) => ({ key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: index + 1 }))}
+          selectedKey={marking} onSelect={setMarking} marking disabled={disabled || geometryDisabled || stale}
+          onGeometryChange={(id, geometry) => { changeDraft(updateVisualBlock(draft, id, { geometry })); setMarking(null); }} />
+      </div> : null}
+      {composite ? <VisualCompositeInspector key={selectedId} doc={draft} node={composite} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />
+        : <VisualBlockInspector key={selectedId} doc={draft} selectedId={selectedId} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />}
+      <p className="helper-text">Aceptar actualiza la previsualizacion. Los cambios se guardan en el servidor al pulsar Guardar cambios en la pagina.</p>
+    </div>
+    <footer className="visual-edit-footer">
+      {stale ? <p role="alert" className="error-text">La pagina ha cambiado mientras editabas. Cancela y vuelve a abrir el bloque para editar la version actual.</p> : error ? <p role="alert" className="error-text">{error}</p> : null}
+      <div className="visual-actions"><button type="button" onClick={onCancel}>Cancelar</button><button type="button" disabled={disabled || stale || Boolean(marking)} onClick={accept}>Aceptar</button></div>
+    </footer>
+  </EditorDialog>;
+}
+
+function VisualAtom({ block, imageSrc, number, selected, onSelect, onAmplify, accessToken, bookId, multiple, dragHandle }: { block: VisualBlock; imageSrc: string | null; number: number; selected: boolean; onSelect: (modifiers?: { ctrlKey: boolean; metaKey: boolean }) => void; onAmplify: (image: { src: string; alt: string }) => void; accessToken: string | null; bookId: string; multiple: boolean; dragHandle: ReactNode }) {
   const [crop, setCrop] = useState<{ key: string; src: string } | null>(null);
   const [cropError, setCropError] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -45,22 +124,25 @@ function VisualAtom({ block, imageSrc, number, selected, onSelect, onAmplify, ac
   }, [block.kind, block.source, cropKey]);
   const html = useBookContentImageHtml(renderVisualBlockHtml(block), accessToken, bookId);
   return <div className={`visual-atom${selected ? " is-selected" : ""}${!block.active ? " is-inactive" : ""}`} data-visual-block-id={block.id}>
-    <div className="visual-atom-label"><span>Bloque {number}{block.kind === "heading" ? ` - T${block.headingLevel ?? 1}` : ""}{!block.active ? " (anulado)" : !block.readAloud ? " - No se lee" : ""}</span>{multiple ? <label className="visual-check"><input type="checkbox" checked={selected} disabled={!block.active || block.kind === "image"} onChange={() => onSelect()} aria-label={`Seleccionar bloque ${number} para unir`} />Seleccionar</label> : <button type="button" onClick={() => onSelect()} aria-label={`Editar bloque ${number}`}>Editar</button>}</div>
+    <div className="visual-atom-label"><span>Bloque {number}{block.kind === "heading" ? ` - T${block.headingLevel ?? 1}` : ""}{!block.active ? " (anulado)" : !block.readAloud ? " - No se lee" : ""}</span><div className="visual-atom-actions">
+      {dragHandle}
+      {multiple ? <label className="visual-check" title={`Seleccionar bloque ${number} para unir`}><input type="checkbox" checked={selected} disabled={!block.active || block.kind === "image"} onChange={() => onSelect()} aria-label={`Seleccionar bloque ${number} para unir`} /></label> : <button className="visual-icon-button" type="button" onClick={() => onSelect()} aria-label={`Editar bloque ${number}`} title={`Editar bloque ${number}`}><PreviewIcon name="edit" /></button>}
+      {block.kind === "image" ? <button className="visual-icon-button" type="button" aria-label={`Ampliar imagen del bloque ${number}`} title={`Ampliar imagen del bloque ${number}`} onClick={() => { const image = ref.current?.querySelector("img"); if (image) onAmplify({ src: image.src, alt: block.text }); }} disabled={!safeVisualImageSource(block.source) && !(crop?.key === cropKey)}><PreviewIcon name="zoom" /></button> : null}
+    </div></div>
     <div ref={ref} className="visual-atom-content" role="button" tabIndex={0} aria-label={`Seleccionar bloque ${number}: ${block.text.slice(0, 80)}`} aria-pressed={selected}
       style={{ textAlign: block.alignment ?? "left", fontSize: `${block.fontScale ?? 1}em`, "--visual-image-width": block.imageWidth === undefined ? "auto" : `${block.imageWidth}%` } as CSSProperties}
       onClick={(event) => { event.preventDefault(); onSelect({ ctrlKey: event.ctrlKey, metaKey: event.metaKey }); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}>
       {block.kind === "image" && block.source === "page-crop" && crop?.key === cropKey ? <figure><img src={crop.src} alt={block.text} /><figcaption>{block.text}</figcaption></figure> : <div dangerouslySetInnerHTML={{ __html: replacePendingBookContentImageReferences(html ?? "") }} />}
       {cropError ? <p role="alert">No se pudo generar el recorte local.</p> : null}
     </div>
-    {block.kind === "image" ? <button type="button" onClick={() => { const image = ref.current?.querySelector("img"); if (image) onAmplify({ src: image.src, alt: block.text }); }} disabled={!safeVisualImageSource(block.source) && !(crop?.key === cropKey)}>Ampliar</button> : null}
   </div>;
 }
 
-function CompositePreview({ node, blocks, number, selected, showInactive, onSelect }: {
-  node: VisualContainer; blocks: VisualBlock[]; number: number; selected: boolean; showInactive: boolean; onSelect: () => void;
+function CompositePreview({ node, blocks, number, selected, showInactive, onSelect, dragHandle }: {
+  node: VisualContainer; blocks: VisualBlock[]; number: number; selected: boolean; showInactive: boolean; onSelect: () => void; dragHandle: ReactNode;
 }) {
   return <div className={`visual-atom visual-compound${selected ? " is-selected" : ""}`} data-visual-composite-id={node.id}>
-    <div className="visual-atom-label"><span>Bloque {number} unido ({node.children.length} fragmentos){node.content?.kind === "heading" ? ` - T${node.content.headingLevel ?? 1}` : ""}</span><button type="button" onClick={onSelect} aria-label={`Editar bloque unido ${number}`}>Editar</button></div>
+    <div className="visual-atom-label"><span>Bloque {number} unido ({node.children.length} fragmentos){node.content?.kind === "heading" ? ` - T${node.content.headingLevel ?? 1}` : ""}</span><div className="visual-atom-actions">{dragHandle}<button className="visual-icon-button" type="button" onClick={onSelect} aria-label={`Editar bloque unido ${number}`} title={`Editar bloque unido ${number}`}><PreviewIcon name="edit" /></button></div></div>
     <div className="visual-atom-content" role="button" tabIndex={0} aria-label={`Seleccionar bloque unido ${number}`} aria-pressed={selected} onClick={(event) => { event.preventDefault(); onSelect(); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }} dangerouslySetInnerHTML={{ __html: renderVisualCompositeHtml(node, blocks, showInactive) }} />
   </div>;
 }
@@ -89,14 +171,15 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
   const [marking, setMarking] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [newBlock, setNewBlock] = useState<VisualBlock | null>(null);
-  const [mobileInspector, setMobileInspector] = useState(false);
+  const [editing, setEditing] = useState<{ id: string; doc: VisualPageDocument; sourceImage: string | null } | null>(null);
   const [multiple, setMultiple] = useState(false);
   const [selection, setSelection] = useState<string[]>([]);
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [joinContent, setJoinContent] = useState<VisualCompositeContent>({ kind: "text", separator: "paragraph", includeInToc: false });
   const [joinReading, setJoinReading] = useState("preserve");
-  const inspectorRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const dragTimerRef = useRef<number | null>(null);
   const order = orderedVisualBlocks(doc);
   const units = visualUnits(doc);
@@ -105,13 +188,13 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
   const unitNumber = (blockId: string) => units.findIndex((unit) => unit.type === "block" ? unit.blockId === blockId : unit.children.some((child) => child.type === "block" && child.blockId === blockId)) + 1;
   const sourceHtml = useMemo(() => page.hasSourceImage ? null : importedVisualSourceHtml(page, savedDocument), [page.hasSourceImage, page.sourceHtmlContent, page.htmlContent, page.paragraphs, savedDocument]);
   const importedHtml = useBookContentImageHtml(sourceHtml, accessToken, bookId);
-  useEffect(() => { onInteractionChange(Boolean(marking || dragging || newBlock || joining)); return () => onInteractionChange(false); }, [marking, dragging, newBlock, joining, onInteractionChange]);
+  useEffect(() => { onInteractionChange(Boolean(editing || marking || dragging || newBlock || joining)); return () => onInteractionChange(false); }, [editing, marking, dragging, newBlock, joining, onInteractionChange]);
   useEffect(() => { if (geometryDisabled || disabled) setMarking(null); }, [geometryDisabled, disabled]);
   useEffect(() => () => { if (dragTimerRef.current !== null) window.clearTimeout(dragTimerRef.current); }, []);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       const target = event.target;
-      if (disabled || newBlock || (target instanceof Element && target.closest("textarea,input,select,[contenteditable='true']"))) return;
+      if (disabled || editing || newBlock || joining || (target instanceof Element && target.closest("textarea,input,select,[contenteditable='true']"))) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) onRedo(); else onUndo();
@@ -119,7 +202,7 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
     }
     document.addEventListener("keydown", keydown);
     return () => document.removeEventListener("keydown", keydown);
-  }, [disabled, newBlock, onUndo, onRedo]);
+  }, [disabled, editing, newBlock, joining, onUndo, onRedo]);
   function select(id: string, modifiers?: { ctrlKey: boolean; metaKey: boolean }) {
     if (multiple || modifiers?.ctrlKey || modifiers?.metaKey) {
       const block = doc.blocks.find((atom) => atom.id === id);
@@ -128,18 +211,17 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
         return;
       }
       setMultiple(true);
-      setMobileInspector(false);
       onSelect(null);
       setSelectionError(null);
       setSelection((ids) => ids.includes(id) ? ids.filter((key) => key !== id) : [...ids, id]);
       return;
     }
-    onSelect(compositeForBlock(doc, id)?.id ?? id);
+    const targetId = compositeForBlock(doc, id)?.id ?? id;
+    returnFocusRef.current = document.activeElement instanceof HTMLElement && editorRef.current?.contains(document.activeElement) ? document.activeElement : null;
+    onSelect(targetId);
     setMarking(null);
-    if (window.matchMedia("(max-width: 760px)").matches) setMobileInspector(true);
-    else requestAnimationFrame(() => inspectorRef.current?.focus());
+    setEditing({ id: targetId, doc, sourceImage });
   }
-  function mark(id: string) { setMobileInspector(false); setMarking(id); }
   function create() { if (sourceImage && !geometryDisabled) setMarking("new"); else setNewBlock(createVisualBlock("text")); }
   function startDrag(event: DragEvent<HTMLButtonElement>, id: string) {
     event.dataTransfer.setData("application/x-visual-node", id);
@@ -152,8 +234,27 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
     dragTimerRef.current = null;
     setDragging(null);
   }
-  const closeInspector = () => { onSelect(null); setMobileInspector(false); };
-  const inspector = selectedComposite ? <VisualCompositeInspector key={selectedId} doc={doc} node={selectedComposite} onChange={onChange} onClose={closeInspector} onMarkGeometry={mark} disabled={disabled} geometryDisabled={geometryDisabled} /> : <VisualBlockInspector key={selectedId} doc={doc} selectedId={selectedId} onChange={onChange} onClose={closeInspector} onMarkGeometry={mark} disabled={disabled} geometryDisabled={geometryDisabled} />;
+  function closeInspector(next?: VisualPageDocument, nextSelectedId = selectedId) {
+    if (next) {
+      if (disabled || doc !== editing?.doc) return;
+      onChange(next);
+      onSelect(nextSelectedId);
+      const composite = flattenVisualLayout(next.layout).find((node) => node.id === nextSelectedId && node.type !== "block" && node.content);
+      if (next.blocks.some((block) => block.id === nextSelectedId && !block.active) || composite && !flattenVisualLayout(composite).some((node) => node.type === "block" && next.blocks.some((block) => block.id === node.blockId && block.active))) setShowInactive(true);
+    }
+    setEditing(null);
+    requestAnimationFrame(() => {
+      const id = nextSelectedId ? CSS.escape(nextSelectedId) : "";
+      const element = editorRef.current?.querySelector<HTMLElement>(`[data-visual-block-id="${id}"],[data-visual-composite-id="${id}"],[data-visual-node-id="${id}"]`);
+      const opener = returnFocusRef.current;
+      const target = opener?.isConnected ? opener : element?.querySelector<HTMLElement>("button[aria-label^='Editar'], .visual-atom-content");
+      target?.focus({ preventScroll: true });
+      if (next && target) {
+        const bounds = target.getBoundingClientRect();
+        if (bounds.top < 0 || bounds.bottom > window.innerHeight) target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+      }
+    });
+  }
   const overlay = sourceImage ? <PageElementOverlay imageSrc={sourceImage} elements={order.map((block) => ({ key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: unitNumber(block.id) }))}
     selectedKey={selectedId} selectedKeys={multiple ? selection : compoundMemberIds} onSelect={select} marking={Boolean(marking)} disabled={geometryDisabled || disabled}
     onGeometryChange={(id, geometry) => { onChange(updateVisualBlock(doc, id, { geometry })); setMarking(null); }}
@@ -166,15 +267,15 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       const block = doc.blocks.find((atom) => atom.id === node.blockId);
       if (!block || (!block.active && !showInactive)) return null;
       return <div className="visual-leaf" key={node.id}>
-        <button className="visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque ${unitNumber(block.id)}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}>Arrastrar bloque</button>
-        <VisualAtom block={block} imageSrc={sourceImage} number={unitNumber(block.id)} selected={multiple ? selection.includes(block.id) : selectedId === block.id} multiple={multiple} onSelect={(modifiers) => select(block.id, modifiers)} onAmplify={onAmplify} accessToken={accessToken} bookId={bookId} />
+        <VisualAtom block={block} imageSrc={sourceImage} number={unitNumber(block.id)} selected={multiple ? selection.includes(block.id) : selectedId === block.id} multiple={multiple} onSelect={(modifiers) => select(block.id, modifiers)} onAmplify={onAmplify} accessToken={accessToken} bookId={bookId}
+          dragHandle={<button className="visual-icon-button visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque ${unitNumber(block.id)}`} title={`Arrastrar bloque ${unitNumber(block.id)}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button>} />
       </div>;
     }
     if (node.content) {
       if (!showInactive && !hasVisibleContent(node)) return null;
       return <div className="visual-leaf" data-visual-node-id={node.id} key={node.id}>
-        <button className="visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque unido ${units.findIndex((unit) => unit.id === node.id) + 1}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}>Arrastrar bloque unido</button>
-        <CompositePreview node={node} blocks={doc.blocks} number={units.findIndex((unit) => unit.id === node.id) + 1} selected={selectedId === node.id} showInactive={showInactive} onSelect={() => select(node.id)} />
+        <CompositePreview node={node} blocks={doc.blocks} number={units.findIndex((unit) => unit.id === node.id) + 1} selected={selectedId === node.id} showInactive={showInactive} onSelect={() => select(node.id)}
+          dragHandle={<button className="visual-icon-button visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque unido ${units.findIndex((unit) => unit.id === node.id) + 1}`} title={`Arrastrar bloque unido ${units.findIndex((unit) => unit.id === node.id) + 1}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button>} />
       </div>;
     }
     if (!root && !showInactive && !dragging && node.children.length && !hasVisibleContent(node)) return null;
@@ -187,9 +288,10 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       }}><span>Soltar aqui</span></div>;
     }
     const autoFooter = !dragging && isCenteredFooterRow(node, doc.blocks);
+    const containerLabel = root ? "pagina" : node.type === "row" ? "fila" : "columna";
     return <section key={node.id} data-visual-node-id={node.id} className={`visual-container visual-container-${node.type}${selectedId === node.id ? " is-selected" : ""}`}>
-      <header><button type="button" onClick={() => select(node.id)} aria-pressed={selectedId === node.id}>{root ? "Pagina" : node.type === "row" ? "Fila" : "Columna"}</button>
-        {!root ? <button type="button" className="visual-drag-handle" draggable={!disabled} disabled={disabled} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}>Arrastrar {node.type === "row" ? "fila" : "columna"}</button> : null}
+      <header><button className="visual-icon-button" type="button" onClick={() => select(node.id)} aria-pressed={selectedId === node.id} aria-label={`Editar distribucion de ${containerLabel}`} title={`Editar distribucion de ${containerLabel}`}><PreviewIcon name={root ? "page" : node.type} /></button>
+        {!root ? <button type="button" className="visual-icon-button visual-drag-handle" draggable={!disabled} disabled={disabled} aria-label={`Arrastrar ${containerLabel}`} title={`Arrastrar ${containerLabel}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button> : null}
       </header>
       <div className="visual-container-children" data-page-footer-row={autoFooter ? "true" : undefined} style={{ flexDirection: node.type === "row" ? "row" : "column", gap: `${node.gap ?? 12}px` }}>
         {node.children.map((child, index) => {
@@ -209,12 +311,11 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       return { document, error: null };
     } catch (error) { return { error: error instanceof Error ? error.message : "No se puede unir esta seleccion." }; }
   })();
-  return <div className="visual-page-editor">
+  return <div className="visual-page-editor" ref={editorRef}>
     <div className="visual-source-column">
       <div className="visual-source-actions"><button type="button" disabled={disabled || multiple || Boolean(sourceImage && geometryDisabled)} onClick={create}>Crear bloque</button>
-        <label className="visual-check"><input type="checkbox" checked={multiple} disabled={disabled || Boolean(marking)} onChange={(event) => { setMultiple(event.target.checked); setSelection([]); setSelectionError(null); setMobileInspector(false); onSelect(null); }} />Seleccion multiple</label>
+        <label className="visual-check"><input type="checkbox" checked={multiple} disabled={disabled || Boolean(marking)} onChange={(event) => { setMultiple(event.target.checked); setSelection([]); setSelectionError(null); onSelect(null); }} />Seleccion multiple</label>
         {multiple ? <><span role="status">{selection.length} bloques seleccionados</span><button type="button" disabled={disabled || selection.length < 2} onClick={() => { const heading = selection.some((id) => doc.blocks.find((block) => block.id === id)?.kind === "heading"); setJoinContent({ kind: heading ? "heading" : "text", separator: heading ? "line" : "paragraph", includeInToc: heading, headingLevel: 1, alignment: heading ? "center" : "left" }); setJoinReading("preserve"); setJoining(true); }}>Unir seleccionados</button><button type="button" onClick={() => { setSelection([]); setSelectionError(null); }}>Limpiar seleccion</button></> : null}
-        {selectedId ? <button type="button" className="visual-open-inspector" onClick={() => setMobileInspector(true)}>Abrir inspector</button> : null}
       </div>
       {selectionError ? <p role="alert" className="error-text">{selectionError}</p> : null}
       {marking ? <p role="status">Arrastra un rectangulo sobre la imagen. <button type="button" onClick={() => setMarking(null)}>Cancelar marcado</button></p> : null}
@@ -222,18 +323,18 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       {!page.hasSourceImage ? <article className="visual-imported-source"><h3>Contenido importado</h3><p className="helper-text">HTML guardado, no es un facsimil. La creacion por geometria no esta disponible.</p>
         <div className="visual-imported-html" dangerouslySetInnerHTML={{ __html: replacePendingBookContentImageReferences(importedHtml ?? "") }} onClick={(event) => { event.preventDefault(); const element = (event.target as Element).closest("[data-visual-block-id],[data-paragraph-id]"); const id = element?.getAttribute("data-visual-block-id") ?? element?.getAttribute("data-paragraph-id"); if (id && doc.blocks.some((block) => block.id === id)) select(id, { ctrlKey: event.ctrlKey, metaKey: event.metaKey }); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { const element = (event.target as Element).closest("[data-visual-block-id],[data-paragraph-id]"); const id = element?.getAttribute("data-visual-block-id") ?? element?.getAttribute("data-paragraph-id"); if (id) { event.preventDefault(); select(id, { ctrlKey: event.ctrlKey, metaKey: event.metaKey }); } } }} />
       </article> : null}
-      <div className="visual-inline-inspector" ref={inspectorRef} tabIndex={-1}>{mobileInspector ? null : inspector}</div>
     </div>
     <article className="visual-preview-column" aria-label="Previsualizacion interactiva">
-      <header><div><p className="page-label">Documento visual</p><h3>Previsualizacion interactiva</h3></div><div className="visual-actions"><button type="button" disabled={disabled || !canUndo} onClick={onUndo}>Deshacer</button><button type="button" disabled={disabled || !canRedo} onClick={onRedo}>Rehacer</button></div></header>
+      <header><div><p className="page-label">Documento visual</p><h3>Previsualizacion interactiva</h3></div><div className="visual-actions"><button className="visual-icon-button" type="button" aria-label="Deshacer" title="Deshacer (Ctrl/Cmd+Z)" disabled={disabled || !canUndo} onClick={onUndo}><PreviewIcon name="undo" /></button><button className="visual-icon-button" type="button" aria-label="Rehacer" title="Rehacer (Ctrl/Cmd+Mayus+Z)" disabled={disabled || !canRedo} onClick={onRedo}><PreviewIcon name="redo" /></button></div></header>
       <div className="visual-preview-tools"><label>Distribucion<select defaultValue="" disabled={disabled} onChange={(event) => { onChange(applyVisualPreset(doc, event.target.value as VisualPreset)); event.target.value = ""; }}><option value="" disabled>Layout actual</option><option value="one-column">1 columna</option><option value="two-columns">2 columnas</option><option value="two-by-two">2 x 2</option><option value="rows">Fila horizontal</option></select></label>
-        <label className="visual-check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />Mostrar anulados</label>
+        <button className="visual-icon-button" type="button" aria-label="Mostrar anulados" title={showInactive ? "Ocultar bloques anulados" : "Mostrar bloques anulados"} aria-pressed={showInactive} onClick={() => setShowInactive((current) => !current)}><PreviewIcon name="inactive" /></button>
       </div>
       <p className="helper-text">Selecciona para editar. Arrastra desde el asa a una zona o usa Mover a... en el inspector.</p>
       <div className="visual-preview-canvas">{renderNode(doc.layout, true)}</div>
       {!order.some((block) => block.active) ? <p className="helper-text">No hay bloques activos. Activa Mostrar anulados para restaurarlos o crea uno nuevo.</p> : null}
     </article>
-    {mobileInspector && selectedId ? <EditorDialog title="Inspector del bloque" onClose={() => setMobileInspector(false)}>{inspector}</EditorDialog> : null}
+    {editing ? <VisualInspectorDialog doc={editing.doc} initialSelectedId={editing.id} sourceImage={editing.sourceImage} disabled={disabled} stale={doc !== editing.doc}
+      geometryDisabled={geometryDisabled || sourceImage !== editing.sourceImage} onCancel={() => closeInspector()} onAccept={closeInspector} /> : null}
     {joining ? <EditorDialog title="Unir contenido" onClose={() => setJoining(false)}><fieldset disabled={disabled}>
       <p>Los fragmentos se unen en el orden de lectura, conservando sus textos, IDs, zonas y anotaciones.</p>
       <label>Tipo del resultado<select value={joinContent.kind} onChange={(event) => setJoinContent({ ...joinContent, kind: event.target.value as "text" | "heading", includeInToc: event.target.value === "heading" })}><option value="text">Cuerpo de texto</option><option value="heading">Titulo</option></select></label>
@@ -247,8 +348,6 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
         if (joinReading !== "preserve") document.blocks = document.blocks.map((block) => selection.includes(block.id) ? { ...block, readAloud: joinReading === "all" } : block);
         const id = compositeForBlock(document, selection[0]!)!.id;
         onChange(document); setJoining(false); setMultiple(false); setSelection([]); setSelectionError(null); onSelect(id);
-        if (window.matchMedia("(max-width: 760px)").matches) setMobileInspector(true);
-        else requestAnimationFrame(() => inspectorRef.current?.focus());
       }}>Unir contenido</button></div>
     </fieldset></EditorDialog> : null}
     {newBlock ? <EditorDialog title="Crear bloque" onClose={() => setNewBlock(null)}><fieldset disabled={disabled}>
@@ -256,7 +355,7 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       <label>{newBlock.kind === "image" ? "Descripcion" : "Contenido Markdown"}<textarea rows={5} value={newBlock.text} onChange={(event) => setNewBlock({ ...newBlock, text: event.target.value })} /></label>
       {newBlock.kind === "image" ? <VisualImageSourceFields block={newBlock} images={doc.blocks} onChange={(patch) => setNewBlock({ ...newBlock, ...patch })} /> : null}
       <p className="helper-text">El nuevo bloque conserva un UUID propio. Solo se persiste con Guardar cambios.</p>
-      <div className="visual-actions"><button type="button" onClick={() => setNewBlock(null)}>Cancelar</button><button type="button" disabled={newBlock.kind === "image" ? !(safeVisualImageSource(newBlock.source) || newBlock.source === "page-crop" && validElementGeometry(newBlock.geometry)) : !newBlock.text.trim()} onClick={() => { onChange(appendVisualBlock(doc, newBlock)); select(newBlock.id); setNewBlock(null); }}>Crear</button></div>
+      <div className="visual-actions"><button type="button" onClick={() => setNewBlock(null)}>Cancelar</button><button type="button" disabled={newBlock.kind === "image" ? !(safeVisualImageSource(newBlock.source) || newBlock.source === "page-crop" && validElementGeometry(newBlock.geometry)) : !newBlock.text.trim()} onClick={() => { onChange(appendVisualBlock(doc, newBlock)); onSelect(newBlock.id); setNewBlock(null); }}>Crear</button></div>
     </fieldset></EditorDialog> : null}
   </div>;
 }

@@ -29,14 +29,15 @@ OCR rerun retains the existing implementation and recovery path; successful refe
 
 ## Interaction
 
-- Source zones and preview atoms select by UUID. The inspector is below the left source on desktop and in a native modal dialog on mobile.
+- Source zones and preview atoms select by UUID and open the same native editing dialog on desktop and mobile. The dialog owns an immutable document draft: Accept applies it as one page-history entry, while Cancel, Close and Escape discard it. Accept never saves to the API. Closing preserves the selection and returns focus without scrolling away from the originating block; moved blocks are brought back into view when necessary.
+- The editing dialog counts as a pending interaction, locks background scrolling and blocks page-level undo/redo. Geometry marking stays inside the dialog and targets the concrete atom UUID, including composite fragments. Separating or ungrouping stays in the draft until Accept. A replaced base document prevents accepting a stale dialog draft.
 - Numbers are depth-first layout order, including annulled atoms. Changing order moves a leaf relative to the target leaf, without changing its atom or geometry.
 - Layout defaults to the received tree. Presets replace containers while retaining atom and leaf IDs, including inactive leaves. Containers can be nested, switched between row/column, assigned positive child weights and a gap of 0..48 px.
 - Drag handles move atoms or containers to explicit insertion zones; cycle/root moves are rejected. `Mover a...` and position controls provide the keyboard alternative.
 - Annul/restore changes `active`, not IDs or original image pixels. Preview excludes annulled atoms unless `Mostrar anulados` is enabled; source zones remain recoverable.
 - Image width is 1..100 percent of its layout area, independent of bbox. Font scale is .5..3. Titles expose T1..T6 and an independent TOC checkbox.
 - Preview clicks select rather than open the image viewer. Only `Ampliar` opens it.
-- Undo/redo include structural changes and annulment. A new edit after undo drops the redo branch. Ctrl/Cmd+Z is not intercepted in textarea/input/select/contenteditable or creation dialogs.
+- Undo/redo include structural changes and annulment. A new edit after undo drops the redo branch. Ctrl/Cmd+Z is not intercepted in textarea/input/select/contenteditable or open editing, creation and joining dialogs.
 - Swipe has no broad parent allow-selector and ignores the entire visual editor, inspector and dialogs; marking/dragging/pending creation also disable it.
 
 ## Creation And Source
