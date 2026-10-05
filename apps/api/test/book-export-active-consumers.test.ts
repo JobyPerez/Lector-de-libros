@@ -86,7 +86,7 @@ test("export fallback filters optional active without collapsing paragraph numbe
   }
 });
 
-test("PDF image percentages change width proportionally without changing text or legacy sizing", async () => {
+test("PDF image percentages preserve reader widths and legacy intrinsic sizing", async () => {
   const image = await sharp({ create: { width: 400, height: 20, channels: 3, background: "blue" } }).png().toBuffer();
   const source = `data:image/png;base64,${image.toString("base64")}`;
   const { getDocument, OPS } = await import("pdfjs-dist/legacy/build/pdf.mjs");
@@ -102,15 +102,18 @@ test("PDF image percentages change width proportionally without changing text or
   const pdf = await getDocument({ data: new Uint8Array(await buildPdfExport(options)), useSystemFonts: true }).promise;
   try {
     assert.equal(pdf.numPages, 4);
-    for (const [index, percentage] of [1, 0.5, 0.25, 1].entries()) {
+    for (const [index, contentWidth] of [400, 450, 225, 400].entries()) {
       const page = await pdf.getPage(index + 1);
       const operators = await page.getOperatorList();
       const paintIndex = operators.fnArray.indexOf(OPS.paintImageXObject);
-      let transformIndex = paintIndex - 1;
-      while (transformIndex >= 0 && operators.fnArray[transformIndex] !== OPS.transform) transformIndex -= 1;
-      assert.ok(transformIndex >= 0);
-      const width = operators.argsArray[transformIndex][0] as number;
-      assert.ok(Math.abs(width - (page.getViewport({ scale: 1 }).width - 100) * percentage) < 0.01);
+      let scaleX = 1;
+      const stack: number[] = [];
+      for (let i = 0; i < paintIndex; i += 1) {
+        if (operators.fnArray[i] === OPS.save) stack.push(scaleX);
+        if (operators.fnArray[i] === OPS.restore) scaleX = stack.pop()!;
+        if (operators.fnArray[i] === OPS.transform) scaleX *= operators.argsArray[i][0] as number;
+      }
+      assert.ok(Math.abs(Math.abs(scaleX) - contentWidth * 0.55) < 1);
     }
   } finally {
     await pdf.destroy();

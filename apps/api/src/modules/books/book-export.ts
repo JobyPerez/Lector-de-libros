@@ -7,6 +7,7 @@ import sharp from "sharp";
 
 import type { BookOutlineEntry } from "./book-outline.js";
 import type { BookLanguageCode } from "./book-import.js";
+import { renderBookHtmlPdf } from "./html-pdf.js";
 
 type ExportBook = {
   authorName: string | null;
@@ -28,33 +29,6 @@ type ExportCoverAsset = {
   mimeType: string;
 } | null;
 
-type RenderBlock = {
-  alignment?: "center" | "justify" | "left" | "right";
-  level?: number;
-  source?: string;
-  imageWidthPct?: number;
-  text?: string;
-  type: "blockquote" | "heading" | "image" | "list-item" | "paragraph";
-};
-
-function resolveBlockAlignment(
-  explicitAlignmentValue: string | undefined,
-  styleAttribute: string | undefined
-): "center" | "justify" | "left" | "right" | undefined {
-  const explicitAlignment = explicitAlignmentValue?.trim().toLowerCase();
-  if (explicitAlignment === "left" || explicitAlignment === "center" || explicitAlignment === "right" || explicitAlignment === "justify") {
-    return explicitAlignment;
-  }
-
-  const styleMatch = (styleAttribute ?? "").match(/text-align\s*:\s*(left|center|right|justify)/iu);
-  const styleAlignment = styleMatch?.[1]?.toLowerCase();
-  if (styleAlignment === "left" || styleAlignment === "center" || styleAlignment === "right" || styleAlignment === "justify") {
-    return styleAlignment;
-  }
-
-  return undefined;
-}
-
 function escapeXml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -62,10 +36,6 @@ function escapeXml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
-}
-
-function normalizeWhitespace(value: string): string {
-  return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function buildFallbackHtml(page: ExportPage): string {
@@ -109,168 +79,6 @@ function createContentDocument(book: ExportBook, page: ExportPage): string {
     ${htmlContent}
   </body>
 </html>`;
-}
-
-function extractRenderableBlocks(page: ExportPage): RenderBlock[] {
-  const html = getActivePageHtml(page);
-  const document = load(html);
-  let root = document(".epub-page-body").first();
-  if (root.length === 0) {
-    root = document("body").first();
-  }
-  const blocks: RenderBlock[] = [];
-
-  function visit(node: unknown) {
-    const element = document(node as string);
-    const tagName = element.prop("tagName")?.toLowerCase();
-    if (!tagName) {
-      return;
-    }
-
-    if (/^h[1-6]$/u.test(tagName)) {
-      const text = normalizeWhitespace(element.text());
-      if (text) {
-        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
-        blocks.push({
-          ...(alignment ? { alignment } : {}),
-          level: Number.parseInt(tagName.replace("h", ""), 10),
-          text,
-          type: "heading"
-        });
-      }
-      return;
-    }
-
-    if (tagName === "p") {
-      const text = normalizeWhitespace(element.text());
-      if (text) {
-        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
-        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "paragraph" });
-      }
-      return;
-    }
-
-    if (tagName === "blockquote") {
-      const text = normalizeWhitespace(element.text());
-      if (text) {
-        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
-        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "blockquote" });
-      }
-      return;
-    }
-
-    if (tagName === "li") {
-      const text = normalizeWhitespace(element.text());
-      if (text) {
-        const alignment = resolveBlockAlignment(element.attr("data-text-align"), element.attr("style"));
-        blocks.push({ ...(alignment ? { alignment } : {}), text, type: "list-item" });
-      }
-      return;
-    }
-
-    if (tagName === "img") {
-      const source = element.attr("src")?.trim();
-      if (source) {
-        const widthAttribute = element.attr("data-image-width") ?? element.closest("[data-image-width]").attr("data-image-width");
-        const imageWidthPct = Number(widthAttribute?.trim().replace(/%$/u, ""));
-        blocks.push({
-          source,
-          type: "image",
-          ...(Number.isFinite(imageWidthPct) && imageWidthPct > 0 && imageWidthPct <= 100 ? { imageWidthPct } : {})
-        });
-      }
-      return;
-    }
-
-    element.children().each((_, child) => {
-      visit(document(child));
-    });
-  }
-
-  root.children().each((_, child) => {
-    visit(document(child));
-  });
-
-  return blocks;
-}
-
-function renderPdfPageFooter(document: PDFKit.PDFDocument, pageLabel: string) {
-  const footerWidth = document.page.width - document.page.margins.left - document.page.margins.right;
-  const footerY = document.page.height - document.page.margins.bottom - 12;
-
-  document
-    .font("Helvetica")
-    .fontSize(10)
-    .fillColor("#666666")
-    .text(pageLabel, document.page.margins.left, footerY, {
-      align: "center",
-      lineBreak: false,
-      width: footerWidth
-    });
-}
-
-function buildPdfPageDestination(pageNumber: number): string {
-  return `page-${pageNumber}`;
-}
-
-function renderPdfBlocks(document: PDFKit.PDFDocument, blocks: RenderBlock[]) {
-  for (const block of blocks) {
-    if (block.type === "heading" && block.text) {
-      const fontSize = Math.max(16, 28 - ((block.level ?? 1) - 1) * 2);
-      document.moveDown(0.5);
-      document.font("Helvetica-Bold").fontSize(fontSize).fillColor("#111111").text(block.text, {
-        align: block.alignment ?? "left"
-      });
-      document.moveDown(0.35);
-      continue;
-    }
-
-    if (block.type === "blockquote" && block.text) {
-      document.font("Helvetica-Oblique").fontSize(12).fillColor("#333333").text(block.text, {
-        align: block.alignment ?? "left",
-        indent: 24,
-        paragraphGap: 10
-      });
-      continue;
-    }
-
-    if (block.type === "list-item" && block.text) {
-      document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(`• ${block.text}`, {
-        align: block.alignment ?? "left",
-        indent: 12,
-        paragraphGap: 6
-      });
-      continue;
-    }
-
-    if (block.type === "image" && block.source) {
-      if (/^data:image\//u.test(block.source)) {
-        try {
-          const [, mimeMetadata, dataPart] = block.source.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/u) ?? [];
-          if (mimeMetadata && dataPart) {
-            const imageBuffer = Buffer.from(dataPart, "base64");
-            const maxWidth = (document.page.width - 100) * (block.imageWidthPct ?? 100) / 100;
-            const maxHeight = document.page.height * 0.35;
-            document.image(imageBuffer, {
-              fit: [maxWidth, maxHeight],
-              align: "center"
-            });
-            document.moveDown();
-          }
-        } catch {
-          // Ignore broken inline images during PDF export.
-        }
-      }
-      continue;
-    }
-
-    if (block.text) {
-      document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(block.text, {
-        align: block.alignment ?? "justify",
-        paragraphGap: 10
-      });
-    }
-  }
 }
 
 export async function buildEpubExport(options: {
@@ -430,80 +238,31 @@ export async function buildPdfExport(options: {
   outline: BookOutlineEntry[];
   pages: ExportPage[];
 }): Promise<Buffer> {
-  const document = new PDFDocument({ autoFirstPage: false, margin: 50, size: "A4" });
-  const chunks: Buffer[] = [];
-
-  document.on("data", (chunk) => {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  });
-
-  const finishPromise = new Promise<Buffer>((resolve, reject) => {
-    document.on("end", () => resolve(Buffer.concat(chunks)));
-    document.on("error", reject);
-  });
-
-  let prefixPages = 0;
-
+  const sheets: string[] = [];
+  const prefixPages = Number(Boolean(options.coverAsset)) + Number(options.outline.length > 0);
   if (options.coverAsset) {
-    prefixPages += 1;
-    document.addPage();
-
-    try {
-      const normalizedBuffer = await sharp(options.coverAsset.buffer).jpeg({ quality: 92 }).toBuffer();
-      const metadata = await sharp(normalizedBuffer).metadata();
-      const imageWidth = metadata.width ?? 0;
-      const imageHeight = metadata.height ?? 0;
-
-      const margin = 50;
-      const maxWidth = document.page.width - margin * 2;
-      const maxHeight = document.page.height - margin * 2;
-
-      let drawWidth = maxWidth;
-      let drawHeight = maxHeight;
-
-      if (imageWidth > 0 && imageHeight > 0) {
-        const scale = Math.min(maxWidth / imageWidth, maxHeight / imageHeight);
-        drawWidth = imageWidth * scale;
-        drawHeight = imageHeight * scale;
-      }
-
-      const imageX = (document.page.width - drawWidth) / 2;
-      const imageY = (document.page.height - drawHeight) / 2;
-
-      document.image(normalizedBuffer, imageX, imageY, { height: drawHeight, width: drawWidth });
-    } catch {
-      // Si la imagen de portada no se pudo renderizar, se deja la página en blanco.
-      // El título y los metadatos ya están en el documento como parte del contenido.
-    }
-
+    const cover = await sharp(options.coverAsset.buffer).rotate().jpeg({ quality: 92 }).toBuffer();
+    sheets.push(`<section class="pdf-sheet"><div class="pdf-content"><img class="pdf-cover" alt="" src="data:image/jpeg;base64,${cover.toString("base64")}"></div></section>`);
   }
-
   if (options.outline.length > 0) {
-    prefixPages += 1;
-    document.addPage();
-    document.font("Helvetica-Bold").fontSize(24).fillColor("#111111").text("Índice");
-    document.moveDown();
-    for (const entry of options.outline) {
-      const physicalPageNumber = prefixPages + entry.pageNumber;
-      const destination = buildPdfPageDestination(entry.pageNumber);
-      document.font("Helvetica").fontSize(12).fillColor("#1f1f1f").text(`${"  ".repeat(Math.max(0, entry.level - 1))}${entry.title}`, {
-        continued: true,
-        goTo: destination,
-        indent: Math.max(0, entry.level - 1) * 14
-      });
-      document.text(String(physicalPageNumber), { align: "right", goTo: destination });
-    }
-    renderPdfPageFooter(document, String(prefixPages));
+    const entries = options.outline.flatMap((entry) => {
+      const index = options.pages.findIndex((page) => page.pageNumber === entry.pageNumber);
+      return index < 0 ? [] : [`<a href="#page-${entry.pageNumber}" style="padding-left:${Math.max(0, entry.level - 1) * 14}px"><span>${escapeXml(entry.title)}</span><span>${prefixPages + index + 1}</span></a>`];
+    }).join("");
+    sheets.push(`<section class="pdf-sheet"><div class="pdf-content pdf-toc"><h1>${options.book.languageCode === "it" ? "Indice" : "Índice"}</h1>${entries}</div><div class="pdf-footer">${prefixPages}</div></section>`);
   }
-
-  for (const page of options.pages) {
-    const physicalPageNumber = prefixPages + page.pageNumber;
-    document.addPage();
-    document.addNamedDestination(buildPdfPageDestination(page.pageNumber), "FitH", document.page.height - document.page.margins.top);
-    renderPdfBlocks(document, extractRenderableBlocks(page));
-    renderPdfPageFooter(document, String(physicalPageNumber));
+  for (const [index, page] of options.pages.entries()) {
+    const html = load(getActivePageHtml(page), null, false);
+    html("script, iframe, object, embed, base, link, meta, form").remove();
+    html("*").each((_, node) => {
+      const element = html(node);
+      for (const attribute of Object.keys(element.attr() ?? {})) {
+        if (/^on/iu.test(attribute)) element.removeAttr(attribute);
+      }
+      const targetPage = Number(element.attr("data-book-page"));
+      if (element.is("a") && targetPage > 0) element.attr("href", `#page-${targetPage}`);
+    });
+    sheets.push(`<section class="pdf-sheet reader-layout reader-ocr-layout" id="page-${page.pageNumber}"><div class="pdf-content reader-rich-content">${html.html()}</div><div class="pdf-footer">${prefixPages + index + 1}</div></section>`);
   }
-
-  document.end();
-  return finishPromise;
+  return renderBookHtmlPdf(options.book.title, options.book.languageCode, sheets);
 }
