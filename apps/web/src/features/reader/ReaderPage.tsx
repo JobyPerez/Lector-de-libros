@@ -5030,9 +5030,6 @@ export function ReaderPage() {
   ) {
     const showPrimaryActions = group !== "secondary";
     const showSecondaryActions = group !== "primary";
-    const deleteButtonClassName = buttonClassName.includes("reader-header-floating-action-button")
-      ? "danger-button reader-header-icon-button reader-header-floating-action-button"
-      : "danger-button reader-header-icon-button";
     const bookmarkButtonClassName = isCurrentPageBookmarked
       ? `${buttonClassName} active`
       : buttonClassName;
@@ -5101,17 +5098,6 @@ export function ReaderPage() {
             <NotionIcon />
           </a>
         ) : null}
-        {showSecondaryActions && pageQuery.data?.book.sourceType === "IMAGES" && appendPagesLink ? (
-          <Link
-            aria-label="Añadir páginas"
-            className={buttonClassName}
-            onClick={onAction}
-            title="Añadir páginas"
-            to={appendPagesLink}
-          >
-            <AddPagesIcon />
-          </Link>
-        ) : null}
         {showSecondaryActions && canEditImportedPage && reviewOcrLink ? (
           <Link
             aria-label="Editar esta página"
@@ -5122,21 +5108,6 @@ export function ReaderPage() {
           >
             <OriginalPageIcon />
           </Link>
-        ) : null}
-        {showSecondaryActions && canDeleteImportedPage ? (
-          <button
-            aria-label={isDeletingPage ? "Borrando página" : "Borrar página"}
-            className={deleteButtonClassName}
-            disabled={isDeletingPage}
-            onClick={() => {
-              onAction?.();
-              void handleDeleteCurrentPage();
-            }}
-            title={isDeletingPage ? "Borrando página..." : "Borrar página"}
-            type="button"
-          >
-            <DeletePageIcon />
-          </button>
         ) : null}
       </>
     );

@@ -182,6 +182,25 @@ function DeletePageIcon() {
   );
 }
 
+function AddPagesIcon() {
+  return (
+    <ToolbarIcon>
+      <path d="M12 6.75V17.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+      <path d="M6.75 12H17.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" />
+    </ToolbarIcon>
+  );
+}
+
+function ActionsMenuIcon() {
+  return (
+    <ToolbarIcon>
+      <circle cx="6.5" cy="12" fill="currentColor" r="1.5" />
+      <circle cx="12" cy="12" fill="currentColor" r="1.5" />
+      <circle cx="17.5" cy="12" fill="currentColor" r="1.5" />
+    </ToolbarIcon>
+  );
+}
+
 function FilesIcon() {
   return (
     <ToolbarIcon>
@@ -349,6 +368,18 @@ type OcrModelSelectProps = {
   onChange: (model: OcrModelId) => void;
   value: OcrModelId;
 };
+
+function AdvancedLayoutCheckbox({ value, onChange, mode, disabled, modelLabel }: {
+  value: boolean; onChange: (value: boolean) => void; mode: ImageOcrMode; disabled: boolean; modelLabel: string;
+}) {
+  return <div className="ocr-model-select-panel ocr-advanced-layout-panel">
+    <label className="ocr-advanced-layout-check">
+      <input type="checkbox" checked={value && mode !== "LOCAL"} disabled={disabled || mode === "LOCAL"} onChange={(event) => onChange(event.target.checked)} />
+      <span>Reconstrucción avanzada de página</span>
+    </label>
+    <p className="helper-text">Al activarla, combina OCR y análisis visual para intentar conservar zonas, tablas y pies de página, sin garantía. Tarda más y puede tener un mayor coste. {mode === "LOCAL" ? "No disponible con OCR LOCAL. OCR estándar, sin segunda fase de análisis visual." : !value ? "OCR estándar, sin segunda fase de análisis visual." : mode === "VISION" ? `Vision realiza dos pasadas con el mismo modelo seleccionado: ${modelLabel}.` : `Utiliza AWS Textract y el modelo seleccionado: ${modelLabel}.`}</p>
+  </div>;
+}
 
 function OcrModelSelect({ disabled = false, models, onChange, value }: OcrModelSelectProps) {
   const selectedModel = models.find((model) => model.id === value);
@@ -858,6 +889,9 @@ export function BookBuilderPage() {
   const [originalReviewImageRotation, setOriginalReviewImageRotation] = useState<ImageRotation>(0);
   const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("TEXTRACT");
   const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("TEXTRACT");
+  const [createAdvancedLayout, setCreateAdvancedLayout] = useState(false);
+  const [appendAdvancedLayout, setAppendAdvancedLayout] = useState(false);
+  const [reviewAdvancedLayout, setReviewAdvancedLayout] = useState(false);
   const [appendInsertionSide, setAppendInsertionSide] = useState<AppendInsertionSide>("after");
   const [appendReferencePageInput, setAppendReferencePageInput] = useState("1");
   const [appendProgressId, setAppendProgressId] = useState<string | null>(null);
@@ -902,6 +936,8 @@ export function BookBuilderPage() {
   const [reviewNavigationTab, setReviewNavigationTab] = useState<"index" | "notes">("index");
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
+  const [isFloatingReviewHeaderExpanded, setIsFloatingReviewHeaderExpanded] = useState(false);
+  const [floatingReviewHeaderDockStyle, setFloatingReviewHeaderDockStyle] = useState<CSSProperties | null>(null);
   const [reviewPageJumpValue, setReviewPageJumpValue] = useState("1");
   const [reviewImageSourceBlob, setReviewImageSourceBlob] = useState<{ blob: Blob; key: string } | null>(null);
   const [reviewImageLoadingKey, setReviewImageLoadingKey] = useState<string | null>(null);
@@ -921,6 +957,10 @@ export function BookBuilderPage() {
   const reviewPageJumpInputRef = useRef<HTMLInputElement | null>(null);
   const reviewIndexPanelRef = useRef<HTMLElement | null>(null);
   const reviewIndexToggleRef = useRef<HTMLButtonElement | null>(null);
+  const reviewOcrPanelRef = useRef<HTMLDivElement | null>(null);
+  const reviewOcrToggleRef = useRef<HTMLButtonElement | null>(null);
+  const reviewPanelRef = useRef<HTMLElement | null>(null);
+  const floatingReviewHeaderRef = useRef<HTMLDivElement | null>(null);
   const activeReviewNavItemRef = useRef<HTMLButtonElement | null>(null);
   const createCameraInputRef = useRef<HTMLInputElement | null>(null);
   const createCameraVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -1344,7 +1384,7 @@ export function BookBuilderPage() {
     canGoNext: reviewPageNumber < (selectedReviewBook?.totalPages ?? 0),
     canGoPrevious: reviewPageNumber > 1,
     enabled: isReviewOnlyMode && !isReviewCropMode && !isVisualEditorBusy && !isSavingReview && !isDeletingReviewPage && !isRerunningOcr,
-    ignoreSelector: ".visual-page-editor,.visual-dialog,.review-floating-controls,.reader-navigation-panel,.review-floating-ocr-panel,.review-crop-workspace",
+    ignoreSelector: ".visual-page-editor,.visual-dialog,.review-floating-controls,.reader-header-floating-dock,.reader-navigation-panel,.review-floating-ocr-panel,.review-crop-workspace",
     onNext: () => changeReviewPage(1),
     onPrevious: () => changeReviewPage(-1),
     ref: reviewSwipeSurfaceRef
@@ -1554,6 +1594,105 @@ export function BookBuilderPage() {
       document.removeEventListener("pointerdown", handlePointerDown);
     };
   }, [isReviewIndexVisible]);
+
+  useEffect(() => {
+    if (!isReviewOcrMenuVisible || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (reviewOcrPanelRef.current?.contains(target) || reviewOcrToggleRef.current?.contains(target)) {
+        return;
+      }
+
+      setIsReviewOcrMenuVisible(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsReviewOcrMenuVisible(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isReviewOcrMenuVisible]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    function updateFloatingReviewHeaderPosition() {
+      const panelRect = reviewPanelRef.current?.getBoundingClientRect();
+      const viewportPadding = 12;
+      const panelInset = 10;
+
+      if (panelRect) {
+        const nextTop = Math.max(viewportPadding, panelRect.top + panelInset);
+        const nextRight = Math.max(viewportPadding, window.innerWidth - panelRect.right + panelInset);
+        setFloatingReviewHeaderDockStyle((current) => {
+          const top = `${nextTop}px`;
+          const right = `${nextRight}px`;
+          if (current?.top === top && current?.right === right) {
+            return current;
+          }
+
+          return { right, top };
+        });
+      } else {
+        setFloatingReviewHeaderDockStyle(null);
+      }
+    }
+
+    updateFloatingReviewHeaderPosition();
+    window.addEventListener("resize", updateFloatingReviewHeaderPosition);
+    window.addEventListener("scroll", updateFloatingReviewHeaderPosition, { passive: true });
+
+    return () => {
+      window.removeEventListener("resize", updateFloatingReviewHeaderPosition);
+      window.removeEventListener("scroll", updateFloatingReviewHeaderPosition);
+    };
+  }, [isReviewOnlyMode]);
+
+  useEffect(() => {
+    if (!isFloatingReviewHeaderExpanded || typeof document === "undefined") {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      const targetNode = event.target as Node;
+      if (floatingReviewHeaderRef.current?.contains(targetNode)) {
+        return;
+      }
+
+      setIsFloatingReviewHeaderExpanded(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsFloatingReviewHeaderExpanded(false);
+      }
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isFloatingReviewHeaderExpanded]);
 
   function toFileArray(fileList: FileList | null): File[] {
     return fileList ? Array.from(fileList) : [];
@@ -2122,7 +2261,8 @@ export function BookBuilderPage() {
       }
 
       const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, {
-        ...(createOcrMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
+        advancedLayout: createAdvancedLayout && createOcrMode !== "LOCAL",
+        ...(createOcrMode === "VISION" || createAdvancedLayout && createOcrMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
         ocrMode: createOcrMode,
         ...(createOcrMode === "VISION" && resolveVisionPromptOverride(createPromptOverride)
           ? { promptOverride: resolveVisionPromptOverride(createPromptOverride) }
@@ -2234,7 +2374,8 @@ export function BookBuilderPage() {
           try {
             const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
               ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
-              ...(appendOcrMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
+              advancedLayout: appendAdvancedLayout && appendOcrMode !== "LOCAL",
+              ...(appendOcrMode === "VISION" || appendAdvancedLayout && appendOcrMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
               ocrMode: appendOcrMode,
               ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
                 ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
@@ -2408,8 +2549,8 @@ export function BookBuilderPage() {
     await reviewPageQuery.refetch();
   }
 
-  function confirmReviewTextReplacement(actionLabel: string) {
-    if (reviewPageAnnotationCount === 0) {
+  function confirmReviewTextReplacement(actionLabel: string, replacesVisualContent = false) {
+    if (reviewPageAnnotationCount === 0 && !replacesVisualContent) {
       return true;
     }
 
@@ -2420,7 +2561,9 @@ export function BookBuilderPage() {
     ].filter(Boolean).join(", ");
 
     return window.confirm(
-      `Esta página tiene ${summaryParts}. Al ${actionLabel}, el sistema intentará recolocar esas anotaciones automáticamente en los nuevos párrafos. Revisa la página después por si alguna necesitara ajuste manual. ¿Continuar?`
+      [replacesVisualContent ? "Volver a ejecutar el OCR reemplazará el contenido de la página, incluidos los estilos editoriales y la maquetación manual, tanto guardados como pendientes de guardar." : null,
+        reviewPageAnnotationCount > 0 ? `Esta página tiene ${summaryParts}. Al ${actionLabel}, el sistema intentará recolocar esas anotaciones automáticamente en los nuevos párrafos. Revisa la página después por si alguna necesitara ajuste manual.` : null,
+        "¿Continuar?"].filter(Boolean).join(" ")
     );
   }
 
@@ -2526,7 +2669,7 @@ export function BookBuilderPage() {
     const hasPendingImageEdits = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
     const normalizedPromptOverride = nextMode === "VISION" && promptOverride ? resolveVisionPromptOverride(promptOverride) : undefined;
 
-    if (!confirmReviewTextReplacement("volver a ejecutar el OCR")) {
+    if (!confirmReviewTextReplacement("volver a ejecutar el OCR", true)) {
       return;
     }
 
@@ -2551,11 +2694,13 @@ export function BookBuilderPage() {
       }
 
       setReviewOcrMode(nextMode);
+      if (nextMode === "LOCAL") setReviewAdvancedLayout(false);
       const expectedUpdatedAt = reviewDraftVersionRef.current?.updatedAt;
       if (!expectedUpdatedAt) throw new Error("La version de la pagina no esta disponible. Vuelve a cargar antes de ejecutar el OCR.");
       await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, {
         expectedUpdatedAt,
-        ...(nextMode === "VISION" ? { ocrModel: selectedOcrModel } : {}),
+        advancedLayout: reviewAdvancedLayout && nextMode !== "LOCAL",
+        ...(nextMode === "VISION" || reviewAdvancedLayout && nextMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
         ocrMode: nextMode,
         ...(normalizedPromptOverride ? { promptOverride: normalizedPromptOverride } : {})
       }));
@@ -2597,6 +2742,7 @@ export function BookBuilderPage() {
     setIsDeletingReviewPage(true);
     setIsReviewOcrMenuVisible(false);
     setIsReviewIndexVisible(false);
+    setIsFloatingReviewHeaderExpanded(false);
 
     try {
       const response = await deleteBookPage(accessToken, reviewBookId, reviewPageNumber);
@@ -2823,11 +2969,16 @@ export function BookBuilderPage() {
       return;
     }
 
-    if (selectedAppendBook) {
-      const pageQuery = appendAfterPageNumber && appendAfterPageNumber > 0
-        ? `?page=${appendAfterPageNumber}`
-        : "";
-      navigate(`/books/${selectedAppendBook.bookId}${pageQuery}`);
+    const appendBookId = selectedAppendBook?.bookId ?? requestedAppendBookId;
+    if (appendBookId) {
+      const backReviewPage = Number.isInteger(requestedInsertAfterPage) && requestedInsertAfterPage >= 1
+        ? requestedInsertAfterPage
+        : (appendAfterPageNumber && appendAfterPageNumber >= 1 ? appendAfterPageNumber : 1);
+      navigate({
+        hash: "#review-ocr",
+        pathname: "/builder",
+        search: `?reviewBookId=${encodeURIComponent(appendBookId)}&reviewPage=${encodeURIComponent(String(backReviewPage))}`
+      });
       return;
     }
 
@@ -2839,6 +2990,14 @@ export function BookBuilderPage() {
   const hasReviewImage = Boolean(reviewPageQuery.data?.page.hasSourceImage);
   const isReviewImageLoading = Boolean(reviewImageLoadingKey);
   const canDeleteReviewPage = selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF" || selectedReviewBook?.sourceType === "EPUB";
+  const canAppendReviewPages = selectedReviewBook?.sourceType === "IMAGES" && Boolean(reviewBookId);
+  const reviewAppendPagesLink = canAppendReviewPages
+    ? {
+      hash: "#append-pages",
+      pathname: "/builder",
+      search: `?appendBookId=${encodeURIComponent(reviewBookId)}&insertAfterPage=${encodeURIComponent(String(reviewPageNumber))}`
+    }
+    : null;
   const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
   const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
@@ -2973,10 +3132,10 @@ export function BookBuilderPage() {
             </div>
             {isAppendOnlyMode ? (
               <button
-                aria-label="Volver al lector"
+                aria-label="Volver a la edición"
                 className="secondary-button reader-header-icon-button"
                 onClick={handleBackFromAppend}
-                title="Volver al lector"
+                title="Volver a la edición"
                 type="button"
               >
                 <BackIcon />
@@ -3095,6 +3254,7 @@ export function BookBuilderPage() {
                           <button
                             aria-checked={createOcrMode === "TEXTRACT"}
                             className={createOcrMode === "TEXTRACT" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isCreating}
                             onClick={() => setCreateOcrMode("TEXTRACT")}
                             role="radio"
                             type="button"
@@ -3104,6 +3264,7 @@ export function BookBuilderPage() {
                           <button
                             aria-checked={createOcrMode === "VISION"}
                             className={createOcrMode === "VISION" ? "append-placement-option active" : "append-placement-option"}
+                            disabled={isCreating}
                             onClick={() => setCreateOcrMode("VISION")}
                             role="radio"
                             type="button"
@@ -3113,7 +3274,8 @@ export function BookBuilderPage() {
                           <button
                             aria-checked={createOcrMode === "LOCAL"}
                             className={createOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
-                            onClick={() => setCreateOcrMode("LOCAL")}
+                            disabled={isCreating}
+                            onClick={() => { setCreateOcrMode("LOCAL"); setCreateAdvancedLayout(false); }}
                             role="radio"
                             type="button"
                           >
@@ -3134,7 +3296,8 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
-                      {createOcrMode === "VISION" && ocrModelOptions.length > 0 ? (
+                      <AdvancedLayoutCheckbox value={createAdvancedLayout} onChange={setCreateAdvancedLayout} mode={createOcrMode} disabled={isCreating} modelLabel={reviewOcrModelLabel} />
+                      {(createOcrMode === "VISION" || createAdvancedLayout && createOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
                         <OcrModelSelect
                           disabled={isCreating}
                           models={ocrModelOptions}
@@ -3430,7 +3593,7 @@ export function BookBuilderPage() {
                             aria-checked={appendOcrMode === "LOCAL"}
                             className={appendOcrMode === "LOCAL" ? "append-placement-option active" : "append-placement-option"}
                             disabled={isAppending}
-                            onClick={() => setAppendOcrMode("LOCAL")}
+                            onClick={() => { setAppendOcrMode("LOCAL"); setAppendAdvancedLayout(false); }}
                             role="radio"
                             type="button"
                           >
@@ -3451,7 +3614,8 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
-                      {appendOcrMode === "VISION" && ocrModelOptions.length > 0 ? (
+                      <AdvancedLayoutCheckbox value={appendAdvancedLayout} onChange={setAppendAdvancedLayout} mode={appendOcrMode} disabled={isAppending} modelLabel={reviewOcrModelLabel} />
+                      {(appendOcrMode === "VISION" || appendAdvancedLayout && appendOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
                         <OcrModelSelect
                           disabled={isAppending}
                           models={ocrModelOptions}
@@ -3669,22 +3833,13 @@ export function BookBuilderPage() {
 
       {isReviewOnlyMode ? (
       <>
-      <section className="panel wide-panel review-ocr-panel" id="review-ocr">
+      <section className="panel wide-panel review-ocr-panel" id="review-ocr" ref={reviewPanelRef}>
         <div className="panel-header">
           <div>
             <p className="eyebrow">Edición</p>
             <h2>{selectedReviewBook?.title ?? "Cargando libro..."}</h2>
             {reviewActiveChapterTitle ? <p className="reader-chapter-title">{reviewActiveChapterTitle}</p> : null}
           </div>
-          <button
-            aria-label="Volver al lector"
-            className="secondary-button reader-header-icon-button"
-            onClick={handleBackFromReview}
-            title="Volver al lector"
-            type="button"
-          >
-            <BackIcon />
-          </button>
         </div>
 
         {reviewableBooks.length === 0 ? (
@@ -4156,72 +4311,76 @@ export function BookBuilderPage() {
               <PageNextIcon />
             </button>
 
-            {canDeleteReviewPage ? (
-              <button
-                aria-label={isDeletingReviewPage ? "Borrando página" : "Borrar página"}
-                className="reader-float-button danger"
-                disabled={isDeletingReviewPage || isSavingReview || !reviewBookId || isReviewCropMode}
-                onClick={() => void handleDeleteReviewPage()}
-                title={isDeletingReviewPage ? "Borrando página..." : "Borrar página"}
-                type="button"
-              >
-                <DeletePageIcon />
-              </button>
-            ) : null}
-
             {canRerunReviewOcr ? (
             <div className="review-floating-ocr-menu">
               {isReviewOcrMenuVisible ? (
-                <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" role="dialog">
+                <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" ref={reviewOcrPanelRef} role="dialog">
                   <p className="review-floating-ocr-title">Volver a reconocer con</p>
+                  <label>
+                    <span>Modo OCR</span>
+                    <select value={reviewOcrMode} disabled={isSavingReview || !reviewBookId || isReviewCropMode} onChange={(event) => {
+                      const mode = event.target.value as ImageOcrMode;
+                      setReviewOcrMode(mode);
+                      if (mode === "LOCAL") setReviewAdvancedLayout(false);
+                    }}>
+                      <option value="TEXTRACT">AWS Textract</option>
+                      <option value="VISION">Vision</option>
+                      <option value="LOCAL">LOCAL: tesseract.js</option>
+                    </select>
+                  </label>
+                  <AdvancedLayoutCheckbox value={reviewAdvancedLayout} onChange={setReviewAdvancedLayout} mode={reviewOcrMode} disabled={isSavingReview || !reviewBookId || isReviewCropMode} modelLabel={reviewOcrModelLabel} />
+                  {(reviewOcrMode === "VISION" || reviewAdvancedLayout && reviewOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
+                    <OcrModelSelect
+                      disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                      models={ocrModelOptions}
+                      onChange={setOcrModelOverride}
+                      value={selectedOcrModel}
+                    />
+                  ) : null}
                   <div className="review-ocr-option-stack">
-                    <div className="review-ocr-option-row">
-                      <button
-                        className={reviewOcrMode === "TEXTRACT" ? "review-ocr-option active" : "review-ocr-option"}
-                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                        onClick={() => void handleRerunOcr("TEXTRACT")}
-                        type="button"
-                      >
-                        <strong>IA: AWS Textract</strong>
-                        <ul className="review-ocr-option-list">
-                          <li>De pago.</li>
-                          <li>Gasto de este mes: {awsTextractCostLabel}</li>
-                        </ul>
-                      </button>
-                    </div>
-                    <div className="review-ocr-option-row">
-                      <button
-                        className={reviewOcrMode === "VISION" ? "review-ocr-option active" : "review-ocr-option"}
-                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                        onClick={() => void handleRerunOcr("VISION", reviewPromptOverride)}
-                        type="button"
-                      >
-                        <strong>IA: {reviewOcrModelLabel}</strong>
-                        <ul className="review-ocr-option-list">
-                          <li>{selectedOcrModelOption?.pricing ?? "De pago."}</li>
-                        </ul>
-                      </button>
-                      <button
-                        aria-expanded={isReviewPromptEditorOpen}
-                        aria-label={`Editar prompt de ${reviewOcrModelLabel}`}
-                        className={isReviewPromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
-                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                        onClick={() => setIsReviewPromptEditorOpen((current) => !current)}
-                        title={`Editar prompt de ${reviewOcrModelLabel}`}
-                        type="button"
-                      >
-                        <PromptIcon />
-                      </button>
-                    </div>
-                    {ocrModelOptions.length > 0 ? (
-                      <OcrModelSelect
-                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                        models={ocrModelOptions}
-                        onChange={setOcrModelOverride}
-                        value={selectedOcrModel}
-                      />
+                    {reviewOcrMode === "TEXTRACT" ? (
+                      <div className="review-ocr-option-row">
+                        <button
+                          className="review-ocr-option active"
+                          disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                          onClick={() => void handleRerunOcr("TEXTRACT")}
+                          type="button"
+                        >
+                          <strong>IA: AWS Textract</strong>
+                          <ul className="review-ocr-option-list">
+                            <li>De pago.</li>
+                            <li>Gasto de este mes: {awsTextractCostLabel}</li>
+                          </ul>
+                        </button>
+                      </div>
                     ) : null}
-                    {isReviewPromptEditorOpen ? (
+                    {reviewOcrMode === "VISION" ? (
+                      <div className="review-ocr-option-row">
+                        <button
+                          className="review-ocr-option active"
+                          disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                          onClick={() => void handleRerunOcr("VISION", reviewPromptOverride)}
+                          type="button"
+                        >
+                          <strong>IA: {reviewOcrModelLabel}</strong>
+                          <ul className="review-ocr-option-list">
+                            <li>{selectedOcrModelOption?.pricing ?? "De pago."}</li>
+                          </ul>
+                        </button>
+                        <button
+                          aria-expanded={isReviewPromptEditorOpen}
+                          aria-label={`Editar prompt de ${reviewOcrModelLabel}`}
+                          className={isReviewPromptEditorOpen ? "ocr-prompt-toggle active" : "ocr-prompt-toggle"}
+                          disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                          onClick={() => setIsReviewPromptEditorOpen((current) => !current)}
+                          title={`Editar prompt de ${reviewOcrModelLabel}`}
+                          type="button"
+                        >
+                          <PromptIcon />
+                        </button>
+                      </div>
+                    ) : null}
+                    {reviewOcrMode === "VISION" && isReviewPromptEditorOpen ? (
                       <OcrPromptEditor
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para volver a reconocer esta página. Si lo restableces, vuelve al mensaje user por defecto."
@@ -4230,17 +4389,19 @@ export function BookBuilderPage() {
                         value={reviewPromptOverride}
                       />
                     ) : null}
-                    <button
-                      className={reviewOcrMode === "LOCAL" ? "review-ocr-option active" : "review-ocr-option"}
-                      disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                      onClick={() => void handleRerunOcr("LOCAL")}
-                      type="button"
-                    >
-                      <strong>Sin IA: tesseract.js</strong>
-                      <ul className="review-ocr-option-list">
-                        <li>Gratuito.</li>
-                      </ul>
-                    </button>
+                    {reviewOcrMode === "LOCAL" ? (
+                      <button
+                        className="review-ocr-option active"
+                        disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                        onClick={() => void handleRerunOcr("LOCAL")}
+                        type="button"
+                      >
+                        <strong>Sin IA: tesseract.js</strong>
+                        <ul className="review-ocr-option-list">
+                          <li>Gratuito.</li>
+                        </ul>
+                      </button>
+                    ) : null}
                   </div>
                 </div>
               ) : null}
@@ -4253,6 +4414,7 @@ export function BookBuilderPage() {
                   : (isReviewOcrMenuVisible ? "reader-float-button review-ocr-text-button active" : "reader-float-button review-ocr-text-button")}
                 disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                 onClick={() => setIsReviewOcrMenuVisible((current) => !current)}
+                ref={reviewOcrToggleRef}
                 title={isRerunningOcr ? "Reconociendo OCR..." : "Opciones de OCR"}
                 type="button"
               >
@@ -4277,6 +4439,65 @@ export function BookBuilderPage() {
               {reviewOcrToast}
             </div>
           ) : null}
+          <div
+            className={isFloatingReviewHeaderExpanded ? "reader-header-floating-dock open" : "reader-header-floating-dock"}
+            ref={floatingReviewHeaderRef}
+            style={floatingReviewHeaderDockStyle ?? undefined}
+          >
+            <div className="reader-header-floating-primary-actions">
+              <button
+                aria-label="Volver al lector"
+                className="secondary-button link-button reader-header-icon-button reader-header-floating-action-button"
+                onClick={handleBackFromReview}
+                title="Volver al lector"
+                type="button"
+              >
+                <BackIcon />
+              </button>
+            </div>
+            {(reviewAppendPagesLink || canDeleteReviewPage) ? (
+              <div className="reader-header-floating-menu">
+                <button
+                  aria-expanded={isFloatingReviewHeaderExpanded}
+                  aria-label={isFloatingReviewHeaderExpanded ? "Cerrar acciones de edición" : "Abrir acciones de edición"}
+                  className="reader-header-floating-toggle"
+                  onClick={() => setIsFloatingReviewHeaderExpanded((current) => !current)}
+                  title={isFloatingReviewHeaderExpanded ? "Cerrar acciones" : "Abrir acciones"}
+                  type="button"
+                >
+                  {isFloatingReviewHeaderExpanded ? <CloseIcon /> : <ActionsMenuIcon />}
+                </button>
+                <div className={isFloatingReviewHeaderExpanded ? "reader-header-floating-dock-panel open" : "reader-header-floating-dock-panel"}>
+                  {reviewAppendPagesLink ? (
+                    <Link
+                      aria-label="Añadir páginas"
+                      className="secondary-button link-button reader-header-icon-button reader-header-floating-action-button"
+                      onClick={() => setIsFloatingReviewHeaderExpanded(false)}
+                      title="Añadir páginas"
+                      to={reviewAppendPagesLink}
+                    >
+                      <AddPagesIcon />
+                    </Link>
+                  ) : null}
+                  {canDeleteReviewPage ? (
+                    <button
+                      aria-label={isDeletingReviewPage ? "Borrando página" : "Borrar página"}
+                      className="danger-button reader-header-icon-button reader-header-floating-action-button"
+                      disabled={isDeletingReviewPage || isSavingReview || !reviewBookId || isReviewCropMode}
+                      onClick={() => {
+                        setIsFloatingReviewHeaderExpanded(false);
+                        void handleDeleteReviewPage();
+                      }}
+                      title={isDeletingReviewPage ? "Borrando página..." : "Borrar página"}
+                      type="button"
+                    >
+                      <DeletePageIcon />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </>
       ) : null}
       </>
