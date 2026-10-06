@@ -5273,22 +5273,23 @@ export function ReaderPage() {
                 />
               </div>
             ) : null}
-            <div className="reader-selection-actions">
+            <div className="reader-note-editor-actions">
               {sharableUsers.length > 0 ? (
                 <button
                   aria-expanded={isSelectionShareOpen}
                   aria-label={isSelectionShareOpen ? "Cerrar opciones para compartir nota" : isSelectionShared ? `Compartida con ${selectionSharedCount} ${selectionSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota"}
-                  className={`secondary-button reader-postit-share-btn ${isSelectionShared ? "shared" : ""} ${isSelectionShareOpen ? "active" : ""}`}
+                  className={`reader-note-icon-button reader-postit-share-btn ${isSelectionShared ? "shared" : ""} ${isSelectionShareOpen ? "active" : ""}`}
                   onClick={() => setIsSelectionShareOpen((prev) => !prev)}
                   title={isSelectionShared ? `Compartida con ${selectionSharedCount} ${selectionSharedCount === 1 ? "persona" : "personas"}` : "Compartir nota"}
                   type="button"
                 >
                   <ShareIcon />
-                  <span>{isSelectionShared ? `Compartida (${selectionSharedCount})` : "Compartir"}</span>
+                  {isSelectionShared ? <span className="reader-share-badge">{selectionSharedCount}</span> : null}
                 </button>
               ) : null}
               <button
-                className="secondary-button"
+                aria-label="Cancelar"
+                className="reader-note-icon-button"
                 onClick={() => {
                   setSelectionDraft(null);
                   setSelectionNoteText("");
@@ -5296,12 +5297,20 @@ export function ReaderPage() {
                   setIsSelectionShareOpen(false);
                   window.getSelection()?.removeAllRanges();
                 }}
+                title="Cancelar"
                 type="button"
               >
-                Cancelar
+                <CloseIcon />
               </button>
-              <button className="primary-button" disabled={isSavingSelection} onClick={() => void handleSaveSelection()} type="button">
-                {isSavingSelection ? "Guardando..." : "Guardar resaltado"}
+              <button
+                aria-label={isSavingSelection ? "Guardando resaltado" : "Guardar resaltado"}
+                className="reader-note-icon-button primary"
+                disabled={isSavingSelection}
+                onClick={() => void handleSaveSelection()}
+                title={isSavingSelection ? "Guardando..." : "Guardar resaltado"}
+                type="button"
+              >
+                <SaveIcon />
               </button>
             </div>
           </div>
