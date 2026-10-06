@@ -6082,9 +6082,10 @@ textarea {
 .reader-navigation-note-meta {
   display: flex;
   min-width: 0;
-  padding-left: 1.45rem;
-  align-items: center;
-  justify-content: space-between;
+  max-width: 100%;
+  padding-left: 0;
+  align-items: flex-start;
+  justify-content: flex-start;
   gap: 0.25rem 0.75rem;
   flex-wrap: wrap;
   color: var(--ink-muted);
@@ -6093,13 +6094,17 @@ textarea {
 
 .reader-navigation-note-meta span {
   min-width: 0;
+  max-width: 100%;
+  flex: 1 1 100%;
   font-size: 0.82rem;
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .reader-navigation-note-meta span:last-child {
-  margin-left: auto;
-  white-space: nowrap;
+  margin-left: 0;
+  white-space: normal;
 }
 
 .reader-navigation-chip {
@@ -6622,6 +6627,9 @@ textarea {
 .reader-postit-excerpt-block {
   display: grid;
   gap: 0.35rem;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(6px);
   padding: 0.65rem 0.85rem;
@@ -6646,11 +6654,15 @@ textarea {
 
 .reader-postit-excerpt-quote {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   font-size: 0.9rem;
   font-style: italic;
   color: #292524;
   line-height: 1.45;
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* 3. LOS BOTONES ABAJO */
