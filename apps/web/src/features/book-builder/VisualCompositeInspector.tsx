@@ -1,6 +1,9 @@
 import { useRef, useState } from "react";
 import type { VisualBlock, VisualCompositeContent, VisualPageDocument } from "../../app/api";
 import { flattenVisualLayout, moveVisualNode, reorderVisualBlock, separateVisualContent, updateVisualBlock, updateVisualNode, visualUnits, type VisualContainer } from "./visual-page";
+import { ReadAloudSwitch } from "./ReadAloudSwitch";
+import { AlignmentControl } from "./AlignmentControl";
+import { FontScaleControl } from "./FontScaleControl";
 
 function FragmentEditor({ block, index, onChange, onMark, geometryDisabled }: {
   block: VisualBlock; index: number; onChange: (patch: Partial<VisualBlock>) => void;
@@ -21,7 +24,7 @@ function FragmentEditor({ block, index, onChange, onMark, geometryDisabled }: {
     <div className="visual-format" role="toolbar" aria-label={`Formato del fragmento ${index + 1}`}>
       <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("**")} aria-label={`Negrita del fragmento ${index + 1}`}><strong>B</strong></button>
       <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("*")} aria-label={`Cursiva del fragmento ${index + 1}`}><em>I</em></button>
-      <label className="visual-check"><input type="checkbox" checked={block.readAloud} onChange={(event) => onChange({ readAloud: event.target.checked })} />Leer fragmento {index + 1}</label>
+      <ReadAloudSwitch checked={block.readAloud} onChange={(readAloud) => onChange({ readAloud })} onLabel={`Leer fragmento ${index + 1}`} offLabel={`No leer fragmento ${index + 1}`} />
       <button type="button" disabled={geometryDisabled} onClick={onMark}>Marcar zona del fragmento {index + 1}</button>
     </div>
   </section>;
@@ -58,8 +61,8 @@ export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, 
         <label>Nivel del titulo<select value={content.headingLevel ?? 1} onChange={(event) => patch({ headingLevel: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>T{level}</option>)}</select></label>
         <label className="visual-check"><input type="checkbox" checked={content.includeInToc} onChange={(event) => patch({ includeInToc: event.target.checked })} />Incluir en el indice</label>
       </> : null}
-      <label>Alineacion<select value={content.alignment ?? "left"} onChange={(event) => patch({ alignment: event.target.value as "left" | "center" | "right" })}><option value="left">Izquierda</option><option value="center">Centro</option><option value="right">Derecha</option></select></label>
-      <label>Escala de fuente: {content.fontScale ?? 1}<input type="range" min={0.5} max={3} step={0.05} value={content.fontScale ?? 1} onChange={(event) => patch({ fontScale: Number(event.target.value) })} /></label>
+      <AlignmentControl value={content.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
+      <FontScaleControl value={content.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} />
       <p className="helper-text">Una sola unidad visual. Los textos, zonas y preferencias originales se conservan por fragmento.</p>
       {members.map((member, index) => <FragmentEditor key={member.id} block={member} index={index} onChange={(patch) => onChange(updateVisualBlock(doc, member.id, patch))} onMark={() => onMarkGeometry(member.id)} geometryDisabled={geometryDisabled} />)}
       <button type="button" onClick={() => onChange(separateVisualContent(doc, node.id))}>Separar contenido</button>

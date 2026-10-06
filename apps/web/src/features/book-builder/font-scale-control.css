@@ -1,0 +1,55 @@
+.font-scale-control {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  margin-block: 0.65rem;
+}
+
+.font-scale-control input[type="range"] {
+  width: 100%;
+}
+
+.font-scale-presets {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.font-scale-presets button {
+  min-width: 2.75rem;
+  min-height: 2.5rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--visual-border, #bcb4a8);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.font-scale-presets button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.font-scale-presets button:not(:disabled):hover,
+.font-scale-presets button:focus-visible {
+  border-color: #216b91;
+  background: rgb(33 107 145 / 8%);
+  outline: none;
+}
+
+.font-scale-presets button:focus-visible {
+  outline: 2px solid #216b91;
+  outline-offset: 2px;
+}
+
+.font-scale-presets button[data-selected] {
+  color: #216b91;
+  border-color: currentColor;
+  background: rgb(33 107 145 / 12%);
+}
+
+[data-theme-mode="dark"] .font-scale-presets button[data-selected] {
+  color: #8fc9e6;
+}

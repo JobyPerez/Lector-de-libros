@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { PageElementRole, VisualBlock, VisualLayoutNode, VisualPageDocument } from "../../app/api";
 import { flattenVisualLayout, moveVisualNode, reorderVisualBlock, safeVisualImageSource, ungroupVisualNode, updateVisualBlock, updateVisualNode, visualUnits, type VisualContainer } from "./visual-page";
+import { ReadAloudSwitch } from "./ReadAloudSwitch";
+import { AlignmentControl } from "./AlignmentControl";
+import { FontScaleControl } from "./FontScaleControl";
 
 export function VisualImageSourceFields({ block, images, onChange }: { block: VisualBlock; images: VisualBlock[]; onChange: (patch: Partial<VisualBlock>) => void }) {
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +109,7 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
         }}><option value="text">Texto</option><option value="heading">Titulo</option><option value="image" disabled={block.kind !== "image" && !block.source}>Imagen</option></select></label>
         <label>Numero / orden<input key={`${block.id}:${number}`} type="number" min={1} max={units.length} defaultValue={number} onBlur={(event) => onChange(reorderVisualBlock(doc, block.id, Number(event.target.value)))} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); event.currentTarget.blur(); } }} /></label>
         <label className="visual-check"><input type="checkbox" checked={!block.active} onChange={(event) => patch({ active: !event.target.checked })} />Anular bloque (se puede restaurar)</label>
-        <label className="visual-check"><input type="checkbox" checked={block.readAloud} onChange={(event) => patch({ readAloud: event.target.checked })} />Leer en voz alta</label>
+        <ReadAloudSwitch checked={block.readAloud} onChange={(readAloud) => patch({ readAloud })} />
         <label>Funcion<select value={block.role} onChange={(event) => patch({ role: event.target.value as PageElementRole })}>{roles.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
         {block.kind === "heading" ? <>
           <label>Nivel del titulo<select value={block.headingLevel ?? 1} onChange={(event) => patch({ headingLevel: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>T{level}</option>)}</select></label>
@@ -122,8 +125,8 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
           <label>Ancho de imagen: {block.imageWidth ?? 100}%<input type="range" min={1} max={100} value={block.imageWidth ?? 100} onChange={(event) => patch({ imageWidth: Number(event.target.value) })} /></label>
           <VisualImageSourceFields key={block.id} block={block} images={doc.blocks} onChange={patch} />
         </>}
-        <label>Alineacion<select value={block.alignment ?? "left"} onChange={(event) => patch({ alignment: event.target.value as NonNullable<VisualBlock["alignment"]> })}><option value="left">Izquierda</option><option value="center">Centro</option><option value="right">Derecha</option></select></label>
-        {block.kind !== "image" ? <label>Escala de fuente: {block.fontScale ?? 1}<input type="range" min={0.5} max={3} step={0.05} value={block.fontScale ?? 1} onChange={(event) => patch({ fontScale: Number(event.target.value) })} /></label> : null}
+        <AlignmentControl value={block.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
+        {block.kind !== "image" ? <FontScaleControl value={block.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
         <button type="button" disabled={geometryDisabled} onClick={() => onMarkGeometry(block.id)}>Marcar zona en el original</button>
         <p className="helper-text">Mover o cambiar el ancho no altera la caja del original. Anular no modifica sus pixeles.</p>
       </> : node.type !== "block" ? <>

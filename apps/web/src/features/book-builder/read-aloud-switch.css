@@ -1,0 +1,66 @@
+.read-aloud-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.25rem 0.25rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 2.5rem;
+}
+
+.read-aloud-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.read-aloud-switch:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 3px;
+  border-radius: 0.35rem;
+}
+
+.read-aloud-track {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: #b9b2a4;
+  position: relative;
+  transition: background 0.15s ease;
+}
+
+.read-aloud-thumb {
+  position: absolute;
+  top: 0.15rem;
+  left: 0.15rem;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  background: #fffdf8;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 30%);
+  transition: transform 0.15s ease;
+}
+
+.read-aloud-switch[data-on] .read-aloud-track {
+  background: #216b91;
+}
+
+.read-aloud-switch[data-on] .read-aloud-thumb {
+  transform: translateX(1.25rem);
+}
+
+.read-aloud-text {
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+[data-theme-mode="dark"] .read-aloud-track {
+  background: #5a564c;
+}
+
+[data-theme-mode="dark"] .read-aloud-switch[data-on] .read-aloud-track {
+  background: #4f9ec2;
+}

@@ -1,0 +1,64 @@
+.alignment-control {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  margin-block: 0.65rem;
+}
+
+.alignment-label {
+  font-size: 0.9rem;
+}
+
+.alignment-icons {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.alignment-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0.35rem;
+  border: 1px solid var(--visual-border, #bcb4a8);
+  border-radius: 0.4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.alignment-icon-button svg {
+  width: 1.4rem;
+  height: 1.4rem;
+  pointer-events: none;
+}
+
+.alignment-icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.alignment-icon-button:not(:disabled):hover,
+.alignment-icon-button:focus-visible {
+  border-color: #216b91;
+  background: rgb(33 107 145 / 8%);
+  outline: none;
+}
+
+.alignment-icon-button:focus-visible {
+  outline: 2px solid #216b91;
+  outline-offset: 2px;
+}
+
+.alignment-icon-button[data-selected] {
+  color: #216b91;
+  border-color: currentColor;
+  background: rgb(33 107 145 / 12%);
+}
+
+[data-theme-mode="dark"] .alignment-icon-button[data-selected] {
+  color: #8fc9e6;
+}

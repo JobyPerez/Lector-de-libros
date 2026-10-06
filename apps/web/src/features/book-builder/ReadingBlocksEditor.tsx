@@ -3,6 +3,7 @@ import { useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { buildOcrPreviewHtml } from "./ocr-preview";
 import type { PageElementRole, ParagraphElementMetadata } from "../../app/api";
 import { editReadingBlock, explicitReadingBlocks, joinReadingBlocks, normalizeReadingRows, paragraphLines, readingElements, readingMetadata, splitReadingBlock, type ReadingBlock } from "./reading-blocks";
+import { ReadAloudSwitch } from "./ReadAloudSwitch";
 import "./reading-blocks.css";
 
 function BlockPreview({ block, accessToken, bookId }: { block: ReadingBlock; accessToken: string | null; bookId: string }) {
@@ -112,7 +113,7 @@ export function ReadingBlocksEditor({ blocks, onChange, editorRef, onSelection, 
           <label>Tipo <select value={element.role} disabled={disabled} onChange={(event) => updateMetadata(index, element.lineIndex, { role: event.target.value as PageElementRole })}>
             {([["header", "Cabecera"], ["body", "Cuerpo"], ["heading", "Titulo"], ["image", "Imagen"], ["imageCaption", "Pie de imagen"], ["footer", "Pie de pagina"], ["pageNumber", "Numero de pagina"]] as const).map(([role, label]) => <option key={role} value={role}>{label}</option>)}
           </select></label>
-          <label><input type="checkbox" checked={element.readAloud} disabled={disabled} onChange={(event) => updateMetadata(index, element.lineIndex, { readAloud: event.target.checked })} />Leer en voz alta</label>
+          <ReadAloudSwitch checked={element.readAloud} disabled={disabled} onChange={(readAloud) => updateMetadata(index, element.lineIndex, { readAloud })} />
           {onMarkGeometry && selectedElementKey === element.key ? <button type="button" disabled={disabled || geometryDisabled} onClick={() => onMarkGeometry(element.key)}>Marcar zona en original</button> : null}
         </div>
       </details>)}
