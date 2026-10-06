@@ -1147,6 +1147,14 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
 
+function isReaderKeyboardNavigationEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(target.closest("input,textarea,select,[contenteditable],[role='textbox'],[role='combobox'],[role='listbox']"));
+}
+
 function resolveReaderPopoverLayout(anchorRect: DOMRect) {
   const viewportHeight = typeof window === "undefined" ? 0 : window.innerHeight;
   const viewportWidth = typeof window === "undefined" ? 0 : window.innerWidth;
@@ -4539,6 +4547,101 @@ export function ReaderPage() {
     setAutoPlay(true);
     await playParagraph(nextParagraph, location.pageNumber, true);
   }
+
+  const goToPageRef = useRef(goToPage);
+  const goToParagraphRef = useRef(goToParagraph);
+  goToPageRef.current = goToPage;
+  goToParagraphRef.current = goToParagraph;
+
+  const readerKeyboardGuardRef = useRef({
+    activeReaderNote,
+    isAudioSettingsVisible,
+    isNavigationPanelVisible,
+    isPageJumpActive,
+    isScreenLockEnabled,
+    pageTurnDirection,
+    pendingPageTurnDirection,
+    selectedViewerImage,
+    selectionDraft
+  });
+  readerKeyboardGuardRef.current = {
+    activeReaderNote,
+    isAudioSettingsVisible,
+    isNavigationPanelVisible,
+    isPageJumpActive,
+    isScreenLockEnabled,
+    pageTurnDirection,
+    pendingPageTurnDirection,
+    selectedViewerImage,
+    selectionDraft
+  };
+
+  useEffect(() => {
+    function handleReaderKeyboardNavigation(event: KeyboardEvent) {
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+
+      const key = event.key;
+      const isPreviousParagraphKey = key === "ArrowLeft";
+      const isNextParagraphKey = key === "ArrowRight";
+      const isPreviousPageKey = key === "PageUp";
+      const isNextPageKey = key === "PageDown";
+      if (!isPreviousParagraphKey && !isNextParagraphKey && !isPreviousPageKey && !isNextPageKey) {
+        return;
+      }
+
+      if (isReaderKeyboardNavigationEditableTarget(event.target)) {
+        return;
+      }
+
+      const guards = readerKeyboardGuardRef.current;
+      if (guards.isScreenLockEnabled
+        || guards.pageTurnDirection
+        || guards.pendingPageTurnDirection
+        || guards.selectionDraft
+        || guards.activeReaderNote
+        || guards.isNavigationPanelVisible
+        || guards.isAudioSettingsVisible
+        || guards.selectedViewerImage
+        || guards.isPageJumpActive) {
+        return;
+      }
+
+      if ((isPreviousParagraphKey || isNextParagraphKey) && typeof window !== "undefined") {
+        const selection = window.getSelection();
+        if (selection && !selection.isCollapsed && selection.toString().trim()) {
+          return;
+        }
+      }
+
+      if (isPreviousParagraphKey) {
+        event.preventDefault();
+        void goToParagraphRef.current(-1);
+        return;
+      }
+
+      if (isNextParagraphKey) {
+        event.preventDefault();
+        void goToParagraphRef.current(1);
+        return;
+      }
+
+      if (isPreviousPageKey) {
+        event.preventDefault();
+        void goToPageRef.current(currentPageNumberRef.current - 1);
+        return;
+      }
+
+      event.preventDefault();
+      void goToPageRef.current(currentPageNumberRef.current + 1);
+    }
+
+    document.addEventListener("keydown", handleReaderKeyboardNavigation);
+    return () => {
+      document.removeEventListener("keydown", handleReaderKeyboardNavigation);
+    };
+  }, []);
 
   async function handleDeleteCurrentPage() {
     if (!accessToken || !pageQuery.data || isDeletingPage || !canEditBook) {

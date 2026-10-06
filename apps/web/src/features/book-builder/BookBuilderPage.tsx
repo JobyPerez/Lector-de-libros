@@ -437,6 +437,14 @@ function formatPageAnchor(pageNumber: number) {
   return `Pág. ${pageNumber}`;
 }
 
+function isReviewKeyboardNavigationEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return Boolean(target.closest("input,textarea,select,[contenteditable],[role='textbox'],[role='combobox'],[role='listbox']"));
+}
+
 function notePreview(note: ReaderNote) {
   const sourceExcerpt = note.highlightedText?.trim();
   if (sourceExcerpt) {
@@ -2697,6 +2705,75 @@ export function BookBuilderPage() {
     setReviewError(null);
     setIsReviewIndexVisible(false);
   }
+
+  const changeReviewPageRef = useRef(changeReviewPage);
+  changeReviewPageRef.current = changeReviewPage;
+
+  const reviewKeyboardGuardRef = useRef({
+    isAppendCameraModalOpen,
+    isCreateCameraModalOpen,
+    isDeletingReviewPage,
+    isRerunningOcr,
+    isReviewCropMode,
+    isReviewOnlyMode,
+    isReviewPageJumpActive,
+    isSavingReview,
+    isVisualEditorBusy,
+    scannerRequest,
+    selectedViewerImage
+  });
+  reviewKeyboardGuardRef.current = {
+    isAppendCameraModalOpen,
+    isCreateCameraModalOpen,
+    isDeletingReviewPage,
+    isRerunningOcr,
+    isReviewCropMode,
+    isReviewOnlyMode,
+    isReviewPageJumpActive,
+    isSavingReview,
+    isVisualEditorBusy,
+    scannerRequest,
+    selectedViewerImage
+  };
+
+  useEffect(() => {
+    function handleReviewKeyboardNavigation(event: KeyboardEvent) {
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+
+      if (event.key !== "PageUp" && event.key !== "PageDown") {
+        return;
+      }
+
+      if (isReviewKeyboardNavigationEditableTarget(event.target)) {
+        return;
+      }
+
+      const guards = reviewKeyboardGuardRef.current;
+      if (!guards.isReviewOnlyMode
+        || guards.isReviewCropMode
+        || guards.isVisualEditorBusy
+        || guards.isSavingReview
+        || guards.isDeletingReviewPage
+        || guards.isRerunningOcr
+        || guards.isReviewPageJumpActive
+        || guards.selectedViewerImage
+        || guards.scannerRequest
+        || guards.isCreateCameraModalOpen
+        || guards.isAppendCameraModalOpen) {
+        return;
+      }
+
+      event.preventDefault();
+      changeReviewPageRef.current(event.key === "PageUp" ? -1 : 1);
+    }
+
+    document.addEventListener("keydown", handleReviewKeyboardNavigation);
+    return () => {
+      document.removeEventListener("keydown", handleReviewKeyboardNavigation);
+    };
+  }, []);
 
   function cancelReviewPageJump() {
     setIsReviewPageJumpActive(false);
