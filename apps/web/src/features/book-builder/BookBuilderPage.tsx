@@ -868,6 +868,8 @@ export function BookBuilderPage() {
   const [isAppendCameraStarting, setIsAppendCameraStarting] = useState(false);
   const [isAppendCameraCapturing, setIsAppendCameraCapturing] = useState(false);
   const [scannerRequest, setScannerRequest] = useState<{ files: File[]; target: ScannerTarget } | null>(null);
+  const [shouldAdjustCreateBorders, setShouldAdjustCreateBorders] = useState(false);
+  const [shouldAdjustAppendBorders, setShouldAdjustAppendBorders] = useState(false);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("TEXTRACT");
   const [ocrModelOverride, setOcrModelOverride] = useState<OcrModelId | null>(null);
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
@@ -1561,7 +1563,11 @@ export function BookBuilderPage() {
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
     if (validFiles.length > 0) {
-      setScannerRequest({ files: validFiles, target: "create" });
+      if (shouldAdjustCreateBorders) {
+        setScannerRequest({ files: validFiles, target: "create" });
+      } else {
+        setSelectedCreateFiles((currentFiles) => [...currentFiles, ...validFiles]);
+      }
     }
 
     if (invalidFiles.length > 0) {
@@ -1593,7 +1599,12 @@ export function BookBuilderPage() {
     const invalidFiles = files.filter((file) => !isSupportedImageFile(file));
 
     if (validFiles.length > 0) {
-      setScannerRequest({ files: validFiles, target: "append" });
+      if (shouldAdjustAppendBorders) {
+        setScannerRequest({ files: validFiles, target: "append" });
+      } else {
+        resetAppendResumeState();
+        setSelectedAppendFiles((currentFiles) => [...currentFiles, ...validFiles]);
+      }
     }
 
     if (invalidFiles.length > 0) {
@@ -2988,6 +2999,17 @@ export function BookBuilderPage() {
                     type="file"
                   />
 
+                  <label style={{ alignItems: "center", display: "flex", flexDirection: "row", gap: "0.5rem" }}>
+                    <input
+                      checked={shouldAdjustCreateBorders}
+                      disabled={isCreating}
+                      onChange={(event) => setShouldAdjustCreateBorders(event.target.checked)}
+                      style={{ height: "1.1rem", width: "1.1rem" }}
+                      type="checkbox"
+                    />
+                    Ajustar bordes de la página
+                  </label>
+
                   <div className="selected-book-banner append-ocr-banner">
                     <span>Modo OCR</span>
                     <div className="ocr-prompt-trigger-anchor">
@@ -3211,6 +3233,17 @@ export function BookBuilderPage() {
                     ref={appendCameraInputRef}
                     type="file"
                   />
+
+                  <label style={{ alignItems: "center", display: "flex", flexDirection: "row", gap: "0.5rem" }}>
+                    <input
+                      checked={shouldAdjustAppendBorders}
+                      disabled={isAppending}
+                      onChange={(event) => setShouldAdjustAppendBorders(event.target.checked)}
+                      style={{ height: "1.1rem", width: "1.1rem" }}
+                      type="checkbox"
+                    />
+                    Ajustar bordes de la página
+                  </label>
 
                   {selectedAppendFiles.length > 0 ? (
                     <div className="file-pill-list file-pill-list-append">
