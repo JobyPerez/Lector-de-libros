@@ -348,11 +348,10 @@ export function UsersAdminPage() {
                   <div><strong>{managedUser.totalBooks}</strong><span>propios</span></div>
                   <div><strong>{managedUser.listenedBooks}</strong><span>escuchados</span></div>
                   <div><strong>{formatDuration(Number(managedUser.listeningSeconds))}</strong><span>escucha</span></div>
-                  <div><strong>{formatDate(managedUser.lastLoginAt)}</strong><span>última conexión</span></div>
+                  <div><strong>{formatDate(managedUser.lastActivityAt)}</strong><span>última actividad</span></div>
                 </div>
 
-                <div className="user-card-footer">
-                  <span className="subdued">Actividad: {formatDate(managedUser.lastActivityAt)}</span>
+                <div className="user-card-footer" style={{ justifyContent: "flex-end" }}>
                   <div className="inline-actions">
                     <button className={isSelected ? "primary-button" : "secondary-button"} disabled={isUserRemoving} onClick={(event) => showActivity(managedUser, event.currentTarget)} type="button">Actividad</button>
                     <button className="text-button" disabled={isUserRemoving} onClick={() => startEditing(managedUser)} type="button">Editar</button>
