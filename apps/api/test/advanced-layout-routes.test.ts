@@ -153,6 +153,69 @@ test("OCR flow defaults false and initial/append persistence uses canonical DFS 
   }
 });
 
+test("append after failed OCR saves the original image as PENDING without invoking OCR again", async () => {
+  const schema = readFileSync(new URL("../sql/001_initial_schema.sql", import.meta.url), "utf8");
+  const constraint = schema.match(/CONSTRAINT ck_book_pages_ocr_status CHECK \(ocr_status IN \(([^)]+)\)\)/u);
+  assert.ok(constraint);
+  const allowedStatuses = [...constraint[1]!.matchAll(/'([^']+)'/gu)].map((match) => match[1]);
+  for (const advancedLayout of [false, true]) {
+    const calls: { sql: string; binds?: any }[] = [];
+    let ocrCalls = 0;
+    const image = { buffer: Buffer.from("original image"), fileName: "page.png", mimeType: "image/png" };
+    const connection = {
+      execute: async (sql: string, binds: any) => {
+        if (sql.includes("INSERT INTO book_pages")) assert.ok(allowedStatuses.includes(binds.ocrStatus), binds.ocrStatus);
+        calls.push({ sql, binds });
+        return { rows: [] };
+      },
+      commit: async () => { calls.push({ sql: "commit" }); },
+      rollback: async () => { calls.push({ sql: "rollback" }); },
+      close: async () => { calls.push({ sql: "close" }); }
+    };
+    const { insertProcessedImagePages } = functions(["insertProcessedImagePages"], {
+      ...common, computeChecksum: () => "checksum", insertContentImageAssets: async () => undefined
+    });
+    const run = handler("post", "/:bookId/import-images", {
+      importImagesParamsSchema: z.object({ bookId: z.string() }),
+      importImagesQuerySchema: z.object({ afterPage: z.number() }),
+      importImagesFieldsSchema: schemas.importImagesFieldsSchema,
+      collectMultipartForm: async (request: any) => ({ fields: request.body, files: [image] }),
+      ensureImageFiles: (files: unknown) => files,
+      getConnection: async () => connection,
+      findAccessibleBook: async () => ({ bookId: "book", sourceType: "IMAGES", languageCode: "es", totalPages: 3, totalParagraphs: 10 }),
+      getEffectiveUserAiCredentials: async () => ({}),
+      isImportImagesCancellationRequested: () => false,
+      ocrImageFiles: async () => { ocrCalls++; throw new Error("OCR provider failed"); },
+      countParagraphsUpToPage: async () => 10,
+      shiftSubsequentPageNumbers: async () => undefined,
+      shiftSubsequentSequenceNumbers: async () => undefined,
+      shiftSubsequentRelatedReferences: async () => undefined,
+      insertProcessedImagePages
+    });
+    const request = { currentUser: { userId: "editor" }, params: { bookId: "book" }, query: { afterPage: 3 }, body: { advancedLayout } };
+    const reply = { statusCode: 200, body: undefined as any, status(code: number) { this.statusCode = code; return this; }, send(body: any) { this.body = body; return this; } };
+    await assert.rejects(run(request, reply), /OCR provider failed/u);
+    assert.deepEqual(calls.map(({ sql }) => sql), ["rollback", "close"]);
+    calls.length = 0;
+    await run({ ...request, body: { advancedLayout, skipOcr: true } }, reply);
+    assert.equal(ocrCalls, 1);
+    assert.equal(reply.statusCode, 201);
+    assert.equal(reply.body.addedPages, 1);
+    assert.equal(reply.body.addedParagraphs, 0);
+    assert.equal(reply.body.nextAfterPage, 4);
+    const page = calls.find(({ sql }) => sql.includes("INSERT INTO book_pages"))!.binds;
+    assert.equal(page.ocrStatus, "PENDING");
+    assert.equal(page.pageNumber, 4);
+    assert.equal(page.visualDocumentJson, null);
+    assert.equal(page.rawText, "");
+    const file = calls.find(({ sql }) => sql.includes("'PAGE_IMAGE'"))!.binds;
+    assert.deepEqual(file.contentBlob, image.buffer);
+    assert.equal(page.sourceFileId, file.fileId);
+    assert.ok(!calls.some(({ sql }) => sql.includes("INSERT INTO book_paragraphs") || sql === "rollback"));
+    assert.deepEqual(calls.slice(-2).map(({ sql }) => sql), ["commit", "close"]);
+  }
+});
+
 function rerunSetup(failure?: "provider" | "missing-document" | "invalid-document" | "stale", configure?: (generated: VisualPageDocument, existing: any[], page: any) => void) {
   const generated = document();
   const existing = ["Stable paragraph identity", "Archived unmatched annotation"].map((paragraphText, index) => ({

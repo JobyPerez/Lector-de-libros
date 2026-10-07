@@ -3599,7 +3599,7 @@ async function insertProcessedImagePages(
   startingSequenceNumber: number
 ): Promise<{ addedPages: number; addedParagraphs: number }> {
   for (const page of processedPages) {
-    if (page.advancedLayout && page.ocrStatus !== "PENDING_OCR" && !page.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
+    if (page.advancedLayout && page.ocrStatus !== "PENDING" && !page.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
     if (page.visualDocument) renderVisualDocument(page.visualDocument, { includeInactive: true });
   }
   const coverCountResult = await connection.execute(
@@ -4962,7 +4962,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             ...(payload.ocrModel ?? aiCredentials.opencodeOcrModel ? { ocrModel: (payload.ocrModel ?? aiCredentials.opencodeOcrModel) as string } : {}),
             editedText: "",
             htmlContent: null,
-            ocrStatus: "PENDING_OCR",
+            ocrStatus: "PENDING",
             paragraphs: [],
             rawText: ""
           }]
