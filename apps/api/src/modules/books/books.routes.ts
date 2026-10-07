@@ -22,8 +22,9 @@ import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, hasValidReadingBlockMarkers, normalizeWhitespace } from "./rich-content.js";
 import { matchParagraphsWithExplicitIds } from "./paragraph-ids.js";
+import { parsePageStyle } from "./page-style.js";
 import { annotatePageElementHtml, geometrySchema, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml, type ParagraphElementMetadata } from "./page-elements.js";
-import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualPageDocument } from "./visual-document.js";
+import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualLayoutNode, type VisualPageDocument } from "./visual-document.js";
 import { generateAiRequestResponse, generateSectionSummary, getDefaultBookAiRequestPrompt, getDefaultSectionAiRequestPrompt, getDefaultSectionSummaryPrompt, type AiRequestKind } from "./section-summary.js";
 
 const createBookSchema = z.object({
@@ -48,7 +49,7 @@ const ocrPromptOverrideSchema = z.preprocess(
 );
 
 const booleanFormFieldSchema = z.preprocess(
-  (value) => value === true || value === "true" || value === "1",
+  (value) => value === "true" || value === "1" ? true : value === "false" || value === "0" ? false : value,
   z.boolean()
 );
 
@@ -56,6 +57,7 @@ const customOcrModelSchema = z.string().trim().min(1).max(255);
 const customSummaryModelSchema = z.string().trim().min(1).max(255);
 
 const imageBookFieldsSchema = z.object({
+  advancedLayout: booleanFormFieldSchema.default(false),
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
@@ -66,6 +68,7 @@ const imageBookFieldsSchema = z.object({
 });
 
 const importImagesFieldsSchema = z.object({
+  advancedLayout: booleanFormFieldSchema.default(false),
   ocrModel: customOcrModelSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
   promptOverride: ocrPromptOverrideSchema,
@@ -161,6 +164,7 @@ const updateOcrPageSchema = z.object({
 });
 
 const rerunOcrPageSchema = z.object({
+  advancedLayout: z.boolean().default(false),
   expectedUpdatedAt: z.string().min(1).max(100).optional(),
   ocrModel: customOcrModelSchema.optional(),
   ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
@@ -192,6 +196,12 @@ type UploadedBinaryFile = {
 };
 
 type ProcessedImagePage = UploadedBinaryFile & {
+  advancedLayout?: boolean;
+  ocrMode?: ImageOcrMode;
+  ocrModel?: string;
+  languageCode?: BookLanguageCode;
+  visualDocument?: VisualPageDocument;
+  paragraphIds?: string[];
   paragraphMetadata?: ParagraphElementMetadata[];
   editedText: string;
   htmlContent: string | null;
@@ -1977,7 +1987,8 @@ async function ocrImageFiles(
     totalFiles: number;
     waitMessage: string;
     waitReason: OcrWaitReason;
-  }) => void
+  }) => void,
+  advancedLayout = false
 ): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
 
@@ -1995,6 +2006,7 @@ async function ocrImageFiles(
     while (true) {
       try {
         ocrResult = await runOcrOnImage(file.buffer, file.fileName, file.mimeType, {
+          advancedLayout,
           awsCredentials,
           language,
           ...(model ? { model } : {}),
@@ -2034,8 +2046,12 @@ async function ocrImageFiles(
       }
     }
 
+    if (advancedLayout && !ocrResult.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
     pages.push({
       ...file,
+      advancedLayout, ocrMode, languageCode: language, ...(model ? { ocrModel: model } : {}),
+      ...(ocrResult.visualDocument ? { visualDocument: visualPageDocumentSchema.parse(ocrResult.visualDocument) } : {}),
+      ...(ocrResult.paragraphIds ? { paragraphIds: ocrResult.paragraphIds } : {}),
       editedText: ocrResult.editedText,
       htmlContent: ocrResult.htmlContent,
       paragraphs: ocrResult.paragraphs,
@@ -3251,12 +3267,13 @@ export async function replaceBookPageParagraphs(
     paragraphMetadata?: ParagraphElementMetadata[];
     requestedParagraphIds?: string[];
     visualDocument?: VisualPageDocument;
+    existingParagraphs?: PageParagraphRecord[];
     rawText: string;
     sourceImageRotation?: ImageRotation;
   }
 ): Promise<void> {
   const suppliedMetadata = options.paragraphMetadata === undefined ? undefined : normalizeParagraphMetadata(options.paragraphMetadata, options.paragraphs.length);
-  const existingParagraphs = await listPageParagraphs(connection, options.bookId, options.pageNumber);
+  const existingParagraphs = options.existingParagraphs ?? await listPageParagraphs(connection, options.bookId, options.pageNumber);
   const pageBookmarks = await listPageBookmarks(connection, options.bookId, options.pageNumber);
   const pageHighlights = await listPageHighlights(connection, options.bookId, options.pageNumber);
   const pageNotes = await listPageNotes(connection, options.bookId, options.pageNumber);
@@ -3303,6 +3320,9 @@ export async function replaceBookPageParagraphs(
     options.requestedParagraphIds ? () => new Map() : matchReplacementParagraphs);
   for (const [existingParagraphId, replacementParagraph] of paragraphMatches) {
     replacementParagraph.paragraphId = existingParagraphId;
+  }
+  if (options.visualDocument && existingParagraphs.some((paragraph) => !paragraphMatches.has(paragraph.paragraphId))) {
+    throw Object.assign(new Error("El documento visual debe conservar todos los parrafos anteriores, aunque sean inactivos."), { statusCode: 400 });
   }
   if (!options.visualDocument) {
     for (const previous of existingParagraphs) {
@@ -3578,6 +3598,10 @@ async function insertProcessedImagePages(
   startingPageNumber: number,
   startingSequenceNumber: number
 ): Promise<{ addedPages: number; addedParagraphs: number }> {
+  for (const page of processedPages) {
+    if (page.advancedLayout && page.ocrStatus !== "PENDING_OCR" && !page.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
+    if (page.visualDocument) renderVisualDocument(page.visualDocument, { includeInactive: true });
+  }
   const coverCountResult = await connection.execute(
     `
       SELECT COUNT(*) AS "coverCount"
@@ -3645,13 +3669,20 @@ async function insertProcessedImagePages(
   for (const processedPage of processedPages) {
     const fileId = randomUUID();
     const pageId = randomUUID();
+    const document = processedPage.visualDocument ? visualPageDocumentSchema.parse(processedPage.visualDocument) : undefined;
     const externalized = externalizeContentImages([
       processedPage.rawText,
       processedPage.htmlContent ?? "",
       processedPage.editedText,
-      ...processedPage.paragraphs
+      ...processedPage.paragraphs,
+      ...(document ? document.blocks.map((block) => block.source ?? "") : [])
     ]);
-    const externalizedParagraphs = externalized.contents.slice(3);
+    if (document) document.blocks.forEach((block, index) => {
+      if (block.source) block.source = externalized.contents[3 + processedPage.paragraphs.length + index]!;
+    });
+    const rendered = document ? renderVisualDocument(document, { includeInactive: true,
+      ...(processedPage.languageCode ? { languageCode: processedPage.languageCode } : {}) }) : undefined;
+    const externalizedParagraphs = rendered?.paragraphs ?? externalized.contents.slice(3);
 
     await connection.execute(
       `
@@ -3700,7 +3731,7 @@ async function insertProcessedImagePages(
           html_content,
           edited_text,
           source_image_rotation,
-          ocr_status
+          ocr_status, visual_document_json, source_html_content
         ) VALUES (
           :pageId,
           :bookId,
@@ -3710,26 +3741,28 @@ async function insertProcessedImagePages(
           :htmlContent,
           :editedText,
           0,
-          :ocrStatus
+          :ocrStatus, :visualDocumentJson, :sourceHtmlContent
         )
       `,
       {
         bookId,
-        editedText: externalized.contents[2] ?? processedPage.editedText,
-        htmlContent: processedPage.htmlContent === null
+        editedText: rendered?.editedText ?? externalized.contents[2] ?? processedPage.editedText,
+        htmlContent: rendered?.htmlContent ?? (processedPage.htmlContent === null
           ? null
-          : externalized.contents[1] ?? processedPage.htmlContent,
+          : externalized.contents[1] ?? processedPage.htmlContent),
+        visualDocumentJson: document ? JSON.stringify(document) : null,
+        sourceHtmlContent: document ? externalized.contents[1] || null : null,
         ocrStatus: processedPage.ocrStatus ?? "READY",
         pageId,
         pageNumber,
-        rawText: externalized.contents[0] ?? processedPage.rawText,
+        rawText: rendered?.rawText ?? externalized.contents[0] ?? processedPage.rawText,
         sourceFileId: fileId
       }
     );
 
     await insertContentImageAssets(connection, bookId, pageNumber, externalized.assets);
 
-    const paragraphMetadata = normalizeParagraphMetadata(processedPage.paragraphMetadata, externalizedParagraphs.length);
+    const paragraphMetadata = normalizeParagraphMetadata(rendered?.paragraphMetadata ?? processedPage.paragraphMetadata, externalizedParagraphs.length);
     for (const [paragraphIndex, paragraphText] of externalizedParagraphs.entries()) {
       const metrics = calculateParagraphReadingMetrics(paragraphText);
       const metadata = paragraphMetadata[paragraphIndex]!;
@@ -3744,7 +3777,7 @@ async function insertProcessedImagePages(
             sequence_number,
             paragraph_text,
             word_count,
-            tts_character_count, element_role, read_aloud, geometry_json
+            tts_character_count, element_role, read_aloud, geometry_json, is_active, include_in_toc, image_width_pct
           ) VALUES (
             :paragraphId,
             :bookId,
@@ -3754,7 +3787,7 @@ async function insertProcessedImagePages(
             :sequenceNumber,
             :paragraphText,
             :wordCount,
-            :characterCount, :elementRole, :readAloud, :geometryJson
+            :characterCount, :elementRole, :readAloud, :geometryJson, :active, :includeInToc, :imageWidth
           )
         `,
         {
@@ -3762,10 +3795,13 @@ async function insertProcessedImagePages(
           characterCount: metrics.characterCount,
           elementRole: metadata.role,
           readAloud: metadata.readAloud ? 1 : 0,
+          active: metadata.active === false ? 0 : 1,
+          includeInToc: metadata.includeInToc == null ? null : metadata.includeInToc ? 1 : 0,
+          imageWidth: metadata.imageWidth ?? null,
           geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
           pageId,
           pageNumber,
-          paragraphId: randomUUID(),
+          paragraphId: rendered?.paragraphIds[paragraphIndex] ?? randomUUID(),
           paragraphNumber: paragraphIndex + 1,
           paragraphText,
           sequenceNumber,
@@ -3805,6 +3841,9 @@ async function insertProcessedImagePages(
         jobId: randomUUID(),
         pageId,
         payloadJson: JSON.stringify({
+          advancedLayout: processedPage.advancedLayout ?? false,
+          ocrMode: processedPage.ocrMode ?? null,
+          ocrModel: processedPage.ocrModel ?? null,
           fileName: processedPage.fileName,
           mimeType: processedPage.mimeType,
           pageNumber
@@ -4718,6 +4757,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const payload = imageBookFieldsSchema.parse({
       authorName: multipartForm.fields.authorName,
       languageCode: multipartForm.fields.languageCode,
+      advancedLayout: multipartForm.fields.advancedLayout,
       ocrModel: multipartForm.fields.ocrModel,
       ocrMode: multipartForm.fields.ocrMode,
       promptOverride: multipartForm.fields.promptOverride,
@@ -4730,7 +4770,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       accessKeyId: aiCredentials.awsAccessKeyId,
       region: aiCredentials.awsRegion,
       secretAccessKey: aiCredentials.awsSecretAccessKey
-    }, aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey);
+    }, aiCredentials.opencodeOcrApiKey ?? aiCredentials.opencodeApiKey, undefined, undefined, payload.advancedLayout);
     const connection = await getConnection();
     const bookId = randomUUID();
 
@@ -4828,6 +4868,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const query = importImagesQuerySchema.parse(request.query);
     const multipartForm = await collectMultipartForm(request);
     const payload = importImagesFieldsSchema.parse({
+      advancedLayout: multipartForm.fields.advancedLayout,
       ocrModel: multipartForm.fields.ocrModel,
       ocrMode: multipartForm.fields.ocrMode,
       promptOverride: multipartForm.fields.promptOverride,
@@ -4916,6 +4957,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         const processedPages = payload.skipOcr
           ? [{
             ...imageFile,
+            advancedLayout: payload.advancedLayout,
+            ocrMode: payload.ocrMode,
+            ...(payload.ocrModel ?? aiCredentials.opencodeOcrModel ? { ocrModel: (payload.ocrModel ?? aiCredentials.opencodeOcrModel) as string } : {}),
             editedText: "",
             htmlContent: null,
             ocrStatus: "PENDING_OCR",
@@ -4975,7 +5019,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 updatedAt: Date.now(),
                 userId: currentUser.userId
               });
-            }
+            },
+            payload.advancedLayout
           );
 
         const processedPage = processedPages[0];
@@ -6100,6 +6145,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       if (payload.expectedUpdatedAt !== undefined && page.updatedAt !== payload.expectedUpdatedAt) {
         return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
+      const html = load(page.htmlContent ?? "", {}, false);
+      if (page.visualDocumentJson
+        || html("[data-image-alt-separated]").length > 0
+        || html("[style]").toArray().some((node) => parsePageStyle(html(node).attr("style") ?? ""))) {
+        return reply.status(409).send({ message: "Esta pagina contiene un documento visual, estilos editoriales o descripciones de imagen independientes. Utiliza el editor visual para guardar los cambios sin perder estilos, maquetacion ni pies de imagen." });
+      }
       const pageEmbeddedImages = extractEmbeddedImageSources(page.htmlContent);
       const richPage = buildRichPageFromEditableText(payload.editedText, {
         embeddedImages: pageEmbeddedImages,
@@ -6189,6 +6240,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
 
+      const previousParagraphs = payload.advancedLayout ? await listPageParagraphs(connection, params.bookId, params.pageNumber) : [];
+      if (payload.advancedLayout && previousParagraphs.length >= 500) {
+        return reply.status(400).send({ message: "El OCR avanzado requiere espacio para conservar los parrafos anteriores (limite de 500 bloques)." });
+      }
       const sourceFileResult = await connection.execute(
         `
           SELECT
@@ -6223,6 +6278,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         sourceFile.fileName ?? `page-${params.pageNumber}.png`,
         sourceFile.mimeType,
         {
+          advancedLayout: payload.advancedLayout,
+          ...(payload.advancedLayout ? { advancedLayoutLimits: { maxBlocks: 500 - previousParagraphs.length, maxDepth: 7 } } : {}),
           awsCredentials: {
             accessKeyId: aiCredentials.awsAccessKeyId,
             region: aiCredentials.awsRegion,
@@ -6243,34 +6300,93 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
 
+      let document: VisualPageDocument | undefined;
+      if (payload.advancedLayout) {
+        if (!ocrResult.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
+        document = visualPageDocumentSchema.parse(ocrResult.visualDocument);
+        const rendered = renderVisualDocument(document, { includeInactive: true, languageCode: book.languageCode });
+        const replacements = rendered.paragraphs.map((paragraphText, index) => ({
+          paragraphText, paragraphId: rendered.paragraphIds[index]!, paragraphNumber: index + 1, sequenceNumber: index + 1,
+          ...calculateParagraphReadingMetrics(paragraphText)
+        }));
+        const matches = matchReplacementParagraphs(previousParagraphs, replacements);
+        const remapped = new Map<string, string>();
+        for (const previous of previousParagraphs) {
+          const replacement = matches.get(previous.paragraphId);
+          if (!replacement) continue;
+          const block = document.blocks.find((block) => block.id === replacement.paragraphId)!;
+          remapped.set(block.id, previous.paragraphId);
+          block.id = previous.paragraphId;
+          block.active = previous.active !== false;
+          block.readAloud = previous.readAloud;
+          if (previous.includeInToc != null) block.includeInToc = previous.includeInToc;
+        }
+        const remap = (node: VisualLayoutNode) => {
+          if (node.type === "block") node.blockId = remapped.get(node.blockId) ?? node.blockId;
+          else node.children.forEach(remap);
+        };
+        remap(document.layout);
+        const previousDocument = page.visualDocumentJson ? visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson))
+          : buildVisualDocumentFromPage(page.htmlContent, previousParagraphs);
+        const inactiveLeaves: VisualLayoutNode[] = [];
+        for (const previous of previousParagraphs) {
+          if (matches.has(previous.paragraphId)) continue;
+          const block = previousDocument.blocks.find((block) => block.id === previous.paragraphId)!;
+          const { sourceKey: _sourceKey, ...preserved } = block;
+          document.blocks.push({ ...preserved, active: false });
+          inactiveLeaves.push({ id: randomUUID(), type: "block", blockId: previous.paragraphId });
+        }
+        if (inactiveLeaves.length) {
+          if (document.layout.type === "column" && !document.layout.content && !document.layout.semantic) {
+            document.layout.children.push(...inactiveLeaves);
+            document.layout.weights?.push(...inactiveLeaves.map(() => 1));
+          } else {
+            document.layout = { id: randomUUID(), type: "column", children: [document.layout, ...inactiveLeaves] };
+          }
+        }
+        document = visualPageDocumentSchema.parse(document);
+      }
       const externalized = externalizeContentImages([
         ocrResult.editedText,
         ocrResult.htmlContent ?? "",
         ocrResult.rawText,
-        ...ocrResult.paragraphs
+        ...ocrResult.paragraphs,
+        ...(document ? document.blocks.map((block) => block.source ?? "") : [])
       ]);
+      if (document) document.blocks.forEach((block, index) => {
+        if (block.source) block.source = externalized.contents[3 + ocrResult.paragraphs.length + index]!;
+      });
+      const rendered = document ? renderVisualDocument(document, { includeInactive: true, languageCode: book.languageCode }) : undefined;
 
       await insertContentImageAssets(connection, params.bookId, params.pageNumber, externalized.assets);
 
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,
-        editedText: externalized.contents[0] ?? ocrResult.editedText,
-        htmlContent: ocrResult.htmlContent === null
+        editedText: rendered?.editedText ?? externalized.contents[0] ?? ocrResult.editedText,
+        htmlContent: rendered?.htmlContent ?? (ocrResult.htmlContent === null
           ? null
-          : externalized.contents[1] ?? ocrResult.htmlContent,
+          : externalized.contents[1] ?? ocrResult.htmlContent),
         ocrStatus: "READY",
         page,
         pageNumber: params.pageNumber,
-        paragraphs: externalized.contents.slice(3),
-        ...("paragraphMetadata" in ocrResult ? { paragraphMetadata: ocrResult.paragraphMetadata as ParagraphElementMetadata[] } : {}),
-        rawText: externalized.contents[2] ?? ocrResult.rawText
+        paragraphs: rendered?.paragraphs ?? externalized.contents.slice(3),
+        ...(rendered && document ? { paragraphMetadata: rendered.paragraphMetadata, requestedParagraphIds: rendered.paragraphIds,
+          visualDocument: document, existingParagraphs: previousParagraphs }
+          : "paragraphMetadata" in ocrResult ? { paragraphMetadata: ocrResult.paragraphMetadata as ParagraphElementMetadata[] } : {}),
+        rawText: rendered?.rawText ?? externalized.contents[2] ?? ocrResult.rawText
+      });
+      if (document) await connection.execute(`UPDATE book_pages SET source_html_content = :sourceHtmlContent
+        WHERE page_id = :pageId AND source_html_content IS NULL`, {
+        pageId: page.pageId,
+        sourceHtmlContent: { val: rendered!.htmlContent, type: oracledb.CLOB }
       });
 
       await recordUserActivity(connection, {
         action: "PAGE_OCR_RERUN",
         bookId: params.bookId,
         bookTitle: book.title,
-        detail: payload.ocrMode,
+        detail: JSON.stringify({ ocrMode: payload.ocrMode, advancedLayout: payload.advancedLayout,
+          ocrModel: payload.ocrModel ?? aiCredentials.opencodeOcrModel ?? null }),
         pageNumber: params.pageNumber,
         userId: request.currentUser.userId
       });

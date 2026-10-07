@@ -7,6 +7,8 @@ import { z } from "zod";
 import { annotatePageElementHtml, geometrySchema, normalizeParagraphMetadata, pageElementRoles, paragraphElementMetadataSchema } from "../src/modules/books/page-elements.js";
 import { normalizeImportedPageParagraphs } from "../src/modules/books/book-import.js";
 import { matchParagraphsWithExplicitIds } from "../src/modules/books/paragraph-ids.js";
+import { parsePageStyle } from "../src/modules/books/page-style.js";
+import { visualPageDocumentSchema } from "../src/modules/books/visual-document.js";
 
 const routes = readFileSync(new URL("../src/modules/books/books.routes.ts", import.meta.url), "utf8");
 const source = ts.createSourceFile("books.routes.ts", routes, ts.ScriptTarget.Latest, true);
@@ -195,7 +197,7 @@ function pageSaveSetup(kind: "ocr" | "image" | "rerun-ocr", options: { changedDu
   };
   const richPage = { editedText: "edited", htmlContent: "<p>edited</p>", rawText: "edited", paragraphs: ["edited"] };
   const dependencies = {
-    z,
+    z, load, parsePageStyle, visualPageDocumentSchema,
     pageParamsSchema: z.object({ bookId: z.string(), pageNumber: z.number() }),
     updateOcrPageSchema: z.object({ editedText: z.string().min(1), expectedUpdatedAt: z.string().min(1).max(100).optional() }),
     rerunOcrPageSchema: z.object({ expectedUpdatedAt: z.string().min(1).max(100).optional(), ocrMode: z.string().default("TEXTRACT") }),

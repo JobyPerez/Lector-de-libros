@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { SUMMARY_AI_MODEL_IDS, getAiModel, type SummaryAiModelId } from "../../config/ai-models.js";
+import { SUMMARY_AI_MODEL_IDS, getAiModel, isFreeZenModelId, type SummaryAiModelId } from "../../config/ai-models.js";
 import { appEnv } from "../../config/env.js";
 import {
   getGoogleAiNativeModelId,
@@ -9,11 +9,16 @@ import {
   isGoogleAiModel
 } from "../../config/google-ai.js";
 import {
+  extractResponsesApiText,
   getOpenCodeChatCompletionsEndpoint,
   getOpenCodeGeminiEndpoint,
   getOpenCodeGeminiRequestHeaders,
   getOpenCodeRequestHeaders,
-  isGeminiModel
+  isGeminiModel,
+  isResponsesApiModel,
+  OPENCODE_RESPONSES_ENDPOINT,
+  resolveOpenCodeChatEndpoints,
+  type ResponsesApiResponse
 } from "../../config/opencode.js";
 import type { BookLanguageCode } from "./book-import.js";
 
@@ -23,6 +28,7 @@ type ChatCompletionResponse = {
     message?: {
       content?: string | Array<{ text?: string; type?: string }> | null;
       reasoning?: string | null;
+      reasoning_content?: string | null;
     } | null;
   }>;
   error?: {
@@ -144,6 +150,14 @@ export function ensureSummaryConfiguration(model: string, keys?: AiProviderKeys)
     }
     return;
   }
+  // Los modelos gratuitos de Zen solo funcionan dentro del cliente OpenCode.
+  // Con clave de servidor devuelven 403 "FreeTierError": rechazar con mensaje claro.
+  if (isFreeZenModelId(model)) {
+    throw Object.assign(new Error(`El modelo "${model}" es gratuito de OpenCode Zen y solo funciona dentro de OpenCode. Elige un modelo Zen de pago (p. ej. DeepSeek V4 Flash o GLM 5.3 Flash) en Configuración IA.`), {
+      code: "FREE_MODEL_UNSUPPORTED",
+      statusCode: 422
+    });
+  }
   if (!(keys?.opencodeApiKey ?? appEnv.opencodeGoApiKey)) {
     throw Object.assign(new Error("Te falta la clave de OpenCode para los resúmenes. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador."), {
       code: "MISSING_OPENCODE",
@@ -170,7 +184,7 @@ function extractAssistantText(content: ChatCompletionResponse["choices"]): strin
       .trim();
   }
 
-  return content?.[0]?.message?.reasoning?.trim() ?? "";
+  return content?.[0]?.message?.reasoning?.trim() ?? content?.[0]?.message?.reasoning_content?.trim() ?? "";
 }
 
 function extractJsonPayload(responseText: string): string {
@@ -388,6 +402,32 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
 
   let response: Response | null = null;
   let retryAfterSeconds: number | null = null;
+  let assistantText: string | null = null;
+
+  // Los modelos con razonamiento (GLM, DeepSeek) consumen tokens de salida
+  // pensando: con libros enteros 1200 se queda corto y la respuesta sale
+  // cortada. Se empieza en 2000 y se duplica hasta 8000 entre reintentos.
+  const SUMMARY_MAX_OUTPUT_TOKENS_CEILING = 8000;
+  let maxTokens = getOpenCodeMaxTokens(currentModel, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 2000);
+  let lastTruncatedByLength = false;
+
+  const effectiveOpencodeKey = prompt.providerKeys?.opencodeApiKey ?? appEnv.opencodeGoApiKey;
+  const effectiveGeminiKey = prompt.providerKeys?.geminiApiKey ?? appEnv.geminiApiKey;
+  // Algunos modelos solo están enrutados en uno de los dos chats (p. ej.
+  // deepseek-v4-flash devuelve 404 en /zen/v1 con clave Go): ante ese 404 se
+  // reintenta una vez en el otro endpoint.
+  const chatEndpoints = resolveOpenCodeChatEndpoints(effectiveOpencodeKey);
+  let chatEndpointIndex = 0;
+  let chatEndpointFallbackUsed = false;
+
+  const probeJsonParses = (text: string): boolean => {
+    try {
+      JSON.parse(extractJsonPayload(text));
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   for (let attempt = 0; attempt < PROVIDER_REQUEST_ATTEMPTS; attempt += 1) {
     // Google AI Studio directo tiene prioridad: su id también empieza por "gemini-"
@@ -395,17 +435,21 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     const usesGoogleAi = isGoogleAiModel(currentModel);
     const providerLabel = usesGoogleAi ? "Google AI Studio" : "OpenCode";
     const usesGeminiApi = !usesGoogleAi && isGeminiModel(currentModel);
+    // gpt-*/muse-spark-* solo hablan Responses API: por chat devuelven 400
+    // "ModelProtocolUnsupported".
+    const usesResponsesApi = !usesGoogleAi && !usesGeminiApi && isResponsesApiModel(currentModel);
+    const usesChatApi = !usesGoogleAi && !usesGeminiApi && !usesResponsesApi;
     const endpoint = usesGoogleAi
       ? GOOGLE_AI_OPENAI_ENDPOINT
       : usesGeminiApi
         ? getOpenCodeGeminiEndpoint(currentModel)
-        : getOpenCodeChatCompletionsEndpoint(currentModel);
+        : usesResponsesApi
+          ? OPENCODE_RESPONSES_ENDPOINT
+          : chatEndpoints[chatEndpointIndex] ?? getOpenCodeChatCompletionsEndpoint(currentModel);
 
     const userPromptContent = prompt.condensed
       ? `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Combina queste risposte parziali in un'unica risposta finale" : "Combina estas respuestas parciales en una única respuesta final"}:\n\n${prompt.text}`
       : `${scopeLabel}: ${prompt.sectionTitle}\n\n${prompt.languageCode === "it" ? "Testo di riferimento" : "Texto de referencia"}:\n\n${prompt.text}`;
-
-    const maxTokens = getOpenCodeMaxTokens(currentModel, kind === "DIAGRAM" ? 2400 : prompt.condensed ? 900 : 1200);
 
     const requestBody = JSON.stringify(usesGeminiApi
       ? {
@@ -425,7 +469,14 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
             temperature: 0.15
           }
         }
-      : {
+      : usesResponsesApi
+        ? {
+            input: userPromptContent,
+            instructions: systemPrompt,
+            max_output_tokens: maxTokens,
+            model: currentModel
+          }
+        : {
           max_tokens: maxTokens,
           messages: [
             {
@@ -443,8 +494,6 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
         });
 
     try {
-      const effectiveOpencodeKey = prompt.providerKeys?.opencodeApiKey ?? appEnv.opencodeGoApiKey;
-      const effectiveGeminiKey = prompt.providerKeys?.geminiApiKey ?? appEnv.geminiApiKey;
       response = await fetch(endpoint, {
         method: "POST",
         headers: usesGoogleAi
@@ -468,6 +517,64 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     }
 
     if (response.ok) {
+      let payload: ChatCompletionResponse & GeminiGenerateContentResponse & ResponsesApiResponse;
+      try {
+        payload = (await response.json()) as ChatCompletionResponse & GeminiGenerateContentResponse & ResponsesApiResponse;
+      } catch {
+        throw createSummaryProviderError({ code: null, message: `${providerLabel} devolvió una respuesta no JSON.` }, false, providerLabel);
+      }
+      if (payload.error?.message) {
+        const errorDetails = extractProviderErrorDetails(payload.error as any, providerLabel);
+        const normalizedProviderError = `${errorDetails.code ?? ""} ${errorDetails.message}`.trim();
+        if (isContentFilterError(normalizedProviderError)) {
+          throw Object.assign(new Error(`${providerLabel} bloqueó el resumen por sus políticas de contenido.`), {
+            statusCode: 422
+          });
+        }
+        if (isRateLimitError(null, normalizedProviderError)) {
+          throw createSummaryRateLimitError(errorDetails, parseRetryWaitFromMessage(normalizedProviderError), providerLabel);
+        }
+        throw createSummaryProviderError(errorDetails, false, providerLabel);
+      }
+
+      let candidateText: string;
+      let truncatedByLength = false;
+      if (usesGeminiApi) {
+        const candidate = (payload as GeminiGenerateContentResponse).candidates?.[0];
+        if (payload.promptFeedback?.blockReason || (candidate?.finishReason && !["STOP", "MAX_TOKENS"].includes(candidate.finishReason))) {
+          throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
+            statusCode: 422
+          });
+        }
+        truncatedByLength = candidate?.finishReason === "MAX_TOKENS";
+        candidateText = (candidate?.content?.parts || [])
+          .filter((part) => !part.thought && typeof part.text === "string")
+          .map((part) => part.text ?? "")
+          .join("")
+          .trim();
+      } else if (usesResponsesApi) {
+        const responsesPayload = payload as ResponsesApiResponse;
+        truncatedByLength = responsesPayload.status === "incomplete" && responsesPayload.incomplete_details?.reason === "max_output_tokens";
+        candidateText = extractResponsesApiText(responsesPayload);
+      } else {
+        const finishReason = payload.choices?.[0]?.finish_reason ?? null;
+        truncatedByLength = finishReason === "length";
+        candidateText = extractAssistantText(payload.choices);
+      }
+
+      // Modelos con razonamiento (GLM, DeepSeek) a veces devuelven contenido
+      // vacío o JSON cortado al agotar max_tokens: reintentar con más techo.
+      const jsonBroken = candidateText ? !probeJsonParses(candidateText) : true;
+      lastTruncatedByLength = truncatedByLength;
+      if ((candidateText.length === 0 || (truncatedByLength && jsonBroken))
+        && attempt < PROVIDER_REQUEST_ATTEMPTS - 1
+        && maxTokens < SUMMARY_MAX_OUTPUT_TOKENS_CEILING) {
+        maxTokens = Math.min(maxTokens * 2, SUMMARY_MAX_OUTPUT_TOKENS_CEILING);
+        prompt.onProviderRetry?.({ attempt: attempt + 2, maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
+        continue;
+      }
+
+      assistantText = candidateText;
       break;
     }
 
@@ -475,6 +582,15 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     const details = extractProviderErrorDetails(errorBody, providerLabel);
     const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
     retryAfterSeconds = parseRetryAfterSeconds(response.headers.get("retry-after")) ?? parseRetryWaitFromMessage(normalizedProviderError);
+
+    // El modelo no está enrutado en este endpoint chat (/zen/v1 vs /zen/go/v1):
+    // probar una vez el otro antes de rendirse.
+    if (usesChatApi && !chatEndpointFallbackUsed && response.status === 404 && /cannot find any route/i.test(normalizedProviderError)) {
+      chatEndpointFallbackUsed = true;
+      chatEndpointIndex = chatEndpointIndex === 0 ? 1 : 0;
+      prompt.onProviderRetry?.({ attempt: attempt + 2, maxAttempts: PROVIDER_REQUEST_ATTEMPTS });
+      continue;
+    }
 
     if (isContentFilterError(normalizedProviderError)) {
       throw Object.assign(new Error(`${providerLabel} bloqueó el resumen por sus políticas de contenido.`), {
@@ -513,46 +629,14 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
   }
 
   const finalProviderLabel = isGoogleAiModel(currentModel) ? "Google AI Studio" : "OpenCode";
-  if (!response?.ok) {
-    throw createSummaryRateLimitError({
-      code: null,
-      message: `${finalProviderLabel} no aceptó la petición por límite temporal.`
-    }, retryAfterSeconds, finalProviderLabel);
-  }
-
-  const payload = (await response.json()) as ChatCompletionResponse & GeminiGenerateContentResponse;
-  if (payload.error?.message) {
-    const details = extractProviderErrorDetails(payload.error as any, finalProviderLabel);
-    const normalizedProviderError = `${details.code ?? ""} ${details.message}`.trim();
-    if (isContentFilterError(normalizedProviderError)) {
-      throw Object.assign(new Error(`${finalProviderLabel} bloqueó el resumen por sus políticas de contenido.`), {
-        statusCode: 422
-      });
+  if (assistantText === null) {
+    if (!response?.ok) {
+      throw createSummaryRateLimitError({
+        code: null,
+        message: `${finalProviderLabel} no aceptó la petición por límite temporal.`
+      }, retryAfterSeconds, finalProviderLabel);
     }
-
-    if (isRateLimitError(null, normalizedProviderError)) {
-      throw createSummaryRateLimitError(details, parseRetryWaitFromMessage(normalizedProviderError), finalProviderLabel);
-    }
-
-    throw createSummaryProviderError(details, false, finalProviderLabel);
-  }
-
-  let assistantText: string;
-  if (!isGoogleAiModel(currentModel) && isGeminiModel(currentModel)) {
-    const candidate = payload.candidates?.[0];
-    if (payload.promptFeedback?.blockReason || (candidate?.finishReason && !["STOP", "MAX_TOKENS"].includes(candidate.finishReason))) {
-      throw Object.assign(new Error("OpenCode bloqueó el resumen por sus políticas de contenido."), {
-        statusCode: 422
-      });
-    }
-
-    assistantText = (candidate?.content?.parts || [])
-      .filter((part) => !part.thought && typeof part.text === "string")
-      .map((part) => part.text ?? "")
-      .join("")
-      .trim();
-  } else {
-    assistantText = extractAssistantText(payload.choices);
+    throw createSummaryProviderError({ code: null, message: `${finalProviderLabel} no devolvió contenido.` }, false, finalProviderLabel);
   }
 
   try {
@@ -579,7 +663,10 @@ async function requestSummaryChunk(prompt: { condensed?: boolean; kind?: AiReque
     return summaryText;
   } catch {
     const invalidProviderLabel = isGoogleAiModel(currentModel) ? "Google AI Studio" : "OpenCode";
-    throw Object.assign(new Error(`${invalidProviderLabel} devolvió una respuesta inválida al generar el resumen. Respuesta: ${assistantText.slice(0, 400)}`), {
+    const previewHead = assistantText.slice(0, 300);
+    const previewTail = assistantText.length > 420 ? `…${assistantText.slice(-120)}` : "";
+    const truncationHint = lastTruncatedByLength ? `, cortada por límite de tokens (techo ${maxTokens})` : "";
+    throw Object.assign(new Error(`${invalidProviderLabel} devolvió una respuesta inválida al generar el resumen. Respuesta (${assistantText.length} caracteres${truncationHint}): ${previewHead}${previewTail}`), {
       statusCode: 502
     });
   }

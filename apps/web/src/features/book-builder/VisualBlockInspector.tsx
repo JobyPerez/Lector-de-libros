@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PageElementRole, VisualBlock, VisualLayoutNode, VisualPageDocument } from "../../app/api";
+import type { PageElementRole, PageStyle, VisualBlock, VisualLayoutNode, VisualPageDocument } from "../../app/api";
 import { flattenVisualLayout, moveVisualNode, reorderVisualBlock, safeVisualImageSource, ungroupVisualNode, updateVisualBlock, updateVisualNode, visualUnits, type VisualContainer } from "./visual-page";
 import { ReadAloudSwitch } from "./ReadAloudSwitch";
 import { AlignmentControl } from "./AlignmentControl";
@@ -70,6 +70,13 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
   const units = visualUnits(doc);
   const number = block ? units.findIndex((unit) => unit.type === "block" && unit.blockId === block.id) + 1 : 0;
   function patch(patch: Partial<VisualBlock>) { if (block) onChange(updateVisualBlock(doc, block.id, patch)); }
+  function patchStyle(key: keyof PageStyle, value: string | number) {
+    if (!block) return;
+    const style = { ...block.style };
+    if (value === "") delete style[key];
+    else Object.assign(style, { [key]: value });
+    patch({ style });
+  }
   function format(marker: "**" | "*" | "list" | "ordered-list") {
     if (!block || !textRef.current) return;
     const editor = textRef.current;
@@ -115,7 +122,8 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
           <label>Nivel del titulo<select value={block.headingLevel ?? 1} onChange={(event) => patch({ headingLevel: Number(event.target.value) })}>{[1, 2, 3, 4, 5, 6].map((level) => <option key={level} value={level}>T{level}</option>)}</select></label>
           <label className="visual-check"><input type="checkbox" checked={block.includeInToc} onChange={(event) => patch({ includeInToc: event.target.checked })} />Incluir en el indice</label>
         </> : null}
-        <label>{block.kind === "image" ? "Descripcion de la imagen" : "Texto Markdown del bloque"}<textarea ref={textRef} rows={6} value={block.text} onChange={(event) => patch({ text: event.target.value })} /></label>
+        <label>{block.kind === "image" ? block.altText !== undefined ? "Pie visible de la imagen" : "Descripcion de la imagen" : "Texto Markdown del bloque"}<textarea ref={textRef} rows={6} value={block.text} onChange={(event) => patch({ text: event.target.value })} /></label>
+        {block.kind === "image" && block.altText !== undefined ? <label>Descripcion alternativa (lectura)<textarea rows={3} value={block.altText} onChange={(event) => patch({ altText: event.target.value })} /></label> : null}
         {block.kind !== "image" ? <div className="visual-format" role="toolbar" aria-label="Formato del bloque seleccionado">
           <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("**")} aria-label="Negrita"><strong>B</strong></button>
           <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => format("*")} aria-label="Cursiva"><em>I</em></button>
@@ -125,8 +133,15 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
           <label>Ancho de imagen: {block.imageWidth ?? 100}%<input type="range" min={1} max={100} value={block.imageWidth ?? 100} onChange={(event) => patch({ imageWidth: Number(event.target.value) })} /></label>
           <VisualImageSourceFields key={block.id} block={block} images={doc.blocks} onChange={patch} />
         </>}
-        <AlignmentControl value={block.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
-        {block.kind !== "image" ? <FontScaleControl value={block.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
+        <AlignmentControl value={block.alignment ?? block.style?.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
+        {block.kind !== "image" ? <FontScaleControl value={block.fontScale ?? block.style?.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
+        <details className="visual-style-fields"><summary>Estilo editorial</summary>
+          {([["color", "Color del texto"], ["backgroundColor", "Color del fondo"], ["borderColor", "Color del borde"]] as const).map(([key, label]) => <label key={key}>{label} (#RRGGBB)
+            <input key={`${block.id}:${block.style?.[key] ?? ""}`} defaultValue={block.style?.[key] ?? ""} placeholder="Heredado" maxLength={7} pattern="#[0-9a-fA-F]{6}" onBlur={(event) => { const value = event.target.value.trim(); if (!value || /^#[0-9a-f]{6}$/i.test(value)) patchStyle(key, value.toLowerCase()); else event.target.reportValidity(); }} />
+          </label>)}
+          {([["borderWidth", "Grosor del borde", 8], ["padding", "Relleno", 48]] as const).map(([key, label, max]) => <label key={key}>{label} (px)<input type="number" min={0} max={max} step={1} value={block.style?.[key] ?? ""} placeholder="Heredado" onChange={(event) => { const value = event.target.value; const number = Number(value); if (!value || Number.isFinite(number) && number >= 0 && number <= max) patchStyle(key, value ? number : ""); }} /></label>)}
+          <label>Familia tipografica<select value={block.style?.fontFamily ?? ""} onChange={(event) => patchStyle("fontFamily", event.target.value)}><option value="">Heredada</option><option value="serif">Serif</option><option value="sans-serif">Sans serif</option></select></label>
+        </details>
         <button type="button" disabled={geometryDisabled} onClick={() => onMarkGeometry(block.id)}>Marcar zona en el original</button>
         <p className="helper-text">Mover o cambiar el ancho no altera la caja del original. Anular no modifica sus pixeles.</p>
       </> : node.type !== "block" ? <>

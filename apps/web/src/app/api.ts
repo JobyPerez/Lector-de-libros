@@ -341,6 +341,7 @@ export type ImageOcrMode = "LOCAL" | "VISION" | "TEXTRACT";
 export type ImageRotation = 0 | 90 | 180 | 270;
 
 type ImageOcrRequestOptions = {
+  advancedLayout?: boolean | undefined;
   ocrModel?: OcrModelId | undefined;
   ocrMode?: ImageOcrMode | undefined;
   promptOverride?: string | undefined;
@@ -358,10 +359,17 @@ export type ParagraphElementMetadata = {
   imageWidth?: number | null;
 };
 
+export type PageStyle = {
+  color?: string; backgroundColor?: string; borderColor?: string;
+  borderWidth?: number; padding?: number; fontScale?: number;
+  fontFamily?: "serif" | "sans-serif"; alignment?: "left" | "center" | "right";
+};
 export type VisualBlock = {
   id: string;
   kind: "text" | "heading" | "image";
   text: string;
+  style?: PageStyle;
+  altText?: string;
   role: PageElementRole;
   active: boolean;
   readAloud: boolean;
@@ -385,7 +393,7 @@ export type VisualCompositeContent = {
 };
 export type VisualLayoutNode =
   | { id: string; type: "block"; blockId: string }
-  | { id: string; type: "row" | "column"; children: VisualLayoutNode[]; weights?: number[]; gap?: number; content?: VisualCompositeContent };
+  | { id: string; type: "row" | "column"; children: VisualLayoutNode[]; weights?: number[]; gap?: number; content?: VisualCompositeContent; style?: PageStyle; semantic?: "table" | "tableRow" | "tableCell" | "figure" };
 export type VisualPageDocument = { version: 1; blocks: VisualBlock[]; layout: VisualLayoutNode };
 
 export type ParagraphContent = {
@@ -690,7 +698,7 @@ export type SectionSummarySection = {
 export type SectionSummaryRecord = {
   createdAt: string;
   isStale: boolean;
-  modelId: AiModelId | null;
+  modelId: string | null;
   summaryId: string;
   summaryText: string;
   updatedAt: string;
@@ -722,7 +730,7 @@ export type AiRequestRecord = {
   endPageNumber: number | null;
   endParagraphNumber: number | null;
   endSequenceNumber: number | null;
-  modelId: AiModelId | null;
+  modelId: string | null;
   isOwnedByCurrentUser: boolean;
   kind: AiRequestKind;
   promptText: string;
@@ -1046,6 +1054,8 @@ function createImageUploadPayload(payload: FormData, options?: ImageOcrRequestOp
     nextPayload.set("ocrMode", options.ocrMode);
   }
 
+  nextPayload.set("advancedLayout", String(options?.advancedLayout === true && nextPayload.get("ocrMode") !== "LOCAL" && !options?.skipOcr && nextPayload.get("skipOcr") !== "true"));
+
   if (options?.ocrModel) {
     nextPayload.set("ocrModel", options.ocrModel);
   }
@@ -1079,6 +1089,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
 }
 
 export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: {
+  advancedLayout?: boolean | undefined;
   afterPage?: number | undefined;
   ocrModel?: OcrModelId | undefined;
   ocrMode?: ImageOcrMode | undefined;
@@ -1102,6 +1113,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
   const response = await fetchWithAutoRefresh(path, {
     accessToken,
     body: createImageUploadPayload(payload, {
+      advancedLayout: options?.advancedLayout,
       ocrMode: options?.ocrMode,
       ocrModel: options?.ocrModel,
       promptOverride: options?.promptOverride,
@@ -1310,7 +1322,7 @@ export function fetchSectionSummaryPrompt(accessToken: string, bookId: string, c
   return request<SectionSummaryPromptResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary/prompt`, { accessToken });
 }
 
-export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string, payload: { model?: SummaryAiModelId; promptOverride?: string } = {}) {
+export function generateSectionSummary(accessToken: string, bookId: string, chapterId: string, payload: { model?: string; promptOverride?: string } = {}) {
   return request<SectionSummaryResponse>(`/books/${bookId}/sections/${encodeURIComponent(chapterId)}/summary`, {
     accessToken,
     body: payload,
@@ -1334,7 +1346,7 @@ export function fetchAiRequestRetryProgress(accessToken: string, progressId: str
   return request<{ progress: AiRequestRetryProgress }>(`/books/ai-requests/progress/${progressId}`, { accessToken });
 }
 
-export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; kind: AiRequestKind; model?: SummaryAiModelId; progressId?: string; promptText: string; visualType?: AiVisualType }) {
+export function createAiRequest(accessToken: string, bookId: string, payload: { chapterId?: string; chapterIds?: string[]; kind: AiRequestKind; model?: string; progressId?: string; promptText: string; visualType?: AiVisualType }) {
   const path = payload.chapterId
     ? `/books/${bookId}/sections/${encodeURIComponent(payload.chapterId)}/ai-requests`
     : `/books/${bookId}/ai-requests`;
@@ -1536,6 +1548,7 @@ export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: nu
     accessToken,
     body: {
       ocrMode: payload?.ocrMode ?? "VISION",
+      advancedLayout: payload?.advancedLayout === true && payload?.ocrMode !== "LOCAL" && !payload?.skipOcr,
       ...(payload?.expectedUpdatedAt ? { expectedUpdatedAt: payload.expectedUpdatedAt } : {}),
       ...(payload?.ocrModel ? { ocrModel: payload.ocrModel } : {}),
       ...(payload?.promptOverride?.trim() ? { promptOverride: payload.promptOverride.trim() } : {})

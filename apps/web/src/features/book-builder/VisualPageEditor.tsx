@@ -5,7 +5,7 @@ import { PageElementOverlay, validElementGeometry } from "../../components/PageE
 import { replacePendingBookContentImageReferences, useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { VisualBlockInspector, VisualImageSourceFields } from "./VisualBlockInspector";
 import { VisualCompositeInspector } from "./VisualCompositeInspector";
-import { appendVisualBlock, applyVisualPreset, compositeForBlock, createVisualBlock, flattenVisualLayout, importedVisualSourceHtml, isCenteredFooterRow, mergeVisualBlocks, moveVisualNode, orderedVisualBlocks, renderVisualBlockHtml, renderVisualCompositeHtml, safeVisualImageSource, updateVisualBlock, visualDocumentSaveError, visualUnits, type VisualContainer, type VisualPreset } from "./visual-page";
+import { appendVisualBlock, applyVisualPreset, compositeForBlock, createVisualBlock, flattenVisualLayout, importedVisualSourceHtml, isCenteredFooterRow, mergeVisualBlocks, moveVisualNode, orderedVisualBlocks, renderVisualBlockHtml, renderVisualCompositeHtml, renderVisualStyle, safeVisualImageSource, updateVisualBlock, visualDocumentSaveError, visualUnits, type VisualContainer, type VisualPreset } from "./visual-page";
 import "./visual-page.css";
 
 function PreviewIcon({ name }: { name: "edit" | "drag" | "zoom" | "undo" | "redo" | "page" | "row" | "column" | "inactive" }) {
@@ -130,9 +130,8 @@ function VisualAtom({ block, imageSrc, number, selected, onSelect, onAmplify, ac
       {block.kind === "image" ? <button className="visual-icon-button" type="button" aria-label={`Ampliar imagen del bloque ${number}`} title={`Ampliar imagen del bloque ${number}`} onClick={() => { const image = ref.current?.querySelector("img"); if (image) onAmplify({ src: image.src, alt: block.text }); }} disabled={!safeVisualImageSource(block.source) && !(crop?.key === cropKey)}><PreviewIcon name="zoom" /></button> : null}
     </div></div>
     <div ref={ref} className="visual-atom-content" role="button" tabIndex={0} aria-label={`Seleccionar bloque ${number}: ${block.text.slice(0, 80)}`} aria-pressed={selected}
-      style={{ textAlign: block.alignment ?? "left", fontSize: `${block.fontScale ?? 1}em`, "--visual-image-width": block.imageWidth === undefined ? "auto" : `${block.imageWidth}%` } as CSSProperties}
       onClick={(event) => { event.preventDefault(); onSelect({ ctrlKey: event.ctrlKey, metaKey: event.metaKey }); }} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(); } }}>
-      {block.kind === "image" && block.source === "page-crop" && crop?.key === cropKey ? <figure><img src={crop.src} alt={block.text} /><figcaption>{block.text}</figcaption></figure> : <div dangerouslySetInnerHTML={{ __html: replacePendingBookContentImageReferences(html ?? "") }} />}
+      {block.kind === "image" && block.source === "page-crop" && crop?.key === cropKey ? <div dangerouslySetInnerHTML={{ __html: renderVisualBlockHtml({ ...block, source: crop.src }) }} /> : <div dangerouslySetInnerHTML={{ __html: replacePendingBookContentImageReferences(html ?? "") }} />}
       {cropError ? <p role="alert">No se pudo generar el recorte local.</p> : null}
     </div>
   </div>;
@@ -271,9 +270,13 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
           dragHandle={<button className="visual-icon-button visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque ${unitNumber(block.id)}`} title={`Arrastrar bloque ${unitNumber(block.id)}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button>} />
       </div>;
     }
+    const containerStyle = Object.fromEntries(renderVisualStyle(node.style).split(";").filter(Boolean).map((declaration) => {
+      const [key, value] = declaration.split(":");
+      return [key!.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase()), value];
+    })) as CSSProperties;
     if (node.content) {
       if (!showInactive && !hasVisibleContent(node)) return null;
-      return <div className="visual-leaf" data-visual-node-id={node.id} key={node.id}>
+      return <div className="visual-leaf" data-visual-node-id={node.id} data-layout-semantic={node.semantic} key={node.id}>
         <CompositePreview node={node} blocks={doc.blocks} number={units.findIndex((unit) => unit.id === node.id) + 1} selected={selectedId === node.id} showInactive={showInactive} onSelect={() => select(node.id)}
           dragHandle={<button className="visual-icon-button visual-drag-handle" type="button" draggable={!disabled && !multiple} disabled={disabled || multiple} aria-label={`Arrastrar bloque unido ${units.findIndex((unit) => unit.id === node.id) + 1}`} title={`Arrastrar bloque unido ${units.findIndex((unit) => unit.id === node.id) + 1}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button>} />
       </div>;
@@ -289,14 +292,14 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
     }
     const autoFooter = !dragging && isCenteredFooterRow(node, doc.blocks);
     const containerLabel = root ? "pagina" : node.type === "row" ? "fila" : "columna";
-    return <section key={node.id} data-visual-node-id={node.id} className={`visual-container visual-container-${node.type}${selectedId === node.id ? " is-selected" : ""}`}>
+    return <section key={node.id} data-visual-node-id={node.id} data-layout-semantic={node.semantic} data-text-align={node.style?.alignment} style={containerStyle} className={`visual-container visual-container-${node.type}${selectedId === node.id ? " is-selected" : ""}`}>
       <header><button className="visual-icon-button" type="button" onClick={() => select(node.id)} aria-pressed={selectedId === node.id} aria-label={`Editar distribucion de ${containerLabel}`} title={`Editar distribucion de ${containerLabel}`}><PreviewIcon name={root ? "page" : node.type} /></button>
         {!root ? <button type="button" className="visual-icon-button visual-drag-handle" draggable={!disabled} disabled={disabled} aria-label={`Arrastrar ${containerLabel}`} title={`Arrastrar ${containerLabel}`} onDragStart={(event) => startDrag(event, node.id)} onDragEnd={endDrag}><PreviewIcon name="drag" /></button> : null}
       </header>
       <div className="visual-container-children" data-page-footer-row={autoFooter ? "true" : undefined} style={{ flexDirection: node.type === "row" ? "row" : "column", gap: `${node.gap ?? 12}px` }}>
         {node.children.map((child, index) => {
           const content = renderNode(child);
-          return content ? <Fragment key={child.id}>{dropzone(index)}<div className="visual-layout-child" data-footer-slot={autoFooter ? index + 2 : undefined} style={{ flexGrow: node.weights?.[index] ?? 1, flexBasis: node.type === "row" ? 0 : "auto", ...(autoFooter ? { gridColumn: index + 2, gridRow: 1 } : {}) }}>{content}</div></Fragment> : null;
+          return content ? <Fragment key={child.id}>{dropzone(index)}<div className="visual-layout-child" data-footer-slot={autoFooter ? index + 2 : undefined} style={{ flexGrow: node.type === "row" ? node.weights?.[index] ?? 1 : 0, flexBasis: node.type === "row" ? 0 : "auto", ...(autoFooter ? { gridColumn: index + 2, gridRow: 1 } : {}) }}>{content}</div></Fragment> : null;
         })}
         {dropzone(node.children.length)}
       </div>

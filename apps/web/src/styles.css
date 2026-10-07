@@ -8130,6 +8130,11 @@ textarea {
   line-height: 1.35;
 }
 
+.ocr-advanced-layout-check { display: flex; align-items: center; gap: .5rem; font-size: .82rem; font-weight: 650; }
+.ocr-advanced-layout-check input[type="checkbox"] { width: 1rem; height: 1rem; flex: 0 0 auto; padding: 0; margin: 0; }
+.ocr-advanced-layout-check input:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.ocr-advanced-layout-check:has(input:disabled) { opacity: .65; }
+
 .review-ocr-option-stack {
   display: grid;
   gap: 0.65rem;

@@ -1,5 +1,6 @@
 import { load } from "cheerio";
 import { normalizeParagraphMetadata, type ParagraphElementMetadata } from "./page-elements.js";
+import { renderPageStyle, type PageStyle } from "./page-style.js";
 
 type EmbeddedImageSourceMap = Map<string, string>;
 
@@ -17,6 +18,8 @@ type RichBlock = {
 };
 
 export type RichPageBuildOptions = {
+  paragraphStyles?: (PageStyle | undefined)[];
+  paragraphImages?: ({ altText: string; caption: string } | undefined)[];
   paragraphMetadata?: ParagraphElementMetadata[];
   embeddedImages?: EmbeddedImageSourceMap;
   inferHeadings?: boolean;
@@ -406,6 +409,25 @@ export function buildRichPageFromParagraphs(
     }
     const block = buildBlockFromParagraph(paragraph, options, paragraphIndex);
     if (block) {
+      const style = options?.paragraphStyles?.[paragraphIndex];
+      const imageText = options?.paragraphImages?.[paragraphIndex];
+      if (style || imageText) {
+        const html = load(block.html, {}, false);
+        const node = html(".reader-rich-node");
+        if (style) {
+          node.attr("style", `${node.attr("style") ?? ""};${renderPageStyle(style)}`);
+          if (style.alignment) node.attr("data-text-align", style.alignment);
+          if (style.fontScale !== undefined) node.attr("data-font-scale", String(style.fontScale));
+        }
+        if (imageText && node.is("figure")) {
+          node.find("img").attr("alt", imageText.altText);
+          node.find("figcaption").remove();
+          if (imageText.caption) node.append(html("<figcaption></figcaption>").text(imageText.caption));
+          block.text = buildImageNarration([imageText.altText, imageText.caption].filter(Boolean).join(" "), options?.languageCode);
+          node.attr("data-reader-text", block.text).attr("data-image-alt-separated", "true");
+        }
+        block.html = html.html();
+      }
       blocks.push(block);
       paragraphIndex += 1;
     }

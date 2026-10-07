@@ -5,6 +5,9 @@ import test from "node:test";
 import ts from "typescript";
 import { z } from "zod";
 import sharp from "sharp";
+import { load } from "cheerio";
+import { parsePageStyle } from "../src/modules/books/page-style.js";
+import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "../src/modules/books/rich-content.js";
 import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualPageDocument } from "../src/modules/books/visual-document.js";
 import { annotatePageElementHtml, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml } from "../src/modules/books/page-elements.js";
 import { matchParagraphsWithExplicitIds } from "../src/modules/books/paragraph-ids.js";
@@ -139,6 +142,86 @@ test("unchanged visual save does not mark cached AI stale", async () => {
   const app = setup({ stored: value });
   await app.call(value);
   assert.ok(!app.calls.some(({ sql }) => sql.includes("is_stale = 1")));
+});
+
+function ocrSetup(storedPage: { htmlContent?: string | null; visualDocumentJson?: string | null } = {}) {
+  const calls: string[] = [];
+  let replacement: any;
+  const page = { pageId: "page", updatedAt: version, sourceFileId: "image", sourceImageRotation: 0, htmlContent: null, ...storedPage };
+  const connection = {
+    execute: async (sql: string) => {
+      calls.push(sql);
+      return { rows: sql.includes("FROM book_files") ? [{ contentBlob: Buffer.alloc(0), fileName: "page.png", mimeType: "image/png" }] : [] };
+    },
+    commit: async () => { calls.push("commit"); }, rollback: async () => { calls.push("rollback"); }, close: async () => { calls.push("close"); }
+  };
+  const dependencies = {
+    load, parsePageStyle, visualPageDocumentSchema,
+    pageParamsSchema: z.object({ bookId: z.string().uuid(), pageNumber: z.number() }),
+    updateOcrPageSchema: z.object({ editedText: z.string().min(1), expectedUpdatedAt: z.string().optional() }),
+    rerunOcrPageSchema: z.object({ expectedUpdatedAt: z.string().optional(), ocrMode: z.literal("VISION") }),
+    getConnection: async () => connection, findAccessibleBook: async () => ({ sourceType: "IMAGES", languageCode: "es", title: "Book" }),
+    findBookPage: async () => page,
+    extractEmbeddedImageSources: (html: string | null) => { calls.push("extractImages"); return extractEmbeddedImageSources(html); },
+    buildRichPageFromEditableText: (text: string, options: any) => { calls.push("buildRich"); return buildRichPageFromEditableText(text, options); },
+    externalizeContentImages: (contents: string[]) => { calls.push("externalize"); return { contents, assets: [] }; },
+    insertContentImageAssets: async () => { calls.push("insertAssets"); },
+    replaceBookPageParagraphs: async (_connection: unknown, value: unknown) => { calls.push("replace"); replacement = value; page.updatedAt = savedVersion; },
+    recordUserActivity: async () => { calls.push("activity"); },
+    getEffectiveUserAiCredentials: async () => ({}), collectBookOcrMarginHints: async () => undefined,
+    runOcrOnImage: async () => { calls.push("mockOcr"); return buildRichPageFromEditableText("Intentionally reprocessed."); },
+    oracledb: { BUFFER: 1 }
+  };
+  return { page, calls, get replacement() { return replacement; },
+    call: async (rerun = false) => {
+      const response = reply();
+      const run = handler(rerun ? "post" : "put", rerun ? "/:bookId/pages/:pageNumber/rerun-ocr" : "/:bookId/pages/:pageNumber/ocr", dependencies);
+      await run({ params, currentUser: { userId: "editor" }, body: { expectedUpdatedAt: version, ...(rerun ? { ocrMode: "VISION" } : { editedText: "Edited legacy text." }) } }, response);
+      return response;
+    } };
+}
+
+test("legacy PUT /ocr rejects visual documents, editorial styles and separated image alt before reconstruction or any writes", async () => {
+  const styled = document();
+  styled.blocks[0]!.style = { color: "#123abc" };
+  const separated = document();
+  separated.blocks[0] = { ...separated.blocks[0]!, kind: "image", source: "https://example.com/image.png", text: "Printed caption", altText: "Portrait" };
+  for (const storedPage of [
+    { visualDocumentJson: JSON.stringify(document()) },
+    { visualDocumentJson: JSON.stringify(styled) },
+    { visualDocumentJson: JSON.stringify(separated) },
+    { htmlContent: '<figure data-image-alt-separated="true"><img alt="Portrait"><figcaption>Printed caption</figcaption></figure>' },
+    ...["color:#123abc", "background-color:#fffefd", "border-color:#abcdef", "border-width:0px", "padding:12px", "font-size:1.5em", "font-family:serif", "text-align:center"]
+      .map((style) => ({ htmlContent: `<p data-paragraph-number="1" style="${style}">Original</p>` }))
+  ]) {
+    const app = ocrSetup(storedPage);
+    const original = structuredClone(app.page);
+    const response = await app.call();
+    assert.equal(response.statusCode, 409, JSON.stringify(storedPage));
+    assert.match(response.body.message, /Utiliza el editor visual/u);
+    assert.deepEqual(app.page, original);
+    assert.equal(app.replacement, undefined);
+    assert.equal(app.calls.length, 3);
+    assert.match(app.calls[0]!, /FROM books.*FOR UPDATE/u);
+    assert.match(app.calls[1]!, /FROM book_pages.*FOR UPDATE/u);
+    assert.equal(app.calls[2], "close");
+  }
+});
+
+test("legacy PUT /ocr still saves unstyled legacy pages and intentional OCR rerun is not blocked by editorial metadata", async () => {
+  for (const storedPage of [{ htmlContent: "<p>Original</p>" }, {}]) {
+    const app = ocrSetup(storedPage);
+    assert.equal((await app.call()).statusCode, 200);
+    assert.deepEqual(app.replacement.paragraphs, ["Edited legacy text."]);
+    assert.ok(app.calls.includes("commit"));
+  }
+  const value = document();
+  value.blocks[0]!.style = { backgroundColor: "#fffefd", padding: 12 };
+  const app = ocrSetup({ visualDocumentJson: JSON.stringify(value), htmlContent: '<figure data-image-alt-separated="true" style="padding:12px"><img alt="Portrait"></figure>' });
+  assert.equal((await app.call(true)).statusCode, 200);
+  assert.deepEqual(app.replacement.paragraphs, ["Intentionally reprocessed."]);
+  assert.ok(app.calls.includes("mockOcr"));
+  assert.ok(app.calls.includes("commit"));
 });
 
 test("compound references follow current active anchor after save/reload and revert on separation without alias writes", async () => {

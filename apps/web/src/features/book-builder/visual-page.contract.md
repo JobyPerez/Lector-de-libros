@@ -52,6 +52,14 @@ For pages without a source image, the left panel is explicitly `Contenido import
 
 `PageElementOverlay` adds optional `number`/`active` element fields and optional `onCreateGeometry`/`onDrawingChange` callbacks. Existing Reader callers can omit all new props; selection and geometry behavior remains unchanged.
 
+## Editorial Style
+
+`VisualBlock.style` is optional on version 1 documents. It admits only `color`, `backgroundColor`, `borderColor` (six-digit hex), `borderWidth` (0..8 px), `padding` (0..48 px), `fontScale` (.5..3 em), `fontFamily` (`serif` or `sans-serif`) and `alignment` (`left`, `center`, `right`). Numbers must be finite. No arbitrary CSS, URLs, positioning or custom font names are accepted. API schema, renderer and HTML parser share `page-style.ts`; the frontend defensively emits the same whitelist. Existing top-level `fontScale` and `alignment` override their style counterparts. Composite typography overrides the corresponding child typography only; other child styles survive.
+
+Vision transports styles through HTML node declarations, not Markdown markers or new database columns. Adaptation reads only complete whitelisted declarations and ignores unsupported source CSS. Text edits, layout changes, history and saves preserve optional style objects. Missing styles retain existing theme defaults.
+
+For new Vision images, `text` is the printed visible caption and optional `altText` is the independent accessibility description. An explicit `altText` (even empty) is transported by `data-image-alt-separated="true"`; narration contains both description and printed caption. Without `altText`, legacy images continue to use `text` as both description and caption. Vision must not invent captions or duplicate them as separate image-caption paragraphs.
+
 ## Verification
 
 Run from `apps/web`, without build or deployment:

@@ -75,14 +75,16 @@
 .reader-layout .reader-reading-row[data-layout-id] {
   display: grid;
   grid-template-columns: var(--reader-row-columns);
-  gap: var(--reader-layout-gap, 16px);
+  gap: var(--reader-layout-gap, 12px);
   margin: 0;
   align-items: stretch;
   min-width: 0;
 }
 .reader-layout .reader-reading-column[data-layout-id] { min-width: 0; margin: 0; }
+.reader-layout .reader-rich-node { box-sizing: border-box; max-width: 100%; }
 .reader-layout .reader-reading-block[data-layout-id] { min-width: 0; margin: 0; padding: 0; }
 .reader-layout .reader-content-compound { min-width: 0; margin: 0; padding: 0; }
+.reader-layout [data-layout-id][data-text-align] p[data-paragraph-number]:not([data-text-align]) { text-align: inherit; }
 .reader-content-compound span[data-paragraph-number] { box-decoration-break: clone; -webkit-box-decoration-break: clone; }
 .reader-layout [data-image-width] img { width: var(--reader-image-width, 100%); height: auto; max-width: 100%; }
 .reader-layout [data-text-align="center"] img { margin-inline: auto; }
@@ -92,3 +94,14 @@
 .reader-layout .reader-reading-row[data-page-footer-row="true"] > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; grid-row: 1; }
 .reader-layout .reader-reading-row[data-page-footer-row="true"] > :nth-child(1) { grid-column: 2; text-align: center; width: max-content; max-width: 60cqi; }
 .reader-layout .reader-reading-row[data-page-footer-row="true"] > :nth-child(2) { grid-column: 3; justify-self: end; text-align: right; }
+
+.reader-rich-content { container-type: inline-size; }
+.reader-layout [data-layout-semantic="table"] { min-width: 0; max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+.reader-layout [data-layout-semantic="table"] .reader-reading-row { min-width: 36rem; grid-auto-flow: column; grid-template-columns: var(--reader-row-columns, none); }
+.reader-layout [data-layout-semantic="tableCell"] { overflow-wrap: anywhere; box-sizing: border-box; }
+@container (max-width: 600px) {
+  .reader-ocr-layout .reader-reading-row:not([data-page-footer-row="true"]):not([data-layout-semantic="table"]):not([data-layout-semantic="tableRow"]):not([data-layout-semantic="table"] *) {
+    grid-auto-flow: row;
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

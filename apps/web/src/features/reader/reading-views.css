@@ -21,6 +21,6 @@
 @media (max-width: 600px) {
   .reader-ocr-layout .reader-rich-content .reader-reading-block,
   .reader-ocr-layout .reader-prose > .reader-reading-block { padding-inline: .25rem; }
-  .reader-ocr-layout .reader-reading-row { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
-  .reader-layout .reader-reading-row[data-layout-id]:not([data-page-footer-row="true"]) { grid-template-columns: minmax(0, 1fr); }
+  .reader-ocr-layout .reader-reading-row:not([data-layout-semantic="table"]):not([data-layout-semantic="tableRow"]):not([data-layout-semantic="table"] *) { grid-auto-flow: row; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .reader-layout .reader-reading-row[data-layout-id]:not([data-page-footer-row="true"]):not([data-layout-semantic="table"]):not([data-layout-semantic="tableRow"]):not([data-layout-semantic="table"] *) { grid-template-columns: minmax(0, 1fr); }
 }

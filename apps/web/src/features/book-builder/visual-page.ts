@@ -1,4 +1,4 @@
-import type { BookPageResponse, PageElementGeometry, VisualBlock, VisualCompositeContent, VisualLayoutNode, VisualPageDocument } from "../../app/api";
+import type { BookPageResponse, PageElementGeometry, PageStyle, VisualBlock, VisualCompositeContent, VisualLayoutNode, VisualPageDocument } from "../../app/api";
 import { buildEditableTextFromHtmlContent } from "./ocr-preview";
 
 export type VisualContainer = Extract<VisualLayoutNode, { children: VisualLayoutNode[] }>;
@@ -6,7 +6,7 @@ export type VisualPreset = "one-column" | "two-columns" | "two-by-two" | "rows";
 export type VisualHistory = { past: VisualPageDocument[]; present: VisualPageDocument; future: VisualPageDocument[] };
 
 export function isCenteredFooterRow(node: VisualLayoutNode, blocks: readonly VisualBlock[]): boolean {
-  if (node.type !== "row" || node.content !== undefined || node.weights !== undefined || node.children.length !== 2) return false;
+  if (node.type !== "row" || node.semantic !== undefined || node.content !== undefined || node.weights !== undefined || node.children.length !== 2) return false;
   const singleBlock = (child: VisualLayoutNode): VisualBlock | undefined => {
     if (child.type === "block") return blocks.find((block) => block.id === child.blockId);
     return child.type === "column" && child.content === undefined && child.children.length === 1 ? singleBlock(child.children[0]!) : undefined;
@@ -130,7 +130,7 @@ export function updateVisualBlock(doc: VisualPageDocument, id: string, patch: Pa
   return { ...doc, blocks: doc.blocks.map((block) => {
     if (block.id !== id) return block;
     const next = { ...block, ...patch };
-    if (next.kind !== "image") { delete next.source; delete next.imageWidth; }
+    if (next.kind !== "image") { delete next.source; delete next.imageWidth; delete next.altText; }
     if (next.kind !== "heading") { delete next.headingLevel; next.includeInToc = false; }
     return next;
   }) };
@@ -324,12 +324,22 @@ export function visualDocumentSaveError(doc: VisualPageDocument, imageChanged = 
   const depth = (node: VisualLayoutNode): number => node.type === "block" || !node.children.length ? 1 : 1 + Math.max(...node.children.map(depth));
   if (depth(doc.layout) > 8) return "La distribucion supera los 8 niveles. Simplifica los grupos antes de guardar.";
   const blocks = new Map(doc.blocks.map((block) => [block.id, block]));
+  const parents = new Map(nodes.flatMap((node) => node.type === "block" ? [] : node.children.map((child) => [child.id, node] as const)));
   for (const node of nodes) {
+    if (node.type !== "block") {
+      if (node.semantic !== undefined && !["table", "tableRow", "tableCell", "figure"].includes(node.semantic)) return "La semantica del contenedor no es valida.";
+      if (node.semantic && node.type !== (node.semantic === "tableRow" ? "row" : "column")) return "La semantica del contenedor no coincide con su distribucion.";
+      if (node.semantic === "table" && node.children.some((child) => child.type !== "row" || child.semantic !== "tableRow")
+        || node.semantic === "tableRow" && (parents.get(node.id)?.semantic !== "table" || node.children.some((child) => child.type !== "column" || child.semantic !== "tableCell"))
+        || node.semantic === "tableCell" && parents.get(node.id)?.semantic !== "tableRow") return "La tabla debe contener filas y las filas celdas, con sus contenedores correspondientes.";
+      if (node.style !== undefined && !validVisualStyle(node.style)) return "El estilo editorial contiene propiedades o valores no permitidos.";
+    }
     if (node.type === "block" || node.content === undefined) continue;
     if (!validCompositeContent(node.content) || !compositeOriginsMatch(node) || node.type !== "column" || node.children.length < 2
       || node.children.some((child) => child.type !== "block" || !blocks.has(child.blockId) || blocks.get(child.blockId)!.kind === "image")) return "El contenido compuesto debe ser una columna de al menos dos hojas de texto o titulo con metadatos validos.";
   }
   for (const block of doc.blocks) {
+    if (block.style !== undefined && !validVisualStyle(block.style)) return "El estilo editorial contiene propiedades o valores no permitidos.";
     if (block.active && block.kind !== "image" && !block.text.trim()) return "Completa el texto de los bloques activos antes de guardar.";
     if (block.kind !== "image") continue;
     if (block.source === "page-crop") {
@@ -345,10 +355,59 @@ function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-export function renderVisualBlockHtml(block: VisualBlock): string {
+function validVisualStyle(style: PageStyle): boolean {
+  return Boolean(style && typeof style === "object" && !Array.isArray(style)
+    && Object.entries(style).every(([key, value]) => ["color", "backgroundColor", "borderColor", "borderWidth", "padding", "fontScale", "fontFamily", "alignment"].includes(key)
+      && renderVisualStyle({ [key]: value })));
+}
+
+export function renderVisualStyle(style: PageStyle = {}): string {
+  if (!style || typeof style !== "object" || Array.isArray(style)) return "";
+  const declarations: string[] = [];
+  for (const [key, property] of [["color", "color"], ["backgroundColor", "background-color"], ["borderColor", "border-color"]] as const) {
+    const value = style[key];
+    if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) declarations.push(`${property}:${value.toLowerCase()}`);
+  }
+  for (const [key, property, min, max, unit] of [["borderWidth", "border-width", 0, 8, "px"], ["padding", "padding", 0, 48, "px"], ["fontScale", "font-size", .5, 3, "em"]] as const) {
+    const value = style[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= min && value <= max) {
+      declarations.push(`${property}:${value}${unit}`);
+      if (key === "borderWidth") declarations.push("border-style:solid");
+    }
+  }
+  if (style.fontFamily === "serif" || style.fontFamily === "sans-serif") declarations.push(`font-family:${style.fontFamily}`);
+  if (style.alignment === "left" || style.alignment === "center" || style.alignment === "right") declarations.push(`text-align:${style.alignment}`);
+  return declarations.join(";");
+}
+
+function visualBlockStyle(block: VisualBlock): PageStyle {
+  return { ...block.style, ...(block.fontScale !== undefined ? { fontScale: block.fontScale } : {}), ...(block.alignment ? { alignment: block.alignment } : {}) };
+}
+
+function parseVisualStyle(css: string): PageStyle {
+  const style: PageStyle = {};
+  const properties = { color: "color", "background-color": "backgroundColor", "border-color": "borderColor", "border-width": "borderWidth", padding: "padding", "font-size": "fontScale", "font-family": "fontFamily", "text-align": "alignment" } as const;
+  for (const declaration of css.split(";")) {
+    const match = declaration.trim().match(/^([a-z-]+)\s*:\s*([^:;]+)$/i);
+    if (!match) continue;
+    const key = properties[match[1]!.toLowerCase() as keyof typeof properties];
+    if (!key) continue;
+    const value = match[2]!.trim().toLowerCase();
+    const unit = key === "fontScale" ? "em" : key === "padding" || key === "borderWidth" ? "px" : null;
+    if (unit && !new RegExp(`^(?:\\d+(?:\\.\\d+)?|\\.\\d+)${unit}$`).test(value)) continue;
+    const candidate = { [key]: unit ? Number(value.slice(0, -unit.length)) : value };
+    if (renderVisualStyle(candidate)) Object.assign(style, candidate);
+  }
+  return style;
+}
+
+export function renderVisualBlockHtml(block: VisualBlock, styled = true): string {
+  const css = styled ? [renderVisualStyle(visualBlockStyle(block)),
+    block.kind === "image" && block.imageWidth !== undefined ? `--reader-image-width:${block.imageWidth}%;--visual-image-width:${block.imageWidth}%` : ""].filter(Boolean).join(";") : "";
+  const attributes = css ? ` style="${css}"` : "";
   if (block.kind === "image") {
     return safeVisualImageSource(block.source)
-      ? `<figure><img src="${escapeHtml(block.source!)}" alt="${escapeHtml(block.text)}" />${block.text ? `<figcaption>${escapeHtml(block.text)}</figcaption>` : ""}</figure>`
+      ? `<figure${attributes}><img src="${escapeHtml(block.source!)}" alt="${escapeHtml(block.altText ?? block.text)}" style="width:var(--reader-image-width,var(--visual-image-width,auto));max-width:100%;height:auto" />${block.text ? `<figcaption>${escapeHtml(block.text).replace(/\n/g, "<br />")}</figcaption>` : ""}</figure>`
       : `<p>${block.source === "page-crop" ? "Recorte de la pagina" : "Imagen sin fuente"}</p>`;
   }
   function inline(value: string) {
@@ -369,10 +428,10 @@ export function renderVisualBlockHtml(block: VisualBlock): string {
   const list = block.kind === "text" && lines.every((line) => /^\s*(?:[-*]|\d+\.)\s+/.test(line));
   if (list) {
     const tag = lines.every((line) => /^\s*\d+\./.test(line)) ? "ol" : "ul";
-    return `<${tag}>${lines.map((line) => `<li>${inline(line.replace(/^\s*(?:[-*]|\d+\.)\s+/, ""))}</li>`).join("")}</${tag}>`;
+    return `<${tag}${attributes}>${lines.map((line) => `<li>${inline(line.replace(/^\s*(?:[-*]|\d+\.)\s+/, ""))}</li>`).join("")}</${tag}>`;
   }
   const tag = block.kind === "heading" ? `h${Math.max(1, Math.min(6, block.headingLevel ?? 1))}` : "p";
-  return `<${tag}>${inline(block.text)}</${tag}>`;
+  return `<${tag}${attributes}>${inline(block.text)}</${tag}>`;
 }
 
 export function renderVisualPreviewHtml(doc: VisualPageDocument, includeInactive = false): string {
@@ -385,7 +444,16 @@ export function renderVisualPreviewHtml(doc: VisualPageDocument, includeInactive
     }
     if (node.content) return renderVisualCompositeHtml(node, doc.blocks, includeInactive);
     const autoFooter = isCenteredFooterRow(node, doc.blocks);
-    return `<div data-visual-container="${node.type}"${autoFooter ? ' data-page-footer-row="true" style="display:grid;grid-template-columns:1fr auto 1fr;--reader-row-columns:1fr auto 1fr"' : style}>${node.children.map((child, index) => render(child, autoFooter ? index === 0 ? "center" : "right" : alignment, autoFooter ? index + 2 : undefined)).join("")}</div>`;
+    const weights = node.children.map((_, index) => {
+      const weight = node.weights?.[index];
+      return typeof weight === "number" && Number.isFinite(weight) && weight > 0 ? weight : 1;
+    });
+    const columns = autoFooter ? "1fr auto 1fr" : weights.map((weight) => `minmax(0,${weight}fr)`).join(" ");
+    const gap = Number.isFinite(node.gap) ? Math.max(0, Math.min(48, node.gap!)) : 12;
+    const css = [renderVisualStyle(node.style), "display:grid", `gap:${gap}px`, node.type === "row" ? `grid-template-columns:${columns};--reader-row-columns:${columns}` : "grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;align-content:start", slot ? `grid-column:${slot};grid-row:1;text-align:${alignment}${slot === 3 ? ";justify-self:end" : ""}` : ""].filter(Boolean).join(";");
+    const semantic = node.semantic && ["table", "tableRow", "tableCell", "figure"].includes(node.semantic) ? ` data-layout-semantic="${node.semantic}"` : "";
+    const textAlign = node.style?.alignment && ["left", "center", "right"].includes(node.style.alignment) ? ` data-text-align="${node.style.alignment}"` : "";
+    return `<div data-visual-container="${node.type}"${semantic}${textAlign}${autoFooter ? ' data-page-footer-row="true"' : ""} style="${css}">${node.children.map((child, index) => render(child, autoFooter ? index === 0 ? "center" : "right" : alignment, autoFooter ? index + 2 : undefined)).join("")}</div>`;
   }
   return render(doc.layout);
 }
@@ -399,18 +467,25 @@ export function renderVisualCompositeHtml(container: VisualContainer, blocks: Vi
     return block && block.kind !== "image" && (includeInactive || block.active) ? [block] : [];
   });
   if (!children.length) return "";
-  const style = [content.alignment ? `text-align:${content.alignment}` : "", content.fontScale ? `font-size:${content.fontScale}em` : ""].filter(Boolean).join(";");
-  const attributes = `data-visual-composite-id="${escapeHtml(container.id)}"${style ? ` style="${style}"` : ""}`;
+  const style = renderVisualStyle({ ...container.style,
+    ...(content.alignment !== undefined ? { alignment: content.alignment } : {}),
+    ...(content.fontScale !== undefined ? { fontScale: content.fontScale } : {}) });
+  const semantic = container.semantic && ["table", "tableRow", "tableCell", "figure"].includes(container.semantic) ? ` data-layout-semantic="${container.semantic}"` : "";
+  const alignment = content.alignment ?? container.style?.alignment;
+  const textAlign = alignment && ["left", "center", "right"].includes(alignment) ? ` data-text-align="${alignment}"` : "";
+  const attributes = `data-visual-composite-id="${escapeHtml(container.id)}"${semantic}${textAlign}${style ? ` style="${style}"` : ""}`;
   const segments = children.map((block) => {
-    const rendered = renderVisualBlockHtml(block);
+    const rendered = renderVisualBlockHtml(block, false);
     const listTag = rendered.match(/^<(ul|ol)>/)?.[1];
     const paragraph = content.kind === "text" && content.separator === "paragraph";
     const tag = paragraph ? listTag ?? "p" : "span";
     let html = rendered.replace(/^<(?:p|h[1-6]|ul|ol)>|<\/(?:p|h[1-6]|ul|ol)>$/g, "");
     // Inline composites keep list item text and formatting, not Markdown markers.
     if (listTag && !paragraph) html = html.replace(/<\/li><li>/g, "<br />").replace(/^<li>|<\/li>$/g, "");
-    const segmentStyle = [content.alignment === undefined && block.alignment ? `text-align:${block.alignment}` : "",
-      content.fontScale === undefined && block.fontScale !== undefined ? `font-size:${block.fontScale}em` : ""].filter(Boolean).join(";");
+    const segment = visualBlockStyle(block);
+    if (content.alignment !== undefined) delete segment.alignment;
+    if (content.fontScale !== undefined) delete segment.fontScale;
+    const segmentStyle = renderVisualStyle(segment);
     return `<${tag} data-visual-block-id="${escapeHtml(block.id)}"${segmentStyle ? ` style="${escapeHtml(segmentStyle)}"` : ""}>${html}</${tag}>`;
   });
   if (content.kind === "heading") return `<h${content.headingLevel ?? 2} ${attributes}>${segments.join(content.separator === "space" ? " " : content.separator === "line" ? "<br />" : "<br /><br />")}</h${content.headingLevel ?? 2}>`;
@@ -438,7 +513,11 @@ export function visualDocumentFromPage(page: BookPageResponse["page"]): VisualPa
     const source = image?.getAttribute("src") ?? image?.getAttribute("href") ?? markdownImage?.[2];
     const text = kind === "image" ? image?.getAttribute("alt") ?? markdownImage?.[1] ?? paragraph.paragraphText : (node ? buildEditableTextFromHtmlContent(`<div>${node.outerHTML}</div>`) : null) ?? paragraph.paragraphText;
     const level = heading ? Number(heading.tagName.slice(1)) : paragraph.paragraphText.match(/^(#{1,6})\s/)?.[1]?.length ?? 1;
+    const caption = node?.querySelector("figcaption")?.cloneNode(true) as Element | undefined;
+    caption?.querySelectorAll("br").forEach((br) => br.replaceWith("\n"));
     return { id: paragraph.paragraphId, kind, text: kind === "heading" ? text.replace(/^#{1,6}\s+/, "") : text, role: paragraph.role ?? (kind === "heading" ? "heading" : kind === "image" ? "image" : "body"), active: paragraph.active ?? true, readAloud: paragraph.readAloud ?? true, includeInToc: paragraph.includeInToc ?? kind === "heading", geometry: paragraph.geometry ?? null,
+      ...(node?.getAttribute("style") ? { style: parseVisualStyle(node.getAttribute("style")!) } : {}),
+      ...(kind === "image" && node?.getAttribute("data-image-alt-separated") === "true" ? { altText: image?.getAttribute("alt") ?? "", text: caption?.textContent ?? "" } : {}),
       ...(source ? { source } : {}), ...(kind === "heading" ? { headingLevel: level } : {}), ...(kind === "image" ? { imageWidth: paragraph.imageWidth ?? 100 } : {}) };
   });
   return { version: 1, blocks, layout: { id: crypto.randomUUID(), type: "column", gap: 12, children: blocks.map((block) => ({ id: crypto.randomUUID(), type: "block", blockId: block.id })) } };
@@ -451,11 +530,13 @@ export function importedVisualSourceHtml(page: BookPageResponse["page"], doc: Vi
   const html = new DOMParser().parseFromString(source, "text/html");
   html.querySelectorAll("script,iframe,object,embed,style,link,form").forEach((node) => node.remove());
   html.querySelectorAll("*").forEach((node) => {
+    const safeStyle = renderVisualStyle(parseVisualStyle(node.getAttribute("style") ?? ""));
     for (const attr of Array.from(node.attributes)) {
       if (/^on/i.test(attr.name) || ["srcdoc", "style"].includes(attr.name)) node.removeAttribute(attr.name);
       if (["href", "xlink:href"].includes(attr.name) && !attr.value.startsWith("#") && !safeVisualImageSource(attr.value)) node.removeAttribute(attr.name);
       if (attr.name === "src" && !safeVisualImageSource(attr.value)) node.removeAttribute("src");
     }
+    if (safeStyle) node.setAttribute("style", safeStyle);
   });
   for (const paragraph of page.paragraphs) {
     const node = paragraphHtmlNode(html, paragraph);

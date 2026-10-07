@@ -106,3 +106,24 @@ export const ocrModelIdSchema = z.enum(OCR_MODEL_IDS);
 export function getAiModel(modelId: string) {
   return AI_MODELS.find((model) => model.id === modelId) ?? AI_MODELS[0]!;
 }
+
+/**
+ * Los modelos gratuitos de OpenCode Zen (sufijo "-free", "big-pickle", "test")
+ * solo funcionan dentro del cliente OpenCode. Con una clave de API de servidor
+ * devuelven 403 "FreeTierError", así que nunca deben ofrecerse para resúmenes,
+ * peticiones IA ni OCR generados desde esta API.
+ * El modelo gratuito de Google (gemini-2.5-flash-lite-google) va por Google AI
+ * Studio directamente y SÍ es utilizable: no debe filtrarse.
+ */
+const FREE_ZEN_MODEL_IDS = new Set(["test", "big-pickle"]);
+
+export function isFreeZenModelId(modelId: string | null | undefined): boolean {
+  const cleanId = (modelId ?? "").trim().toLowerCase();
+  if (!cleanId) return false;
+  if (FREE_ZEN_MODEL_IDS.has(cleanId)) return true;
+  return cleanId.endsWith("-free");
+}
+
+export function isUsableZenModelId(modelId: string | null | undefined): boolean {
+  return !isFreeZenModelId(modelId);
+}

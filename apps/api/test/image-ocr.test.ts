@@ -178,6 +178,108 @@ function layout(id: string, type: Block["BlockType"], text: string, left: number
   return { Id: id, BlockType: type!, Text: text, Geometry: { BoundingBox: { Left: left, Top: top, Width: width, Height: height } } };
 }
 
+for (const captionHeight of [0.02, 0.03, 0.04]) {
+  test(`Textract separates short figure rows with caption height ${captionHeight} in geometric reading order`, async () => {
+    const blocks = [
+      layout("a", "LAYOUT_FIGURE", "", 0.1, 0.1, 0.3, 0.12),
+      layout("b", "LAYOUT_FIGURE", "", 0.6, 0.1, 0.3, 0.12),
+      layout("a-caption", "LAYOUT_TEXT", "Figura 1. Left upper.", 0.1, 0.23, 0.3, captionHeight),
+      layout("b-caption", "LAYOUT_TEXT", "Figura 2. Right upper.", 0.6, 0.23, 0.3, captionHeight),
+      layout("c", "LAYOUT_FIGURE", "", 0.1, 0.35, 0.3, 0.12),
+      layout("d", "LAYOUT_FIGURE", "", 0.6, 0.35, 0.3, 0.12),
+      layout("c-caption", "LAYOUT_TEXT", "Figura 3. Left lower.", 0.1, 0.48, 0.3, captionHeight),
+      layout("d-caption", "LAYOUT_TEXT", "Figura 4. Right lower.", 0.6, 0.48, 0.3, captionHeight)
+    ];
+    const snapshot = structuredClone(blocks);
+    const groups = groupTextractLayoutBlocks([...blocks].reverse());
+    assert.deepEqual(groups.map((group) => group.blocks.map((block) => block.Id)), [
+      ["a", "a-caption"], ["b", "b-caption"], ["c", "c-caption"], ["d", "d-caption"]
+    ]);
+    assert.deepEqual(groups.map((group) => group.readingRowId), ["textract-row-1", "textract-row-1", "textract-row-2", "textract-row-2"]);
+    const image = await sharp({ create: { width: 500, height: 500, channels: 3, background: "white" } }).png().toBuffer();
+    const page = await buildTextractPage(image, [...blocks].reverse());
+    const $ = load(page.htmlContent!);
+    assert.deepEqual($("section").map((_, section) => $(section).text()).get(), blocks.filter((block) => block.BlockType === "LAYOUT_TEXT").map((block) => block.Text));
+    assert.equal($("figure").length, 4);
+    assert.equal(page.paragraphMetadata!.filter((item) => item.role === "imageCaption").length, 4);
+    assert.deepEqual(buildRichPageFromEditableText(page.editedText, { paragraphMetadata: page.paragraphMetadata! }), page);
+    assert.deepEqual(blocks, snapshot);
+  });
+}
+
+test("Textract embeds internal lines once and preserves exterior, partial and unknown figure text", async () => {
+  const image = await sharp({ create: { width: 500, height: 500, channels: 3, background: "white" } }).png().toBuffer();
+  const figure = layout("figure", "LAYOUT_FIGURE", "Parent must not resurrect internal text.", 0.1, 0.1, 0.3, 0.3);
+  figure.Relationships = [{ Type: "CHILD", Ids: ["inside", "outside", "partial", "unknown"] }];
+  const duplicate = layout("duplicate", "LAYOUT_TEXT", "Internal label.", 0.15, 0.15, 0.1, 0.02);
+  duplicate.Relationships = [{ Type: "CHILD", Ids: ["inside"] }];
+  const blocks = [figure, duplicate,
+    layout("inside", "LINE", "Internal label.", 0.15, 0.15, 0.1, 0.02),
+    layout("outside", "LINE", "Caption outside.", 0.1, 0.42, 0.3, 0.02),
+    layout("partial", "LINE", "Crossing boundary.", 0.35, 0.2, 0.1, 0.02),
+    { Id: "unknown", BlockType: "LINE", Text: "Unknown geometry." } as Block
+  ];
+  const page = await buildTextractPage(image, blocks);
+  assert.deepEqual(page.paragraphs, ["Imagen.", "Caption outside. Crossing boundary. Unknown geometry."]);
+  assert.doesNotMatch(page.rawText, /Internal label|Parent must/u);
+  assert.equal(page.paragraphMetadata!.length, page.paragraphs.length);
+  const internalOnly = await buildTextractPage(image, [
+    { ...figure, Relationships: [{ Type: "CHILD", Ids: ["inside"] }] }, blocks[2]!
+  ]);
+  assert.deepEqual(internalOnly.paragraphs, ["Imagen."]);
+  // A crop too small to embed cannot justify suppressing any text.
+  const tiny = await sharp({ create: { width: 20, height: 20, channels: 3, background: "white" } }).png().toBuffer();
+  const uncropped = await buildTextractPage(tiny, [figure, blocks[2]!]);
+  assert.deepEqual(uncropped.paragraphs, ["Internal label."]);
+  assert.equal(load(uncropped.htmlContent!)("img").length, 0);
+});
+
+test("Textract retains parent fallback text for empty or missing CHILD responses", async () => {
+  const parent = layout("parent", "LAYOUT_TEXT", "Recoverable text.", 0.1, 0.1);
+  parent.Relationships = [{ Type: "CHILD", Ids: ["empty", "missing"] }];
+  const page = await buildTextractPage(Buffer.alloc(0), [parent, { Id: "empty", BlockType: "LINE" }]);
+  assert.deepEqual(page.paragraphs, ["Recoverable text."]);
+});
+
+test("Textract retains table CHILD content once without duplicating nested layouts or words", async () => {
+  const table = layout("table", "LAYOUT_TABLE", "", 0.1, 0.2, 0.8, 0.3);
+  table.Relationships = [{ Type: "CHILD", Ids: ["row", "row"] }];
+  const row = layout("row", "LAYOUT_TEXT", "", 0.1, 0.2, 0.8, 0.1);
+  row.Relationships = [{ Type: "CHILD", Ids: ["line"] }];
+  const page = await buildTextractPage(Buffer.alloc(0), [
+    layout("title", "LAYOUT_TITLE", "Table title", 0.1, 0.1, 0.3, 0.03), table, row,
+    { Id: "line", BlockType: "LINE", Text: "Name Value", Relationships: [{ Type: "CHILD", Ids: ["word"] }] },
+    { Id: "word", BlockType: "WORD", Text: "Name" },
+    layout("end", "LAYOUT_TEXT", "After table.", 0.1, 0.6, 0.8, 0.1)
+  ]);
+  assert.deepEqual(page.paragraphs, ["Table title", "Name Value", "After table."]);
+  assert.doesNotMatch(page.editedText, /::center::/u);
+  assert.match(page.editedText, /## Table title/u);
+  assert.equal(load(page.htmlContent!)("h2").attr("data-text-align"), undefined);
+  assert.equal(page.paragraphMetadata!.length, 3);
+});
+
+test("Textract sends JPEG to mocked AWS but crops exact original pixels after rotation", async (t) => {
+  const pixels = Buffer.from(Array.from({ length: 80 * 100 * 3 }, (_, index) => (index * 73 + Math.floor(index / 9)) % 256));
+  const image = await sharp(pixels, { raw: { width: 80, height: 100, channels: 3 } }).png().toBuffer();
+  const figure = layout("figure", "LAYOUT_FIGURE", "", 0.1, 0.2, 0.5, 0.5);
+  t.mock.method(TextractClient.prototype, "send", async (command: { input: { Document: { Bytes: Uint8Array }; FeatureTypes: string[] } }) => {
+    const metadata = await sharp(command.input.Document.Bytes).metadata();
+    assert.equal(metadata.format, "jpeg");
+    assert.equal(metadata.width, 100);
+    assert.equal(metadata.height, 80);
+    assert.deepEqual(command.input.FeatureTypes, ["LAYOUT"]);
+    return { Blocks: [figure] };
+  });
+  const page = await runOcrOnImage(image, "page.png", "image/png", { rotation: 90, ocrMode: "TEXTRACT",
+    awsCredentials: { accessKeyId: "test", secretAccessKey: "test", region: "eu-west-1" } });
+  const source = load(page.htmlContent!)("img").attr("src")!;
+  const actual = await sharp(Buffer.from(source.split(",")[1]!, "base64")).raw().toBuffer();
+  const rotated = await sharp(image).rotate(90).png().toBuffer();
+  const expected = await sharp(rotated).extract({ left: 10, top: 16, width: 50, height: 40 }).raw().toBuffer();
+  assert.deepEqual(actual, expected);
+});
+
 test("Textract captured sanitized geometry forms exactly two rows of two whole sections", async () => {
   const blocks = historyPage4Geometry();
   const expected = [[766], [765, 764, 772, 773, 774, 775, 776, 777, 778], [781, 782, 783, 785, 786, 788], [784, 787, 789, 790]];

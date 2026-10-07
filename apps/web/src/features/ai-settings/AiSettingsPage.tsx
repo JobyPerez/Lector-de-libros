@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 
 import {
@@ -68,6 +68,52 @@ function ModelCheckList({ models, visible, onToggle, idPrefix }: { models: Openc
       })}
     </ul>
   );
+}
+
+function placeholderTopModel(id: string, purpose: "ocr" | "summary"): OpencodeTopModel {
+  const cleanId = id.trim();
+  return {
+    contextWindowTokens: 0,
+    description: purpose === "ocr" ? "Modelo guardado en tu configuración." : "Modelo apto para resúmenes (guardado en tu configuración).",
+    id: cleanId,
+    name: cleanId,
+    pricing: "Guardado",
+    supportsVision: purpose === "ocr"
+  };
+}
+
+// Los modelos gratuitos de Zen ("*-free", "big-pickle", "test") devuelven 403
+// "FreeTierError" fuera del cliente OpenCode: nunca se ofrecen ni se restauran.
+// El gratuito de Google (gemini-2.5-flash-lite-google) va por Google AI Studio y sí vale.
+function isFreeZenModelId(id: string | null | undefined): boolean {
+  const cleanId = (id ?? "").trim().toLowerCase();
+  if (!cleanId) return false;
+  if (cleanId === "test" || cleanId === "big-pickle") return true;
+  return cleanId.endsWith("-free");
+}
+
+function mergeWithSavedModels(
+  current: OpencodeTopModel[],
+  visible: string[],
+  defaultModel: string,
+  purpose: "ocr" | "summary"
+): OpencodeTopModel[] {
+  const known = new Map(current.map((model) => [model.id, model]));
+  for (const id of [...visible, defaultModel]) {
+    const cleanId = id?.trim();
+    // No restaurar gratuitos de Zen: fallan con 403 fuera de OpenCode.
+    if (cleanId && !known.has(cleanId) && !isFreeZenModelId(cleanId)) {
+      known.set(cleanId, placeholderTopModel(cleanId, purpose));
+    }
+  }
+  // Mantener primero los conocidos (live/curados) y añadir al final los guardados que ya no están en el top-5.
+  const ordered: OpencodeTopModel[] = [...current];
+  for (const [id, model] of known) {
+    if (!current.some((entry) => entry.id === id)) {
+      ordered.push(model);
+    }
+  }
+  return ordered;
 }
 
 export function AiSettingsPage() {
@@ -139,7 +185,7 @@ export function AiSettingsPage() {
   }, [settings, settingsQuery.data?.effectiveModels.ocrModel, settingsQuery.data?.effectiveModels.summaryModel]);
 
   useEffect(() => {
-    const curatedOcr = (aiConfigQuery.data?.models ?? []).filter((model) => model.supportsVision).slice(0, 5).map((model) => ({
+    const curatedOcr = (aiConfigQuery.data?.models ?? []).filter((model) => model.supportsVision && !isFreeZenModelId(model.id)).slice(0, 5).map((model) => ({
       contextWindowTokens: model.contextWindowTokens,
       description: model.description,
       id: model.id,
@@ -148,7 +194,7 @@ export function AiSettingsPage() {
       supportsVision: model.supportsVision
     }));
     if (curatedOcr.length > 0 && ocrModels.length === 0) setOcrModels(curatedOcr);
-    const curatedSummary = (aiConfigQuery.data?.models ?? []).slice(0, 5).map((model) => ({
+    const curatedSummary = (aiConfigQuery.data?.models ?? []).filter((model) => !isFreeZenModelId(model.id)).slice(0, 5).map((model) => ({
       contextWindowTokens: model.contextWindowTokens,
       description: model.description,
       id: model.id,
@@ -159,6 +205,59 @@ export function AiSettingsPage() {
     if (curatedSummary.length > 0 && summaryModels.length === 0) setSummaryModels(curatedSummary);
   }, [aiConfigQuery.data, ocrModels.length, summaryModels.length]);
 
+  const hasAutoRefreshedOcr = useRef(false);
+  const hasAutoRefreshedSummary = useRef(false);
+
+  // Listas efectivas: curadas/live de pago + placeholders de los IDs guardados que ya no estén en el top-5.
+  // Los gratuitos de Zen se excluyen siempre (403 fuera de OpenCode).
+  // Así al salir y volver se siguen viendo los modelos de pago elegidos aunque el top-5 haya rotado.
+  const effectiveOcrModels = mergeWithSavedModels(ocrModels.filter((model) => !isFreeZenModelId(model.id)), form.opencodeOcrVisible, form.opencodeOcrModel, "ocr");
+  const effectiveSummaryModels = mergeWithSavedModels(summaryModels.filter((model) => !isFreeZenModelId(model.id)), form.opencodeSummaryVisible, form.opencodeSummaryModel, "summary");
+
+  // Aviso si la configuración guardada contenía gratuitos de Zen (se ocultan por inservibles).
+  const savedFreeSummaryIds = [...(settings?.opencodeSummaryVisibleModels ?? []), settings?.opencodeSummaryModel ?? ""].map((id) => id.trim()).filter((id) => id && isFreeZenModelId(id));
+  const savedFreeOcrIds = [...(settings?.opencodeOcrVisibleModels ?? []), settings?.opencodeOcrModel ?? ""].map((id) => id.trim()).filter((id) => id && isFreeZenModelId(id));
+
+  // Al cargar la configuración, si hay modelos guardados que no están en la lista curada,
+  // pedir automáticamente el top-5 en vivo una vez para recuperar nombre/precio reales.
+  useEffect(() => {
+    if (!accessToken || !settings) return;
+    const savedSummary = [...(settings.opencodeSummaryVisibleModels ?? []), settings.opencodeSummaryModel ?? ""].map((id) => id.trim()).filter(Boolean);
+    const missingSummary = savedSummary.filter((id) => !summaryModels.some((model) => model.id === id));
+    if (savedSummary.length > 0 && missingSummary.length > 0 && !hasAutoRefreshedSummary.current && summaryModels.length > 0) {
+      hasAutoRefreshedSummary.current = true;
+      void (async () => {
+        setIsRefreshingSummary(true);
+        try {
+          const response = await fetchOpencodeTopModels(accessToken, "summary");
+          setSummaryModels(response.models);
+          setSummarySource(response.source);
+        } catch {
+          // Los placeholders ya muestran los guardados; ignorar el fallo silencioso.
+        } finally {
+          setIsRefreshingSummary(false);
+        }
+      })();
+    }
+    const savedOcr = [...(settings.opencodeOcrVisibleModels ?? []), settings.opencodeOcrModel ?? ""].map((id) => id.trim()).filter(Boolean);
+    const missingOcr = savedOcr.filter((id) => !ocrModels.some((model) => model.id === id));
+    if (savedOcr.length > 0 && missingOcr.length > 0 && !hasAutoRefreshedOcr.current && ocrModels.length > 0) {
+      hasAutoRefreshedOcr.current = true;
+      void (async () => {
+        setIsRefreshingOcr(true);
+        try {
+          const response = await fetchOpencodeTopModels(accessToken, "ocr");
+          setOcrModels(response.models);
+          setOcrSource(response.source);
+        } catch {
+          // Los placeholders ya muestran los guardados; ignorar el fallo silencioso.
+        } finally {
+          setIsRefreshingOcr(false);
+        }
+      })();
+    }
+  }, [accessToken, settings, summaryModels, ocrModels]);
+
   if (!accessToken) return <Navigate to="/login" replace />;
 
   async function refreshModels(purpose: "ocr" | "summary") {
@@ -168,17 +267,18 @@ export function AiSettingsPage() {
     setErrorMessage(null);
     try {
       const response = await fetchOpencodeTopModels(accessToken, purpose);
+      const paidModels = response.models.filter((model) => !isFreeZenModelId(model.id));
       if (purpose === "ocr") {
-        setOcrModels(response.models);
+        setOcrModels(paidModels);
         setOcrSource(response.source);
-        if (response.models.length > 0 && !form.opencodeOcrModel) {
-          setForm((current) => ({ ...current, opencodeOcrModel: response.models[0]!.id }));
+        if (paidModels.length > 0 && !form.opencodeOcrModel) {
+          setForm((current) => ({ ...current, opencodeOcrModel: paidModels[0]!.id }));
         }
       } else {
-        setSummaryModels(response.models);
+        setSummaryModels(paidModels);
         setSummarySource(response.source);
-        if (response.models.length > 0 && !form.opencodeSummaryModel) {
-          setForm((current) => ({ ...current, opencodeSummaryModel: response.models[0]!.id }));
+        if (paidModels.length > 0 && !form.opencodeSummaryModel) {
+          setForm((current) => ({ ...current, opencodeSummaryModel: paidModels[0]!.id }));
         }
       }
       if (response.warning) setErrorMessage(response.warning);
@@ -194,7 +294,7 @@ export function AiSettingsPage() {
   function toggleVisible(kind: "ocr" | "summary", id: string) {
     setForm((current) => {
       const key = kind === "ocr" ? "opencodeOcrVisible" : "opencodeSummaryVisible";
-      const list = kind === "ocr" ? ocrModels : summaryModels;
+      const list = kind === "ocr" ? effectiveOcrModels : effectiveSummaryModels;
       const currentVisible = current[key].length > 0 ? current[key] : list.map((model) => model.id);
       const next = currentVisible.includes(id) ? currentVisible.filter((item) => item !== id) : [...currentVisible, id];
       return { ...current, [key]: next };
@@ -253,8 +353,24 @@ export function AiSettingsPage() {
     }
   }
 
-  const ocrVisibleOptions = ocrModels.filter((model) => form.opencodeOcrVisible.length === 0 || form.opencodeOcrVisible.includes(model.id));
-  const summaryVisibleOptions = summaryModels.filter((model) => form.opencodeSummaryVisible.length === 0 || form.opencodeSummaryVisible.includes(model.id));
+  const ocrVisibleOptions = (() => {
+    const filtered = effectiveOcrModels.filter((model) => form.opencodeOcrVisible.length === 0 || form.opencodeOcrVisible.includes(model.id));
+    const base = filtered.length > 0 ? filtered : effectiveOcrModels;
+    // Asegurar que el modelo por defecto siempre esté en el desplegable aunque se haya desmarcado arriba.
+    if (form.opencodeOcrModel.trim() && !base.some((model) => model.id === form.opencodeOcrModel.trim())) {
+      return [...base, placeholderTopModel(form.opencodeOcrModel.trim(), "ocr")];
+    }
+    return base;
+  })();
+  const summaryVisibleOptions = (() => {
+    const filtered = effectiveSummaryModels.filter((model) => form.opencodeSummaryVisible.length === 0 || form.opencodeSummaryVisible.includes(model.id));
+    const base = filtered.length > 0 ? filtered : effectiveSummaryModels;
+    // Asegurar que el modelo por defecto siempre esté en el desplegable aunque se haya desmarcado arriba.
+    if (form.opencodeSummaryModel.trim() && !base.some((model) => model.id === form.opencodeSummaryModel.trim())) {
+      return [...base, placeholderTopModel(form.opencodeSummaryModel.trim(), "summary")];
+    }
+    return base;
+  })();
 
   return (
     <div className="page-grid profile-layout">
@@ -345,12 +461,13 @@ export function AiSettingsPage() {
             </button>
           </div>
           {ocrSource ? <p className="helper-text">Fuente: {ocrSource === "live" ? "OpenCode en vivo" : "lista curada"}.</p> : null}
-          <ModelCheckList models={ocrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
+          {savedFreeOcrIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeOcrIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago.</p> : null}
+          <ModelCheckList models={effectiveOcrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
           <label>
             Modelo OCR por defecto
             <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={form.opencodeOcrModel}>
               <option value="">Usar el del servidor</option>
-              {(ocrVisibleOptions.length > 0 ? ocrVisibleOptions : ocrModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+              {(ocrVisibleOptions.length > 0 ? ocrVisibleOptions : effectiveOcrModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
             </select>
             <span className="helper-text">Marca o desmarca arriba qué modelos quieres ver en esta lista.</span>
           </label>
@@ -365,12 +482,13 @@ export function AiSettingsPage() {
             </button>
           </div>
           {summarySource ? <p className="helper-text">Fuente: {summarySource === "live" ? "OpenCode en vivo" : "lista curada"}.</p> : null}
-          <ModelCheckList models={summaryModels} visible={form.opencodeSummaryVisible} onToggle={(id) => toggleVisible("summary", id)} idPrefix="summary" />
+          {savedFreeSummaryIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeSummaryIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago o el gratis de Google.</p> : null}
+          <ModelCheckList models={effectiveSummaryModels} visible={form.opencodeSummaryVisible} onToggle={(id) => toggleVisible("summary", id)} idPrefix="summary" />
           <label>
             Modelo de resúmenes por defecto
             <select onChange={(event) => setForm((current) => ({ ...current, opencodeSummaryModel: event.target.value }))} value={form.opencodeSummaryModel}>
               <option value="">Usar el del servidor</option>
-              {(summaryVisibleOptions.length > 0 ? summaryVisibleOptions : summaryModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+              {(summaryVisibleOptions.length > 0 ? summaryVisibleOptions : effectiveSummaryModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
             </select>
           </label>
 

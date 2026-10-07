@@ -63,6 +63,8 @@ function recoveryHarness(overrides: Record<string, unknown> = {}, oldGuard = fal
     activeOcrOperationsRef: { current: active },
     reviewDraftVersionRef: version,
     reviewOcrMode: "LOCAL",
+    reviewAdvancedLayout: false,
+    setReviewAdvancedLayout: setter("setReviewAdvancedLayout"),
     reviewImageRotation: 0,
     originalReviewImageRotation: 0,
     reviewImageCrop: null,
@@ -105,6 +107,7 @@ function assertRecovery(harness: ReturnType<typeof recoveryHarness>, mode: strin
   assert.equal(harness.calls.length, 1, "OCR recovery must reach rerunOcrPage exactly once");
   assert.deepEqual(harness.calls[0], ["synthetic-token-not-a-credential", "synthetic-book", 7, {
     expectedUpdatedAt,
+    advancedLayout: false,
     ...(mode === "VISION" ? { ocrModel: "synthetic-vision-model", promptOverride: "synthetic prompt" } : {}),
     ocrMode: mode
   }]);
@@ -130,6 +133,18 @@ for (const mode of ["TEXTRACT", "VISION", "LOCAL"]) {
     const harness = recoveryHarness();
     await harness.run(mode, "  synthetic prompt  ");
     assertRecovery(harness, mode);
+  });
+}
+
+for (const mode of ["TEXTRACT", "VISION", "LOCAL"]) {
+  test(`${mode} recovery opt-in forwards the same selected model only for non-local modes`, async () => {
+    const harness = recoveryHarness({ reviewAdvancedLayout: true });
+    await harness.run(mode, "  synthetic prompt  ");
+    const payload = harness.calls[0]![3];
+    assert.deepEqual(payload, { expectedUpdatedAt, advancedLayout: mode !== "LOCAL", ocrMode: mode,
+      ...(mode !== "LOCAL" ? { ocrModel: "synthetic-vision-model" } : {}),
+      ...(mode === "VISION" ? { promptOverride: "synthetic prompt" } : {}) });
+    if (mode === "LOCAL") assert.ok(harness.effects.some(([name, value]) => name === "setReviewAdvancedLayout" && value === false));
   });
 }
 
@@ -181,4 +196,38 @@ test("a failed OCR request releases the active operation and restores both loadi
   }
   assert.ok(harness.effects.some(([name, value]) => name === "setReviewError" && value === "synthetic OCR failure"));
   assert.ok(harness.effects.some(([name, value]) => name === "sound" && value === "error"));
+});
+
+test("OCR confirmation explicitly warns about replacing saved and pending styles/layout even without annotations", async () => {
+  for (const annotationCount of [0, 3]) {
+    const messages: string[] = [];
+    const confirm = evaluateHandler("confirmReviewTextReplacement", {
+      reviewPageAnnotationCount: annotationCount, reviewPageBookmarkCount: annotationCount ? 1 : 0,
+      reviewPageHighlightCount: annotationCount ? 1 : 0, reviewPageNoteCount: annotationCount ? 1 : 0,
+      window: { confirm: (message: string) => { messages.push(message); return false; } }
+    });
+    assert.equal(await confirm("volver a ejecutar el OCR", true), false);
+    assert.equal(messages.length, 1);
+    assert.match(messages[0]!, /reemplazará.*estilos editoriales.*maquetación manual.*guardados.*pendientes de guardar/u);
+    if (annotationCount) assert.match(messages[0]!, /1 marcador, 1 resaltado, 1 nota.*recolocar/u);
+    else assert.doesNotMatch(messages[0]!, /anotaciones/u);
+  }
+  const confirmSave = evaluateHandler("confirmReviewTextReplacement", { reviewPageAnnotationCount: 0 });
+  assert.equal(await confirmSave("guardar el documento visual"), true);
+});
+
+test("canceling OCR replacement confirmation prevents image writes and OCR execution", async () => {
+  let confirmations = 0;
+  const harness = recoveryHarness({ confirmReviewTextReplacement: (action: string, replacesVisualContent: boolean) => {
+    confirmations++;
+    assert.equal(action, "volver a ejecutar el OCR");
+    assert.equal(replacesVisualContent, true);
+    return false;
+  } });
+  await harness.run("VISION");
+  assert.equal(confirmations, 1);
+  assert.deepEqual(harness.calls, []);
+  assert.deepEqual(harness.effects, []);
+  assert.deepEqual(harness.refetches, []);
+  assert.equal(harness.version.current?.updatedAt, expectedUpdatedAt);
 });

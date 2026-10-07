@@ -13,15 +13,73 @@ export function isGeminiModel(model: string): boolean {
   return model.startsWith("gemini-");
 }
 
+/**
+ * Modelos que solo hablan el protocolo Responses API (/zen/v1/responses).
+ * Por /chat/completions devuelven 400 "ModelProtocolUnsupported".
+ * Según https://opencode.ai/docs/zen: gpt-*, muse-spark-*.
+ */
+export function isResponsesApiModel(model: string): boolean {
+  const normalizedModel = model.trim().toLowerCase();
+  return normalizedModel.startsWith("gpt-") || normalizedModel.startsWith("muse-spark-");
+}
+
+/**
+ * Las claves Go (sk-...) rinden mejor en /zen/go/v1 y las Zen (z-...) en /zen/v1.
+ * Como algunos modelos solo están enrutados en uno de los dos (p. ej.
+ * deepseek-v4-flash devuelve 404 en /zen/v1 con clave Go), el orden solo es
+ * preferencia: ante un 404 de ruta se prueba el otro endpoint.
+ */
+export function isGoApiKey(apiKey: string | null | undefined): boolean {
+  return (apiKey ?? "").trim().toLowerCase().startsWith("sk-");
+}
+
+export function resolveOpenCodeChatEndpoints(apiKey: string | null | undefined): [string, string] {
+  return isGoApiKey(apiKey)
+    ? [OPENCODE_GO_ENDPOINT, OPENCODE_ZEN_ENDPOINT]
+    : [OPENCODE_ZEN_ENDPOINT, OPENCODE_GO_ENDPOINT];
+}
+
+export type ResponsesApiResponse = {
+  error?: {
+    code?: string;
+    message?: string;
+    param?: string | null;
+    type?: string;
+  };
+  incomplete_details?: {
+    reason?: string;
+  } | null;
+  output?: Array<{
+    content?: Array<{
+      text?: string;
+      type?: string;
+    }>;
+    type?: string;
+  }>;
+  output_text?: string;
+  status?: string;
+};
+
+export function extractResponsesApiText(payload: ResponsesApiResponse): string {
+  if (payload.output_text?.trim()) {
+    return payload.output_text.trim();
+  }
+
+  return (payload.output ?? [])
+    .flatMap((item) => item.content ?? [])
+    .map((item) => item.text ?? "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
 export function getOpenCodeGeminiEndpoint(model: string): string {
   return `${OPENCODE_ZEN_MODELS_ENDPOINT}/${encodeURIComponent(model)}:generateContent`;
 }
 
-export function getOpenCodeChatCompletionsEndpoint(model: string): string {
-  // Los resúmenes usan Zen de pago por uso (https://opencode.ai/docs/zen/):
-  // deepseek-v4-flash, glm-5.3-flash, etc. van a /zen/v1, no a /zen/go/v1.
-  // Se mantiene OPENCODE_GO_ENDPOINT solo para un futuro uso con suscripción Go.
-  // Los antiguos "-free" también iban a /zen/v1 pero están bloqueados fuera de OpenCode.
+export function getOpenCodeChatCompletionsEndpoint(_model: string): string {
+  // Compatibilidad: los resúmenes eligen endpoint según clave (Go/Zen) con
+  // conmutación ante 404. Los "-free" están bloqueados fuera de OpenCode.
   return OPENCODE_ZEN_ENDPOINT;
 }
 

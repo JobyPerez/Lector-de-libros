@@ -15,6 +15,182 @@ const doc = (...blocks: VisualBlock[]): VisualPageDocument => ({ version: 1, blo
   layout: { id: randomUUID(), type: "column", children: blocks.map(leaf) } });
 const geometry = { bbox: { left: 0.1, top: 0.2, width: 0.3, height: 0.4 } };
 
+test("column weights roundtrip as metadata without imposing proportional heights; row weights remain widths", () => {
+  const value = doc(block("Short"), block("Long\n\nbody"));
+  assert.ok(value.layout.type !== "block");
+  value.layout.weights = [100, 1];
+  const before = structuredClone(value);
+  const rendered = renderVisualDocument(value);
+  const css = load(rendered.htmlContent)(`[data-layout-id="${value.layout.id}"]`).attr("style")!;
+  assert.doesNotMatch(css, /grid-template-rows/u);
+  assert.match(css, /grid-auto-rows:max-content;align-content:start/u);
+  assert.match(css, /--reader-layout-weights:minmax\(0,100fr\) minmax\(0,1fr\)/u);
+  const stored = rendered.paragraphIds.map((paragraphId, index) => ({ ...rendered.paragraphMetadata[index]!,
+    paragraphId, paragraphNumber: index + 1, paragraphText: rendered.paragraphs[index]! }));
+  const roundtrip = buildVisualDocumentFromPage(rendered.htmlContent, stored);
+  assert.ok(roundtrip.layout.type !== "block");
+  assert.deepEqual(roundtrip.layout.weights, [100, 1]);
+  assert.deepEqual(value, before);
+  value.layout.type = "row";
+  assert.match(renderVisualDocument(value).htmlContent, /--reader-row-columns:minmax\(0,100fr\) minmax\(0,1fr\)/u);
+});
+
+test("image width is emitted once per CSS hook and works without reader stylesheets", () => {
+  const value = doc(block("Caption", { kind: "image", source: "data:image/png;base64,YQ==", imageWidth: 42 }));
+  const html = load(renderVisualDocument(value).htmlContent);
+  const css = html("figure").attr("style")!;
+  assert.equal(css.split("--reader-image-width:").length - 1, 1);
+  assert.equal(css.split("--visual-image-width:").length - 1, 1);
+  assert.match(css, /--reader-image-width:42%;--visual-image-width:42%/u);
+  assert.equal(html("img").attr("style"), "width:var(--reader-image-width,var(--visual-image-width,auto));max-width:100%;height:auto");
+});
+
+test("explicit atom and composite scale take precedence without duplicate or compounded declarations", () => {
+  const value = doc(block("One", { fontScale: 1.2, style: { fontScale: 1.5 } }), block("Two"));
+  const atom = load(renderVisualDocument(value).htmlContent)("p").first();
+  assert.equal(atom.attr("data-font-scale"), "1.2");
+  assert.equal((atom.attr("style")!.match(/font-size:/gu) ?? []).length, 1);
+  assert.match(atom.attr("style")!, /font-size:1.2em/u);
+  assert.ok(value.layout.type !== "block");
+  value.layout.style = { fontScale: 1.5, color: "#123abc" };
+  for (const fontScale of [undefined, 2]) {
+    value.layout.content = { kind: "text", separator: "paragraph", includeInToc: false,
+      ...(fontScale !== undefined ? { fontScale } : {}) };
+    const html = load(renderVisualDocument(value).htmlContent);
+    const sectionStyle = html(".reader-content-compound").attr("style")!;
+    assert.match(sectionStyle, /color:#123abc/u);
+    if (fontScale !== undefined) {
+      assert.doesNotMatch(sectionStyle, /font-size|--reader-font-scale/u);
+      assert.match(html(".reader-content-compound > div").attr("style")!, /font-size:2em/u);
+      assert.doesNotMatch(html("p").first().attr("style") ?? "", /font-size/u);
+    } else {
+      assert.match(sectionStyle, /font-size:1.5em/u);
+      assert.match(html("p").first().attr("style")!, /font-size:1.2em/u);
+    }
+  }
+});
+const tableDoc = (...blocks: VisualBlock[]): VisualPageDocument => ({ version: 1, blocks,
+  layout: { id: randomUUID(), type: "column", semantic: "table", children: [
+    { id: randomUUID(), type: "row", semantic: "tableRow", children: blocks.map((atom) => ({
+      id: randomUUID(), type: "column", semantic: "tableCell", children: [leaf(atom)]
+    })) }
+  ] } });
+
+test("container semantics have strict orientations, safe styles and accessible roles, compatible with version 1", () => {
+  for (const semantic of ["table", "tableRow", "tableCell", "figure"] as const) {
+    const value = semantic === "figure" ? doc(block()) : tableDoc(block());
+    assert.ok(value.layout.type !== "block");
+    let node = value.layout;
+    if (semantic === "tableRow" || semantic === "tableCell") {
+      const row = node.children[0]!;
+      assert.ok(row.type !== "block");
+      node = row;
+      if (semantic === "tableCell") {
+        const cell = row.children[0]!;
+        assert.ok(cell.type !== "block");
+        node = cell;
+      }
+    }
+    node.semantic = semantic;
+    node.style = { backgroundColor: "#fffefd", borderColor: "#123abc", borderWidth: 2, padding: 12, fontFamily: "serif" };
+    const html = load(renderVisualDocument(value).htmlContent);
+    const container = html(`[data-layout-semantic="${semantic}"]`);
+    assert.equal(container.attr("role"), { table: "table", tableRow: "row", tableCell: "cell", figure: "group" }[semantic]);
+    assert.match(container.attr("style")!, /background-color:#fffefd;border-color:#123abc;border-width:2px;border-style:solid;padding:12px;font-family:serif/u);
+    assert.equal(visualPageDocumentSchema.safeParse(value).success, true);
+    node.type = node.type === "row" ? "column" : "row";
+    assert.equal(visualPageDocumentSchema.safeParse(value).success, false);
+    node.type = semantic === "tableRow" ? "row" : "column";
+    (node.style as any).color = "red;position:fixed";
+    assert.throws(() => renderVisualDocument(value));
+  }
+  assert.equal(visualPageDocumentSchema.safeParse(doc(block())).success, true);
+  const value = doc(block());
+  (value.layout as any).semantic = "unknown";
+  assert.equal(visualPageDocumentSchema.safeParse(value).success, false);
+  (value.layout as any).children[0].semantic = "tableCell";
+  assert.equal(visualPageDocumentSchema.safeParse(value).success, false);
+});
+
+test("API-generated wrappers roundtrip nested container semantics and styles without applying arbitrary CSS", () => {
+  const first = block("Cell A"), second = block("Cell B");
+  const value = doc(first, second);
+  const cell: VisualLayoutNode = { id: randomUUID(), type: "column", semantic: "tableCell", style: { padding: 8 }, children: [leaf(first)] };
+  value.layout = { id: randomUUID(), type: "column", semantic: "table", style: { borderWidth: 1, borderColor: "#123abc" }, gap: 4,
+    children: [{ id: randomUUID(), type: "row", semantic: "tableRow", weights: [2, 1], style: { backgroundColor: "#fffefd" },
+      children: [cell, { id: randomUUID(), type: "column", semantic: "tableCell", children: [
+        { id: randomUUID(), type: "column", semantic: "figure", style: { alignment: "center" }, children: [leaf(second)] }
+      ] }] }] };
+  const rendered = renderVisualDocument(value, { includeInactive: true });
+  const stored = rendered.paragraphIds.map((paragraphId, index) => ({ ...rendered.paragraphMetadata[index]!, paragraphId,
+    paragraphNumber: index + 1, paragraphText: rendered.paragraphs[index]! }));
+  const roundtrip = buildVisualDocumentFromPage(rendered.htmlContent, stored);
+  assert.equal(visualPageDocumentSchema.safeParse(roundtrip).success, true);
+  assert.deepEqual(orderedVisualBlocks(roundtrip).map((block) => block.id), rendered.paragraphIds);
+  assert.ok(roundtrip.layout.type !== "block");
+  assert.deepEqual(roundtrip.layout.style, { borderWidth: 1, borderColor: "#123abc" });
+  assert.equal(roundtrip.layout.semantic, "table");
+  const row = roundtrip.layout.children[0]!;
+  assert.ok(row.type !== "block");
+  assert.equal(row.semantic, "tableRow");
+  assert.deepEqual(row.weights, [2, 1]);
+  assert.deepEqual(row.style, { backgroundColor: "#fffefd" });
+  assert.ok(row.children[0]!.type !== "block");
+  assert.equal(row.children[0]!.semantic, "tableCell");
+  assert.deepEqual(row.children[0]!.style, { padding: 8 });
+  assert.ok(row.children[1]!.type !== "block");
+  assert.equal(row.children[1]!.semantic, "tableCell");
+  const figure = row.children[1]!.children[0]!;
+  assert.ok(figure.type !== "block");
+  assert.equal(figure.semantic, "figure");
+  assert.deepEqual(figure.style, { alignment: "center" });
+  const source = load(rendered.htmlContent);
+  assert.equal(source(`[data-layout-id="${figure.id}"]`).attr("data-text-align"), "center");
+  assert.equal(source(`[data-visual-block-id="${second.id}"]`).attr("data-text-align"), undefined);
+});
+
+test("table semantics reject stray rows/cells, invalid direct children and intervening generic wrappers", () => {
+  const value = tableDoc(block());
+  assert.ok(value.layout.type !== "block");
+  const row = value.layout.children[0]!;
+  assert.ok(row.type !== "block");
+  const cell = row.children[0]!;
+  assert.ok(cell.type !== "block");
+  assert.equal(visualPageDocumentSchema.safeParse(value).success, true);
+  const invalid = [
+    { ...value, layout: row },
+    { ...value, layout: cell },
+    { ...value, layout: { ...value.layout, children: [cell] } },
+    { ...value, layout: { ...value.layout, children: [{ ...row, children: cell.children }] } },
+    { ...value, layout: { ...value.layout, children: [{ id: randomUUID(), type: "column", children: [row] }] } },
+    { ...value, layout: { ...value.layout, children: [{ ...row, children: [{ id: randomUUID(), type: "column", children: [cell] }] }] } }
+  ];
+  for (const document of invalid) assert.equal(visualPageDocumentSchema.safeParse(document).success, false);
+  const generic = doc(block());
+  assert.ok(generic.layout.type !== "block");
+  generic.layout.children = [{ id: randomUUID(), type: "row", children: generic.layout.children }];
+  assert.equal(visualPageDocumentSchema.safeParse(generic).success, true);
+});
+
+test("nested aligned containers expose inheritance hooks without overriding atomic or nearer alignment", () => {
+  const inherited = block("Inherited"), explicit = block("Explicit", { alignment: "right" });
+  const value = doc(inherited, explicit);
+  assert.ok(value.layout.type !== "block");
+  value.layout.style = { alignment: "center" };
+  const nested: VisualLayoutNode = { id: randomUUID(), type: "column", style: { alignment: "left" }, children: [leaf(inherited), leaf(explicit)] };
+  value.layout.children = [nested];
+  const html = load(renderVisualDocument(value).htmlContent);
+  assert.equal(html(`[data-layout-id="${value.layout.id}"]`).attr("data-text-align"), "center");
+  assert.equal(html(`[data-layout-id="${nested.id}"]`).attr("data-text-align"), "left");
+  assert.equal(html(`[data-visual-block-id="${inherited.id}"]`).attr("data-text-align"), undefined);
+  assert.doesNotMatch(html(`[data-visual-block-id="${inherited.id}"]`).attr("style") ?? "", /text-align/u);
+  assert.equal(html(`[data-visual-block-id="${explicit.id}"]`).attr("data-text-align"), "right");
+  value.layout.children = [leaf(inherited), leaf(explicit)];
+  value.layout.content = { kind: "text", separator: "paragraph", includeInToc: false };
+  const compound = load(renderVisualDocument(value).htmlContent);
+  assert.equal(compound(".reader-content-compound").attr("data-text-align"), "center");
+});
+
 test("legacy footer pair adapts without body weights and renders centered without new leaves", () => {
   const footer = block("Pie de pagina", { role: "footer", readAloud: false, geometry: { bbox: { left: .4, top: .92, width: .2, height: .02 } } });
   const number = block("97", { role: "pageNumber", readAloud: false, geometry: { bbox: { left: .9, top: .925, width: .04, height: .02 } } });

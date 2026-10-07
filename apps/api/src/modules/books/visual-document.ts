@@ -5,6 +5,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { geometrySchema, pageElementRoles, type ParagraphElementMetadata } from "./page-elements.js";
 import { buildRichPageFromParagraphs, normalizeWhitespace } from "./rich-content.js";
+import { pageStyleSchema, parsePageStyle, renderPageStyle, type PageStyle } from "./page-style.js";
 
 const uuid = z.string().uuid().transform((id) => id.toLowerCase());
 export function isSafeVisualImageSource(source: string): boolean {
@@ -18,6 +19,7 @@ export function isSafeVisualImageSource(source: string): boolean {
 
 export const visualBlockSchema = z.object({
   id: uuid, kind: z.enum(["text", "heading", "image"]), text: z.string().max(50000),
+  style: pageStyleSchema.optional(), altText: z.string().max(50000).optional(),
   role: z.enum(pageElementRoles), active: z.boolean(), readAloud: z.boolean(), includeInToc: z.boolean(),
   source: z.string().max(48 * 1024 * 1024).transform((source) => /^lector-content-image:/iu.test(source)
     ? `lector-content-image:${source.slice(21).toLowerCase()}` : source).optional(),
@@ -28,6 +30,7 @@ export const visualBlockSchema = z.object({
 }).strict().superRefine((block, ctx) => {
   if (block.kind !== "image" && block.active && !block.text.trim()) ctx.addIssue({ code: "custom", path: ["text"], message: "Un bloque activo debe contener texto." });
   if (block.source !== undefined && block.kind !== "image") ctx.addIssue({ code: "custom", path: ["source"], message: "Solo las imagenes admiten source." });
+  if (block.altText !== undefined && block.kind !== "image") ctx.addIssue({ code: "custom", path: ["altText"], message: "Solo las imagenes admiten altText." });
   if (block.kind === "image" && (!block.source || (block.source !== "page-crop" && !isSafeVisualImageSource(block.source)))) {
     ctx.addIssue({ code: "custom", path: ["source"], message: "Origen de imagen no permitido." });
   }
@@ -43,14 +46,16 @@ const visualContentSchema = z.object({
 }).strict();
 export type VisualContent = z.infer<typeof visualContentSchema>;
 export type VisualLayoutNode = { id: string; type: "block"; blockId: string }
-  | { id: string; type: "row" | "column"; children: VisualLayoutNode[]; weights?: number[] | undefined; gap?: number | undefined; content?: VisualContent | undefined };
+  | { id: string; type: "row" | "column"; children: VisualLayoutNode[]; weights?: number[] | undefined; gap?: number | undefined; content?: VisualContent | undefined;
+    style?: PageStyle | undefined; semantic?: "table" | "tableRow" | "tableCell" | "figure" | undefined };
 export type VisualPageDocument = { version: 1; blocks: VisualBlock[]; layout: VisualLayoutNode };
 
 const nodeSchema: z.ZodType<VisualLayoutNode> = z.lazy(() => z.discriminatedUnion("type", [
   z.object({ id: uuid, type: z.literal("block"), blockId: uuid }).strict(),
   z.object({ id: uuid, type: z.enum(["row", "column"]), children: z.array(nodeSchema).max(1000),
     weights: z.array(z.number().finite().positive()).max(1000).optional(), gap: z.number().finite().min(0).max(48).optional(),
-    content: visualContentSchema.optional() }).strict()
+    content: visualContentSchema.optional(), style: pageStyleSchema.optional(),
+    semantic: z.enum(["table", "tableRow", "tableCell", "figure"]).optional() }).strict()
 ]));
 
 // Check cycles and budgets before invoking the recursive schema (also used by in-process adapters).
@@ -87,13 +92,26 @@ export const visualPageDocumentSchema = z.unknown().superRefine((value, ctx) => 
         sourceKeys.add(block.sourceKey);
       }
     }
-    const visit = (node: VisualLayoutNode) => {
+    const visit = (node: VisualLayoutNode, parentSemantic?: "table" | "tableRow" | "tableCell" | "figure") => {
       if (ids.has(node.id)) issue("Los IDs de bloques y nodos deben ser unicos.");
       ids.add(node.id);
       if (node.type === "block") {
         if (!blockIds.has(node.blockId) || references.has(node.blockId)) issue("Referencia inexistente o duplicada.");
         references.add(node.blockId);
       } else {
+        if (node.semantic && node.type !== (node.semantic === "tableRow" ? "row" : "column")) {
+          issue("semantic requiere tableRow row y table/tableCell/figure column.");
+        }
+        if (node.semantic === "table" && node.children.some((child) => child.type !== "row" || child.semantic !== "tableRow")) {
+          issue("table solo admite hijos tableRow.");
+        }
+        if (node.semantic === "tableRow" && (parentSemantic !== "table"
+          || node.children.some((child) => child.type !== "column" || child.semantic !== "tableCell"))) {
+          issue("tableRow requiere padre table e hijos tableCell.");
+        }
+        if (node.semantic === "tableCell" && parentSemantic !== "tableRow") {
+          issue("tableCell requiere padre tableRow.");
+        }
         if (node.content && (node.type !== "column" || node.children.length < 2 || node.children.some((child) =>
           child.type !== "block" || document.blocks.find((block) => block.id === child.blockId)?.kind === "image"))) {
           issue("content requiere una columna con al menos dos bloques directos de texto, sin imagenes ni contenedores.");
@@ -107,7 +125,7 @@ export const visualPageDocumentSchema = z.unknown().superRefine((value, ctx) => 
           }
         }
         if (node.weights && node.weights.length !== node.children.length) issue("weights debe corresponder a children.");
-        node.children.forEach(visit);
+        node.children.forEach((child) => visit(child, node.semantic));
       }
     };
     visit(document.layout);
@@ -128,7 +146,7 @@ export function orderedVisualBlocks(document: VisualPageDocument): VisualBlock[]
 }
 
 export function isCenteredFooterRow(node: VisualLayoutNode, blocks: readonly VisualBlock[]): boolean {
-  if (node.type !== "row" || node.content !== undefined || node.weights !== undefined || node.children.length !== 2) return false;
+  if (node.type !== "row" || node.semantic !== undefined || node.content !== undefined || node.weights !== undefined || node.children.length !== 2) return false;
   const singleBlock = (child: VisualLayoutNode): VisualBlock | undefined => {
     if (child.type === "block") return blocks.find((block) => block.id === child.blockId);
     return child.type === "column" && child.content === undefined && child.children.length === 1 ? singleBlock(child.children[0]!) : undefined;
@@ -192,13 +210,17 @@ export function renderVisualDocument(input: VisualPageDocument, options: { inclu
     if (block.kind === "image" && block.source) atom.find("img").attr("src", block.source);
     if (block.kind === "heading") atom.attr("data-include-in-toc", String(block.includeInToc));
     if (block.geometry) atom.attr("data-element-geometry", JSON.stringify(block.geometry));
-    const styles: string[] = [];
+    const fontScale = block.fontScale ?? block.style?.fontScale;
+    const alignment = block.alignment ?? block.style?.alignment;
+    const editorialStyle = renderPageStyle({ ...block.style, fontScale, alignment });
+    const styles: string[] = editorialStyle ? [editorialStyle] : [];
     if (block.imageWidth !== undefined) {
       atom.attr("data-image-width", String(block.imageWidth));
-      styles.push(`--reader-image-width:${block.imageWidth}%`);
+      styles.push(`--reader-image-width:${block.imageWidth}%`, `--visual-image-width:${block.imageWidth}%`);
     }
-    if (block.fontScale !== undefined) { atom.attr("data-font-scale", String(block.fontScale)); styles.push(`--reader-font-scale:${block.fontScale}`, `font-size:${block.fontScale}em`); }
-    if (block.alignment) { atom.attr("data-text-align", block.alignment); styles.push(`text-align:${block.alignment}`); }
+    if (fontScale !== undefined) atom.attr("data-font-scale", String(fontScale));
+    if (alignment) atom.attr("data-text-align", alignment);
+    if (block.kind === "image") atom.find("img").attr("style", "width:var(--reader-image-width,var(--visual-image-width,auto));max-width:100%;height:auto");
     if (styles.length) atom.attr("style", styles.join(";") + ";");
     let plain = rich.paragraphs[0] ?? "";
     for (const escaped of escapedCharacters) plain = plain.split(escaped.token).join(escaped.character);
@@ -209,8 +231,11 @@ export function renderVisualDocument(input: VisualPageDocument, options: { inclu
       atom.attr("data-reader-text", plain);
     }
     if (block.kind === "image") {
-      plain = `${options.languageCode === "it" ? "Immagine." : "Imagen."}${text.trim() ? ` ${text.trim()}` : ""}`;
-      atom.attr("data-reader-text", plain).find("img").attr("alt", text);
+      const altText = block.altText ?? text;
+      const narration = block.altText === undefined ? text.trim() : [altText.trim(), text.trim()].filter(Boolean).join(" ");
+      plain = `${options.languageCode === "it" ? "Immagine." : "Imagen."}${narration ? ` ${narration}` : ""}`;
+      atom.attr("data-reader-text", plain).find("img").attr("alt", altText);
+      if (block.altText !== undefined) atom.attr("data-image-alt-separated", "true");
       if (text) {
         const caption = html("<figcaption></figcaption>").text(text);
         caption.html((caption.html() ?? "").replace(/\n/gu, "<br>"));
@@ -232,12 +257,19 @@ export function renderVisualDocument(input: VisualPageDocument, options: { inclu
       const atom = atoms.get(node.blockId);
       return atom ? `<section class="reader-reading-block" data-layout-id="${node.id}" data-reading-block-id="${node.blockId}">${atom}</section>` : "";
     }
+    const semanticAttributes = node.semantic ? ` data-layout-semantic="${node.semantic}" role="${{ table: "table", tableRow: "row", tableCell: "cell", figure: "group" }[node.semantic]}"` : "";
+    const containerStyle = renderPageStyle({ ...node.style,
+      ...(node.content?.fontScale !== undefined ? { fontScale: undefined } : {}),
+      ...(node.content?.alignment !== undefined ? { alignment: undefined } : {}) });
     if (node.content) {
       const content = node.content;
       const members = node.children.flatMap((child) => child.type === "block" && atoms.has(child.blockId) ? [child.blockId] : []);
       if (!members.length) return "";
       const html = load("<section class=\"reader-content-compound\"></section>", {}, false);
       const section = html("section").attr("data-composite-id", node.id).attr("data-layout-id", node.id);
+      if (containerStyle) section.attr("style", containerStyle + ";");
+      if (node.style?.alignment) section.attr("data-text-align", node.style.alignment);
+      if (node.semantic) section.attr("data-layout-semantic", node.semantic).attr("role", { table: "table", tableRow: "row", tableCell: "cell", figure: "group" }[node.semantic]);
       const heading = content.kind === "heading";
       const wrapper = html(`<${heading ? `h${content.headingLevel ?? 2}` : content.separator === "paragraph" ? "div" : "p"}></${heading ? `h${content.headingLevel ?? 2}` : content.separator === "paragraph" ? "div" : "p"}>`);
       if (heading) {
@@ -294,7 +326,7 @@ export function renderVisualDocument(input: VisualPageDocument, options: { inclu
     }).filter((child) => child.html);
     if (!children.length) return "";
     const weights = children.map((child) => `minmax(0,${child.weight}fr)`).join(" ");
-    return `<div class="reader-reading-${node.type}" data-layout-id="${node.id}"${autoFooter ? ' data-page-footer-row="true"' : ""} style="--reader-layout-gap:${node.gap ?? 16}px;--reader-layout-weights:${weights};gap:${node.gap ?? 16}px;${node.type === "row" ? `--reader-row-columns:${autoFooter ? "1fr auto 1fr" : weights};` : `display:grid;grid-template-columns:minmax(0,1fr);${node.weights ? `grid-template-rows:${weights};` : ""}`}">${children.map((child) => child.html).join("")}</div>`;
+    return `<div class="reader-reading-${node.type}" data-layout-id="${node.id}"${semanticAttributes}${node.style?.alignment ? ` data-text-align="${node.style.alignment}"` : ""}${autoFooter ? ' data-page-footer-row="true"' : ""} style="${containerStyle ? containerStyle + ";" : ""}--reader-layout-gap:${node.gap ?? 12}px;--reader-layout-weights:${weights};gap:${node.gap ?? 12}px;${node.type === "row" ? `--reader-row-columns:${autoFooter ? "1fr auto 1fr" : weights};` : "display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;align-content:start;"}">${children.map((child) => child.html).join("")}</div>`;
   };
   return { htmlContent: `<div class="epub-page-shell"><div class="epub-page-body ocr-page-body">${render(document.layout)}</div></div>`,
     paragraphs, paragraphIds, paragraphMetadata, rawText: visibleText.join("\n"), editedText: editedAtoms.join("\n") };
@@ -380,11 +412,14 @@ export function buildVisualDocumentFromPage(
     if (isImage && image[0]) includedImages.add(image[0]);
     const kind = isImage ? "image" : headingLevel && matches ? "heading" : "text";
     const style = element.attr("style") ?? "";
+    const pageStyle = parsePageStyle(style);
+    const separatedAlt = isImage && element.attr("data-image-alt-separated") === "true";
     const alignment = element.attr("data-text-align") ?? style.match(/(?:^|;)\s*text-align\s*:\s*(left|center|right)\b/iu)?.[1]?.toLowerCase();
     const imageWidth = paragraph.imageWidth ?? Number(element.attr("data-image-width"));
     const fontScale = Number(element.attr("data-font-scale") ?? style.match(/(?:^|;)\s*font-size\s*:\s*([\d.]+)em\b/iu)?.[1]);
     const include = element.attr("data-include-in-toc");
-    blocks.push({ id: paragraph.paragraphId, kind, text: isImage ? alt : matches ? markdown : paragraph.paragraphText.replace(/([\\*_\[\]()#])/gu, "\\$1"),
+    blocks.push({ id: paragraph.paragraphId, kind, text: isImage ? separatedAlt ? element.find("figcaption").clone().find("br").replaceWith("\n").end().text() : alt : matches ? markdown : paragraph.paragraphText.replace(/([\\*_\[\]()#])/gu, "\\$1"),
+      ...(pageStyle ? { style: pageStyle } : {}), ...(separatedAlt ? { altText: alt } : {}),
       role: paragraph.role, active: paragraph.active !== false, readAloud: paragraph.readAloud,
       includeInToc: paragraph.includeInToc ?? (include !== undefined ? include === "true" : !!headingLevel && headingLevel <= 3),
       geometry: paragraph.geometry ?? null,
@@ -401,7 +436,8 @@ export function buildVisualDocumentFromPage(
     if (!source || !isSafeVisualImageSource(source)) return;
     const id = randomUUID();
     const text = image.attr("alt") ?? image.find("title").text();
-    blocks.push({ id, kind: "image", source, sourceKey: sourceKeys.get(node), text, role: "image", active: true, readAloud: false, includeInToc: false, geometry: null });
+    const style = parsePageStyle(image.attr("style") ?? image.closest("figure").attr("style") ?? "");
+    blocks.push({ id, kind: "image", source, sourceKey: sourceKeys.get(node), text, role: "image", active: true, readAloud: false, includeInToc: false, geometry: null, ...(style ? { style } : {}) });
     extraLeaves.set(node, { id: randomUUID(), type: "block", blockId: id });
   });
   const used = new Set<number>();
@@ -429,8 +465,14 @@ export function buildVisualDocumentFromPage(
     }
     const children = node.children.flatMap(adapt);
     if (!children.length) return [];
-    if (element.hasClass("reader-reading-row") || element.hasClass("reader-reading-column") || element.attr("data-reading-block-id")) {
+    if (element.hasClass("reader-reading-row") || element.hasClass("reader-reading-column") || element.hasClass("reader-content-compound") || element.attr("data-reading-block-id")) {
+      if (element.attr("data-reading-block-id") && z.string().uuid().safeParse(element.attr("data-layout-id")).success && children.length === 1) return children;
       const type = element.hasClass("reader-reading-row") ? "row" : "column";
+      const knownWrapper = z.string().uuid().safeParse(element.attr("data-layout-id")).success;
+      const style = knownWrapper ? parsePageStyle(element.attr("style") ?? "") : undefined;
+      const semantic = knownWrapper ? element.attr("data-layout-semantic") : undefined;
+      const weights = knownWrapper ? [...(element.attr("style") ?? "").matchAll(/minmax\(0,([\d.]+)fr\)/gu)].slice(0, children.length).map((match) => Number(match[1])) : [];
+      const gap = knownWrapper ? Number((element.attr("style") ?? "").match(/--reader-layout-gap:([\d.]+)px/u)?.[1]) : NaN;
       const widths = type === "row" ? children.map(widthFor) : [];
       if (type === "column") {
         const width = widthFor({ id: randomUUID(), type, children });
@@ -443,7 +485,11 @@ export function buildVisualDocumentFromPage(
         };
         children.forEach(setImageWidths);
       }
-      return [{ id: randomUUID(), type, children, ...(widths.length && widths.every((width) => width && width > 0) ? { weights: widths as number[] } : {}) }];
+      return [{ id: knownWrapper ? element.attr("data-layout-id")! : randomUUID(), type, children,
+        ...(style ? { style } : {}),
+        ...(["table", "tableRow", "tableCell", "figure"].includes(semantic ?? "") && type === (semantic === "tableRow" ? "row" : "column") ? { semantic: semantic as "table" | "tableRow" | "tableCell" | "figure" } : {}),
+        ...(Number.isFinite(gap) && gap >= 0 && gap <= 48 ? { gap } : {}),
+        ...(weights.length === children.length && weights.every((weight) => weight > 0) ? { weights } : widths.length && widths.every((width) => width && width > 0) ? { weights: widths as number[] } : {}) }];
     }
     return children;
   };
@@ -453,7 +499,9 @@ export function buildVisualDocumentFromPage(
   const collect = (node: VisualLayoutNode) => { if (node.type === "block") present.add(node.blockId); else node.children.forEach(collect); };
   children.forEach(collect);
   for (const leaf of extraLeaves.values()) if (leaf.type === "block" && !present.has(leaf.blockId)) children.push(leaf);
-  return { version: 1, blocks, layout: { id: randomUUID(), type: "column", children } };
+  const knownRoot = children.length === 1 && children[0]!.type !== "block"
+    && html("[data-layout-id]").toArray().some((node) => html(node).attr("data-layout-id") === children[0]!.id);
+  return { version: 1, blocks, layout: knownRoot ? children[0]! : { id: randomUUID(), type: "column", children } };
 }
 
 export async function cropVisualPageImage(buffer: Buffer, geometry: NonNullable<VisualBlock["geometry"]>, rotation = 0): Promise<Buffer> {

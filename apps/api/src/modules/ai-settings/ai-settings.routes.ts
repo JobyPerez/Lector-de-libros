@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { AI_MODELS } from "../../config/ai-models.js";
+import { AI_MODELS, isFreeZenModelId } from "../../config/ai-models.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
 import {
   getOpenCodeRequestHeaders,
@@ -102,6 +102,17 @@ function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary") {
         ? ((payload as { models: ZenModelEntry[] }).models as ZenModelEntry[])
         : [];
 
+  // El endpoint /zen/v1/models no publica precios: solo id/object/created.
+  // El free tier de Zen ("*-free", "big-pickle", "test") devuelve 403
+  // "FreeTierError" fuera del cliente OpenCode, así que se excluye siempre.
+  // Sin precios no se puede ordenar por calidad-precio: se priorizan los
+  // modelos de pago ya conocidos que funcionan y luego el resto por id.
+  const PREFERRED_PAID_ORDER = purpose === "ocr"
+    ? ["gemini-3.5-flash-lite", "gpt-5.4-nano", "gpt-5.4-mini", "deepseek-v4-flash", "glm-5.3-flash"]
+    : ["deepseek-v4-flash", "glm-5.3-flash", "gemini-3.5-flash-lite", "gpt-5.4-nano", "gpt-5.4-mini", "deepseek-v4.1-flash", "gemini-3-flash", "glm-5.3"];
+
+  const curatedById = new Map<string, (typeof AI_MODELS)[number]>(AI_MODELS.map((model) => [model.id, model]));
+  const seen = new Set<string>();
   const withVision = list
     .map((entry) => ({
       id: String(entry.id ?? "").trim(),
@@ -112,21 +123,32 @@ function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary") {
       priceScore: extractModelPrice(entry),
       pricing: formatZenPricing(entry)
     }))
-    .filter((entry) => entry.id.length > 0);
+    .filter((entry) => entry.id.length > 0 && !seen.has(entry.id) && (seen.add(entry.id), true))
+    .filter((entry) => !isFreeZenModelId(entry.id));
 
   const filtered = purpose === "ocr" ? withVision.filter((entry) => entry.supportsVision) : withVision;
-  const priced = filtered.filter((entry) => entry.priceScore !== null);
-  const unpriced = filtered.filter((entry) => entry.priceScore === null);
-  priced.sort((a, b) => (a.priceScore ?? 0) - (b.priceScore ?? 0));
+  const rankOf = (id: string) => {
+    const rank = PREFERRED_PAID_ORDER.indexOf(id);
+    return rank === -1 ? Number.MAX_SAFE_INTEGER : rank;
+  };
+  filtered.sort((a, b) => {
+    const rankDelta = rankOf(a.id) - rankOf(b.id);
+    if (rankDelta !== 0) return rankDelta;
+    if ((a.priceScore ?? 0) !== (b.priceScore ?? 0)) return (a.priceScore ?? 0) - (b.priceScore ?? 0);
+    return a.id.localeCompare(b.id);
+  });
 
-  return [...priced, ...unpriced].slice(0, 5).map((entry) => ({
-    id: entry.id,
-    name: entry.name || entry.id,
-    description: entry.description || (purpose === "ocr" ? "Modelo multimodal apto para OCR." : "Modelo apto para resúmenes."),
-    contextWindowTokens: entry.contextWindowTokens,
-    pricing: entry.pricing,
-    supportsVision: entry.supportsVision
-  }));
+  return filtered.slice(0, 5).map((entry) => {
+    const curated = curatedById.get(entry.id);
+    return {
+      id: entry.id,
+      name: entry.name || curated?.name || entry.id,
+      description: entry.description || curated?.description || (purpose === "ocr" ? "Modelo multimodal apto para OCR." : "Modelo apto para resúmenes."),
+      contextWindowTokens: entry.contextWindowTokens || curated?.contextWindowTokens || 0,
+      pricing: entry.pricing !== "Precio Zen no publicado" ? entry.pricing : (curated?.pricing ?? "Zen de pago por uso"),
+      supportsVision: entry.supportsVision
+    };
+  });
 }
 
 async function syncLegacyShareFlagsToGranularTable(
@@ -178,7 +200,8 @@ async function syncLegacyShareFlagsToGranularTable(
 }
 
 function curatedFallback(purpose: "ocr" | "summary") {
-  const curated = AI_MODELS.filter((model) => (purpose === "ocr" ? model.supportsVision : true)).slice(0, 5);
+  // Solo modelos de pago: los "-free" devuelven 403 fuera del cliente OpenCode.
+  const curated = AI_MODELS.filter((model) => !isFreeZenModelId(model.id) && (purpose === "ocr" ? model.supportsVision : true)).slice(0, 5);
   return curated.map((model) => ({
     id: model.id,
     name: model.name,
