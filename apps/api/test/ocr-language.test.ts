@@ -89,8 +89,8 @@ test("envia imagenes OCR a Zen con el protocolo de cada modelo", async (t) => {
       assert.match(body.input[0].content[0].text, /\bjson\b/iu);
       assert.equal(body.input[0].content[1].type, "input_image");
       assert.equal(body.input[0].content[1].image_url, `data:image/png;base64,${image.toString("base64")}`);
-      assert.equal(body.text.format.type, "json_object");
-      assert.equal(body.reasoning.effort, "none");
+      assert.equal(Object.hasOwn(body, "text"), false);
+      assert.equal(Object.hasOwn(body, "reasoning"), false);
       assert.equal(body.max_output_tokens, 8192);
       return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text }] }] });
     });

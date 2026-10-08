@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getCachedOpenCodeVisionCapability } from "./opencode-model-metadata.js";
 
 export const AI_MODELS = [
   {
@@ -105,6 +106,21 @@ export const ocrModelIdSchema = z.enum(OCR_MODEL_IDS);
 
 export function getAiModel(modelId: string) {
   return AI_MODELS.find((model) => model.id === modelId) ?? AI_MODELS[0]!;
+}
+
+// Verified live choice also used by saved OCR settings; this is not an OCR allowlist.
+const VERIFIED_VISION_MODEL_IDS = new Set(["gemini-3-flash"]);
+
+export function resolveModelVisionCapability(modelId: string, explicitCapability?: unknown): boolean | undefined {
+  const liveCapability = getCachedOpenCodeVisionCapability(modelId);
+  if (liveCapability !== undefined) {
+    return typeof explicitCapability === "boolean" ? explicitCapability : liveCapability;
+  }
+  const curated = AI_MODELS.find((model) => model.id === modelId);
+  // Preserve legacy validation only when no exact live metadata has been verified.
+  if (curated?.supportsVision === false) return false;
+  if (typeof explicitCapability === "boolean") return explicitCapability;
+  return curated?.supportsVision ?? (VERIFIED_VISION_MODEL_IDS.has(modelId) ? true : undefined);
 }
 
 /**

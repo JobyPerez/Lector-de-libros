@@ -342,7 +342,7 @@ export type ImageRotation = 0 | 90 | 180 | 270;
 
 type ImageOcrRequestOptions = {
   advancedLayout?: boolean | undefined;
-  ocrModel?: OcrModelId | undefined;
+  ocrModel?: string | undefined;
   ocrMode?: ImageOcrMode | undefined;
   promptOverride?: string | undefined;
   skipOcr?: boolean | undefined;
@@ -758,6 +758,7 @@ export type BookPageResponse = {
   hasNextPage: boolean;
   hasPreviousPage: boolean;
   page: {
+    pageId: string;
     visualDocument?: VisualPageDocument | null;
     hasVisualDocument?: boolean;
     sourceHtmlContent?: string | null;
@@ -968,8 +969,8 @@ export function updateAiShare(accessToken: string, payload: { recipientUserId: s
   });
 }
 
-export function fetchOpencodeTopModels(accessToken: string, purpose: "ocr" | "summary") {
-  return request<OpencodeTopModelsResponse>(`/ai-settings/opencode-models?purpose=${encodeURIComponent(purpose)}`, { accessToken });
+export function fetchOpencodeTopModels(accessToken: string, purpose: "ocr" | "summary", refresh = false) {
+  return request<OpencodeTopModelsResponse>(`/ai-settings/opencode-models?purpose=${encodeURIComponent(purpose)}${refresh ? "&refresh=true" : ""}`, { accessToken });
 }
 
 export function fetchBooks(accessToken: string, options?: { scope?: BookScope }) {
@@ -1091,7 +1092,7 @@ export async function createImageBook(accessToken: string, payload: FormData, op
 export async function appendImagesToBook(accessToken: string, bookId: string, payload: FormData, options?: {
   advancedLayout?: boolean | undefined;
   afterPage?: number | undefined;
-  ocrModel?: OcrModelId | undefined;
+  ocrModel?: string | undefined;
   ocrMode?: ImageOcrMode | undefined;
   progressId?: string | undefined;
   promptOverride?: string | undefined;
@@ -1170,15 +1171,75 @@ export function cancelAppendImagesImport(accessToken: string, progressId: string
   });
 }
 
-export function deleteBookPage(accessToken: string, bookId: string, pageNumber: number) {
+export function deleteBookPage(accessToken: string, bookId: string, pageNumber: number, pageId?: string) {
   return request<{
     book: BookSummary;
     deletedPageNumber: number;
+    deletedPageId: string;
     nextPageNumber: number | null;
-  }>(`/books/${bookId}/pages/${pageNumber}`, {
+  }>(`/books/${bookId}/pages/${pageNumber}${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken,
     method: "DELETE"
   });
+}
+
+// Gallery contracts: IDs are immutable; pageNumber is only the current reader/image address.
+export type BookGalleryPage = {
+  pageId: string;
+  position: number;
+  pageNumber: number;
+  pageLabel: string | null;
+  pageType: string;
+  paragraphCount: number;
+  source: { type: "PDF" | "EPUB" | "IMAGES"; fileId: string | null; mimeType: string | null; rotation: number };
+  preview: { kind: "IMAGE" | "CONTENT"; text: string; contentUrl: string; imageUrl: string | null };
+  capabilities: { edit: boolean; delete: boolean; reorder: boolean; ocr: boolean; visualEditor: boolean };
+  ocrStatus: string;
+  updatedAt: string;
+};
+export type BookPagesResponse = { pages: BookGalleryPage[]; pageIds: string[]; capabilities: { reorder: boolean } };
+export type BookPageOrderInput = {
+  pageIds: string[]; // Complete permutation for reorder.
+  expectedPageIds: string[]; // Complete persisted order used for optimistic concurrency.
+};
+// Reorder must be atomic and return 409 if expectedPageIds no longer matches.
+export function fetchBookPages(accessToken: string, bookId: string) {
+  return request<BookPagesResponse>(`/books/${bookId}/pages`, { accessToken });
+}
+export function reorderBookPages(accessToken: string, bookId: string, body: BookPageOrderInput) {
+  return request<BookPagesResponse>(`/books/${bookId}/pages/reorder`, { accessToken, body, method: "POST" });
+}
+export type BookPagesOcrJob = {
+  jobId: string;
+  bookId: string;
+  status: "PENDING" | "RUNNING" | "READY" | "FAILED" | "CANCELLED";
+  cancelRequested: boolean;
+  attemptCount: number;
+  total: number;
+  completed: number;
+  failed: number;
+  processed: number;
+  progress: number;
+  pages: { pageId: string; expectedUpdatedAt: string; status: "PENDING" | "READY" | "FAILED"; error?: string }[];
+  error: string | null;
+};
+export type BookPagesOcrInput = {
+  pageIds: string[];
+  ocrMode?: ImageOcrMode | "AUTO";
+  advancedLayout?: boolean;
+  ocrModel?: string;
+  promptOverride?: string;
+};
+// Persistent, book-scoped jobs survive navigation/reload. POST returns 202 with the job directly.
+// IMAGES/editor-only; GET, cancel and retry use the same authorization and immutable IDs.
+export function fetchBookPagesOcrJob(accessToken: string, bookId: string, jobId: string) {
+  return request<BookPagesOcrJob>(`/books/${bookId}/ocr-jobs/${jobId}`, { accessToken });
+}
+export function startBookPagesOcrJob(accessToken: string, bookId: string, body: BookPagesOcrInput) {
+  return request<BookPagesOcrJob>(`/books/${bookId}/ocr-jobs`, { accessToken, body, method: "POST" });
+}
+export function updateBookPagesOcrJob(accessToken: string, bookId: string, jobId: string, action: "cancel" | "retry") {
+  return request<BookPagesOcrJob>(`/books/${bookId}/ocr-jobs/${jobId}/${action}`, { accessToken, method: "POST" });
 }
 
 export function fetchBook(accessToken: string, bookId: string) {
@@ -1253,15 +1314,18 @@ export function setShareUserAnnotations(accessToken: string, bookId: string, ena
   });
 }
 
-export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number, options?: { includeInactive?: boolean }) {
-  return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}${options?.includeInactive ? "?includeInactive=true" : ""}`, { accessToken });
+export function fetchBookPage(accessToken: string, bookId: string, pageNumber: number, options?: { includeInactive?: boolean; pageId?: string }) {
+  const query = new URLSearchParams();
+  if (options?.includeInactive) query.set("includeInactive", "true");
+  if (options?.pageId) query.set("pageId", options.pageId);
+  return request<BookPageResponse>(`/books/${bookId}/pages/${pageNumber}${query.size ? `?${query}` : ""}`, { accessToken });
 }
 
 export function saveVisualPageDocument(accessToken: string, bookId: string, pageNumber: number, payload: {
   document: VisualPageDocument;
   expectedUpdatedAt: string;
-}) {
-  return request<{ updatedAt: string; document: VisualPageDocument }>(`/books/${bookId}/pages/${pageNumber}/visual-document`, {
+}, pageId?: string) {
+  return request<{ updatedAt: string; document: VisualPageDocument }>(`/books/${bookId}/pages/${pageNumber}/visual-document${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken, body: payload, method: "PUT"
   });
 }
@@ -1453,10 +1517,12 @@ export function deleteNote(accessToken: string, bookId: string, noteId: string) 
   });
 }
 
-export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null, original = false) {
+export function fetchBookPageImage(accessToken: string, bookId: string, pageNumber: number, cacheKey?: string | null, original = false, pageId?: string, thumbnail = false) {
   const query = new URLSearchParams();
   if (cacheKey) query.set("v", cacheKey);
   if (original) query.set("original", "true");
+  if (pageId) query.set("pageId", pageId);
+  if (thumbnail) query.set("thumbnail", "true");
   return requestBlob(`/books/${bookId}/pages/${pageNumber}/image${query.size ? `?${query}` : ""}`, accessToken);
 }
 
@@ -1478,8 +1544,8 @@ export async function fetchBookCover(accessToken: string, bookId: string, cacheK
   }
 }
 
-export async function uploadBookPageImage(accessToken: string, bookId: string, pageNumber: number, payload: FormData) {
-  const response = await fetchWithAutoRefresh(`/books/${bookId}/pages/${pageNumber}/image`, {
+export async function uploadBookPageImage(accessToken: string, bookId: string, pageNumber: number, payload: FormData, pageId?: string) {
+  const response = await fetchWithAutoRefresh(`/books/${bookId}/pages/${pageNumber}/image${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken,
     body: payload,
     fallbackMessage: "No se pudo guardar la imagen editada de la página.",
@@ -1518,8 +1584,8 @@ export async function createBookDownloadUrl(accessToken: string, bookId: string,
   return `${apiBaseUrl}/books/download/${encodeURIComponent(result.token)}`;
 }
 
-export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; expectedUpdatedAt?: string; paragraphIds?: (string | null)[]; paragraphMetadata?: ParagraphElementMetadata[]; sourceImageRotation?: ImageRotation }) {
-  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/ocr`, {
+export function updateOcrPage(accessToken: string, bookId: string, pageNumber: number, payload: { editedText: string; expectedUpdatedAt?: string; paragraphIds?: (string | null)[]; paragraphMetadata?: ParagraphElementMetadata[]; sourceImageRotation?: ImageRotation }, pageId?: string) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/ocr${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken,
     body: payload,
     method: "PUT"
@@ -1529,22 +1595,22 @@ export function updateOcrPage(accessToken: string, bookId: string, pageNumber: n
 export function updatePageElements(accessToken: string, bookId: string, pageNumber: number, payload: {
   expectedUpdatedAt: string;
   elements: (ParagraphElementMetadata & { paragraphId: string })[];
-}) {
-  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/elements`, {
+}, pageId?: string) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/elements${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken, body: payload, method: "PATCH"
   });
 }
 
-export function updateBookPageImageRotation(accessToken: string, bookId: string, pageNumber: number, payload: { rotation: ImageRotation }) {
-  return request<void>(`/books/${bookId}/pages/${pageNumber}/image-rotation`, {
+export function updateBookPageImageRotation(accessToken: string, bookId: string, pageNumber: number, payload: { rotation: ImageRotation }, pageId?: string) {
+  return request<void>(`/books/${bookId}/pages/${pageNumber}/image-rotation${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken,
     body: payload,
     method: "PUT"
   });
 }
 
-export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: ImageOcrRequestOptions & { expectedUpdatedAt?: string }) {
-  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr`, {
+export function rerunOcrPage(accessToken: string, bookId: string, pageNumber: number, payload?: ImageOcrRequestOptions & { expectedUpdatedAt?: string }, pageId?: string) {
+  return request<{ updatedAt: string }>(`/books/${bookId}/pages/${pageNumber}/rerun-ocr${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken,
     body: {
       ocrMode: payload?.ocrMode ?? "VISION",
@@ -1561,7 +1627,8 @@ export function fetchProgress(accessToken: string, bookId: string) {
   return request<{ progress: ReadingProgress | null }>(`/books/${bookId}/progress`, { accessToken });
 }
 
-export function updateProgress(accessToken: string, bookId: string, payload: Omit<ReadingProgress, "lastOpenedAt" | "progressId" | "updatedAt">) {
+// The server resolves the current position/sequence from paragraphId under the book lock.
+export function updateProgress(accessToken: string, bookId: string, payload: Omit<ReadingProgress, "lastOpenedAt" | "progressId" | "updatedAt"> & { paragraphId: string }) {
   return request<void>(`/books/${bookId}/progress`, { accessToken, body: payload, method: "PUT" });
 }
 

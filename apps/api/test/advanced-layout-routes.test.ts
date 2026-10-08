@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { z } from "zod";
+import { processSelectionJob, selectionSchema } from "../src/modules/books/gallery-ocr-jobs.js";
 import { load } from "cheerio";
 import { externalizeContentImages } from "../src/modules/books/content-images.js";
 import { calculateParagraphReadingMetrics } from "../src/services/paragraph-metrics.js";
@@ -30,11 +31,27 @@ function handler(method: string, path: string, dependencies: Record<string, unkn
   const end = routes.indexOf("\n  });", start);
   assert.ok(start >= 0 && end >= 0);
   const body = routes.slice(start, end).split("async (request, reply) => {")[1];
+  assert.ok(body, `handler body: ${path}`);
   return new Function(...Object.keys(dependencies), ts.transpile(`return async (request, reply) => {${body}\n};`,
     { target: ts.ScriptTarget.ES2022 }))(...Object.values(dependencies));
 }
+function galleryAdapter(rerunOcrHandler: unknown) {
+  let registration: ts.CallExpression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "registerGalleryOcrJobs") registration = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(registration, "gallery worker registration");
+  let runPage: any;
+  new Function("registerGalleryOcrJobs", "app", "getConnection", "authenticateRequest", "requireBookRole", "assertBookRole", "rerunOcrHandler",
+    ts.transpile(registration.getText(source), { target: ts.ScriptTarget.ES2022 }))(
+    (_app: unknown, deps: any) => { runPage = deps.runPage; }, {}, () => undefined, () => undefined, () => undefined, () => undefined, rerunOcrHandler);
+  assert.equal(typeof runPage, "function");
+  return runPage;
+}
 const schemas = functions(["booleanFormFieldSchema", "ocrPromptOverrideSchema", "customOcrModelSchema", "imageBookFieldsSchema", "importImagesFieldsSchema", "rerunOcrPageSchema"], {
-  z, supportedBookLanguageCodes: ["es", "it"], supportedImageOcrModes: ["AUTO", "VISION", "TEXTRACT"]
+  z, supportedBookLanguageCodes: ["es", "it"], supportedImageOcrModes: ["AUTO", "LOCAL", "VISION", "TEXTRACT"]
 });
 const imageSource = "data:image/png;base64,aGVsbG8=";
 function document(): VisualPageDocument {
@@ -83,6 +100,7 @@ test("legacy PUT /ocr rejects every persisted visual document, including unstyle
     const calls: string[] = [];
     const run = handler("put", "/:bookId/pages/:pageNumber/ocr", {
       load, parsePageStyle, visualPageDocumentSchema,
+      assertBookRole: async () => {},
       pageParamsSchema: z.object({ bookId: z.string(), pageNumber: z.number() }),
       updateOcrPageSchema: z.object({ editedText: z.string(), expectedUpdatedAt: z.string() }),
       getConnection: async () => ({ execute: async (sql: string) => { calls.push(sql); }, close: async () => { calls.push("close"); } }),
@@ -226,6 +244,10 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
   configure?.(generated, existing, page);
   const calls: { sql: string; binds?: any }[] = [];
   let options: any, replacement: any;
+  const credentialUsers: string[] = [], resolvedPages: string[] = [], hintCalls: any[] = [], ocrInputs: any[] = [];
+  const credentials = { opencodeOcrModel: "audit-model", opencodeApiKey: "secret", opencodeOcrApiKey: "ocr-secret",
+    awsAccessKeyId: "aws-id", awsRegion: "eu-west-1", awsSecretAccessKey: "aws-secret" };
+  const marginHints = { headerTexts: ["Book header"], footerTexts: ["Book footer"] };
   const connection = { execute: async (sql: string, binds: any) => {
     calls.push({ sql, binds });
     if (sql.includes("FROM book_files")) return { rows: [{ contentBlob: Buffer.from("image"), mimeType: "image/png" }] };
@@ -237,6 +259,7 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
     return { rows: [] };
   }, commit: async () => { calls.push({ sql: "commit" }); }, rollback: async () => { calls.push({ sql: "rollback" }); }, close: async () => undefined };
   const deps = { ...common, ...matching, rerunOcrPageSchema: schemas.rerunOcrPageSchema,
+    assertBookRole: async () => {},
     pageParamsSchema: z.object({ bookId: z.string(), pageNumber: z.number() }), getConnection: async () => connection,
     findAccessibleBook: async () => ({ sourceType: "IMAGES", languageCode: "es", title: "Book" }), findBookPage: async () => page,
     listPageParagraphs: async () => { calls.push({ sql: "readParagraphs" }); return existing; }, listPageBookmarks: async () => [{ paragraphId: existing[1]!.paragraphId }],
@@ -244,8 +267,19 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
     invalidateBookAudioCache: async () => undefined, shiftSubsequentSequenceNumbers: async () => undefined,
     shiftSubsequentAnnotationSequenceNumbers: async () => undefined,
     restorePageBookmarks: async () => undefined, restorePageNotes: async () => undefined,
-    getEffectiveUserAiCredentials: async () => ({ opencodeOcrModel: "audit-model", opencodeApiKey: "secret" }), collectBookOcrMarginHints: async () => undefined,
+    resolveGalleryPage: async (_c: unknown, params: any, query: any) => {
+      assert.equal(query.pageId, page.pageId);
+      resolvedPages.push(query.pageId);
+      params.pageNumber = 4;
+    },
+    getEffectiveUserAiCredentials: async (userId: string, db: unknown) => {
+      assert.equal(db, connection); credentialUsers.push(userId); return credentials;
+    },
+    collectBookOcrMarginHints: async (db: unknown, ...args: any[]) => {
+      assert.equal(db, connection); hintCalls.push(args); return marginHints;
+    },
     runOcrOnImage: async (_b: unknown, _f: unknown, _m: unknown, input: any) => {
+      ocrInputs.push([_b, _f, _m]);
       options = input;
       calls.push({ sql: "mockOcr" });
       if (failure === "provider") throw new Error("advanced pass failed");
@@ -255,7 +289,8 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
   const { replaceBookPageParagraphs } = functions(["replaceBookPageParagraphs"], deps);
   Object.assign(deps, { replaceBookPageParagraphs: async (c: any, value: any) => { replacement = value; return replaceBookPageParagraphs(c, value); } });
   const run = handler("post", "/:bookId/pages/:pageNumber/rerun-ocr", deps);
-  return { existing, generated, calls, page, get options() { return options; }, get replacement() { return replacement; },
+  return { existing, generated, calls, page, run, marginHints, credentialUsers, resolvedPages, hintCalls, ocrInputs,
+    get options() { return options; }, get replacement() { return replacement; },
     call: async (advancedLayout = true) => {
       const reply = { statusCode: 200, status(code: number) { this.statusCode = code; return this; }, send() { return this; } };
       await run({ currentUser: { userId: "editor" }, params: { bookId: "book", pageNumber: 1 },
@@ -330,6 +365,89 @@ test("advanced rerun reconciles fresh UUIDs, preserves flags and unmatched annot
   assert.ok(app.calls.some(({ sql }) => sql === "commit"));
   assert.match(app.calls[0]!.sql, /FROM books.*FOR UPDATE/u);
   assert.match(app.calls[1]!.sql, /FROM book_pages.*FOR UPDATE/u);
+});
+
+test("direct rerun and the actual gallery worker adapter preserve all OCR options and canonical colored containers", async () => {
+  const value = document();
+  value.blocks[0]!.style = { color: "#123456", fontFamily: "serif", fontScale: 1.25 };
+  value.blocks[1]!.source = "https://example.test/portrait.png";
+  assert.ok(value.layout.type !== "block");
+  value.layout.style = { backgroundColor: "#ffcc00", borderColor: "#112233", borderWidth: 2, padding: 8 };
+  value.layout.children[1] = { id: randomUUID(), type: "column", style: { backgroundColor: "#ddeeff", alignment: "center" },
+    children: [value.layout.children[1]!] };
+  const stablePageId = randomUUID(), sourceFileId = randomUUID();
+  const canonical = renderVisualDocument(value, { includeInactive: true });
+  const configure = (generated: VisualPageDocument, existing: any[], page: any) => {
+    Object.assign(generated, structuredClone(value));
+    existing.splice(0, existing.length, ...canonical.paragraphs.map((paragraphText, index) => ({
+      ...canonical.paragraphMetadata[index], paragraphText, paragraphId: canonical.paragraphIds[index],
+      paragraphNumber: index + 1, sequenceNumber: index + 1
+    })));
+    Object.assign(page, { pageId: stablePageId, sourceFileId });
+  };
+  // This checks handler forwarding; real LOCAL + advanced rejection is covered in advanced-layout.test.ts.
+  for (const [index, ocrMode] of ["AUTO", "LOCAL", "TEXTRACT", "VISION"].entries()) {
+    for (const advancedLayout of [false, true]) {
+      const direct = rerunSetup(undefined, configure), gallery = rerunSetup(undefined, configure);
+      direct.page.sourceImageRotation = gallery.page.sourceImageRotation = index * 90;
+      const { pageIds: _pageIds, ...options } = selectionSchema.parse({ pageIds: [stablePageId], ocrMode,
+        ocrModel: "explicit-model-not-account-default", advancedLayout, promptOverride: "Keep colored containers." });
+      const reply = { statusCode: 200, status(code: number) { this.statusCode = code; return this; }, send() { return this; } };
+      await direct.run({ currentUser: { userId: "editor" }, params: { bookId: "book", pageNumber: 4 },
+        body: { ...options, expectedUpdatedAt: "version" } }, reply);
+      assert.equal(reply.statusCode, 200);
+      const runPage = galleryAdapter(gallery.run);
+      const job = { jobId: randomUUID(), bookId: "book", status: "RUNNING", attemptCount: 1, lastError: null,
+        payloadJson: JSON.stringify({ kind: "GALLERY_OCR_SELECTION", userId: "editor", options,
+          pages: [{ pageId: stablePageId, expectedUpdatedAt: "version", status: "PENDING" }] }) };
+      await processSelectionJob({ execute: async (sql: string, binds: any) => {
+        if (sql.startsWith("SELECT")) return { rows: [job] };
+        if (binds.payload) job.payloadJson = binds.payload.val;
+        if (binds.status) job.status = binds.status;
+        return { rowsAffected: 1 };
+      } } as any, job, runPage);
+      assert.equal(job.status, "READY", job.payloadJson);
+      assert.deepEqual(gallery.options, direct.options);
+      assert.deepEqual(gallery.options, {
+        advancedLayout, ...(advancedLayout ? { advancedLayoutLimits: { maxBlocks: 498, maxDepth: 7 } } : {}),
+        awsCredentials: { accessKeyId: "aws-id", region: "eu-west-1", secretAccessKey: "aws-secret" },
+        language: "es", marginHints: gallery.marginHints, model: options.ocrModel, ocrMode,
+        opencodeApiKey: "ocr-secret", promptOverride: options.promptOverride, rotation: index * 90
+      });
+      assert.deepEqual(gallery.ocrInputs, direct.ocrInputs);
+      assert.deepEqual(gallery.ocrInputs, [[Buffer.from("image"), "page-4.png", "image/png"]]);
+      assert.deepEqual(gallery.credentialUsers, ["editor"]);
+      assert.deepEqual(direct.credentialUsers, ["editor"]);
+      assert.deepEqual(gallery.hintCalls, [["book", 4, "Book"]]);
+      assert.deepEqual(gallery.resolvedPages, [stablePageId]);
+      assert.deepEqual(gallery.calls.find(({ sql }) => sql.includes("FROM book_files"))!.binds,
+        { bookId: "book", fileId: sourceFileId });
+      assert.deepEqual(gallery.replacement, direct.replacement);
+      const persisted = (app: typeof direct) => app.calls.filter(({ binds }) => binds?.visualDocumentJson || binds?.paragraphId || binds?.sourceHtmlContent);
+      assert.deepEqual(persisted(gallery), persisted(direct));
+      if (advancedLayout) {
+        const write = gallery.calls.find(({ binds }) => binds?.visualDocumentJson)!;
+        assert.deepEqual(JSON.parse(write.binds.visualDocumentJson), value);
+        assert.equal(write.binds.htmlContent, canonical.htmlContent);
+        assert.equal(gallery.page.sourceHtmlContent, canonical.htmlContent);
+        assert.deepEqual(gallery.replacement.requestedParagraphIds, canonical.paragraphIds);
+        assert.match(write.binds.htmlContent, /background-color:#ffcc00/u);
+        assert.match(write.binds.htmlContent, /background-color:#ddeeff/u);
+        assert.match(write.binds.htmlContent, /color:#123456/u);
+      }
+      assert.doesNotMatch(job.payloadJson, /ocr-secret|aws-secret|aws-id/u);
+    }
+  }
+});
+
+test("gallery adapter propagates stale version failures without OCR or content writes", async () => {
+  const app = rerunSetup("stale");
+  const runPage = galleryAdapter(app.run);
+  await assert.rejects(runPage("book", "editor", { pageId: app.page.pageId, expectedUpdatedAt: "old-version" },
+    { ocrMode: "VISION", advancedLayout: true, ocrModel: "explicit-model" }), /ha cambiado/u);
+  assert.equal(app.options, undefined);
+  assert.equal(app.replacement, undefined);
+  assert.ok(!app.calls.some(({ sql }) => /^\s*(?:UPDATE|INSERT|DELETE)\b/u.test(sql) || sql === "commit"));
 });
 
 test("advanced rerun preserves an intentional existing source snapshot via a conditional update", async () => {

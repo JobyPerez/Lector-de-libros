@@ -5,7 +5,8 @@ import sharp from "sharp";
 import Tesseract from "tesseract.js";
 import { load } from "cheerio";
 import { appEnv } from "../src/config/env.js";
-import { buildAdvancedVisionPrompt, isRetryableOcrError, runOcrOnImage } from "../src/modules/books/image-ocr.js";
+import { buildAdvancedVisionPrompt, isRetryableOcrError, runOcrOnImage, type AdvancedOcrAttemptDiagnostic } from "../src/modules/books/image-ocr.js";
+import { processSelectionJob, selectionJobResponse } from "../src/modules/books/gallery-ocr-jobs.js";
 import { advancedLayoutSchema, createAdvancedLayoutSchema, resolveAdvancedLayoutLimits, validateAdvancedLayout } from "../src/modules/books/advanced-layout.js";
 import { visualPageDocumentSchema } from "../src/modules/books/visual-document.js";
 
@@ -460,8 +461,120 @@ test("validation failures retry with guided repair feedback and never leak model
   const result = await runOcrOnImage(await image(), "page.png", "image/png", { ...options, ocrMode: "TEXTRACT", advancedLayout: true });
   assert.deepEqual(result.paragraphs, ["Visual text."]);
   assert.equal(calls, 2);
-  assert.match(bodies[1]!, /Previous attempt was rejected \(layout\.children: too_small; root: custom Every blockIndex must appear exactly once\.\)/u);
+  assert.match(bodies[1]!, /Previous attempt was rejected \(schema: layout\.children: too_small; root: custom Every blockIndex must appear exactly once\.\)/u);
   assert.doesNotMatch(bodies[1]!, /LEAKED-MODEL-TEXT/u);
+});
+
+test("terminal diagnostics retain recursive truncation, repair validation and gallery page.error", async (t) => {
+  mockDelays(t);
+  const aws = t.mock.method(TextractClient.prototype, "send", async () => awsBase);
+  const budgets: number[] = [];
+  const prompts: string[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    budgets.push(body.max_output_tokens);
+    prompts.push(body.input[0].content[0].text);
+    if (budgets.length === 1) return Response.json({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output_text: '{"layout": "PRIVATE-OCR-TEXT' });
+    if (budgets.length === 2) return Response.json({ output_text: "PRIVATE-OCR-TEXT visual-secret aws-secret" });
+    return response({ layout: column({ type: "paragraph", text: "PRIVATE-OCR-TEXT", sourceTextIndex: 999 }) });
+  });
+  const buffer = await image();
+  let terminal: Error & { advancedDiagnostics: { model: string; attempts: AdvancedOcrAttemptDiagnostic[] } };
+  await assert.rejects(runOcrOnImage(buffer, "page.png", "image/png", { ...options, ocrMode: "TEXTRACT", advancedLayout: true }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    terminal = error as typeof terminal;
+    assert.equal((error as Error & { code: string }).code, "OCR_ADVANCED_FAILED");
+    assert.equal(terminal.advancedDiagnostics.model, options.model);
+    assert.deepEqual(terminal.advancedDiagnostics.attempts.map((item) => item.category), ["truncation", "invalid_json", "schema"]);
+    assert.deepEqual(terminal.advancedDiagnostics.attempts.map((item) => item.attempt), [1, 2, 3]);
+    assert.deepEqual(terminal.advancedDiagnostics.attempts.map((item) => item.maxTokens), [8192, 16384, 16384]);
+    assert.match(error.message, /blocks\.#1\.sourceTextIndex: custom Unknown sourceTextIndex\./u);
+    assert.match(error.message, /#1 tokens=8192 truncation.*#2 tokens=16384 invalid_json.*#3 tokens=16384 schema/u);
+    assert.ok(error.message.length <= 2000);
+    assert.equal(error.cause, undefined);
+    assert.doesNotMatch(error.message + JSON.stringify(error) + error.stack, /PRIVATE-OCR-TEXT|visual-secret|aws-secret|data:/u);
+    return true;
+  });
+  assert.equal(aws.mock.callCount(), 1);
+  assert.deepEqual(budgets, [8192, 16384, 16384]);
+  assert.match(prompts[1]!, /Previous attempt was rejected \(truncation: incomplete JSON\)/u);
+  assert.ok(prompts[2]!.includes("Previous attempt was rejected (invalid_json: Return compact valid JSON only, with no explanation or markdown fences; escape newlines and quotation marks inside strings.)"));
+  assert.doesNotMatch(prompts.slice(1).join(""), /PRIVATE-OCR-TEXT|visual-secret|aws-secret/u);
+
+  // Exercise the real worker persistence path with an in-memory connection, no database.
+  const job = { jobId: "job", bookId: "book", status: "RUNNING", attemptCount: 1, lastError: null,
+    payloadJson: JSON.stringify({ kind: "GALLERY_OCR_SELECTION", userId: "user", options: {},
+      pages: [{ pageId: "page22", expectedUpdatedAt: "v1", status: "PENDING" }] }) };
+  const connection = { execute: async (sql: string, binds: any) => {
+    if (sql.startsWith("SELECT")) return { rows: [job] };
+    if (binds.payload) job.payloadJson = binds.payload.val;
+    return { rowsAffected: 1 };
+  } };
+  await processSelectionJob(connection as any, job, async () => { throw terminal; });
+  assert.equal(selectionJobResponse(job).pages[0]!.error, terminal!.message);
+  assert.match(selectionJobResponse(job).pages[0]!.error!, /Unknown sourceTextIndex\./u);
+});
+
+test("advanced diagnostics distinguish empty JSON, schema keys and safe conversion without response text", async (t) => {
+  mockDelays(t);
+  const aws = t.mock.method(TextractClient.prototype, "send", async () => awsBase);
+  const cases = [
+    { category: "empty_response", payload: () => Response.json({ output_text: "  " }), detail: /empty_response/u },
+    { category: "empty_response", payload: () => Response.json({ output_text: "```json\n \n```" }), detail: /empty_response/u },
+    { category: "invalid_json", payload: () => Response.json({ output_text: "PRIVATE-OCR-TEXT visual-secret" }), detail: /invalid_json/u },
+    { category: "schema", payload: () => response({ layout: column({ type: "paragraph", text: "PRIVATE-OCR-TEXT", "PRIVATE-KEY-aws-secret": true }) }), detail: /layout\.children\.#1: unrecognized_keys/u },
+    { category: "schema", payload: () => response({ layout: column({ type: "PRIVATE-OCR-TEXT", text: "PRIVATE-OCR-TEXT" }) }), detail: /invalid_union_discriminator expected heading\|paragraph\|image/u },
+    { category: "conversion", payload: () => response({ layout: column({ type: "paragraph", text: ":::block PRIVATE-OCR-TEXT" }) }), detail: /Advanced OCR omitted a crop or text block\./u },
+    { category: "conversion", payload: () => response({ layout: { type: "row", children: [
+      { type: "paragraph", text: "PRIVATE-OCR-TEXT", bbox: { x: 100, y: 100, width: 500, height: 100 } },
+      { type: "paragraph", text: "PRIVATE-OCR-TEXT", bbox: { x: 400, y: 100, width: 500, height: 100 } }
+    ] } }), detail: /Invalid advanced row geometry: children overlap horizontally/u }
+  ];
+  const buffer = await image();
+  for (const item of cases) {
+    const prompts: string[] = [];
+    const fetchMock = t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+      prompts.push(JSON.parse(String(init.body)).input[0].content[0].text);
+      return item.payload();
+    });
+    const beforeAws = aws.mock.callCount();
+    await assert.rejects(runOcrOnImage(buffer, "page.png", "image/png", { ...options, ocrMode: "TEXTRACT", advancedLayout: true }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const diagnostics = (error as Error & { advancedDiagnostics: { attempts: AdvancedOcrAttemptDiagnostic[] } }).advancedDiagnostics;
+      assert.deepEqual(diagnostics.attempts.map((attempt) => attempt.category), Array(3).fill(item.category));
+      assert.match(error.message, item.detail);
+      assert.ok(error.message.length <= 2000);
+      assert.doesNotMatch(JSON.stringify(error) + error.message + error.stack, /PRIVATE-OCR-TEXT|PRIVATE-KEY|visual-secret|aws-secret|data:/u);
+      return true;
+    });
+    assert.equal(aws.mock.callCount() - beforeAws, 1);
+    assert.equal(fetchMock.mock.callCount(), 3);
+    assert.match(prompts[2]!, item.detail);
+    assert.doesNotMatch(prompts.slice(1).join(""), /PRIVATE-OCR-TEXT|PRIVATE-KEY|visual-secret|aws-secret/u);
+    fetchMock.mock.restore();
+  }
+});
+
+test("truncation token ceiling survives optimized-image retries and exhaustion", async (t) => {
+  mockDelays(t);
+  const aws = t.mock.method(TextractClient.prototype, "send", async () => awsBase);
+  const budgets: number[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    budgets.push(body.max_output_tokens);
+    if (budgets.length === 2) return new Response("image_too_large PRIVATE-OCR-TEXT", { status: 400 });
+    return Response.json({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output_text: "PRIVATE-OCR-TEXT" });
+  });
+  await assert.rejects(runOcrOnImage(await image(), "page.png", "image/png", { ...options, ocrMode: "TEXTRACT", advancedLayout: true }), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    const diagnostics = (error as Error & { advancedDiagnostics: { attempts: AdvancedOcrAttemptDiagnostic[] } }).advancedDiagnostics;
+    assert.deepEqual(diagnostics.attempts.map((attempt) => attempt.category), ["truncation", "provider_error", "truncation"]);
+    assert.deepEqual(diagnostics.attempts.map((attempt) => attempt.optimized), [false, false, true]);
+    assert.doesNotMatch(JSON.stringify(error) + error.message, /PRIVATE-OCR-TEXT/u);
+    return true;
+  });
+  assert.equal(aws.mock.callCount(), 1);
+  assert.deepEqual(budgets, [8192, 16384, 16384]);
 });
 
 const catalogueFigureBox = { x: 65, y: 95, width: 417, height: 211 };
@@ -486,7 +599,7 @@ test("AWS and Vision catalogues reuse exact source pixels and geometry despite i
   let advanced = false;
   let visionBasePending = false;
   const payload = { blocks: [catalogueText[0], { type: "image", sourceImageIndex: 1,
-    bbox: { x: 50, y: 84, width: 348, height: 182 }, source: "https://untrusted.invalid/image.png" }, ...catalogueText.slice(1)],
+    bbox: { x: 50, y: 84, width: 348, height: 182 } }, ...catalogueText.slice(1)],
     layout: column(leaf(1), { type: "column", semantic: "figure", children: [leaf(2), leaf(3)] }, leaf(4),
       { type: "row", weights: [1, 2], children: [column(leaf(5)), column(leaf(6))] }) };
   t.mock.method(globalThis, "fetch", async (_url: unknown, init: RequestInit) => {
@@ -569,8 +682,13 @@ test("dedicated prompt specifies trusted images, normalized geometry and full re
   const prompt = buildAdvancedVisionPrompt("es", resolveAdvancedLayoutLimits());
   for (const contract of [/sourceImageIndex/u, /1-based image-only/u, /ONLY when the base image catalogue is empty/u,
     /NOT pixels/u, /bbox on every text block/u, /Every substantial base text region/u, /FULL text/u,
-    /Venus/u, /lower-left sidebar/u, /rasterized inside a selected map/u, /do not emit map labels/u,
+    /illustration descriptions/u, /each sidebar/u, /rasterized inside a selected map/u, /do not emit map labels/u,
     /weights ONLY for horizontal rows/u, /Document headings are not repeated headers/u, /full captions/u]) assert.match(prompt, contract);
+  for (const contract of [/printed colors/u, /background fills/u, /borders\/frames/u, /inset padding/u,
+    /borderWidth \(frame width, 0-8 px\)/u, /padding \(0-48 px\)/u, /Do not invent decorations/u,
+    /No arbitrary CSS/u, /numbered section titles/u, /"style":\{"backgroundColor":"#F4F1E8"/u,
+    /"color":"#304050"/u]) assert.match(prompt, contract);
+  assert.doesNotMatch(prompt, /Venus|DOC [0-9]|lower-left sidebar/u);
 });
 
 const fidelityVenus = "Venus de El Pendo representa la figura femenina. Posee una antiguedad de diecisiete mil anos. Pertenece al arte mobiliar realizado sobre objetos pequenos y manejables, principalmente esculturas y grabados del Paleolitico.";
@@ -731,7 +849,7 @@ test("inline prepass rejects excessive depth, nodes, leaves and unsafe child fie
     { layout: column({ type: "paragraph", text: "Text.", children: [] }) },
     { layout: column({ type: "image", bbox: catalogueFigureBox, source: "https://untrusted.invalid" }) },
     { layout: { type: "column", text: "Container content.", children: [{ type: "paragraph", text: "Text." }] } },
-    { layout: { type: "column", children: [{ type: "paragraph", text: "Text.", style: { position: "absolute" } }] } },
+    { layout: { type: "column", children: [{ type: "paragraph", text: "Text.", style: { color: "url(https://untrusted.invalid)" } }] } },
     { layout: column({ type: "block", blockIndex: 1 }) },
     { layout: { type: "figure", semantic: "table", children: [{ type: "paragraph", text: "Text." }] } },
     { layout: column({ type: "paragraph", text: "Text." }), secret: "unsafe" }

@@ -294,8 +294,7 @@ async function insertAnnotationShares(
   await connection.executeMany(
     `INSERT INTO annotation_shares (annotation_id, annotation_type, user_id)
      VALUES (:annotationId, :annotationType, :userId)`,
-    allowed.map((userId: string) => ({ annotationId, annotationType, userId })),
-    { autoCommit: true }
+    allowed.map((userId: string) => ({ annotationId, annotationType, userId }))
   );
 }
 
@@ -980,6 +979,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
       const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
@@ -1033,8 +1033,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
           paragraphNumber: bookmark.paragraphNumber,
           sequenceNumber: bookmark.sequenceNumber,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
 
       await recordUserActivity(connection, {
@@ -1045,7 +1044,11 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.commit();
       return reply.status(201).send({ bookmark });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -1177,6 +1180,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
       const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
@@ -1249,8 +1253,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
           paragraphNumber: highlight.paragraphNumber,
           sequenceNumber: highlight.sequenceNumber,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
 
       await recordUserActivity(connection, {
@@ -1262,7 +1265,11 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.commit();
       return reply.status(201).send({ highlight });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -1318,6 +1325,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
       const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
@@ -1393,8 +1401,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
           paragraphNumber,
           sequenceNumber,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
 
       if (payload.sharedWithUserIds?.length) {
@@ -1410,6 +1417,7 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.commit();
       return reply.status(201).send({
         note: {
           createdAt: new Date().toISOString(),
@@ -1427,6 +1435,9 @@ export const registerAnnotationRoutes: FastifyPluginAsync = async (app) => {
           updatedAt: new Date().toISOString()
         }
       });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }

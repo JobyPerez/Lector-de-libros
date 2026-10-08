@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createRequire } from "node:module";
 import type { PageStyle, VisualLayoutNode, VisualPageDocument } from "../src/app/api";
 import { createVisualBlock, flattenVisualLayout, isCenteredFooterRow, normalizeVisualDocument, renderVisualPreviewHtml, renderVisualStyle, visualDocumentSaveError } from "../src/features/book-builder/visual-page";
+import { loadOcrConfig } from "./ocr-config-fixture";
 
 const builderText = readFileSync(new URL("../src/features/book-builder/BookBuilderPage.tsx", import.meta.url), "utf8");
 const builder = ts.createSourceFile("builder.tsx", builderText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -56,9 +57,7 @@ test("rerun serializes JSON bool and preserves exact expectedUpdatedAt and selec
 });
 
 test("shared checkbox is false initially, disabled for LOCAL/busy, and explains the same Vision model", () => {
-  const node = builder.statements.find((item): item is ts.FunctionDeclaration => ts.isFunctionDeclaration(item) && item.name?.text === "AdvancedLayoutCheckbox")!;
-  const code = ts.transpileModule(node.getText(builder), { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
-  const Checkbox = new Function("React", `${code};return AdvancedLayoutCheckbox;`)(React);
+  const Checkbox = loadOcrConfig().AdvancedLayoutCheckbox;
   for (const [mode, value, busy] of [["TEXTRACT", false, false], ["TEXTRACT", true, false], ["LOCAL", true, false], ["VISION", false, false], ["VISION", true, true]] as const) {
     const html = renderToStaticMarkup(React.createElement(Checkbox, { mode, value, disabled: busy, onChange() {}, modelLabel: "selected" }));
     const input = new JSDOM(html).window.document.querySelector("input");
@@ -76,7 +75,7 @@ test("shared checkbox is false initially, disabled for LOCAL/busy, and explains 
   }
   for (const flow of ["create", "append", "review"]) {
     assert.match(builderText, new RegExp(`const \\[${flow}AdvancedLayout, set${flow[0]!.toUpperCase() + flow.slice(1)}AdvancedLayout\\] = useState\\(false\\)`));
-    assert.match(builderText, new RegExp(`advancedLayout: ${flow}AdvancedLayout &&`));
+    assert.match(builderText, new RegExp(`normalizeOcrOptions\\(${flow === "review" ? "nextMode" : `${flow}OcrMode`}, ${flow}AdvancedLayout, selectedOcrModel,`));
   }
   assert.doesNotMatch(builderText, /localStorage[^\n]*[Aa]dvanced|[Aa]dvanced[^\n]*localStorage/);
   assert.equal((builderText.match(/<AdvancedLayoutCheckbox /g) ?? []).length, 3);
@@ -90,14 +89,14 @@ test("review UI switches providers, resets LOCAL opt-in and exposes only the sel
   }
   visit(builder);
   assert.ok(panel);
-  const functions = ["AdvancedLayoutCheckbox", "OcrModelSelect"].map((name) => builder.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name)!.getText(builder)).join("\n");
-  const code = ts.transpileModule(`${functions}\nconst panel = ${panel.getText(builder)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
+  const code = ts.transpileModule(`const panel = ${panel.getText(builder)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React } }).outputText;
   const state = { reviewOcrMode: "TEXTRACT", reviewAdvancedLayout: false, isSavingReview: false };
   const calls: unknown[][] = [];
   function render() {
-    const bindings = { React, ...state, reviewBookId: "book", isReviewCropMode: false, reviewOcrPanelRef: { current: null },
+    const bindings = { React, ...loadOcrConfig(), ...state, reviewBookId: "book", isReviewCropMode: false, reviewOcrPanelRef: { current: null },
       reviewOcrModelLabel: "Selected Vision", selectedOcrModel: "selected", selectedOcrModelOption: { pricing: "Synthetic pricing" },
-      ocrModelOptions: [{ id: "selected", name: "Selected Vision", pricing: "Synthetic pricing" }], awsTextractCostLabel: "Synthetic cost",
+      ocrModelOptions: [{ id: "selected", name: "Selected Vision", pricing: "Synthetic pricing", supportsVision: true, visionStatus: "supported" }], awsTextractCostLabel: "Synthetic cost",
+      canRunOcr: () => true, compatibilityMessage: null,
       reviewPromptOverride: "Synthetic prompt", isReviewPromptEditorOpen: false,
       setReviewOcrMode: (mode: string) => { state.reviewOcrMode = mode; },
       setReviewAdvancedLayout: (value: boolean) => { state.reviewAdvancedLayout = value; },

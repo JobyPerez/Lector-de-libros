@@ -18,6 +18,7 @@ import {
 import { useAuthStore } from "../../app/auth-store";
 import { getDeepgramVoiceOptions, readStoredVoiceModel, writeStoredVoiceModel } from "../../app/book-language";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
+import type { SelectableAiModel } from "../../components/AiModelBadge";
 
 type AiFormState = {
   awsAccessKeyId: string;
@@ -47,16 +48,17 @@ function StatusChip({ active, sharedBy, activeLabel, pendingLabel }: { active: b
   return <span className="tag-chip">{pendingLabel}</span>;
 }
 
-function ModelCheckList({ models, visible, onToggle, idPrefix }: { models: OpencodeTopModel[]; visible: string[]; onToggle: (id: string) => void; idPrefix: string }) {
+function ModelCheckList({ models, visible, onToggle, idPrefix }: { models: SelectableAiModel[]; visible: string[]; onToggle: (id: string) => void; idPrefix: string }) {
+  if (idPrefix === "ocr") models = models.filter((model) => model.supportsVision === true);
   if (models.length === 0) return <p className="subdued">Sin modelos. Pulsa Refrescar.</p>;
   return (
-    <ul className="ai-model-check-list">
+    <ul className="ai-model-check-list" tabIndex={0} aria-label={idPrefix === "ocr" ? "Modelos para OCR" : "Modelos para resumenes"}>
       {models.map((model) => {
         const checked = visible.length === 0 || visible.includes(model.id);
         return (
           <li key={`${idPrefix}-${model.id}`}>
             <label className="inline-check">
-              <input type="checkbox" checked={checked} onChange={() => onToggle(model.id)} />
+              <input type="checkbox" checked={checked} disabled={idPrefix === "ocr" && model.supportsVision !== true} onChange={() => onToggle(model.id)} />
               <span>
                 <strong>{model.name}</strong> <span className="subdued">({model.id})</span>
                 <br />
@@ -78,7 +80,7 @@ function placeholderTopModel(id: string, purpose: "ocr" | "summary"): OpencodeTo
     id: cleanId,
     name: cleanId,
     pricing: "Guardado",
-    supportsVision: purpose === "ocr"
+    supportsVision: false
   };
 }
 
@@ -106,7 +108,7 @@ function mergeWithSavedModels(
       known.set(cleanId, placeholderTopModel(cleanId, purpose));
     }
   }
-  // Mantener primero los conocidos (live/curados) y añadir al final los guardados que ya no están en el top-5.
+  // Keep catalogue entries first, followed by saved selections outside the current ranking.
   const ordered: OpencodeTopModel[] = [...current];
   for (const [id, model] of known) {
     if (!current.some((entry) => entry.id === id)) {
@@ -144,6 +146,7 @@ export function AiSettingsPage() {
   const [ocrModels, setOcrModels] = useState<OpencodeTopModel[]>([]);
   const [summaryModels, setSummaryModels] = useState<OpencodeTopModel[]>([]);
   const [ocrSource, setOcrSource] = useState<string | null>(null);
+  const [ocrCatalogueWarning, setOcrCatalogueWarning] = useState<string | null>(null);
   const [summarySource, setSummarySource] = useState<string | null>(null);
   const [isRefreshingOcr, setIsRefreshingOcr] = useState(false);
   const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
@@ -185,15 +188,6 @@ export function AiSettingsPage() {
   }, [settings, settingsQuery.data?.effectiveModels.ocrModel, settingsQuery.data?.effectiveModels.summaryModel]);
 
   useEffect(() => {
-    const curatedOcr = (aiConfigQuery.data?.models ?? []).filter((model) => model.supportsVision && !isFreeZenModelId(model.id)).slice(0, 5).map((model) => ({
-      contextWindowTokens: model.contextWindowTokens,
-      description: model.description,
-      id: model.id,
-      name: model.name,
-      pricing: model.pricing,
-      supportsVision: model.supportsVision
-    }));
-    if (curatedOcr.length > 0 && ocrModels.length === 0) setOcrModels(curatedOcr);
     const curatedSummary = (aiConfigQuery.data?.models ?? []).filter((model) => !isFreeZenModelId(model.id)).slice(0, 5).map((model) => ({
       contextWindowTokens: model.contextWindowTokens,
       description: model.description,
@@ -203,23 +197,30 @@ export function AiSettingsPage() {
       supportsVision: model.supportsVision
     }));
     if (curatedSummary.length > 0 && summaryModels.length === 0) setSummaryModels(curatedSummary);
-  }, [aiConfigQuery.data, ocrModels.length, summaryModels.length]);
+  }, [aiConfigQuery.data, summaryModels.length]);
 
   const hasAutoRefreshedOcr = useRef(false);
   const hasAutoRefreshedSummary = useRef(false);
 
-  // Listas efectivas: curadas/live de pago + placeholders de los IDs guardados que ya no estén en el top-5.
-  // Los gratuitos de Zen se excluyen siempre (403 fuera de OpenCode).
-  // Así al salir y volver se siguen viendo los modelos de pago elegidos aunque el top-5 haya rotado.
-  const effectiveOcrModels = mergeWithSavedModels(ocrModels.filter((model) => !isFreeZenModelId(model.id)), form.opencodeOcrVisible, form.opencodeOcrModel, "ocr");
+  // Saved selections remain in the form, but only confirmed vision models appear in OCR lists.
+  const effectiveOcrModels = ocrModels.filter((model) => model.supportsVision === true && !isFreeZenModelId(model.id));
+  const ocrWarning = form.opencodeOcrModel && !effectiveOcrModels.some((model) => model.id === form.opencodeOcrModel)
+    ? "Tu modelo OCR guardado no esta disponible en el catalogo OpenCode en vivo. No se puede ejecutar OCR con el. Elige un modelo compatible; tu preferencia guardada no se ha cambiado."
+    : null;
   const effectiveSummaryModels = mergeWithSavedModels(summaryModels.filter((model) => !isFreeZenModelId(model.id)), form.opencodeSummaryVisible, form.opencodeSummaryModel, "summary");
 
   // Aviso si la configuración guardada contenía gratuitos de Zen (se ocultan por inservibles).
   const savedFreeSummaryIds = [...(settings?.opencodeSummaryVisibleModels ?? []), settings?.opencodeSummaryModel ?? ""].map((id) => id.trim()).filter((id) => id && isFreeZenModelId(id));
   const savedFreeOcrIds = [...(settings?.opencodeOcrVisibleModels ?? []), settings?.opencodeOcrModel ?? ""].map((id) => id.trim()).filter((id) => id && isFreeZenModelId(id));
 
+  useEffect(() => {
+    if (!accessToken || hasAutoRefreshedOcr.current) return;
+    hasAutoRefreshedOcr.current = true;
+    void refreshModels("ocr", false);
+  }, [accessToken]);
+
   // Al cargar la configuración, si hay modelos guardados que no están en la lista curada,
-  // pedir automáticamente el top-5 en vivo una vez para recuperar nombre/precio reales.
+  // Refresh once to recover metadata for saved models outside the initial catalogue.
   useEffect(() => {
     if (!accessToken || !settings) return;
     const savedSummary = [...(settings.opencodeSummaryVisibleModels ?? []), settings.opencodeSummaryModel ?? ""].map((id) => id.trim()).filter(Boolean);
@@ -239,41 +240,23 @@ export function AiSettingsPage() {
         }
       })();
     }
-    const savedOcr = [...(settings.opencodeOcrVisibleModels ?? []), settings.opencodeOcrModel ?? ""].map((id) => id.trim()).filter(Boolean);
-    const missingOcr = savedOcr.filter((id) => !ocrModels.some((model) => model.id === id));
-    if (savedOcr.length > 0 && missingOcr.length > 0 && !hasAutoRefreshedOcr.current && ocrModels.length > 0) {
-      hasAutoRefreshedOcr.current = true;
-      void (async () => {
-        setIsRefreshingOcr(true);
-        try {
-          const response = await fetchOpencodeTopModels(accessToken, "ocr");
-          setOcrModels(response.models);
-          setOcrSource(response.source);
-        } catch {
-          // Los placeholders ya muestran los guardados; ignorar el fallo silencioso.
-        } finally {
-          setIsRefreshingOcr(false);
-        }
-      })();
-    }
-  }, [accessToken, settings, summaryModels, ocrModels]);
+  }, [accessToken, settings, summaryModels]);
 
   if (!accessToken) return <Navigate to="/login" replace />;
 
-  async function refreshModels(purpose: "ocr" | "summary") {
+  async function refreshModels(purpose: "ocr" | "summary", refresh = true) {
     if (!accessToken) return;
     if (purpose === "ocr") setIsRefreshingOcr(true);
     else setIsRefreshingSummary(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
     try {
-      const response = await fetchOpencodeTopModels(accessToken, purpose);
+      const response = await fetchOpencodeTopModels(accessToken, purpose, refresh);
       const paidModels = response.models.filter((model) => !isFreeZenModelId(model.id));
       if (purpose === "ocr") {
-        setOcrModels(paidModels);
+        setOcrModels(response.source === "live" ? paidModels : []);
         setOcrSource(response.source);
-        if (paidModels.length > 0 && !form.opencodeOcrModel) {
-          setForm((current) => ({ ...current, opencodeOcrModel: paidModels[0]!.id }));
-        }
+        setOcrCatalogueWarning(response.warning ?? (response.source !== "live" ? "No se pudo obtener el catalogo OCR OpenCode en vivo." : null));
       } else {
         setSummaryModels(paidModels);
         setSummarySource(response.source);
@@ -282,8 +265,13 @@ export function AiSettingsPage() {
         }
       }
       if (response.warning) setErrorMessage(response.warning);
-      else setSuccessMessage(`Modelos de ${purpose === "ocr" ? "OCR" : "resúmenes"} actualizados (${response.source === "live" ? "OpenCode en vivo" : "lista curada"}).`);
+      else if (purpose === "summary" || response.source === "live") setSuccessMessage(`Modelos de ${purpose === "ocr" ? "OCR" : "resúmenes"} actualizados (${response.source === "live" ? "OpenCode en vivo" : "lista curada"}).`);
     } catch (error) {
+      if (purpose === "ocr") {
+        setOcrModels([]);
+        setOcrSource(null);
+        setOcrCatalogueWarning(error instanceof Error ? error.message : "No se pudo obtener el catalogo OCR OpenCode en vivo.");
+      }
       setErrorMessage(error instanceof Error ? error.message : "No se pudieron refrescar los modelos.");
     } finally {
       if (purpose === "ocr") setIsRefreshingOcr(false);
@@ -333,6 +321,9 @@ export function AiSettingsPage() {
       writeStoredVoiceModel("it", form.deepgramTtsModelIt);
       await settingsQuery.refetch();
       await queryClient.invalidateQueries({ queryKey: ["current-user-profile"] });
+      // Refrescar las listas de modelos en galería y edición de página,
+      // que comparten estas cachés (mismos modelos en ambas pantallas).
+      await queryClient.invalidateQueries({ queryKey: ["opencode-top-models"] });
       setForm((current) => ({
         ...current,
         awsAccessKeyId: "",
@@ -357,8 +348,9 @@ export function AiSettingsPage() {
     const filtered = effectiveOcrModels.filter((model) => form.opencodeOcrVisible.length === 0 || form.opencodeOcrVisible.includes(model.id));
     const base = filtered.length > 0 ? filtered : effectiveOcrModels;
     // Asegurar que el modelo por defecto siempre esté en el desplegable aunque se haya desmarcado arriba.
-    if (form.opencodeOcrModel.trim() && !base.some((model) => model.id === form.opencodeOcrModel.trim())) {
-      return [...base, placeholderTopModel(form.opencodeOcrModel.trim(), "ocr")];
+    const selected = effectiveOcrModels.find((model) => model.id === form.opencodeOcrModel);
+    if (selected && !base.some((model) => model.id === selected.id)) {
+      return [...base, selected];
     }
     return base;
   })();
@@ -423,7 +415,7 @@ export function AiSettingsPage() {
             <div>
               <p className="eyebrow">OpenCode</p>
               <h3>OCR con visión y resúmenes</h3>
-              <p className="helper-text">Una sola clave OpenCode sirve para OCR con visión (modo VISION) y para resúmenes y peticiones IA. Elige el modelo por defecto de cada uso entre los 5 mejores calidad-precio. El administrador puede compartirte el OCR y los resúmenes por separado.</p>
+              <p className="helper-text">Una sola clave OpenCode sirve para OCR con visión (modo VISION) y para resúmenes y peticiones IA. Elige OCR entre todos los modelos compatibles del catálogo en vivo y resúmenes entre los 5 mejores calidad-precio. El administrador puede compartirte el OCR y los resúmenes por separado.</p>
             </div>
             <StatusChip active={Boolean(settings?.hasOpencodeApiKey)} sharedBy={settings?.sharedOpencodeBy} activeLabel="OpenCode configurado" pendingLabel="OpenCode pendiente" />
           </div>
@@ -457,19 +449,21 @@ export function AiSettingsPage() {
               <h3>Modelo para OCR</h3>
             </div>
             <button className="secondary-button" disabled={isRefreshingOcr} onClick={() => void refreshModels("ocr")} type="button">
-              {isRefreshingOcr ? "Refrescando..." : "Refrescar top-5 OCR"}
+              {isRefreshingOcr ? "Refrescando..." : "Refrescar modelos OCR"}
             </button>
           </div>
-          {ocrSource ? <p className="helper-text">Fuente: {ocrSource === "live" ? "OpenCode en vivo" : "lista curada"}.</p> : null}
+          <p className="helper-text">Catálogo completo: {effectiveOcrModels.length} modelos OCR compatibles, sin límite. Fuente: {ocrSource === "live" ? "OpenCode en vivo" : "OpenCode en vivo pendiente"}. Capacidades de imagen y texto confirmadas mediante la metadata OpenCode de models.dev. Sin modelos guardados ni lista curada.</p>
+          {ocrCatalogueWarning && <p className="error-text" role="alert">{ocrCatalogueWarning}</p>}
           {savedFreeOcrIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeOcrIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago.</p> : null}
           <ModelCheckList models={effectiveOcrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
           <label>
             Modelo OCR por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={form.opencodeOcrModel}>
-              <option value="">Usar el del servidor</option>
-              {(ocrVisibleOptions.length > 0 ? ocrVisibleOptions : effectiveOcrModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+            <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={ocrVisibleOptions.some((model) => model.id === form.opencodeOcrModel) ? form.opencodeOcrModel : ""}>
+              <option value="" disabled>Selecciona un modelo compatible</option>
+              {ocrVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
             </select>
             <span className="helper-text">Marca o desmarca arriba qué modelos quieres ver en esta lista.</span>
+            {ocrWarning && <span className="error-text" role="alert">{ocrWarning}</span>}
           </label>
 
           <div className="settings-section">

@@ -250,7 +250,7 @@ function sectionSummaryHref(bookId: string, targetChapterId: string) {
   return `/books/${bookId}/sections/${encodeURIComponent(targetChapterId)}/ai-requests`;
 }
 
-type PersistedParagraphProgress = Pick<ParagraphContent, "paragraphNumber" | "sequenceNumber">;
+type PersistedParagraphProgress = Pick<ParagraphContent, "paragraphId" | "paragraphNumber" | "sequenceNumber">;
 
 type PageTurnSnapshot = {
   activeParagraphNumber: number | null;
@@ -1203,6 +1203,8 @@ export function ReaderPage() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const userAiCredentials = useAuthStore((state) => state.user?.aiCredentials);
   const [currentPageNumber, setCurrentPageNumber] = useState(1);
+  const [currentPageId, setCurrentPageId] = useState(searchParams.get("pageId")?.trim() ?? "");
+  const [isPageLocationReady, setIsPageLocationReady] = useState(false);
   const [currentParagraphNumber, setCurrentParagraphNumber] = useState(1);
   const [isSavingProgress, setIsSavingProgress] = useState(false);
   const [isAudioLoading, setIsAudioLoading] = useState(false);
@@ -1298,6 +1300,7 @@ export function ReaderPage() {
   const screenLockHoldTimeoutRef = useRef<number | null>(null);
   const screenLockHoldIntervalRef = useRef<number | null>(null);
   const requestedPageParam = searchParams.get("page")?.trim() ?? "";
+  const requestedPageId = searchParams.get("pageId")?.trim() ?? "";
   const requestedParagraphParam = searchParams.get("paragraph")?.trim() ?? "";
   const requestedSearchParam = searchParams.get("search")?.trim() ?? "";
   const requestedSearchCaseSensitive = searchParams.get("searchCaseSensitive") === "true";
@@ -1306,6 +1309,7 @@ export function ReaderPage() {
   const navigationState = (location.state as ReaderNavigationState | null) ?? null;
   const readerReturnTo = navigationState?.returnTo?.trim() ?? "";
   const isReturningToGlobalSearch = readerReturnTo.startsWith("/search");
+  const isReturningToGallery = readerReturnTo.split("?")[0] === `/books/${bookId}/pages`;
   const shelfAnchorBookId = bookId;
   const shelfReturnToFromState = isValidShelfReturnTo(navigationState?.shelfReturnTo)
     ? (navigationState?.shelfReturnTo as string)
@@ -1339,9 +1343,15 @@ export function ReaderPage() {
     setPageTurnDirection(null);
     setPageTurnSnapshot(null);
     setCurrentPageNumber(1);
+    setCurrentPageId(requestedPageId);
+    setIsPageLocationReady(false);
     setCurrentParagraphNumber(1);
     setActiveSearchTarget(null);
   }, [bookId]);
+
+  useEffect(() => {
+    if (requestedPageId) setCurrentPageId(requestedPageId);
+  }, [requestedPageId]);
 
   useEffect(() => {
     if (!accessToken || !isAudioPlaying) {
@@ -1503,20 +1513,31 @@ export function ReaderPage() {
   const ttsVoiceOptions = getDeepgramVoiceOptions(bookLanguageCode);
 
   const pageQuery = useQuery({
-    enabled: Boolean(accessToken && bookId),
-    queryKey: ["book-page", bookId, currentPageNumber],
+    // Hydrate the location first, so cached page 1 cannot pin the wrong immutable ID.
+    enabled: Boolean(accessToken && bookId && isPageLocationReady),
+    queryKey: ["book-page", bookId, currentPageId ? { pageId: currentPageId } : currentPageNumber],
     queryFn: async () => {
       if (!accessToken) {
         throw new Error("Missing access token.");
       }
 
-      return fetchBookPage(accessToken, bookId, currentPageNumber);
+      return fetchBookPage(accessToken, bookId, currentPageNumber, currentPageId ? { pageId: currentPageId } : undefined);
     }
   });
 
+  const resolvedRequestedPageNumber = currentPageId && pageQuery.data?.page.pageId === currentPageId
+    ? pageQuery.data.page.pageNumber
+    : requestedPageId && (!Number.isInteger(requestedPageNumber) || requestedPageNumber < 1) ? 1 : requestedPageNumber;
+  useEffect(() => {
+    const page = pageQuery.data?.page;
+    if (!isPageLocationReady || !progressHydratedRef.current || !page || pageQuery.isFetching || (currentPageId && page.pageId !== currentPageId)) return;
+    setCurrentPageId(page.pageId);
+    setCurrentPageNumber(page.pageNumber);
+  }, [isPageLocationReady, currentPageId, pageQuery.data?.page, pageQuery.isFetching]);
+
   const annotationsQuery = useQuery({
-    enabled: Boolean(accessToken && bookId),
-    queryKey: ["reader-annotations", bookId, currentPageNumber],
+    enabled: Boolean(accessToken && bookId && isPageLocationReady && pageQuery.data?.page.pageNumber === currentPageNumber),
+    queryKey: ["reader-annotations", bookId, currentPageNumber, pageQuery.data?.page.pageId],
     queryFn: async () => {
       if (!accessToken) {
         throw new Error("Missing access token.");
@@ -1661,26 +1682,27 @@ export function ReaderPage() {
   }, [availableDeviceVoices, bookLanguageCode, selectedDeviceVoiceUri]);
 
   useEffect(() => {
-    if (Number.isInteger(requestedPageNumber) && requestedPageNumber >= 1 && !progressHydratedRef.current) {
+    if ((Number.isInteger(resolvedRequestedPageNumber) && resolvedRequestedPageNumber >= 1 || requestedPageId) && !progressHydratedRef.current) {
       progressHydratedRef.current = true;
+      setIsPageLocationReady(true);
       const nextParagraphNumber = Number.isInteger(requestedParagraphNumber) && requestedParagraphNumber >= 1
         ? requestedParagraphNumber
         : 1;
       pendingRouteNavigationRef.current = {
-        pageNumber: requestedPageNumber,
+        pageNumber: resolvedRequestedPageNumber,
         paragraphNumber: nextParagraphNumber,
         query: requestedSearchParam || null
       };
       if (requestedSearchParam) {
         setActiveSearchTarget({
           caseSensitive: requestedSearchCaseSensitive,
-          pageNumber: requestedPageNumber,
+          pageNumber: resolvedRequestedPageNumber,
           paragraphNumber: nextParagraphNumber,
           query: requestedSearchParam
         });
       }
       pendingParagraphTargetRef.current = nextParagraphNumber;
-      setCurrentPageNumber(requestedPageNumber);
+      setCurrentPageNumber(resolvedRequestedPageNumber);
       setCurrentParagraphNumber(nextParagraphNumber);
       return;
     }
@@ -1692,6 +1714,7 @@ export function ReaderPage() {
 
     if (savedProgress) {
       progressHydratedRef.current = true;
+      setIsPageLocationReady(true);
       setCurrentPageNumber(savedProgress.currentPageNumber);
       setCurrentParagraphNumber(savedProgress.currentParagraphNumber);
       return;
@@ -1702,15 +1725,16 @@ export function ReaderPage() {
       // hidratar igual en la pág. 1 para que la URL ?page= aparezca y el
       // sincronizado de página funcione igual que en los propios.
       progressHydratedRef.current = true;
+      setIsPageLocationReady(true);
     }
-  }, [bookId, navigate, progressQuery.data?.progress, progressQuery.isError, progressQuery.isSuccess, requestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
+  }, [bookId, navigate, progressQuery.data?.progress, progressQuery.isError, progressQuery.isSuccess, requestedPageId, resolvedRequestedPageNumber, requestedParagraphNumber, requestedSearchCaseSensitive, requestedSearchParam]);
 
   useEffect(() => {
-    if (!pendingRouteNavigationRef.current) {
+    if (!pendingRouteNavigationRef.current || !isPageLocationReady || pageQuery.isFetching) {
       return;
     }
 
-    if (!Number.isInteger(requestedPageNumber) || requestedPageNumber < 1) {
+    if (!Number.isInteger(resolvedRequestedPageNumber) || resolvedRequestedPageNumber < 1) {
       return;
     }
 
@@ -1722,7 +1746,7 @@ export function ReaderPage() {
       setActiveSearchTarget((current) => {
         if (
           current
-          && current.pageNumber === requestedPageNumber
+          && current.pageNumber === resolvedRequestedPageNumber
           && current.paragraphNumber === targetParagraphNumber
           && current.query === requestedSearchParam
           && current.caseSensitive === requestedSearchCaseSensitive
@@ -1732,21 +1756,21 @@ export function ReaderPage() {
 
         return {
           caseSensitive: requestedSearchCaseSensitive,
-          pageNumber: requestedPageNumber,
+          pageNumber: resolvedRequestedPageNumber,
           paragraphNumber: targetParagraphNumber,
           query: requestedSearchParam
         };
       });
     }
 
-    if (currentPageNumber !== requestedPageNumber) {
+    if (currentPageNumber !== resolvedRequestedPageNumber) {
       pendingParagraphTargetRef.current = targetParagraphNumber;
-      setCurrentPageNumber(requestedPageNumber);
+      setCurrentPageNumber(resolvedRequestedPageNumber);
       setCurrentParagraphNumber(targetParagraphNumber);
       return;
     }
 
-    if (pageQuery.data?.page.pageNumber !== requestedPageNumber) {
+    if (pageQuery.data?.page.pageNumber !== resolvedRequestedPageNumber) {
       return;
     }
 
@@ -1766,7 +1790,7 @@ export function ReaderPage() {
 
     if (pendingRouteNavigationRef.current) {
       pendingRouteNavigationRef.current = null;
-      navigate(`/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}`, { replace: true, state: location.state });
+      navigate(`/books/${bookId}?page=${currentPageNumber}&pageId=${encodeURIComponent(pageQuery.data.page.pageId)}`, { replace: true, state: location.state });
     }
   }, [
     bookId,
@@ -1776,7 +1800,9 @@ export function ReaderPage() {
     navigate,
     pageQuery.data?.page.pageNumber,
     pageQuery.data?.page.paragraphs,
-    requestedPageNumber,
+    pageQuery.isFetching,
+    isPageLocationReady,
+    resolvedRequestedPageNumber,
     requestedParagraphNumber,
     requestedSearchCaseSensitive,
     requestedSearchParam
@@ -1793,12 +1819,14 @@ export function ReaderPage() {
       return;
     }
 
-    if (pendingRouteNavigationRef.current && Number.isInteger(requestedPageNumber) && requestedPageNumber !== currentPageNumber) {
+    if (pendingRouteNavigationRef.current && Number.isInteger(resolvedRequestedPageNumber) && resolvedRequestedPageNumber !== currentPageNumber) {
       return;
     }
 
     const nextSearchParams = new URLSearchParams(location.search);
     nextSearchParams.set("page", String(currentPageNumber));
+    if (currentPageId) nextSearchParams.set("pageId", currentPageId);
+    else nextSearchParams.delete("pageId");
     const nextSearch = `?${nextSearchParams.toString()}`;
 
     if (nextSearch === location.search) {
@@ -1806,7 +1834,7 @@ export function ReaderPage() {
     }
 
     navigate({ pathname: location.pathname, search: nextSearch }, { replace: true, state: location.state });
-  }, [currentPageNumber, location.pathname, location.search, location.state, navigate, requestedPageNumber]);
+  }, [currentPageId, currentPageNumber, location.pathname, location.search, location.state, navigate, resolvedRequestedPageNumber]);
 
   useEffect(() => {
     if (!activeSearchTarget) {
@@ -2060,11 +2088,11 @@ export function ReaderPage() {
       search: `?appendBookId=${encodeURIComponent(bookId)}&insertAfterPage=${encodeURIComponent(String(currentPageNumber))}`
     }
     : null;
-  const reviewOcrLink = canEditBook
+  const reviewOcrLink = canEditBook && pageQuery.data?.page.pageId && !pageQuery.isFetching
     ? {
       hash: "#review-ocr",
       pathname: "/builder",
-      search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${encodeURIComponent(String(currentPageNumber))}`
+      search: `?reviewBookId=${encodeURIComponent(bookId)}&reviewPage=${currentPageNumber}&reviewPageId=${encodeURIComponent(pageQuery.data?.page.pageId ?? currentPageId)}`
     }
     : null;
 
@@ -2708,7 +2736,7 @@ export function ReaderPage() {
   }, [currentPageNumber, currentParagraphNumber, pageTurnDirection, currentHtmlContent, isOriginalView]);
 
   useEffect(() => {
-    if (!pendingPageTurnDirection || pageQuery.data?.page.pageNumber !== currentPageNumber) {
+    if (!pendingPageTurnDirection || pageQuery.isFetching || pageQuery.data?.page.pageNumber !== currentPageNumber) {
       return;
     }
 
@@ -2728,11 +2756,11 @@ export function ReaderPage() {
       setPageTurnSnapshot(null);
       pageTurnTimeoutRef.current = null;
     }, PAGE_TURN_DURATION_MS);
-  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pendingPageTurnDirection]);
+  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.isFetching, pendingPageTurnDirection]);
 
   useEffect(() => {
     const pendingParagraphTarget = pendingParagraphTargetRef.current;
-    if ((pendingParagraphTarget === null && !pendingAutoPlayNextPage) || pageQuery.data?.page.pageNumber !== currentPageNumber) {
+    if ((pendingParagraphTarget === null && !pendingAutoPlayNextPage) || pageQuery.isFetching || pageQuery.data?.page.pageNumber !== currentPageNumber) {
       return;
     }
 
@@ -2761,7 +2789,7 @@ export function ReaderPage() {
       && pendingRouteNavigationRef.current.paragraphNumber === targetParagraph.paragraphNumber
     ) {
       pendingRouteNavigationRef.current = null;
-      navigate(`/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}`, { replace: true, state: location.state });
+      navigate(`/books/${bookId}?page=${currentPageNumber}&pageId=${encodeURIComponent(pageQuery.data.page.pageId)}`, { replace: true, state: location.state });
     }
     if (pendingAutoPlayNextPage) {
       setPendingAutoPlayNextPage(false);
@@ -2770,7 +2798,7 @@ export function ReaderPage() {
     }
 
     void persistProgress(targetParagraph, currentPageNumber);
-  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.data?.page.paragraphs, pendingAutoPlayNextPage]);
+  }, [currentPageNumber, pageQuery.data?.page.pageNumber, pageQuery.data?.page.paragraphs, pageQuery.isFetching, pendingAutoPlayNextPage]);
 
   useEffect(() => {
     if (typeof document === "undefined") {
@@ -3028,11 +3056,11 @@ export function ReaderPage() {
   }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, isNavigationPanelVisible]);
 
   async function persistProgress(paragraph: PersistedParagraphProgress, pageNumber: number) {
-    if (!accessToken) {
+    if (!accessToken || !paragraph.paragraphId) {
       return;
     }
 
-    const progressKey = `${pageNumber}:${paragraph.sequenceNumber}`;
+    const progressKey = `${paragraph.paragraphId}:${paragraph.sequenceNumber}`;
     if (lastPersistedProgressRef.current === progressKey) {
       return;
     }
@@ -3048,6 +3076,7 @@ export function ReaderPage() {
     try {
       await updateProgress(accessToken, bookId, {
         audioOffsetMs: 0,
+        paragraphId: paragraph.paragraphId,
         currentPageNumber: pageNumber,
         currentParagraphNumber: paragraph.paragraphNumber,
         currentSequenceNumber: paragraph.sequenceNumber,
@@ -3472,6 +3501,7 @@ export function ReaderPage() {
       preparePageTurn(paragraph.pageNumber);
       currentPageNumberRef.current = paragraph.pageNumber;
       setCurrentPageNumber(paragraph.pageNumber);
+      setCurrentPageId("");
     }
 
     if (paragraph.paragraphNumber !== currentParagraphNumberRef.current) {
@@ -4471,6 +4501,7 @@ export function ReaderPage() {
     currentParagraphNumberRef.current = targetParagraphNumber === "last" ? 1 : targetParagraphNumber;
     setCurrentParagraphNumber(targetParagraphNumber === "last" ? 1 : targetParagraphNumber);
     setCurrentPageNumber(boundedPageNumber);
+    setCurrentPageId("");
   }
 
   function handleNavigationPanelSelection(pageNumber: number, paragraphNumber: number | "last" = 1) {
@@ -4644,7 +4675,7 @@ export function ReaderPage() {
   }, []);
 
   async function handleDeleteCurrentPage() {
-    if (!accessToken || !pageQuery.data || isDeletingPage || !canEditBook) {
+    if (!accessToken || !pageQuery.data?.page.pageId || pageQuery.isFetching || isDeletingPage || !canEditBook) {
       return;
     }
 
@@ -4660,7 +4691,7 @@ export function ReaderPage() {
     setAutoPlay(false);
 
     try {
-      const response = await deleteBookPage(accessToken, bookId, currentPageNumber);
+      const response = await deleteBookPage(accessToken, bookId, currentPageNumber, pageQuery.data.page.pageId);
 
       if (response.nextPageNumber === null && response.book.sourceType === "IMAGES") {
         if (canEditBook) {
@@ -4683,6 +4714,7 @@ export function ReaderPage() {
       queryClient.removeQueries({ queryKey: ["book-page", bookId] });
       queryClient.removeQueries({ queryKey: ["reader-annotations", bookId] });
       setCurrentPageNumber(response.nextPageNumber);
+      setCurrentPageId("");
       setCurrentParagraphNumber(1);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["book", bookId] }),
@@ -5019,7 +5051,7 @@ export function ReaderPage() {
     readerSearchParams.set("caseSensitive", "true");
   }
   const readerSearchHref = `/search?${readerSearchParams.toString()}`;
-  const readerSearchReturnTo = `/books/${bookId}?page=${encodeURIComponent(String(currentPageNumber))}&paragraph=${encodeURIComponent(String(currentParagraphNumber))}`;
+  const readerSearchReturnTo = `/books/${bookId}?page=${currentPageNumber}&pageId=${encodeURIComponent(pageQuery.data?.page.pageId ?? currentPageId)}&paragraph=${currentParagraphNumber}`;
   const canEditImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
   const canDeleteImportedPage = pageQuery.data?.book.sourceType === "IMAGES" || pageQuery.data?.book.sourceType === "PDF" || pageQuery.data?.book.sourceType === "EPUB";
 
@@ -5040,14 +5072,14 @@ export function ReaderPage() {
     return (
       <>
         {showPrimaryActions ? <Link
-          aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          aria-label={isReturningToGallery ? "Volver a la galería" : isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
           className={buttonClassName}
           onClick={onAction}
-          state={isReturningToGlobalSearch ? undefined : { shelfAnchorBookId, shelfReturnTo }}
-          title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
-          to={isReturningToGlobalSearch ? readerReturnTo : shelfReturnTo}
+          state={isReturningToGlobalSearch || isReturningToGallery ? undefined : { shelfAnchorBookId, shelfReturnTo }}
+          title={isReturningToGallery ? "Volver a la galería" : isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          to={isReturningToGlobalSearch || isReturningToGallery ? readerReturnTo : shelfReturnTo}
         >
-          {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
+          {isReturningToGlobalSearch || isReturningToGallery ? <BackIcon /> : <ShelfIcon />}
         </Link> : null}
         {showSecondaryActions ? <Link
           aria-label="Buscar dentro del libro"
@@ -5109,6 +5141,12 @@ export function ReaderPage() {
             <OriginalPageIcon />
           </Link>
         ) : null}
+        {showSecondaryActions ? (
+          <Link aria-label="Galería de páginas" className={buttonClassName} onClick={onAction}
+            title="Galería de páginas" to={`/books/${bookId}/pages?pageId=${encodeURIComponent(currentPageId || pageQuery.data?.page.pageId || "")}&page=${currentPageNumber}`}>
+            <svg aria-hidden="true" fill="none" viewBox="0 0 24 24"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" stroke="currentColor" strokeWidth="1.8" /></svg>
+          </Link>
+        ) : null}
       </>
     );
   }
@@ -5146,7 +5184,7 @@ export function ReaderPage() {
                 {pageQuery.isError ? <p className="error-text">No se pudo cargar el contenido del libro.</p> : null}
                 {readerError ? <p className="error-text">{readerError}</p> : null}
                 {readerError ? <AiMissingBanner error={new Error(readerError)} /> : null}
-                {isOriginalView ? <OriginalPageView key={`${bookId}-${currentPageNumber}`} accessToken={accessToken} bookId={bookId} pageNumber={currentPageNumber} updatedAt={pageQuery.data?.page.updatedAt ?? null} onEnlarge={openImageViewer} /> : renderPageContent(baseParagraphs, baseHtmlContent, baseActiveParagraphNumber, !pageTurnDirection)}
+                {isOriginalView ? <OriginalPageView key={`${bookId}-${pageQuery.data?.page.pageId}`} accessToken={accessToken} bookId={bookId} pageNumber={currentPageNumber} pageId={pageQuery.data?.page.pageId ?? currentPageId} updatedAt={pageQuery.data?.page.updatedAt ?? null} onEnlarge={openImageViewer} /> : renderPageContent(baseParagraphs, baseHtmlContent, baseActiveParagraphNumber, !pageTurnDirection)}
               </div>
 
               {!isOriginalView && pageTurnSnapshot && overlayParagraphs.length > 0 ? (

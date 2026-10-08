@@ -15,7 +15,7 @@ saveVisualPageDocument(accessToken, bookId, pageNumber, {
 }): Promise<{ updatedAt: string; document: VisualPageDocument }>;
 ```
 
-The first helper must request editor-authorized inactive content. Its cache key is `['builder-page-visual', bookId, pageNumber, 'include-inactive']`, never Reader's public page key. Production responses must supply `page.visualDocument` derived from ALL SQL paragraphs or the stored document. `hasVisualDocument` does not gate initialization: derived documents are authoritative too.
+The first helper must request editor-authorized inactive content. Its cache key is `['builder-page-visual', bookId, { pageId }, 'include-inactive']` once identity is known (numeric position only during initial positional navigation), never Reader's public page key. GETs and mutations use the immutable `pageId` query parameter; draft identity is `bookId:pageId` so reordering cannot reassign a draft. Production responses must supply `page.visualDocument` derived from ALL SQL paragraphs or the stored document. `hasVisualDocument` does not gate initialization: derived documents are authoritative too.
 
 The save helper targets the new `PUT visual-document` route. No legacy text/paragraph-line or metadata PATCH routes are used by this editor.
 

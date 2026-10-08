@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export const OPENCODE_ZEN_ENDPOINT = "https://opencode.ai/zen/v1/chat/completions";
 export const OPENCODE_GO_ENDPOINT = "https://opencode.ai/zen/go/v1/chat/completions";
 export const OPENCODE_RESPONSES_ENDPOINT = "https://opencode.ai/zen/v1/responses";
+export const OPENCODE_MESSAGES_ENDPOINT = "https://opencode.ai/zen/v1/messages";
 export const OPENCODE_ZEN_MODELS_ENDPOINT = "https://opencode.ai/zen/v1/models";
 
 // El free tier de OpenCode Zen solo acepta peticiones que simulan el cliente oficial:
@@ -16,11 +17,20 @@ export function isGeminiModel(model: string): boolean {
 /**
  * Modelos que solo hablan el protocolo Responses API (/zen/v1/responses).
  * Por /chat/completions devuelven 400 "ModelProtocolUnsupported".
- * Según https://opencode.ai/docs/zen: gpt-*, muse-spark-*.
+ * Segun https://opencode.ai/docs/zen: gpt-*, muse-spark-*, grok-*.
  */
 export function isResponsesApiModel(model: string): boolean {
   const normalizedModel = model.trim().toLowerCase();
-  return normalizedModel.startsWith("gpt-") || normalizedModel.startsWith("muse-spark-");
+  return normalizedModel.startsWith("gpt-") || normalizedModel.startsWith("muse-spark-") || normalizedModel.startsWith("grok-");
+}
+
+export function isAnthropicMessagesModel(model: string): boolean {
+  return model.startsWith("claude-") || ["qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus"].includes(model);
+}
+
+export function getOpenCodeMessagesRequestHeaders(apiKey: string | undefined): Record<string, string> {
+  const { Authorization: _authorization, ...headers } = getOpenCodeRequestHeaders(apiKey);
+  return { ...headers, "x-api-key": apiKey ?? "", "anthropic-version": "2023-06-01" };
 }
 
 /**
@@ -66,8 +76,12 @@ export function extractResponsesApiText(payload: ResponsesApiResponse): string {
   }
 
   return (payload.output ?? [])
+    // Untyped items/blocks occur in existing compatible-provider fixtures. Explicit
+    // reasoning/tool/refusal types are never final message text, even if they have text.
+    .filter((item) => item.type === undefined || item.type === "message")
     .flatMap((item) => item.content ?? [])
-    .map((item) => item.text ?? "")
+    .filter((item) => item.type === undefined || item.type === "output_text")
+    .map((item) => typeof item.text === "string" ? item.text : "")
     .filter(Boolean)
     .join("\n")
     .trim();
@@ -102,4 +116,3 @@ export function getOpenCodeGeminiRequestHeaders(apiKey: string | undefined): Rec
     "x-opencode-session": `ses_${randomUUID().replace(/-/gu, "")}`
   };
 }
-

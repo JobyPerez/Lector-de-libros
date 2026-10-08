@@ -198,6 +198,7 @@ function pageSaveSetup(kind: "ocr" | "image" | "rerun-ocr", options: { changedDu
   const richPage = { editedText: "edited", htmlContent: "<p>edited</p>", rawText: "edited", paragraphs: ["edited"] };
   const dependencies = {
     z, load, parsePageStyle, visualPageDocumentSchema,
+    assertBookRole: async () => {},
     pageParamsSchema: z.object({ bookId: z.string(), pageNumber: z.number() }),
     updateOcrPageSchema: z.object({ editedText: z.string().min(1), expectedUpdatedAt: z.string().min(1).max(100).optional() }),
     rerunOcrPageSchema: z.object({ expectedUpdatedAt: z.string().min(1).max(100).optional(), ocrMode: z.string().default("TEXTRACT") }),

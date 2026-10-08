@@ -1,10 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import { AI_MODELS, isFreeZenModelId } from "../../config/ai-models.js";
+import { AI_MODELS, isFreeZenModelId, resolveModelVisionCapability } from "../../config/ai-models.js";
 import { ALLOWED_DEEPGRAM_TTS_MODELS, appEnv } from "../../config/env.js";
+import { fetchModelMetadata } from "../../config/opencode-model-metadata.js";
 import {
   getOpenCodeRequestHeaders,
   OPENCODE_USER_AGENT,
@@ -37,7 +38,8 @@ const shareUpdateSchema = z.object({
 });
 
 const opencodeModelsQuerySchema = z.object({
-  purpose: z.enum(["ocr", "summary"]).default("ocr")
+  purpose: z.enum(["ocr", "summary"]).default("ocr"),
+  refresh: z.enum(["true", "false"]).optional()
 });
 
 const granularShareUpdateSchema = z.object({
@@ -54,6 +56,8 @@ type ZenModelEntry = {
   contextWindow?: number;
   supports_vision?: boolean;
   supportsVision?: boolean;
+  modalities?: { input?: unknown[]; output?: unknown[] };
+  limit?: { context?: number };
   cost?: { input?: number; output?: number };
   pricing?: { input?: number; output?: number };
   price?: { input?: number; output?: number };
@@ -93,14 +97,27 @@ function formatZenPricing(entry: ZenModelEntry): string {
   return "Precio Zen no publicado";
 }
 
-function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary") {
-  const list: ZenModelEntry[] = Array.isArray(payload)
+function zenModelEntries(payload: unknown): ZenModelEntry[] {
+  const list = Array.isArray(payload)
     ? (payload as ZenModelEntry[])
     : Array.isArray((payload as { data?: unknown })?.data)
       ? ((payload as { data: ZenModelEntry[] }).data as ZenModelEntry[])
       : Array.isArray((payload as { models?: unknown })?.models)
         ? ((payload as { models: ZenModelEntry[] }).models as ZenModelEntry[])
         : [];
+  return list.filter((entry): entry is ZenModelEntry => entry !== null && typeof entry === "object" && typeof entry.id === "string");
+}
+
+type ModelMetadata = { opencode?: { models?: Record<string, ZenModelEntry> } };
+
+function modalityVision(entry: ZenModelEntry | undefined): boolean | undefined {
+  if (!Array.isArray(entry?.modalities?.input) || !Array.isArray(entry?.modalities?.output)) return undefined;
+  return entry.modalities.input.includes("image") && entry.modalities.output.includes("text");
+}
+
+export function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary", metadata: unknown = {}) {
+  const list = zenModelEntries(payload);
+  const metadataModels = (metadata as ModelMetadata | null)?.opencode?.models;
 
   // El endpoint /zen/v1/models no publica precios: solo id/object/created.
   // El free tier de Zen ("*-free", "big-pickle", "test") devuelve 403
@@ -108,21 +125,28 @@ function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary") {
   // Sin precios no se puede ordenar por calidad-precio: se priorizan los
   // modelos de pago ya conocidos que funcionan y luego el resto por id.
   const PREFERRED_PAID_ORDER = purpose === "ocr"
-    ? ["gemini-3.5-flash-lite", "gpt-5.4-nano", "gpt-5.4-mini", "deepseek-v4-flash", "glm-5.3-flash"]
+    ? ["gemini-3.5-flash-lite", "gpt-5.4-nano", "gpt-5.4-mini", "gemini-3-flash"]
     : ["deepseek-v4-flash", "glm-5.3-flash", "gemini-3.5-flash-lite", "gpt-5.4-nano", "gpt-5.4-mini", "deepseek-v4.1-flash", "gemini-3-flash", "glm-5.3"];
 
   const curatedById = new Map<string, (typeof AI_MODELS)[number]>(AI_MODELS.map((model) => [model.id, model]));
   const seen = new Set<string>();
   const withVision = list
-    .map((entry) => ({
-      id: String(entry.id ?? "").trim(),
-      name: String(entry.name ?? entry.id ?? "").trim(),
-      description: String(entry.description ?? "").trim(),
-      contextWindowTokens: Number(entry.context_window ?? entry.contextWindow ?? 0) || 0,
-      supportsVision: Boolean(entry.supports_vision ?? entry.supportsVision ?? /vision|image|multimodal|gemini|gpt|flash/i.test(`${entry.id ?? ""} ${entry.description ?? ""}`)),
-      priceScore: extractModelPrice(entry),
-      pricing: formatZenPricing(entry)
-    }))
+    .map((entry) => {
+      const id = entry.id!;
+      const known = metadataModels && Object.hasOwn(metadataModels, id) ? metadataModels[id] : undefined;
+      const explicit = typeof entry.supports_vision === "boolean" ? entry.supports_vision : entry.supportsVision;
+      const capability = typeof explicit === "boolean" ? explicit : modalityVision(entry) ?? modalityVision(known);
+      const enriched = { ...known, ...entry };
+      return {
+        id,
+        name: String(entry.name ?? known?.name ?? id).trim(),
+        description: String(entry.description ?? known?.description ?? "").trim(),
+        contextWindowTokens: Number(entry.context_window ?? entry.contextWindow ?? known?.limit?.context ?? 0) || 0,
+        supportsVision: purpose === "ocr" ? capability === true : resolveModelVisionCapability(id, explicit) === true,
+        priceScore: extractModelPrice(enriched),
+        pricing: formatZenPricing(enriched)
+      };
+    })
     .filter((entry) => entry.id.length > 0 && !seen.has(entry.id) && (seen.add(entry.id), true))
     .filter((entry) => !isFreeZenModelId(entry.id));
 
@@ -138,8 +162,8 @@ function normalizeZenModels(payload: unknown, purpose: "ocr" | "summary") {
     return a.id.localeCompare(b.id);
   });
 
-  return filtered.slice(0, 5).map((entry) => {
-    const curated = curatedById.get(entry.id);
+  return (purpose === "ocr" ? filtered : filtered.slice(0, 5)).map((entry) => {
+    const curated = purpose === "summary" ? curatedById.get(entry.id) : undefined;
     return {
       id: entry.id,
       name: entry.name || curated?.name || entry.id,
@@ -212,7 +236,8 @@ function curatedFallback(purpose: "ocr" | "summary") {
   }));
 }
 
-let modelsCache: { expiresAt: number; payloadByPurpose: Record<string, unknown> } | null = null;
+const modelsCache = new Map<string, { expiresAt: number; payload: unknown }>();
+const catalogueCacheMs = 5 * 60 * 1000;
 
 export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
   app.get("/ai-settings", { preHandler: authenticateRequest }, async (request, reply) => {
@@ -498,11 +523,6 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
     const query = opencodeModelsQuerySchema.parse(request.query ?? {});
-    const cacheKey = query.purpose;
-    if (modelsCache && modelsCache.expiresAt > Date.now() && modelsCache.payloadByPurpose[cacheKey]) {
-      return reply.send(modelsCache.payloadByPurpose[cacheKey]);
-    }
-
     const effective = await getEffectiveUserAiCredentials(request.currentUser.userId);
     const apiKey = (query.purpose === "ocr" ? effective.opencodeOcrApiKey : effective.opencodeSummaryApiKey)
       ?? effective.opencodeApiKey ?? appEnv.opencodeGoApiKey;
@@ -510,43 +530,60 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(503).send({
         code: "MISSING_OPENCODE",
         message: "Te falta la clave de OpenCode. Rellénala en Configuración IA (/ai-settings) o usa la compartida del administrador.",
-        models: curatedFallback(query.purpose),
-        source: "curated"
+        models: query.purpose === "ocr" ? [] : curatedFallback(query.purpose),
+        source: query.purpose === "ocr" ? "live" : "curated",
+        purpose: query.purpose,
+        ...(query.purpose === "ocr" ? { liveModelCount: 0, returnedModelCount: 0 } : {})
       });
     }
+    const cacheKey = `${request.currentUser.userId}:${query.purpose}:${createHash("sha256").update(apiKey).digest("hex")}`;
+    const cached = modelsCache.get(cacheKey);
+    if (query.refresh !== "true" && cached && cached.expiresAt > Date.now()) return reply.send(cached.payload);
+    modelsCache.delete(cacheKey);
 
     try {
+      const metadataRequest = query.purpose === "ocr"
+        ? fetchModelMetadata(query.refresh === "true").then((payload) => ({ payload, warning: undefined as string | undefined }),
+          () => ({ payload: {}, warning: "No se pudieron obtener los metadatos de models.dev; solo se muestran capacidades explicitas de OpenCode." }))
+        : Promise.resolve({ payload: {}, warning: undefined });
       const response = await fetch(OPENCODE_ZEN_MODELS_ENDPOINT, {
         method: "GET",
+        signal: AbortSignal.timeout(10000),
         headers: {
           ...getOpenCodeRequestHeaders(apiKey),
           "User-Agent": OPENCODE_USER_AGENT
         }
       });
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw Object.assign(new Error(`OpenCode devolvió ${response.status} al listar modelos. ${body.slice(0, 200)}`.trim()), {
+        throw Object.assign(new Error(`OpenCode devolvio ${response.status} al listar modelos.`), {
           statusCode: 502
         });
       }
       const payload = (await response.json()) as unknown;
-      const models = normalizeZenModels(payload, query.purpose);
+      const metadata = await metadataRequest;
+      const models = normalizeZenModels(payload, query.purpose, metadata.payload);
+      const liveModelCount = new Set(zenModelEntries(payload).map((entry) => entry.id)).size;
       const result = {
-        models: models.length > 0 ? models : curatedFallback(query.purpose),
-        source: models.length > 0 ? "live" : "curated",
-        purpose: query.purpose
+        models: query.purpose === "ocr" || models.length > 0 ? models : curatedFallback(query.purpose),
+        source: query.purpose === "ocr" || models.length > 0 ? "live" : "curated",
+        purpose: query.purpose,
+        liveModelCount,
+        returnedModelCount: models.length,
+        ...(metadata.warning || (query.purpose === "ocr" && !models.length) ? {
+          warning: metadata.warning ?? "OpenCode no publico modelos con entrada de imagen y salida de texto verificadas."
+        } : {})
       };
-      modelsCache = {
-        expiresAt: Date.now() + 60 * 60 * 1000,
-        payloadByPurpose: { ...(modelsCache?.payloadByPurpose ?? {}), [cacheKey]: result }
-      };
+      for (const [key, value] of modelsCache) if (value.expiresAt <= Date.now()) modelsCache.delete(key);
+      if (modelsCache.size >= 256) modelsCache.delete(modelsCache.keys().next().value!);
+      if (!metadata.warning) modelsCache.set(cacheKey, { expiresAt: Date.now() + catalogueCacheMs, payload: result });
       return reply.send(result);
     } catch (error) {
       return reply.send({
-        models: curatedFallback(query.purpose),
-        source: "curated",
+        models: query.purpose === "ocr" ? [] : curatedFallback(query.purpose),
+        source: query.purpose === "ocr" ? "live" : "curated",
         purpose: query.purpose,
-        warning: error instanceof Error ? error.message : "No se pudo refrescar desde OpenCode. Mostrando lista curada."
+        ...(query.purpose === "ocr" ? { liveModelCount: 0, returnedModelCount: 0 } : {}),
+        warning: error instanceof Error ? error.message : "No se pudo refrescar desde OpenCode."
       });
     }
   });

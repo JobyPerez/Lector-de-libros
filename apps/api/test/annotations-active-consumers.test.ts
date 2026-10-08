@@ -40,6 +40,7 @@ test("annotation destinations default to active, with an authorized editorial op
   const connection = {
     async execute(sql: string, binds: Record<string, any> = {}) {
       if (sql.startsWith("ALTER SESSION")) return {};
+      if (sql.includes("FROM books WHERE book_id = :bookId FOR UPDATE")) return { rows: [{ bookId }] };
       if (sql.includes('AS "shareRole"')) return { rows: [{ ownerUserId: role === "owner" ? userId : "other", shareRole: role, shareUserAnnotations: "N" }] };
       if (sql.includes("FROM user_bookmarks b")) {
         assert.match(sql, /:includeInactive = 1 OR EXISTS/);
@@ -88,7 +89,7 @@ test("annotation destinations default to active, with an authorized editorial op
       }
       assert.fail(`Unexpected SQL: ${sql}`);
     },
-    async close() {}
+    async close() {}, async commit() {}, async rollback() {}
   };
   t.mock.method(oracledb, "createPool", async () => ({ getConnection: async () => connection, close: async () => {} }));
   await initializeConnectionPool();

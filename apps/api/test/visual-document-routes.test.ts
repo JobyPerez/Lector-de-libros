@@ -157,6 +157,7 @@ function ocrSetup(storedPage: { htmlContent?: string | null; visualDocumentJson?
   };
   const dependencies = {
     load, parsePageStyle, visualPageDocumentSchema,
+    assertBookRole: async () => {},
     pageParamsSchema: z.object({ bookId: z.string().uuid(), pageNumber: z.number() }),
     updateOcrPageSchema: z.object({ editedText: z.string().min(1), expectedUpdatedAt: z.string().optional() }),
     rerunOcrPageSchema: z.object({ expectedUpdatedAt: z.string().optional(), ocrMode: z.literal("VISION") }),

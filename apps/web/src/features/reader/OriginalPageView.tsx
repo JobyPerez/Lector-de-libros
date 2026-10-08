@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { fetchBookPageImage } from "../../app/api";
 
-export function OriginalPageView({ accessToken, bookId, pageNumber, updatedAt, onEnlarge }: {
+export function OriginalPageView({ accessToken, bookId, pageNumber, pageId, updatedAt, onEnlarge }: {
   accessToken: string | null;
   bookId: string;
   pageNumber: number;
+  pageId: string;
   updatedAt: string | null;
   onEnlarge: (image: { src: string; alt: string; title: string }) => void;
 }) {
@@ -15,8 +16,8 @@ export function OriginalPageView({ accessToken, bookId, pageNumber, updatedAt, o
     let url: string | null = null;
     setSource(null);
     setError(null);
-    if (accessToken) {
-      void fetchBookPageImage(accessToken, bookId, pageNumber, updatedAt, true).then((blob) => {
+    if (accessToken && pageId) {
+      void fetchBookPageImage(accessToken, bookId, pageNumber, updatedAt, true, pageId).then((blob) => {
         if (disposed) return;
         url = URL.createObjectURL(blob);
         setSource(url);
@@ -28,7 +29,7 @@ export function OriginalPageView({ accessToken, bookId, pageNumber, updatedAt, o
       disposed = true;
       if (url) URL.revokeObjectURL(url);
     };
-  }, [accessToken, bookId, pageNumber, updatedAt]);
+  }, [accessToken, bookId, pageNumber, pageId, updatedAt]);
 
   const title = `Original de la pagina ${pageNumber}`;
   return <div className="reader-original-view">

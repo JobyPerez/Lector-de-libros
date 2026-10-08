@@ -9,6 +9,7 @@ import { RabbitMark } from "../components/RabbitMark";
 import { LoginPage } from "../features/auth/LoginPage";
 import { AiSettingsPage } from "../features/ai-settings/AiSettingsPage";
 import { BookBuilderPage } from "../features/book-builder/BookBuilderPage";
+import { BookPagesGallery, GalleryPageDestination } from "../features/book-pages/BookPagesGallery";
 import { ProfilePage } from "../features/profile/ProfilePage";
 import { AiRequestsPage } from "../features/reader/AiRequestsPage";
 import { ReaderPage } from "../features/reader/ReaderPage";
@@ -610,6 +611,8 @@ const router = createBrowserRouter(createRoutesFromElements(
       <Route path="/profile" element={<ProfilePage />} />
       <Route path="/ai-settings" element={<AiSettingsPage />} />
       <Route path="/books/:bookId" element={<ReaderPage />} />
+      <Route path="/books/:bookId/pages" element={<BookPagesGallery />} />
+      <Route path="/books/:bookId/pages/:pageId/:action" element={<GalleryPageDestination />} />
       <Route path="/books/:bookId/ai-requests" element={<AiRequestsPage />} />
       <Route path="/books/:bookId/sections/:chapterId/ai-requests" element={<AiRequestsPage />} />
       <Route path="/books/:bookId/sections/:chapterId/summary" element={<AiRequestsPage />} />

@@ -20,10 +20,8 @@ import {
   uploadBookPageImage,
   saveVisualPageDocument,
   type AppendImagesImportProgress,
-  type AiModelOption,
   type ImageRotation,
   type ImageOcrMode,
-  type OcrModelId,
   type OcrWaitReason,
   type ReaderBookmark,
   type ReaderHighlight,
@@ -41,7 +39,7 @@ import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
-import { useAiConfig } from "../../components/AiModelBadge";
+import { AdvancedLayoutCheckbox, OcrModelSelect, OcrPromptEditor, defaultOcrMode, normalizeOcrOptions, useOcrModelSelection, usesOcrModel } from "../../components/OcrConfig";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { useUnsavedChanges } from "../../hooks/useUnsavedChanges";
 import { DocumentScannerModal } from "./DocumentScannerModal";
@@ -306,98 +304,6 @@ function moveFileInList(files: File[], fromIndex: number, toIndex: number): File
 
   nextFiles.splice(toIndex, 0, moved);
   return nextFiles;
-}
-
-function resolveVisionPromptOverride(prompt: string): string | undefined {
-  const normalizedPrompt = prompt.trim();
-  if (!normalizedPrompt || normalizedPrompt === defaultVisionOcrEditablePrompt) {
-    return undefined;
-  }
-
-  return normalizedPrompt;
-}
-
-type OcrPromptEditorProps = {
-  disabled?: boolean;
-  helperText: string;
-  onChange: (value: string) => void;
-  onReset: () => void;
-  value: string;
-};
-
-function OcrPromptEditor({
-  disabled = false,
-  helperText,
-  onChange,
-  onReset,
-  value
-}: OcrPromptEditorProps) {
-  const hasCustomPrompt = value.trim() !== defaultVisionOcrEditablePrompt;
-
-  return (
-    <div className="ocr-prompt-editor-panel">
-      <div className="ocr-prompt-editor-header">
-        <p className="ocr-prompt-editor-title">Mensaje user del OCR con IA</p>
-        <button
-          className="secondary-button ocr-prompt-editor-reset"
-          disabled={disabled || !hasCustomPrompt}
-          onClick={onReset}
-          type="button"
-        >
-          Restablecer
-        </button>
-      </div>
-      <label className="ocr-prompt-editor-field">
-        <span>Contenido del mensaje user</span>
-        <textarea
-          disabled={disabled}
-          maxLength={4000}
-          onChange={(event) => onChange(event.target.value)}
-          rows={7}
-          value={value}
-        />
-      </label>
-      <p className="helper-text">{helperText}</p>
-    </div>
-  );
-}
-
-type OcrModelSelectProps = {
-  disabled?: boolean;
-  models: AiModelOption[];
-  onChange: (model: OcrModelId) => void;
-  value: OcrModelId;
-};
-
-function AdvancedLayoutCheckbox({ value, onChange, mode, disabled, modelLabel }: {
-  value: boolean; onChange: (value: boolean) => void; mode: ImageOcrMode; disabled: boolean; modelLabel: string;
-}) {
-  return <div className="ocr-model-select-panel ocr-advanced-layout-panel">
-    <label className="ocr-advanced-layout-check">
-      <input type="checkbox" checked={value && mode !== "LOCAL"} disabled={disabled || mode === "LOCAL"} onChange={(event) => onChange(event.target.checked)} />
-      <span>Reconstrucción avanzada de página</span>
-    </label>
-    <p className="helper-text">Al activarla, combina OCR y análisis visual para intentar conservar zonas, tablas y pies de página, sin garantía. Tarda más y puede tener un mayor coste. {mode === "LOCAL" ? "No disponible con OCR LOCAL. OCR estándar, sin segunda fase de análisis visual." : !value ? "OCR estándar, sin segunda fase de análisis visual." : mode === "VISION" ? `Vision realiza dos pasadas con el mismo modelo seleccionado: ${modelLabel}.` : `Utiliza AWS Textract y el modelo seleccionado: ${modelLabel}.`}</p>
-  </div>;
-}
-
-function OcrModelSelect({ disabled = false, models, onChange, value }: OcrModelSelectProps) {
-  const selectedModel = models.find((model) => model.id === value);
-
-  return (
-    <div className="ocr-model-select-panel">
-      <label className="ocr-model-select-field">
-        <span>Modelo de OCR con IA (OpenCode Zen)</span>
-        <select disabled={disabled} onChange={(event) => onChange(event.target.value as OcrModelId)} value={value}>
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>{model.name} · {model.pricing}</option>
-          ))}
-        </select>
-      </label>
-      {selectedModel ? <p className="helper-text">{selectedModel.description} {selectedModel.pricing}.</p> : null}
-      {selectedModel ? <p className="helper-text">{selectedModel.privacyNotice}</p> : null}
-    </div>
-  );
 }
 
 type ReviewNavigationItem =
@@ -871,6 +777,7 @@ export function BookBuilderPage() {
   const [selectedBookId, setSelectedBookId] = useState("");
   const [reviewBookId, setReviewBookId] = useState("");
   const [reviewPageNumber, setReviewPageNumber] = useState(1);
+  const [reviewPageId, setReviewPageId] = useState(searchParams.get("reviewPageId")?.trim() ?? "");
   const [visualHistory, setVisualHistory] = useState<VisualHistory | null>(null);
   const [originalVisualDocument, setOriginalVisualDocument] = useState("");
   const savedVisualDocument = useMemo(() => originalVisualDocument ? JSON.parse(originalVisualDocument) as VisualPageDocument : null, [originalVisualDocument]);
@@ -887,8 +794,8 @@ export function BookBuilderPage() {
   const [originalReviewImageCrop, setOriginalReviewImageCrop] = useState<ReviewImageCrop>(defaultReviewImageCrop);
   const [reviewImageRotation, setReviewImageRotation] = useState<ImageRotation>(0);
   const [originalReviewImageRotation, setOriginalReviewImageRotation] = useState<ImageRotation>(0);
-  const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>("TEXTRACT");
-  const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>("TEXTRACT");
+  const [createOcrMode, setCreateOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
+  const [appendOcrMode, setAppendOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [createAdvancedLayout, setCreateAdvancedLayout] = useState(false);
   const [appendAdvancedLayout, setAppendAdvancedLayout] = useState(false);
   const [reviewAdvancedLayout, setReviewAdvancedLayout] = useState(false);
@@ -912,8 +819,7 @@ export function BookBuilderPage() {
   const [scannerRequest, setScannerRequest] = useState<{ files: File[]; target: ScannerTarget } | null>(null);
   const [shouldAdjustCreateBorders, setShouldAdjustCreateBorders] = useState(false);
   const [shouldAdjustAppendBorders, setShouldAdjustAppendBorders] = useState(false);
-  const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>("TEXTRACT");
-  const [ocrModelOverride, setOcrModelOverride] = useState<OcrModelId | null>(null);
+  const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [reviewPromptOverride, setReviewPromptOverride] = useState(defaultVisionOcrEditablePrompt);
@@ -981,6 +887,10 @@ export function BookBuilderPage() {
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
   const requestedReviewPageParam = searchParams.get("reviewPage")?.trim() ?? "";
+  const requestedReviewPageId = searchParams.get("reviewPageId")?.trim() ?? "";
+  useEffect(() => {
+    if (requestedReviewPageId) setReviewPageId(requestedReviewPageId);
+  }, [requestedReviewPageId]);
   const returnTo = typeof location.state === "object"
     && location.state !== null
     && "returnTo" in location.state
@@ -989,12 +899,7 @@ export function BookBuilderPage() {
       : null;
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
-  const aiConfigQuery = useAiConfig();
-  const ocrModelOptions = (aiConfigQuery.data?.ocrModelIds ?? [])
-    .map((modelId) => aiConfigQuery.data?.models.find((model) => model.id === modelId))
-    .filter((model): model is AiModelOption => Boolean(model));
-  const selectedOcrModel = ocrModelOverride ?? (aiConfigQuery.data?.ocrModel as OcrModelId | undefined) ?? "gemini-3.5-flash-lite";
-  const selectedOcrModelOption = ocrModelOptions.find((model) => model.id === selectedOcrModel);
+  const { models: ocrModelOptions, selectedModelId: selectedOcrModel, selectedModel: selectedOcrModelOption, setSelectedModelId: setOcrModelOverride, canRunOcr, compatibilityMessage } = useOcrModelSelection();
   const reviewOcrModelLabel = selectedOcrModelOption?.name ?? selectedOcrModel;
   const awsCostQuery = useQuery({
     enabled: Boolean(accessToken) && hasAwsCredentials,
@@ -1241,19 +1146,28 @@ export function BookBuilderPage() {
 
   const reviewPageQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
-    queryKey: ["builder-page-visual", reviewBookId, reviewPageNumber, "include-inactive"],
+    queryKey: ["builder-page-visual", reviewBookId, reviewPageId ? { pageId: reviewPageId } : reviewPageNumber, "include-inactive"],
     queryFn: async () => {
       if (!accessToken || !reviewBookId) {
         throw new Error("Missing access token.");
       }
 
-      return fetchBookPage(accessToken, reviewBookId, reviewPageNumber, { includeInactive: true });
+      return fetchBookPage(accessToken, reviewBookId, reviewPageNumber, { includeInactive: true, ...(reviewPageId ? { pageId: reviewPageId } : {}) });
     }
   });
+  const reviewPageIdentity = `${reviewBookId}:${reviewPageQuery.data?.page.pageId ?? reviewPageId}`;
+  const reviewPageIdentityRef = useRef(reviewPageIdentity);
+  reviewPageIdentityRef.current = reviewPageIdentity;
+  useEffect(() => {
+    const page = reviewPageQuery.data?.page;
+    if (!page || reviewPageQuery.isFetching || (reviewPageId && page.pageId !== reviewPageId)) return;
+    setReviewPageId(page.pageId);
+    setReviewPageNumber(page.pageNumber);
+  }, [reviewPageId, reviewPageQuery.data?.page, reviewPageQuery.isFetching]);
 
   const reviewAnnotationsQuery = useQuery({
-    enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
-    queryKey: ["builder-page-annotations", reviewBookId, reviewPageNumber],
+    enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode && reviewPageQuery.data?.page.pageNumber === reviewPageNumber),
+    queryKey: ["builder-page-annotations", reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.pageId],
     queryFn: async () => {
       if (!accessToken || !reviewBookId) {
         throw new Error("Missing access token.");
@@ -1275,7 +1189,7 @@ export function BookBuilderPage() {
     }
   });
   const reviewSourceImageKey = reviewPageQuery.data?.page.hasSourceImage
-    ? `${reviewBookId}:${reviewPageNumber}:${reviewPageQuery.data.page.sourceFileId ?? ""}:${reviewPageQuery.data.page.updatedAt ?? ""}`
+    ? `${reviewBookId}:${reviewPageQuery.data.page.pageId}:${reviewPageQuery.data.page.sourceFileId ?? ""}:${reviewPageQuery.data.page.updatedAt ?? ""}`
     : null;
 
   useEffect(() => {
@@ -1333,11 +1247,11 @@ export function BookBuilderPage() {
   useEffect(() => {
     const page = reviewPageQuery.data?.page;
 
-    if (!page) {
+    if (!page || reviewPageQuery.isFetching || (reviewPageId && page.pageId !== reviewPageId)) {
       return;
     }
 
-    const remoteVersion = { identity: `${reviewBookId}:${reviewPageNumber}`, updatedAt: page.updatedAt };
+    const remoteVersion = { identity: `${reviewBookId}:${page.pageId}`, updatedAt: page.updatedAt };
     const syncAction = readingDraftSyncAction(reviewDraftVersionRef.current, remoteVersion, reviewDraftDirtyRef.current);
     if (syncAction === "preserve") return;
     if (syncAction === "conflict") {
@@ -1365,7 +1279,7 @@ export function BookBuilderPage() {
     setOriginalReviewImageCrop(defaultReviewImageCrop);
     setReviewImageRotation(page.sourceImageRotation);
     setOriginalReviewImageRotation(page.sourceImageRotation);
-  }, [reviewBookId, reviewPageNumber, reviewPageQuery.data?.page, reviewPageQuery.dataUpdatedAt]);
+  }, [reviewBookId, reviewPageId, reviewPageQuery.data?.page, reviewPageQuery.dataUpdatedAt, reviewPageQuery.isFetching]);
 
   useEffect(() => {
     setReviewError(null);
@@ -1424,7 +1338,9 @@ export function BookBuilderPage() {
       accessToken,
       reviewBookId,
       reviewPageNumber,
-      `${reviewPageQuery.data?.page.sourceFileId ?? ""}:${reviewPageQuery.data?.page.updatedAt ?? ""}`
+      `${reviewPageQuery.data?.page.sourceFileId ?? ""}:${reviewPageQuery.data?.page.updatedAt ?? ""}`,
+      false,
+      reviewPageQuery.data?.page.pageId
     )
       .then((imageBlob) => {
         if (!active) {
@@ -1444,7 +1360,7 @@ export function BookBuilderPage() {
     return () => {
       active = false;
     };
-  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.sourceFileId, reviewSourceImageKey, reviewPartialSave]);
+  }, [accessToken, isReviewOnlyMode, reviewBookId, reviewPageNumber, reviewPageQuery.data?.page.pageId, reviewPageQuery.data?.page.sourceFileId, reviewSourceImageKey, reviewPartialSave]);
 
   useEffect(() => {
     let active = true;
@@ -2228,6 +2144,10 @@ export function BookBuilderPage() {
 
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canRunOcr(createOcrMode, createAdvancedLayout)) {
+      setCreateError(compatibilityMessage);
+      return;
+    }
 
     if (!accessToken || activeOcrOperationsRef.current.has("create")) {
       return;
@@ -2261,12 +2181,7 @@ export function BookBuilderPage() {
       }
 
       const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, {
-        advancedLayout: createAdvancedLayout && createOcrMode !== "LOCAL",
-        ...(createOcrMode === "VISION" || createAdvancedLayout && createOcrMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
-        ocrMode: createOcrMode,
-        ...(createOcrMode === "VISION" && resolveVisionPromptOverride(createPromptOverride)
-          ? { promptOverride: resolveVisionPromptOverride(createPromptOverride) }
-          : {})
+        ...normalizeOcrOptions(createOcrMode, createAdvancedLayout, selectedOcrModel, createPromptOverride)
       }));
       await booksQuery.refetch();
       clearCreateSelection();
@@ -2285,6 +2200,10 @@ export function BookBuilderPage() {
 
   async function handleAppendImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canRunOcr(appendOcrMode, appendAdvancedLayout)) {
+      setAppendError(compatibilityMessage);
+      return;
+    }
 
     if (!accessToken || activeOcrOperationsRef.current.has("append")) {
       return;
@@ -2374,12 +2293,7 @@ export function BookBuilderPage() {
           try {
             const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
               ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
-              advancedLayout: appendAdvancedLayout && appendOcrMode !== "LOCAL",
-              ...(appendOcrMode === "VISION" || appendAdvancedLayout && appendOcrMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
-              ocrMode: appendOcrMode,
-              ...(appendOcrMode === "VISION" && resolveVisionPromptOverride(appendPromptOverride)
-                ? { promptOverride: resolveVisionPromptOverride(appendPromptOverride) }
-                : {}),
+              ...normalizeOcrOptions(appendOcrMode, appendAdvancedLayout, selectedOcrModel, appendPromptOverride),
               progressId
             });
 
@@ -2500,6 +2414,7 @@ export function BookBuilderPage() {
       clearAppendSelection();
       if (reviewBookId === selectedBookId) {
         setReviewPageNumber(targetPageNumber);
+        setReviewPageId("");
       }
       completionSound = skippedFailedOcr ? "error" : "success";
       navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
@@ -2518,7 +2433,8 @@ export function BookBuilderPage() {
   }
 
   async function persistReviewImageEdits(expectedVersion: string) {
-    if (!accessToken || !reviewBookId || !reviewImageSourceBlob) {
+    const pageId = reviewPageQuery.data?.page.pageId;
+    if (!accessToken || !reviewBookId || !reviewImageSourceBlob || !pageId || reviewImageSourceBlob.key !== reviewSourceImageKey || reviewDraftVersionRef.current?.identity !== reviewPageIdentity) {
       throw new Error("La imagen original no está disponible para guardar los ajustes.");
     }
 
@@ -2532,7 +2448,7 @@ export function BookBuilderPage() {
     const formData = new FormData();
     formData.append("image", editedImageBlob, buildReviewImageFileName(reviewPageNumber, outputMimeType));
     formData.append("expectedUpdatedAt", expectedVersion);
-    return uploadBookPageImage(accessToken, reviewBookId, reviewPageNumber, formData);
+    return uploadBookPageImage(accessToken, reviewBookId, reviewPageNumber, formData, pageId);
   }
 
   async function preservePartialReviewSave(message: string) {
@@ -2570,7 +2486,7 @@ export function BookBuilderPage() {
   async function handleSaveOcr(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!accessToken || !reviewBookId || reviewBlockLoadError || reviewPartialSave || !visualDocument || isSavingReview || isReviewCropMode || isVisualEditorBusy) {
+    if (!accessToken || !reviewBookId || reviewBlockLoadError || reviewPartialSave || !visualDocument || isSavingReview || isReviewCropMode || isVisualEditorBusy || !reviewPageQuery.data?.page.pageId || reviewPageQuery.isFetching || reviewDraftVersionRef.current?.identity !== reviewPageIdentity) {
       return;
     }
 
@@ -2607,11 +2523,11 @@ export function BookBuilderPage() {
         const result = await persistReviewImageEdits(expectedUpdatedAt);
         imageSaved = true;
         expectedUpdatedAt = result.updatedAt;
-        reviewDraftVersionRef.current = { identity: `${reviewBookId}:${reviewPageNumber}`, updatedAt: expectedUpdatedAt };
+        reviewDraftVersionRef.current = { identity: reviewPageIdentity, updatedAt: expectedUpdatedAt };
         setVisualHistory({ past: [], present: documentForSave, future: [] });
       }
 
-      const result = await saveVisualPageDocument(accessToken, reviewBookId, reviewPageNumber, { expectedUpdatedAt, document: documentForSave });
+      const result = await saveVisualPageDocument(accessToken, reviewBookId, reviewPageNumber, { expectedUpdatedAt, document: documentForSave }, reviewPageQuery.data.page.pageId);
       expectedUpdatedAt = result.updatedAt;
       draftSaved = true;
 
@@ -2624,7 +2540,7 @@ export function BookBuilderPage() {
         setOriginalReviewImageCrop(defaultReviewImageCrop);
         setReviewCropDraft(reviewCropToRect(defaultReviewImageCrop));
       }
-      reviewDraftVersionRef.current = { identity: `${reviewBookId}:${reviewPageNumber}`, updatedAt: expectedUpdatedAt };
+      reviewDraftVersionRef.current = { identity: reviewPageIdentity, updatedAt: expectedUpdatedAt };
       reviewDraftDirtyRef.current = false;
       setReviewMessage(hasImageChanges ? "La imagen ajustada y el documento visual se guardaron correctamente." : "El documento visual se guardo correctamente.");
 
@@ -2661,13 +2577,16 @@ export function BookBuilderPage() {
 
   async function handleRerunOcr(modeOverride?: ImageOcrMode, promptOverride?: string) {
     // OCR reads the source image, so an uneditable text/metadata mismatch must not block recovery.
-    if (!accessToken || !reviewBookId || reviewPartialSave || reviewDraftConflict || activeOcrOperationsRef.current.has("review")) {
+    if (!accessToken || !reviewBookId || reviewPartialSave || reviewDraftConflict || activeOcrOperationsRef.current.has("review") || !reviewPageQuery.data?.page.pageId || reviewPageQuery.isFetching || reviewDraftVersionRef.current?.identity !== reviewPageIdentity) {
       return;
     }
 
     const nextMode = modeOverride ?? reviewOcrMode;
+    if (!canRunOcr(nextMode, reviewAdvancedLayout)) {
+      setReviewError(compatibilityMessage);
+      return;
+    }
     const hasPendingImageEdits = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
-    const normalizedPromptOverride = nextMode === "VISION" && promptOverride ? resolveVisionPromptOverride(promptOverride) : undefined;
 
     if (!confirmReviewTextReplacement("volver a ejecutar el OCR", true)) {
       return;
@@ -2689,7 +2608,7 @@ export function BookBuilderPage() {
         if (!expectedUpdatedAt) throw new Error("La version de la pagina no esta disponible. Vuelve a cargar antes de guardar.");
         const result = await persistReviewImageEdits(expectedUpdatedAt);
         imageSaved = true;
-        reviewDraftVersionRef.current = { identity: `${reviewBookId}:${reviewPageNumber}`, updatedAt: result.updatedAt };
+        reviewDraftVersionRef.current = { identity: reviewPageIdentity, updatedAt: result.updatedAt };
         if (visualDocument) setVisualHistory({ past: [], present: clearVisualGeometry(visualDocument), future: [] });
       }
 
@@ -2699,21 +2618,40 @@ export function BookBuilderPage() {
       if (!expectedUpdatedAt) throw new Error("La version de la pagina no esta disponible. Vuelve a cargar antes de ejecutar el OCR.");
       await runOcrRequestWithRetry("review", () => rerunOcrPage(accessToken, reviewBookId, reviewPageNumber, {
         expectedUpdatedAt,
-        advancedLayout: reviewAdvancedLayout && nextMode !== "LOCAL",
-        ...(nextMode === "VISION" || reviewAdvancedLayout && nextMode === "TEXTRACT" ? { ocrModel: selectedOcrModel } : {}),
-        ocrMode: nextMode,
-        ...(normalizedPromptOverride ? { promptOverride: normalizedPromptOverride } : {})
-      }));
+        ...normalizeOcrOptions(nextMode, reviewAdvancedLayout, selectedOcrModel, promptOverride ?? reviewPromptOverride)
+      }, reviewPageQuery.data.page.pageId));
       ocrSaved = true;
       setReviewPromptOverride(defaultVisionOcrEditablePrompt);
       setIsReviewPromptEditorOpen(false);
       const rerunOcrMessage = reviewPageAnnotationCount > 0
         ? "El OCR de la página se volvió a reconocer y se intentó conservar las anotaciones existentes."
         : "El OCR de la página se volvió a reconocer correctamente.";
+      if (reviewPageIdentityRef.current === reviewPageIdentity) reviewDraftVersionRef.current = null;
+      const [refreshed] = await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch(),
+        ...["book-pages", "book", "book-page", "book-page-image", "reader-annotations", "reader-navigation", "reader-readable-neighbors", "progress", "ai-requests", "section-summary"].map((key) =>
+          queryClient.invalidateQueries({ predicate: (query) => query.queryKey[0] === key && query.queryKey[1] === reviewBookId }))]);
+      if (!refreshed.data || refreshed.error) throw refreshed.error ?? new Error("No se pudo recargar la pagina tras el OCR.");
+      const page = refreshed.data.page;
+      // Only replace the page confirmed for OCR, never a draft opened while it was running.
+      const currentVersion = reviewDraftVersionRef.current as ReadingDraftVersion | null;
+      if (reviewPageIdentityRef.current === reviewPageIdentity && `${reviewBookId}:${page.pageId}` === reviewPageIdentity && (!currentVersion || currentVersion.identity === reviewPageIdentity)) {
+        const document = visualDocumentFromPage(page);
+        setVisualHistory({ past: [], present: document, future: [] });
+        setOriginalVisualDocument(JSON.stringify(document));
+        reviewDraftVersionRef.current = { identity: reviewPageIdentity, updatedAt: page.updatedAt };
+        reviewDraftDirtyRef.current = false;
+        setReviewDraftConflict(false);
+        setReviewBlockLoadError(null);
+        setSelectedElementKey(null);
+        setIsReviewCropMode(false);
+        setReviewImageCrop(defaultReviewImageCrop);
+        setReviewCropDraft(reviewCropToRect(defaultReviewImageCrop));
+        setOriginalReviewImageCrop(defaultReviewImageCrop);
+        setReviewImageRotation(page.sourceImageRotation);
+        setOriginalReviewImageRotation(page.sourceImageRotation);
+      }
       setReviewMessage(rerunOcrMessage);
       showReviewOcrToast(rerunOcrMessage);
-      reviewDraftVersionRef.current = null;
-      await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
       playCompletionSound("success");
     } catch (error) {
       const rerunOcrErrorMessage = error instanceof Error ? error.message : "No se pudo volver a reconocer el OCR de la página.";
@@ -2728,7 +2666,7 @@ export function BookBuilderPage() {
   }
 
   async function handleDeleteReviewPage() {
-    if (!accessToken || !reviewBookId || !selectedReviewBook || isDeletingReviewPage || isSavingReview) {
+    if (!accessToken || !reviewBookId || !reviewPageQuery.data?.page.pageId || reviewPageQuery.isFetching || !selectedReviewBook || isDeletingReviewPage || isSavingReview) {
       return;
     }
 
@@ -2745,7 +2683,7 @@ export function BookBuilderPage() {
     setIsFloatingReviewHeaderExpanded(false);
 
     try {
-      const response = await deleteBookPage(accessToken, reviewBookId, reviewPageNumber);
+      const response = await deleteBookPage(accessToken, reviewBookId, reviewPageNumber, reviewPageQuery.data.page.pageId);
       await Promise.all([booksQuery.refetch(), reviewNavigationQuery.refetch()]);
 
       if (response.nextPageNumber === null) {
@@ -2763,13 +2701,14 @@ export function BookBuilderPage() {
       }
 
       setReviewPageNumber(response.nextPageNumber);
+      setReviewPageId("");
       setReviewPageJumpValue(String(response.nextPageNumber));
       setReviewMessage(`La página ${response.deletedPageNumber} se borró correctamente.`);
 
       if (response.nextPageNumber === reviewPageNumber) {
         reviewDraftVersionRef.current = null;
-        await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch()]);
       }
+      await queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes(reviewBookId) });
     } catch (error) {
       setReviewError(error instanceof Error ? error.message : "No se pudo borrar la página.");
     } finally {
@@ -2847,6 +2786,7 @@ export function BookBuilderPage() {
       return;
     }
     setReviewPageNumber(nextPage);
+    if (nextPage !== reviewPageNumber) setReviewPageId("");
     setReviewMessage(null);
     setReviewError(null);
     setIsReviewIndexVisible(false);
@@ -2956,7 +2896,7 @@ export function BookBuilderPage() {
     }
 
     if (selectedReviewBook) {
-      navigate(`/books/${selectedReviewBook.bookId}?page=${reviewPageNumber}`);
+      navigate(`/books/${selectedReviewBook.bookId}?page=${reviewPageNumber}&pageId=${encodeURIComponent(reviewPageQuery.data?.page.pageId ?? reviewPageId)}`);
       return;
     }
 
@@ -3004,6 +2944,15 @@ export function BookBuilderPage() {
   const isReviewDirty = visualDocumentDirty || hasPendingReviewImageEdits || reviewPartialSave;
   const hasPendingReviewCrop = isReviewCropMode && !equalReviewImageCrop(reviewRectToCrop(reviewCropDraft), reviewImageCrop);
   const confirmDiscardReviewChanges = useUnsavedChanges(isReviewOnlyMode && (isReviewDirty || hasPendingReviewCrop || isVisualEditorBusy));
+  useEffect(() => {
+    const page = reviewPageQuery.data?.page;
+    if (!isReviewOnlyMode || !page || reviewPageQuery.isFetching || isReviewDirty || hasPendingReviewCrop || isVisualEditorBusy || location.pathname !== "/builder") return;
+    const params = new URLSearchParams(location.search);
+    params.set("reviewPage", String(page.pageNumber));
+    params.set("reviewPageId", page.pageId);
+    const search = `?${params}`;
+    if (search !== location.search) navigate({ pathname: location.pathname, search, hash: location.hash }, { replace: true, state: location.state });
+  }, [isReviewOnlyMode, reviewPageQuery.data?.page, reviewPageQuery.isFetching, isReviewDirty, hasPendingReviewCrop, isVisualEditorBusy, location.pathname, location.search, location.hash, location.state, navigate]);
   const reviewEditorKindLabel = selectedReviewBook?.sourceType === "EPUB" ? "texto" : "OCR";
   const reviewPageBookmarkCount = reviewAnnotationsQuery.data?.bookmarks.length ?? 0;
   const reviewPageHighlightCount = reviewAnnotationsQuery.data?.highlights.length ?? 0;
@@ -3297,10 +3246,11 @@ export function BookBuilderPage() {
                         ) : null}
                       </div>
                       <AdvancedLayoutCheckbox value={createAdvancedLayout} onChange={setCreateAdvancedLayout} mode={createOcrMode} disabled={isCreating} modelLabel={reviewOcrModelLabel} />
-                      {(createOcrMode === "VISION" || createAdvancedLayout && createOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
+                      {usesOcrModel(createOcrMode, createAdvancedLayout) && ocrModelOptions.length > 0 ? (
                         <OcrModelSelect
                           disabled={isCreating}
                           models={ocrModelOptions}
+                          compatibilityMessage={compatibilityMessage}
                           onChange={setOcrModelOverride}
                           value={selectedOcrModel}
                         />
@@ -3310,7 +3260,7 @@ export function BookBuilderPage() {
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
                         </div>
                       ) : null}
-                      {createOcrMode === "VISION" && isCreatePromptEditorOpen ? (
+                      {(createOcrMode === "VISION" && isCreatePromptEditorOpen || createOcrMode === "TEXTRACT" && createAdvancedLayout) ? (
                         <OcrPromptEditor
                           disabled={isCreating}
                           helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para crear este libro. Si lo restableces, vuelve al mensaje user por defecto."
@@ -3383,7 +3333,7 @@ export function BookBuilderPage() {
                     <p aria-live="polite" className="helper-text ocr-waiting-text">{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining, ocrRetryState.reason)}</p>
                   ) : null}
 
-                  <button className="primary-button" disabled={isCreating} type="submit">
+                  <button className="primary-button" disabled={isCreating || !canRunOcr(createOcrMode, createAdvancedLayout)} type="submit">
                     {isCreating ? "Procesando OCR..." : "Crear libro desde imágenes"}
                   </button>
                 </form>
@@ -3615,10 +3565,11 @@ export function BookBuilderPage() {
                         ) : null}
                       </div>
                       <AdvancedLayoutCheckbox value={appendAdvancedLayout} onChange={setAppendAdvancedLayout} mode={appendOcrMode} disabled={isAppending} modelLabel={reviewOcrModelLabel} />
-                      {(appendOcrMode === "VISION" || appendAdvancedLayout && appendOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
+                      {usesOcrModel(appendOcrMode, appendAdvancedLayout) && ocrModelOptions.length > 0 ? (
                         <OcrModelSelect
                           disabled={isAppending}
                           models={ocrModelOptions}
+                          compatibilityMessage={compatibilityMessage}
                           onChange={setOcrModelOverride}
                           value={selectedOcrModel}
                         />
@@ -3628,7 +3579,7 @@ export function BookBuilderPage() {
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
                         </div>
                       ) : null}
-                      {appendOcrMode === "VISION" && isAppendPromptEditorOpen ? (
+                      {(appendOcrMode === "VISION" && isAppendPromptEditorOpen || appendOcrMode === "TEXTRACT" && appendAdvancedLayout) ? (
                         <OcrPromptEditor
                           disabled={isAppending}
                           helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para añadir estas páginas. Si lo restableces, vuelve al mensaje user por defecto."
@@ -3656,7 +3607,7 @@ export function BookBuilderPage() {
                     <AiMissingBanner error={new Error(appendImportProgress.errorMessage)} />
                   ) : null}
 
-                  <button className="secondary-button" disabled={isAppending} type="submit">
+                  <button className="secondary-button" disabled={isAppending || !canRunOcr(appendOcrMode, appendAdvancedLayout)} type="submit">
                     {isAppending ? "Procesando OCR..." : appendResumeState?.completedFiles ? "Continuar páginas pendientes" : "Añadir páginas"}
                   </button>
                 </form>
@@ -3852,8 +3803,8 @@ export function BookBuilderPage() {
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
 
             <form id="ocr-review-form" onSubmit={handleSaveOcr} ref={reviewSwipeSurfaceRef}>
-              {visualDocument && visualHistory && savedVisualDocument && reviewPageQuery.data?.page && reviewDraftVersionRef.current?.identity === `${reviewBookId}:${reviewPageNumber}` ? <VisualPageEditor
-                key={`${reviewBookId}:${reviewPageNumber}`}
+              {visualDocument && visualHistory && savedVisualDocument && reviewPageQuery.data?.page && reviewDraftVersionRef.current?.identity === reviewPageIdentity ? <VisualPageEditor
+                key={reviewPageIdentity}
                 doc={visualDocument} page={reviewPageQuery.data.page}
                 savedDocument={savedVisualDocument}
                 selectedId={selectedElementKey} onSelect={setSelectedElementKey}
@@ -4329,10 +4280,11 @@ export function BookBuilderPage() {
                     </select>
                   </label>
                   <AdvancedLayoutCheckbox value={reviewAdvancedLayout} onChange={setReviewAdvancedLayout} mode={reviewOcrMode} disabled={isSavingReview || !reviewBookId || isReviewCropMode} modelLabel={reviewOcrModelLabel} />
-                  {(reviewOcrMode === "VISION" || reviewAdvancedLayout && reviewOcrMode === "TEXTRACT") && ocrModelOptions.length > 0 ? (
+                  {usesOcrModel(reviewOcrMode, reviewAdvancedLayout) && ocrModelOptions.length > 0 ? (
                     <OcrModelSelect
                       disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                       models={ocrModelOptions}
+                      compatibilityMessage={compatibilityMessage}
                       onChange={setOcrModelOverride}
                       value={selectedOcrModel}
                     />
@@ -4342,7 +4294,7 @@ export function BookBuilderPage() {
                       <div className="review-ocr-option-row">
                         <button
                           className="review-ocr-option active"
-                          disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                          disabled={isSavingReview || !reviewBookId || isReviewCropMode || !canRunOcr("TEXTRACT", reviewAdvancedLayout)}
                           onClick={() => void handleRerunOcr("TEXTRACT")}
                           type="button"
                         >
@@ -4358,7 +4310,7 @@ export function BookBuilderPage() {
                       <div className="review-ocr-option-row">
                         <button
                           className="review-ocr-option active"
-                          disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                          disabled={isSavingReview || !reviewBookId || isReviewCropMode || !canRunOcr("VISION", reviewAdvancedLayout)}
                           onClick={() => void handleRerunOcr("VISION", reviewPromptOverride)}
                           type="button"
                         >
@@ -4380,7 +4332,7 @@ export function BookBuilderPage() {
                         </button>
                       </div>
                     ) : null}
-                    {reviewOcrMode === "VISION" && isReviewPromptEditorOpen ? (
+                    {(reviewOcrMode === "VISION" && isReviewPromptEditorOpen || reviewOcrMode === "TEXTRACT" && reviewAdvancedLayout) ? (
                       <OcrPromptEditor
                         disabled={isSavingReview || !reviewBookId || isReviewCropMode}
                         helperText="El mensaje system del OCR con IA es fijo. Este campo solo modifica el mensaje user para volver a reconocer esta página. Si lo restableces, vuelve al mensaje user por defecto."

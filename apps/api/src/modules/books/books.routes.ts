@@ -3,13 +3,14 @@ import { extname } from "node:path";
 
 import type { MultipartFile } from "@fastify/multipart";
 import { load } from "cheerio";
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest, RouteHandlerMethod } from "fastify";
 import oracledb from "oracledb";
+import sharp from "sharp";
 import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { appEnv } from "../../config/env.js";
-import { requireBookRole } from "../../services/book-access.js";
+import { assertBookRole, requireBookRole } from "../../services/book-access.js";
 import { calculateParagraphReadingMetrics } from "../../services/paragraph-metrics.js";
 import { recordBookView, recordUserActivity } from "../../services/user-activity.js";
 import { getEffectiveUserAiCredentials } from "../../services/user-ai-credentials.js";
@@ -22,6 +23,8 @@ import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, hasValidReadingBlockMarkers, normalizeWhitespace } from "./rich-content.js";
 import { matchParagraphsWithExplicitIds } from "./paragraph-ids.js";
+import { listGalleryPages, pageOrderSchema, reorderGalleryPages, resolveGalleryPage } from "./page-gallery.js";
+import { registerGalleryOcrJobs } from "./gallery-ocr-jobs.js";
 import { parsePageStyle } from "./page-style.js";
 import { annotatePageElementHtml, geometrySchema, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml, type ParagraphElementMetadata } from "./page-elements.js";
 import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualLayoutNode, type VisualPageDocument } from "./visual-document.js";
@@ -3876,6 +3879,31 @@ function detectSourceType(fileName: string, mimeType: string, requestedSourceTyp
 }
 
 export const registerBookRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/:bookId/pages", { preHandler: [authenticateRequest, requireBookRole("VIEWER")] }, async (request, reply) => {
+    const { bookId } = bookParamsSchema.parse(request.params);
+    const connection = await getConnection();
+    try {
+      const canEdit = request.bookAccess?.role === "OWNER" || request.bookAccess?.role === "EDITOR";
+      return reply.send(await listGalleryPages(connection, bookId, canEdit));
+    } finally { await connection.close(); }
+  });
+
+  let reorderHandler: RouteHandlerMethod;
+  app.put("/:bookId/pages/order", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, reorderHandler = async (request, reply) => {
+    const { bookId } = bookParamsSchema.parse(request.params);
+    const parsed = pageOrderSchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ message: parsed.error.message });
+    const connection = await getConnection();
+    try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId });
+      await reorderGalleryPages(connection, bookId, parsed.data.expectedPageIds, parsed.data.pageIds);
+      const gallery = await listGalleryPages(connection, bookId, true);
+      await connection.commit();
+      return reply.send(gallery);
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { await connection.close(); }
+  });
+  app.post("/:bookId/pages/reorder", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, reorderHandler);
   app.get("/ai-requests/progress/:progressId", { preHandler: authenticateRequest }, async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
@@ -5234,6 +5262,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "Solo puedes borrar páginas de libros EPUB, PDF o creados desde imágenes." });
       }
 
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
         return reply.status(404).send({ message: "Page not found." });
@@ -5424,6 +5453,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
       await connection.commit();
 
       return reply.send({
@@ -5433,6 +5463,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           totalPages: updatedTotalPages,
           totalParagraphs: updatedTotalParagraphs
         },
+        deletedPageId: page.pageId,
         deletedPageNumber: params.pageNumber,
         nextPageNumber
       });
@@ -5555,6 +5586,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
+      if ((request.query as { pageId?: string })?.pageId) {
+        await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+        await resolveGalleryPage(connection, params, request.query);
+      }
       const pageRecord = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!pageRecord) {
         return reply.status(404).send({ message: "Page not found." });
@@ -5565,8 +5600,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         bookTitle: String(book.title ?? "Libro"),
         userId: request.currentUser.userId
       });
-      await connection.commit();
-
       const allParagraphs = await listPageParagraphs(connection, params.bookId, params.pageNumber);
       const paragraphs = includeInactive ? allParagraphs : allParagraphs.filter((paragraph) => paragraph.active !== false);
       const hasInactive = allParagraphs.some((paragraph) => paragraph.active === false);
@@ -5595,11 +5628,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         wordsBeforePage: number;
       }>;
 
+      await connection.commit();
       return reply.send({
         book,
         hasNextPage: params.pageNumber < Number(book.totalPages ?? 0),
         hasPreviousPage: params.pageNumber > 1,
         page: {
+          pageId: pageRecord.pageId,
           editedText: rendered?.editedText ?? (hasInactive && !includeInactive ? projectedText : pageRecord.editedText),
           hasSourceImage: Number(pageRecord.hasSourceImage ?? 0) > 0,
           htmlContent: rendered?.htmlContent ?? (includeInactive ? annotatePageElementHtml(pageRecord.htmlContent, allParagraphs)
@@ -5632,6 +5667,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
     try {
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) return reply.status(404).send({ message: "Page not found." });
@@ -5704,6 +5740,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
     try {
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) return reply.status(404).send({ message: "Page not found." });
@@ -5793,6 +5830,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
@@ -5851,7 +5889,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = pageParamsSchema.parse(request.params);
-    const query = z.object({ original: z.enum(["true", "false"]).optional() }).parse(request.query);
+    const query = z.object({ original: z.enum(["true", "false"]).optional(), thumbnail: z.enum(["true", "false"]).optional(), pageId: z.string().uuid().optional() }).parse(request.query);
     const connection = await getConnection();
 
     try {
@@ -5859,6 +5897,11 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         `
           SELECT
             bf.mime_type AS "mimeType",
+            bf.checksum_sha256 AS "checksum",
+            bf.file_id AS "fileId",
+            bp.page_id AS "pageId",
+            bp.source_image_rotation AS "sourceImageRotation",
+            TO_CHAR(bp.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6') AS "updatedAt",
             bf.content_blob AS "contentBlob"
           FROM books b
           JOIN book_pages bp
@@ -5872,11 +5915,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             ON bf.file_id = COALESCE(original.file_id, bp.source_file_id)
             AND bf.book_id = bp.book_id
           WHERE b.book_id = :bookId
-            AND bp.page_number = :pageNumber
+            AND ((:pageId IS NOT NULL AND bp.page_id = :pageId) OR (:pageId IS NULL AND bp.page_number = :pageNumber))
         `,
         {
           bookId: params.bookId,
           original: query.original === "true" ? 1 : 0,
+          pageId: query.pageId ?? null,
           pageNumber: params.pageNumber
         },
         {
@@ -5886,9 +5930,29 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
-      const [image] = (result.rows ?? []) as Array<{ contentBlob?: Buffer; mimeType?: string }>;
+      const [image] = (result.rows ?? []) as Array<{ contentBlob?: Buffer; mimeType?: string; checksum?: string | null;
+        fileId: string; pageId: string; sourceImageRotation: number | null; updatedAt: string }>;
       if (!image?.contentBlob || !image.mimeType) {
         return reply.status(404).send({ message: "Source image not found." });
+      }
+
+      if (query.thumbnail === "true") {
+        if (!image.mimeType.startsWith("image/")) return reply.status(409).send({ message: "Thumbnails require a source image." });
+        const rotation = Number(image.sourceImageRotation ?? 0);
+        const checksum = image.checksum ?? createHash("sha256").update(image.contentBlob).digest("hex");
+        const etag = `"${createHash("sha256").update(JSON.stringify([
+          "thumbnail-webp-v1-360x480-q75", image.fileId, image.pageId, checksum, rotation, image.updatedAt,
+          query.original === "true"
+        ])).digest("hex")}"`;
+        reply.header("ETag", etag).header("Cache-Control", "private, no-cache");
+        const matches = request.headers?.["if-none-match"]?.split(",").some((value) => {
+          const tag = value.trim(); return tag === "*" || tag.replace(/^W\//u, "") === etag;
+        });
+        if (matches) return reply.status(304).send();
+        const thumbnail = await sharp(image.contentBlob).autoOrient().rotate(rotation)
+          .resize({ width: 360, height: 480, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 75 }).toBuffer();
+        return reply.header("Content-Type", "image/webp").send(thumbnail);
       }
 
       return reply
@@ -5993,6 +6057,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         "SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE",
         { bookId: params.bookId }
       );
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute(
         "SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE",
         { bookId: params.bookId, pageNumber: params.pageNumber }
@@ -6136,6 +6201,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
@@ -6194,7 +6261,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+      await connection.execute("UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
       const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
       await connection.commit();
 
       return reply.send({ updatedAt: updatedPage!.updatedAt });
@@ -6206,7 +6276,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/:bookId/pages/:pageNumber/rerun-ocr", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, async (request, reply) => {
+  let rerunOcrHandler: RouteHandlerMethod;
+  app.post("/:bookId/pages/:pageNumber/rerun-ocr", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, rerunOcrHandler = async (request, reply) => {
     if (!request.currentUser) {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
@@ -6226,6 +6297,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
       await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
       const page = await findBookPage(connection, params.bookId, params.pageNumber);
       if (!page) {
@@ -6300,6 +6373,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
 
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
       let document: VisualPageDocument | undefined;
       if (payload.advancedLayout) {
         if (!ocrResult.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
@@ -6391,7 +6465,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         userId: request.currentUser.userId
       });
 
+      await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+      await connection.execute("UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
       const updatedPage = await findBookPage(connection, params.bookId, params.pageNumber);
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
       await connection.commit();
 
       return reply.send({ updatedAt: updatedPage!.updatedAt });
@@ -6400,6 +6477,25 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       throw error;
     } finally {
       await connection.close();
+    }
+  });
+
+  registerGalleryOcrJobs(app, {
+    getConnection, authenticate: authenticateRequest, editor: requireBookRole("EDITOR"),
+    assertEditor: (connection, bookId, userId) => assertBookRole(connection, bookId, userId, "EDITOR"),
+    runPage: async (bookId, userId, page, options) => {
+      let statusCode = 200;
+      let body: { message?: string } = {};
+      // Reuse the exact single-page save path, including locks, version checks and annotation remapping.
+      const response = {
+        status(code: number) { statusCode = code; return this; },
+        send(value: { message?: string }) { body = value; return this; }
+      };
+      await rerunOcrHandler.call(app, {
+        params: { bookId, pageNumber: 1 }, query: { pageId: page.pageId },
+        body: { ...options, expectedUpdatedAt: page.expectedUpdatedAt }, currentUser: { userId }
+      } as FastifyRequest, response as unknown as FastifyReply);
+      if (statusCode >= 400) throw new Error(body.message ?? `OCR failed (${statusCode}).`);
     }
   });
 

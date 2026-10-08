@@ -92,6 +92,7 @@ function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: 
     return { rows: [] };
   }, commit: async () => { events.push("commit"); }, rollback: async () => { events.push("rollback"); }, close: async () => {} };
   const dependencies = {
+    assertBookRole: async () => {},
     pageParamsSchema: { parse: (value: unknown) => value }, rerunOcrPageSchema: { parse: (value: unknown) => value },
     getConnection: async () => connection,
     findAccessibleBook: async () => options.inaccessible ? null : ({ sourceType: options.sourceType ?? "IMAGES", title: "Ef\u00edmera", authorName: "Laura Vil\u00e1n", languageCode: "es" }),

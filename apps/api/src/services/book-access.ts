@@ -31,9 +31,10 @@ function rowToRole(row: { owner_user_id: string; share_role: string | null }): B
 
 export async function resolveBookAccess(
   bookId: string,
-  userId: string
+  userId: string,
+  existingConnection?: Awaited<ReturnType<typeof getConnection>>
 ): Promise<BookAccess | null> {
-  const connection = await getConnection();
+  const connection = existingConnection ?? await getConnection();
   try {
     const result = await connection.execute(
       `SELECT b.owner_user_id      AS "ownerUserId",
@@ -74,7 +75,20 @@ export async function resolveBookAccess(
       role: rowToRole({ owner_user_id: row.ownerUserId, share_role: row.shareRole })
     };
   } finally {
-    await connection.close();
+    if (!existingConnection) await connection.close();
+  }
+}
+
+export async function assertBookRole(
+  connection: Awaited<ReturnType<typeof getConnection>>,
+  bookId: string,
+  userId: string,
+  minRole: BookRole
+): Promise<void> {
+  const access = await resolveBookAccess(bookId, userId, connection);
+  if (!access) throw Object.assign(new Error("Book access no longer available."), { statusCode: 404 });
+  if (!roleAtLeast(access.role, minRole)) {
+    throw Object.assign(new Error(`This action requires current ${minRole} access.`), { statusCode: 403 });
   }
 }
 

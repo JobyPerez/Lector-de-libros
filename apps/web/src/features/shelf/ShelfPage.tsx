@@ -412,7 +412,7 @@ export function ShelfPage() {
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
   const canEditBookMetadata = !editingBook?.currentUserRole || editingBook.currentUserRole === "OWNER";
   const requestedScope = searchParams.get("scope");
-  const scope: BookScope = requestedScope === "shared" || requestedScope === "all" ? requestedScope : "mine";
+  const scope: BookScope = requestedScope === "mine" || requestedScope === "shared" ? requestedScope : "all";
 
   const sharedBooksQuery = useQuery({
     enabled: Boolean(accessToken),
@@ -473,7 +473,7 @@ export function ShelfPage() {
     // que el efecto de restauración fuerce de vuelta a "Todos".
     clearShelfAnchorFromSession();
     const nextParams = new URLSearchParams(searchParams);
-    if (nextScope === "mine") {
+    if (nextScope === "all") {
       nextParams.delete("scope");
     } else {
       nextParams.set("scope", nextScope);
@@ -665,7 +665,7 @@ export function ShelfPage() {
       const isAnchorInScope = booksInScope.some((book) => book.bookId === anchorBookId);
       if (isReturnNavigation && !isAnchorInScope && effectiveScope !== "all") {
         const nextParams = new URLSearchParams(location.search);
-        nextParams.set("scope", "all");
+        nextParams.delete("scope");
         const nextSearch = nextParams.toString();
         navigate(
           {
@@ -1363,8 +1363,17 @@ export function ShelfPage() {
         </div>
 
         <div className="shelf-toolbar">
-          {hasSharedBooks || sharedBooksQuery.isLoading || scope !== "mine" ? (
+          {hasSharedBooks || sharedBooksQuery.isLoading || scope !== "all" ? (
             <div className="shelf-scope-tabs" role="tablist">
+              <button
+                aria-selected={effectiveScope === "all"}
+                className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
+                onClick={() => selectScope("all")}
+                role="tab"
+                type="button"
+              >
+                Todos
+              </button>
               <button
                 aria-selected={effectiveScope === "mine"}
                 className={["shelf-scope-tab", effectiveScope === "mine" ? "is-active" : ""].filter(Boolean).join(" ")}
@@ -1382,15 +1391,6 @@ export function ShelfPage() {
                 type="button"
               >
                 Compartidos conmigo
-              </button>
-              <button
-                aria-selected={effectiveScope === "all"}
-                className={["shelf-scope-tab", effectiveScope === "all" ? "is-active" : ""].filter(Boolean).join(" ")}
-                onClick={() => selectScope("all")}
-                role="tab"
-                type="button"
-              >
-                Todos
               </button>
             </div>
           ) : <div />}
@@ -1489,7 +1489,7 @@ export function ShelfPage() {
                 <h3 className="shelf-section-title">{section.label}</h3>
                 <span className="shelf-section-count">{section.books.length}</span>
               </div>
-              <div className="shelf-grid" data-compact-row={section.books.length > 0 && section.books.length < 3 ? "true" : undefined}>
+              <div className="shelf-grid">
                 {section.books.map((book) => renderBookCard(book))}
               </div>
             </section>
