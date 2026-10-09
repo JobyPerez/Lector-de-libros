@@ -21,6 +21,7 @@ import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry
 import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
 import { extractEpubCover } from "./epub-import.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
+import type { OcrMarginHints } from "./ocr-margins.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, hasValidReadingBlockMarkers, normalizeWhitespace } from "./rich-content.js";
 import { matchParagraphsWithExplicitIds } from "./paragraph-ids.js";
 import { listGalleryPages, pageOrderSchema, reorderGalleryPages, resolveGalleryPage } from "./page-gallery.js";
@@ -66,14 +67,14 @@ const imageBookFieldsSchema = z.object({
   synopsis: z.string().trim().max(5000).optional(),
   languageCode: z.enum(supportedBookLanguageCodes).default("es"),
   ocrModel: customOcrModelSchema.optional(),
-  ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
+  ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
   promptOverride: ocrPromptOverrideSchema
 });
 
 const importImagesFieldsSchema = z.object({
   advancedLayout: booleanFormFieldSchema.default(false),
   ocrModel: customOcrModelSchema.optional(),
-  ocrMode: z.enum(supportedImageOcrModes).default("AUTO"),
+  ocrMode: z.enum(supportedImageOcrModes).default("TEXTRACT"),
   promptOverride: ocrPromptOverrideSchema,
   skipOcr: booleanFormFieldSchema.default(false)
 });
@@ -1991,7 +1992,8 @@ async function ocrImageFiles(
     waitMessage: string;
     waitReason: OcrWaitReason;
   }) => void,
-  advancedLayout = false
+  advancedLayout = false,
+  marginHints?: OcrMarginHints
 ): Promise<ProcessedImagePage[]> {
   const pages: ProcessedImagePage[] = [];
 
@@ -2012,6 +2014,7 @@ async function ocrImageFiles(
           advancedLayout,
           awsCredentials,
           language,
+          ...(marginHints ? { marginHints } : {}),
           ...(model ? { model } : {}),
           ocrMode,
           ...(opencodeApiKey ? { opencodeApiKey } : {}),
@@ -4935,6 +4938,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         region: aiCredentials.awsRegion,
         secretAccessKey: aiCredentials.awsSecretAccessKey
       };
+      // New images have no stored page to exclude; page zero includes all existing pages.
+      const marginHints = payload.skipOcr ? undefined
+        : await collectBookOcrMarginHints(connection, params.bookId, 0, existingBook.title);
 
       if (progressId) {
         importImagesCancellationRequests.delete(progressId);
@@ -5048,7 +5054,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 userId: currentUser.userId
               });
             },
-            payload.advancedLayout
+            payload.advancedLayout,
+            marginHints
           );
 
         const processedPage = processedPages[0];

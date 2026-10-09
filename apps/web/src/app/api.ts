@@ -545,8 +545,10 @@ export type UpdateProfilePayload = {
   themePalette?: ThemePalette;
 };
 
-export type AiSettingsUpdatePayload = Partial<Omit<UpdateProfilePayload, "displayName" | "themeMode" | "themePalette">> & {
+export type AiSettingsUpdatePayload = Partial<Omit<UpdateProfilePayload, "displayName" | "themeMode" | "themePalette" | "opencodeOcrModel" | "opencodeSummaryModel">> & {
   email?: string;
+  opencodeOcrModel?: string | null;
+  opencodeSummaryModel?: string | null;
 };
 
 export type SharedIaType = "AWS" | "OPENCODE_OCR" | "OPENCODE_SUMMARY" | "GOOGLE" | "DEEPGRAM";
@@ -936,6 +938,9 @@ export function updateCurrentUserProfile(accessToken: string, payload: UpdatePro
     method: "PUT"
   });
 }
+
+export const aiSettingsQueryKey = (userId: string | undefined) => ["ai-settings", userId ?? null] as const;
+export const aiCatalogQueryKey = (userId: string | undefined, purpose: "ocr" | "summary") => ["opencode-top-models", purpose, userId ?? null] as const;
 
 export function fetchAiSettings(accessToken: string) {
   return request<AiSettingsResponse>("/ai-settings", { accessToken });

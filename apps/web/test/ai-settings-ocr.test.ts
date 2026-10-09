@@ -45,8 +45,11 @@ for (const hasSavedOcr of [false, true]) test(`settings auto-load OCR once ${has
   let response: unknown = { source: "live", models: [], warning: "Live catalogue unavailable" };
   let fail = false;
   let submitted: any;
+  const cached = new Map<string, any>();
   const mocks: Record<string, unknown> = {
     "../../app/api": {
+      aiSettingsQueryKey: (id: string) => ["ai-settings", id],
+      aiCatalogQueryKey: (id: string, purpose: string) => ["opencode-top-models", purpose, id],
       fetchOpencodeTopModels: async (_token: string, purpose: string, refresh: boolean | undefined) => {
         requests.push({ purpose, refresh });
         assert.equal(purpose, "ocr", "summary must not fetch when its saved model is already merged");
@@ -56,12 +59,12 @@ for (const hasSavedOcr of [false, true]) test(`settings auto-load OCR once ${has
       },
       updateAiSettings: async (_token: string, payload: unknown) => { submitted = payload; return settings; }
     },
-    "../../app/auth-store": { useAuthStore: Object.assign((selector: (state: unknown) => unknown) => selector({ accessToken: "synthetic-token", user: { role: "USER" } }), { setState() {} }) },
+    "../../app/auth-store": { useAuthStore: Object.assign((selector: (state: unknown) => unknown) => selector({ accessToken: "synthetic-token", user: { userId: "user-a", role: "USER" } }), { setState() {} }) },
     "../../app/book-language": { getDeepgramVoiceOptions: () => [], readStoredVoiceModel: (_language: string, fallback: string) => fallback, writeStoredVoiceModel() {} },
     "../../components/AwsCostBadge": { AwsCostBadge: () => null },
     "@tanstack/react-query": {
-      useQuery: ({ queryKey }: { queryKey: string[] }) => ({ data: queryKey[0] === "ai-settings" ? settings : queryKey[0] === "ai-config" ? config : undefined, refetch: async () => {}, isLoading: false }),
-      useQueryClient: () => ({ invalidateQueries: async () => {} })
+      useQuery: ({ queryKey }: { queryKey: string[] }) => ({ data: queryKey[0] === "ai-settings" ? settings : queryKey[0] === "ai-config" ? config : undefined, refetch: async () => ({ data: settings, isError: false }), isLoading: false }),
+      useQueryClient: () => ({ cancelQueries: async () => {}, invalidateQueries: async () => {}, setQueryData: (key: string[], value: unknown) => cached.set(JSON.stringify(key), value) })
     }
   };
   const exports: any = {};
@@ -74,33 +77,48 @@ for (const hasSavedOcr of [false, true]) test(`settings auto-load OCR once ${has
   try {
     await act(async () => { root.render(React.createElement(exports.AiSettingsPage)); });
     assert.equal(requests.length, 1, "auto-fetch must not depend on initial static models or missing saved IDs");
-    assert.equal(ocrSelect().options.length, 1, "no static OCR initial seeding or saved placeholders");
-    assert.equal(ocrSelect().value, "");
+    assert.equal(ocrSelect().options.length, hasSavedOcr ? 2 : 1, "only server choice and an unavailable-default placeholder; no saved model options");
+    assert.equal(ocrSelect().value, hasSavedOcr ? "unavailable" : "");
     assert.doesNotMatch(ocrSelect().innerHTML, /static-only|saved-missing/);
     const initialSummary = summarySelect().innerHTML;
     assert.match(initialSummary, /static-only/);
     assert.equal(summarySelect().options.length, 6, "five curated summary models plus server option");
     await act(async () => { resolveInitial({ source: "live", models: [...Array.from({ length: 13 }, (_, index) => model(`vision-${index}`)), model("text-only", false), model("vision-free")] }); });
     assert.equal(document.querySelectorAll(".ai-model-check-list")[0]!.querySelectorAll("input").length, 13);
+    assert.equal(cached.get(JSON.stringify(["opencode-top-models", "ocr", "user-a"])).models.length, 15);
     assert.match(document.body.textContent!, /Catálogo completo: 13 modelos OCR compatibles/);
     assert.doesNotMatch(ocrSelect().innerHTML, /saved-missing|static-only|vision-free|text-only/);
-    assert.equal(ocrSelect().value, "");
-    assert.match(document.body.textContent!, /Tu modelo OCR guardado no esta disponible/);
+    assert.equal(ocrSelect().value, hasSavedOcr ? "unavailable" : "");
+    if (hasSavedOcr) assert.match(document.body.textContent!, /Tu modelo OCR guardado no esta disponible/);
+    else assert.match(document.body.textContent!, /Modelo efectivo del servidor: saved-missing/);
     await act(async () => { document.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); });
-    assert.equal(submitted.opencodeOcrModel, "saved-missing", "catalogue must not silently change persisted preferences");
+    assert.equal(submitted.opencodeOcrModel, hasSavedOcr ? "saved-missing" : null, "catalogue must not silently turn the server default into an override");
     assert.deepEqual(submitted.opencodeOcrVisibleModels, settings.settings.opencodeOcrVisibleModels);
+    const ocrChecks = [...document.querySelectorAll<HTMLInputElement>(".ai-model-check-list")[0]!.querySelectorAll<HTMLInputElement>("input")];
+    if (!ocrChecks[0]!.checked) await act(async () => { ocrChecks[0]!.click(); });
+    await act(async () => { ocrSelect().value = "vision-0"; ocrSelect().dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    for (const check of ocrChecks) if (check.checked && !check.closest("label")!.textContent!.includes("vision-12")) await act(async () => { check.click(); });
+    await act(async () => { ocrChecks[12]!.click(); });
+    assert.equal(ocrChecks[12]!.checked, true);
+    assert.match(document.body.textContent!, /al menos un modelo visible/);
+    assert.equal(ocrSelect().options.length, 3, "default dropdown has only the last marked model, server choice and unavailable-default placeholder");
+    submitted = undefined;
+    await act(async () => { document.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); });
+    assert.equal(submitted, undefined, "unmarked default cannot be saved or silently marked");
+    await act(async () => { ocrSelect().value = "vision-12"; ocrSelect().dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
+    await act(async () => { document.querySelector("form")!.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true })); });
+    assert.equal(submitted.opencodeOcrModel, "vision-12");
     await act(async () => { ocrButton().click(); });
-    assert.equal(ocrSelect().options.length, 1);
+    assert.equal(ocrSelect().options.length, 2);
     assert.match(document.body.textContent!, /Live catalogue unavailable/);
     await flush();
     assert.equal(requests.length, 2, "empty response must not trigger an autoload loop");
     response = { source: "live", models: [model("saved-missing")] };
     await act(async () => { ocrButton().click(); });
-    assert.equal(ocrSelect().value, "saved-missing", "live metadata restores the exact saved selection absent static metadata");
-    assert.doesNotMatch(document.body.textContent!, /Tu modelo OCR guardado no esta disponible/);
+    assert.equal(ocrSelect().value, "unavailable", "catalog refresh cannot reinsert an unmarked default or display it as server choice");
     fail = true;
     await act(async () => { ocrButton().click(); });
-    assert.equal(ocrSelect().options.length, 1, "failed refresh must clear the last live catalogue");
+    assert.equal(ocrSelect().options.length, 2, "failed refresh must clear the last live catalogue without removing server choice");
     assert.match(document.body.textContent!, /Refresh network failure/);
     await flush();
     assert.equal(requests.length, 4);

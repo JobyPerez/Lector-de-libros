@@ -147,7 +147,7 @@ test("all builder entry points reject nonvision models before requests, confirma
     const errors: unknown[] = [];
     for (const [name, prefix] of [["handleCreateFromImages", "create"], ["handleAppendImages", "append"]]) {
       const run = evaluateHandler(name!, {
-        canRunOcr: selection.canRunOcr, compatibilityMessage: selection.compatibilityMessage,
+        [`${prefix}Selection`]: selection,
         [`${prefix}OcrMode`]: mode, [`${prefix}AdvancedLayout`]: true,
         [prefix === "create" ? "setCreateError" : "setAppendError"]: (value: unknown) => errors.push(value)
       });

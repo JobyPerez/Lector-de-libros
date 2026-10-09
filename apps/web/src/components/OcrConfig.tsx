@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { fetchAiSettings, fetchOpencodeTopModels, type AiConfigResponse, type AiSettingsResponse, type ImageOcrMode, type OpencodeTopModelsResponse } from "../app/api";
+import { aiSettingsQueryKey, aiCatalogQueryKey, fetchAiSettings, fetchOpencodeTopModels, type AiConfigResponse, type AiSettingsResponse, type ImageOcrMode, type OpencodeTopModelsResponse } from "../app/api";
 import { useAuthStore } from "../app/auth-store";
 import { useAiConfig, type SelectableAiModel } from "./AiModelBadge";
 
@@ -35,10 +35,10 @@ export function resolveOcrModels(config?: AiConfigResponse, settings?: AiSetting
     const known = config?.models.find((entry) => entry.id === model.id);
     metadata.set(model.id, { ...known, ...model });
   }
-  const selectedModelId = override ?? settings?.effectiveModels.ocrModel ?? config?.ocrModel ?? "";
+  const selectedModelId = override ?? settings?.effectiveModels.ocrModel ?? "";
   const visible = settings?.settings.opencodeOcrVisibleModels ?? [];
   const models: OcrSelectableModel[] = [...metadata.values()]
-    .filter((model) => model.supportsVision === true && (!visible.length || visible.includes(model.id) || model.id === selectedModelId))
+    .filter((model) => model.supportsVision === true && (!visible.length || visible.includes(model.id)))
     .map((model) => ({ ...model, visionStatus: "supported" }));
   const selectedMetadata = metadata.get(selectedModelId);
   const selectedModel: OcrSelectableModel = models.find((model) => model.id === selectedModelId) ?? {
@@ -47,22 +47,28 @@ export function resolveOcrModels(config?: AiConfigResponse, settings?: AiSetting
     visionStatus: selectedMetadata?.supportsVision === false ? "unsupported" : "unconfirmed"
   };
   const supportsVision = selectedModel.visionStatus === "supported";
-  const compatibilityMessage = ocrCompatibilityMessage(selectedModel);
+  const compatibilityMessage = live?.warning ?? (selectedMetadata?.supportsVision === true && visible.length && !visible.includes(selectedModelId)
+    ? `${selectedMetadata.name}: tu modelo OCR por defecto no esta marcado como visible. Marca el modelo en Configuracion IA o elige uno de los modelos visibles; tu preferencia guardada no se ha cambiado.`
+    : ocrCompatibilityMessage(selectedModel));
   return { models, selectedModelId, selectedModel, supportsVision, status: selectedModel.visionStatus, compatibilityMessage,
     canRunOcr: (mode: ImageOcrMode, advanced: boolean) => !usesOcrModel(mode, advanced) || supportsVision };
 }
 
-export function useOcrModelSelection() {
+export function useOcrModelSelection(context = "ocr") {
   const config = useAiConfig();
   const accessToken = useAuthStore((state) => state.accessToken);
-  const [override, setSelectedModelId] = useState<string | null>(null);
-  // Misma clave que AiSettingsPage y useAiModelSelection: un solo cache para
-  // ajustes IA, de modo que galería y edición de página lean siempre los mismos datos.
-  const settings = useQuery({ queryKey: ["ai-settings"], queryFn: () => fetchAiSettings(accessToken!), enabled: !!accessToken, staleTime: 60_000, retry: false });
-  const live = useQuery({ queryKey: ["opencode-top-models", "ocr", accessToken], queryFn: () => fetchOpencodeTopModels(accessToken!, "ocr"), enabled: !!accessToken, staleTime: 300_000, retry: false });
+  const userId = useAuthStore((state) => state.user?.userId);
+  const settings = useQuery({ queryKey: aiSettingsQueryKey(userId), queryFn: () => fetchAiSettings(accessToken!), enabled: !!accessToken && !!userId, staleTime: 60_000, retry: false });
+  const live = useQuery({ queryKey: aiCatalogQueryKey(userId, "ocr"), queryFn: () => fetchOpencodeTopModels(accessToken!, "ocr"), enabled: !!accessToken && !!userId, staleTime: 300_000, retry: false });
+  const identity = JSON.stringify([context, userId, settings.data?.effectiveModels.ocrModel, settings.data?.settings.opencodeOcrModel, settings.data?.settings.opencodeOcrVisibleModels]);
+  const [choice, setChoice] = useState<{ identity: string; modelId: string } | null>(null);
+  // Reset during render so a changed operation or preference never submits a stale override.
+  if (choice && choice.identity !== identity) setChoice(null);
+  const override = choice?.identity === identity ? choice.modelId : null;
+  const setSelectedModelId = (modelId: string) => setChoice({ identity, modelId });
   const selection = resolveOcrModels(config.data, settings.data, live.isError ? undefined : live.data, override);
   // Do not execute a server fallback while the user's effective preference is unavailable.
-  if (!override && (settings.isPending || settings.isError)) {
+  if (!override && (!settings.data || settings.isPending || settings.isError)) {
     return { ...selection, supportsVision: false, status: "unconfirmed" as const,
       compatibilityMessage: "No se pudo confirmar tu modelo OCR efectivo. Espera a que cargue la configuracion o elige un modelo compatible explicitamente.",
       canRunOcr: (mode: ImageOcrMode, advanced: boolean) => !usesOcrModel(mode, advanced), setSelectedModelId };

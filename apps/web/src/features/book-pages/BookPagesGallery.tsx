@@ -104,7 +104,7 @@ export function BookPagesGallery() {
   const [ocrMode, setOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [advancedLayout, setAdvancedLayout] = useState(false);
   const [promptOverride, setPromptOverride] = useState("");
-  const { models, selectedModelId, selectedModel, setSelectedModelId, canRunOcr, compatibilityMessage } = useOcrModelSelection();
+  const { models, selectedModelId, selectedModel, setSelectedModelId, canRunOcr, compatibilityMessage } = useOcrModelSelection(`gallery:${bookId}`);
   const pagesQuery = useQuery({ queryKey: ["book-pages", bookId], queryFn: () => fetchBookPages(accessToken, bookId), enabled: !!accessToken });
   const bookQuery = useQuery({ queryKey: ["book", bookId], queryFn: () => fetchBook(accessToken, bookId), enabled: !!accessToken });
   const data = pagesQuery.data;

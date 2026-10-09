@@ -39,7 +39,7 @@ import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
-import { AdvancedLayoutCheckbox, OcrModelSelect, OcrPromptEditor, defaultOcrMode, normalizeOcrOptions, useOcrModelSelection, usesOcrModel } from "../../components/OcrConfig";
+import { AdvancedLayoutCheckbox, OcrModelSelect, OcrPromptEditor, defaultOcrMode, normalizeOcrOptions, useOcrModelSelection } from "../../components/OcrConfig";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { useUnsavedChanges } from "../../hooks/useUnsavedChanges";
 import { DocumentScannerModal } from "./DocumentScannerModal";
@@ -899,7 +899,10 @@ export function BookBuilderPage() {
       : null;
   const isAppendOnlyMode = requestedAppendBookId.length > 0;
   const isReviewOnlyMode = requestedReviewBookId.length > 0;
-  const { models: ocrModelOptions, selectedModelId: selectedOcrModel, selectedModel: selectedOcrModelOption, setSelectedModelId: setOcrModelOverride, canRunOcr, compatibilityMessage } = useOcrModelSelection();
+  const operationContext = isAppendOnlyMode ? "append" : isReviewOnlyMode ? "review" : "builder";
+  const createSelection = useOcrModelSelection(`${operationContext}:create`);
+  const appendSelection = useOcrModelSelection(`${operationContext}:append:${requestedAppendBookId || selectedBookId}`);
+  const { models: ocrModelOptions, selectedModelId: selectedOcrModel, selectedModel: selectedOcrModelOption, setSelectedModelId: setOcrModelOverride, canRunOcr, compatibilityMessage } = useOcrModelSelection(`${operationContext}:review:${requestedReviewBookId || reviewBookId}`);
   const reviewOcrModelLabel = selectedOcrModelOption?.name ?? selectedOcrModel;
   const awsCostQuery = useQuery({
     enabled: Boolean(accessToken) && hasAwsCredentials,
@@ -2144,8 +2147,8 @@ export function BookBuilderPage() {
 
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canRunOcr(createOcrMode, createAdvancedLayout)) {
-      setCreateError(compatibilityMessage);
+    if (!createSelection.canRunOcr(createOcrMode, createAdvancedLayout)) {
+      setCreateError(createSelection.compatibilityMessage);
       return;
     }
 
@@ -2181,7 +2184,7 @@ export function BookBuilderPage() {
       }
 
       const response = await runOcrRequestWithRetry("create", () => createImageBook(accessToken, formData, {
-        ...normalizeOcrOptions(createOcrMode, createAdvancedLayout, selectedOcrModel, createPromptOverride)
+        ...normalizeOcrOptions(createOcrMode, createAdvancedLayout, createSelection.selectedModelId, createPromptOverride)
       }));
       await booksQuery.refetch();
       clearCreateSelection();
@@ -2200,8 +2203,8 @@ export function BookBuilderPage() {
 
   async function handleAppendImages(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canRunOcr(appendOcrMode, appendAdvancedLayout)) {
-      setAppendError(compatibilityMessage);
+    if (!appendSelection.canRunOcr(appendOcrMode, appendAdvancedLayout)) {
+      setAppendError(appendSelection.compatibilityMessage);
       return;
     }
 
@@ -2293,7 +2296,7 @@ export function BookBuilderPage() {
           try {
             const response = await appendImagesToBook(accessToken, selectedBookId, formData, {
               ...(nextAfterPage !== undefined && nextAfterPage !== null ? { afterPage: nextAfterPage } : {}),
-              ...normalizeOcrOptions(appendOcrMode, appendAdvancedLayout, selectedOcrModel, appendPromptOverride),
+              ...normalizeOcrOptions(appendOcrMode, appendAdvancedLayout, appendSelection.selectedModelId, appendPromptOverride),
               progressId
             });
 
@@ -3218,7 +3221,7 @@ export function BookBuilderPage() {
                             role="radio"
                             type="button"
                           >
-                            IA: {reviewOcrModelLabel}
+                            IA: {createSelection.selectedModel.name}
                           </button>
                           <button
                             aria-checked={createOcrMode === "LOCAL"}
@@ -3245,16 +3248,14 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
-                      <AdvancedLayoutCheckbox value={createAdvancedLayout} onChange={setCreateAdvancedLayout} mode={createOcrMode} disabled={isCreating} modelLabel={reviewOcrModelLabel} />
-                      {usesOcrModel(createOcrMode, createAdvancedLayout) && ocrModelOptions.length > 0 ? (
-                        <OcrModelSelect
-                          disabled={isCreating}
-                          models={ocrModelOptions}
-                          compatibilityMessage={compatibilityMessage}
-                          onChange={setOcrModelOverride}
-                          value={selectedOcrModel}
-                        />
-                      ) : null}
+                      <AdvancedLayoutCheckbox value={createAdvancedLayout} onChange={setCreateAdvancedLayout} mode={createOcrMode} disabled={isCreating} modelLabel={createSelection.selectedModel.name} />
+                      <OcrModelSelect
+                        disabled={isCreating}
+                        models={createSelection.models}
+                        compatibilityMessage={createSelection.compatibilityMessage}
+                        onChange={createSelection.setSelectedModelId}
+                        value={createSelection.selectedModelId}
+                      />
                       {createOcrMode === "TEXTRACT" ? (
                         <div className="append-placement-cost-row">
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
@@ -3271,7 +3272,7 @@ export function BookBuilderPage() {
                       ) : null}
                     </div>
                     {createOcrMode === "VISION" ? (
-                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. De pago.</span>
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {createSelection.selectedModel.name}. De pago.</span>
                     ) : createOcrMode === "TEXTRACT" ? (
                       <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
                     ) : (
@@ -3333,7 +3334,7 @@ export function BookBuilderPage() {
                     <p aria-live="polite" className="helper-text ocr-waiting-text">{buildOcrRetryCountdownLabel(ocrRetryState.secondsRemaining, ocrRetryState.reason)}</p>
                   ) : null}
 
-                  <button className="primary-button" disabled={isCreating || !canRunOcr(createOcrMode, createAdvancedLayout)} type="submit">
+                  <button className="primary-button" disabled={isCreating || !createSelection.canRunOcr(createOcrMode, createAdvancedLayout)} type="submit">
                     {isCreating ? "Procesando OCR..." : "Crear libro desde imágenes"}
                   </button>
                 </form>
@@ -3537,7 +3538,7 @@ export function BookBuilderPage() {
                             role="radio"
                             type="button"
                           >
-                            IA: {reviewOcrModelLabel}
+                            IA: {appendSelection.selectedModel.name}
                           </button>
                           <button
                             aria-checked={appendOcrMode === "LOCAL"}
@@ -3564,16 +3565,14 @@ export function BookBuilderPage() {
                           </button>
                         ) : null}
                       </div>
-                      <AdvancedLayoutCheckbox value={appendAdvancedLayout} onChange={setAppendAdvancedLayout} mode={appendOcrMode} disabled={isAppending} modelLabel={reviewOcrModelLabel} />
-                      {usesOcrModel(appendOcrMode, appendAdvancedLayout) && ocrModelOptions.length > 0 ? (
-                        <OcrModelSelect
-                          disabled={isAppending}
-                          models={ocrModelOptions}
-                          compatibilityMessage={compatibilityMessage}
-                          onChange={setOcrModelOverride}
-                          value={selectedOcrModel}
-                        />
-                      ) : null}
+                      <AdvancedLayoutCheckbox value={appendAdvancedLayout} onChange={setAppendAdvancedLayout} mode={appendOcrMode} disabled={isAppending} modelLabel={appendSelection.selectedModel.name} />
+                      <OcrModelSelect
+                        disabled={isAppending}
+                        models={appendSelection.models}
+                        compatibilityMessage={appendSelection.compatibilityMessage}
+                        onChange={appendSelection.setSelectedModelId}
+                        value={appendSelection.selectedModelId}
+                      />
                       {appendOcrMode === "TEXTRACT" ? (
                         <div className="append-placement-cost-row">
                           <AwsCostBadge accessToken={accessToken} hasAwsCredentials={hasAwsCredentials} />
@@ -3590,7 +3589,7 @@ export function BookBuilderPage() {
                       ) : null}
                     </div>
                     {appendOcrMode === "VISION" ? (
-                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {reviewOcrModelLabel}. De pago.</span>
+                      <span className="ai-model-badge ai-model-badge-compact">IA: modelo: {appendSelection.selectedModel.name}. De pago.</span>
                     ) : appendOcrMode === "TEXTRACT" ? (
                       <span className="ai-model-badge ai-model-badge-compact">IA: modelo: AWS Textract. De pago.</span>
                     ) : (
@@ -3607,7 +3606,7 @@ export function BookBuilderPage() {
                     <AiMissingBanner error={new Error(appendImportProgress.errorMessage)} />
                   ) : null}
 
-                  <button className="secondary-button" disabled={isAppending || !canRunOcr(appendOcrMode, appendAdvancedLayout)} type="submit">
+                  <button className="secondary-button" disabled={isAppending || !appendSelection.canRunOcr(appendOcrMode, appendAdvancedLayout)} type="submit">
                     {isAppending ? "Procesando OCR..." : appendResumeState?.completedFiles ? "Continuar páginas pendientes" : "Añadir páginas"}
                   </button>
                 </form>
@@ -4280,15 +4279,13 @@ export function BookBuilderPage() {
                     </select>
                   </label>
                   <AdvancedLayoutCheckbox value={reviewAdvancedLayout} onChange={setReviewAdvancedLayout} mode={reviewOcrMode} disabled={isSavingReview || !reviewBookId || isReviewCropMode} modelLabel={reviewOcrModelLabel} />
-                  {usesOcrModel(reviewOcrMode, reviewAdvancedLayout) && ocrModelOptions.length > 0 ? (
-                    <OcrModelSelect
-                      disabled={isSavingReview || !reviewBookId || isReviewCropMode}
-                      models={ocrModelOptions}
-                      compatibilityMessage={compatibilityMessage}
-                      onChange={setOcrModelOverride}
-                      value={selectedOcrModel}
-                    />
-                  ) : null}
+                  <OcrModelSelect
+                    disabled={isSavingReview || !reviewBookId || isReviewCropMode}
+                    models={ocrModelOptions}
+                    compatibilityMessage={compatibilityMessage}
+                    onChange={setOcrModelOverride}
+                    value={selectedOcrModel}
+                  />
                   <div className="review-ocr-option-stack">
                     {reviewOcrMode === "TEXTRACT" ? (
                       <div className="review-ocr-option-row">

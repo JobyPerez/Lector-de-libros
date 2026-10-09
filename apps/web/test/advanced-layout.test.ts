@@ -75,10 +75,24 @@ test("shared checkbox is false initially, disabled for LOCAL/busy, and explains 
   }
   for (const flow of ["create", "append", "review"]) {
     assert.match(builderText, new RegExp(`const \\[${flow}AdvancedLayout, set${flow[0]!.toUpperCase() + flow.slice(1)}AdvancedLayout\\] = useState\\(false\\)`));
-    assert.match(builderText, new RegExp(`normalizeOcrOptions\\(${flow === "review" ? "nextMode" : `${flow}OcrMode`}, ${flow}AdvancedLayout, selectedOcrModel,`));
+    assert.match(builderText, new RegExp(`normalizeOcrOptions\\(${flow === "review" ? "nextMode" : `${flow}OcrMode`}, ${flow}AdvancedLayout, ${flow === "review" ? "selectedOcrModel" : `${flow}Selection\\.selectedModelId`},`));
   }
   assert.doesNotMatch(builderText, /localStorage[^\n]*[Aa]dvanced|[Aa]dvanced[^\n]*localStorage/);
   assert.equal((builderText.match(/<AdvancedLayoutCheckbox /g) ?? []).length, 3);
+});
+
+test("all builder model controls remain mounted even with an empty model list or a non-AI engine", () => {
+  const selectors: ts.JsxSelfClosingElement[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(builder) === "OcrModelSelect") selectors.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(builder);
+  assert.equal(selectors.length, 3);
+  assert.deepEqual(selectors.map((node) => node.attributes.properties.find((attr) => ts.isJsxAttribute(attr) && attr.name.getText(builder) === "models")?.getText(builder)), ["models={createSelection.models}", "models={appendSelection.models}", "models={ocrModelOptions}"]);
+  for (const selector of selectors) assert.ok(ts.isJsxElement(selector.parent), "model selector is a direct child, not a model-count or engine conditional");
+  assert.match(builderText, /useOcrModelSelection\(`\$\{operationContext\}:append:\$\{requestedAppendBookId \|\| selectedBookId\}`\)/);
+  assert.match(builderText, /useOcrModelSelection\(`\$\{operationContext\}:review:\$\{requestedReviewBookId \|\| reviewBookId\}`\)/);
 });
 
 test("review UI switches providers, resets LOCAL opt-in and exposes only the selected execution after settings", () => {

@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 
 import {
+  aiSettingsQueryKey,
+  aiCatalogQueryKey,
   fetchAiConfig,
   fetchAiSettings,
   fetchAiShares,
@@ -119,6 +121,11 @@ function mergeWithSavedModels(
 }
 
 export function AiSettingsPage() {
+  const userId = useAuthStore((state) => state.user?.userId);
+  return <AiSettingsForm key={userId ?? "anonymous"} />;
+}
+
+function AiSettingsForm() {
   const accessToken = useAuthStore((state) => state.accessToken);
   const storeUser = useAuthStore((state) => state.user);
   const queryClient = useQueryClient();
@@ -152,8 +159,8 @@ export function AiSettingsPage() {
   const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
 
   const settingsQuery = useQuery({
-    enabled: Boolean(accessToken),
-    queryKey: ["ai-settings"],
+    enabled: Boolean(accessToken && storeUser?.userId),
+    queryKey: aiSettingsQueryKey(storeUser?.userId),
     queryFn: async () => {
       if (!accessToken) throw new Error("Sesión no disponible.");
       return fetchAiSettings(accessToken);
@@ -180,12 +187,12 @@ export function AiSettingsPage() {
       deepgramTtsModelIt: getDeepgramVoiceOptions("it").some((voice) => voice.value === (settings.deepgramTtsModelIt ?? defaultDeepgramModelIt))
         ? (settings.deepgramTtsModelIt as DeepgramTtsModel) ?? defaultDeepgramModelIt
         : (readStoredVoiceModel("it", defaultDeepgramModelIt) as DeepgramTtsModel),
-      opencodeOcrModel: settings.opencodeOcrModel ?? settingsQuery.data?.effectiveModels.ocrModel ?? "",
-      opencodeSummaryModel: settings.opencodeSummaryModel ?? settingsQuery.data?.effectiveModels.summaryModel ?? "",
+      opencodeOcrModel: settings.opencodeOcrModel ?? "",
+      opencodeSummaryModel: settings.opencodeSummaryModel ?? "",
       opencodeOcrVisible: settings.opencodeOcrVisibleModels ?? [],
       opencodeSummaryVisible: settings.opencodeSummaryVisibleModels ?? []
     }));
-  }, [settings, settingsQuery.data?.effectiveModels.ocrModel, settingsQuery.data?.effectiveModels.summaryModel]);
+  }, [settings]);
 
   useEffect(() => {
     const curatedSummary = (aiConfigQuery.data?.models ?? []).filter((model) => !isFreeZenModelId(model.id)).slice(0, 5).map((model) => ({
@@ -204,7 +211,9 @@ export function AiSettingsPage() {
 
   // Saved selections remain in the form, but only confirmed vision models appear in OCR lists.
   const effectiveOcrModels = ocrModels.filter((model) => model.supportsVision === true && !isFreeZenModelId(model.id));
-  const ocrWarning = form.opencodeOcrModel && !effectiveOcrModels.some((model) => model.id === form.opencodeOcrModel)
+  const ocrWarning = form.opencodeOcrModel && form.opencodeOcrVisible.length > 0 && !form.opencodeOcrVisible.includes(form.opencodeOcrModel)
+    ? "Tu modelo OCR por defecto no esta marcado como visible. Marca el modelo o elige otro predeterminado antes de guardar."
+    : form.opencodeOcrModel && !effectiveOcrModels.some((model) => model.id === form.opencodeOcrModel)
     ? "Tu modelo OCR guardado no esta disponible en el catalogo OpenCode en vivo. No se puede ejecutar OCR con el. Elige un modelo compatible; tu preferencia guardada no se ha cambiado."
     : null;
   const effectiveSummaryModels = mergeWithSavedModels(summaryModels.filter((model) => !isFreeZenModelId(model.id)), form.opencodeSummaryVisible, form.opencodeSummaryModel, "summary");
@@ -214,7 +223,7 @@ export function AiSettingsPage() {
   const savedFreeOcrIds = [...(settings?.opencodeOcrVisibleModels ?? []), settings?.opencodeOcrModel ?? ""].map((id) => id.trim()).filter((id) => id && isFreeZenModelId(id));
 
   useEffect(() => {
-    if (!accessToken || hasAutoRefreshedOcr.current) return;
+    if (!accessToken || !storeUser?.userId || hasAutoRefreshedOcr.current) return;
     hasAutoRefreshedOcr.current = true;
     void refreshModels("ocr", false);
   }, [accessToken]);
@@ -230,7 +239,9 @@ export function AiSettingsPage() {
       void (async () => {
         setIsRefreshingSummary(true);
         try {
+          await queryClient.cancelQueries({ queryKey: aiCatalogQueryKey(storeUser?.userId, "summary") });
           const response = await fetchOpencodeTopModels(accessToken, "summary");
+          queryClient.setQueryData(aiCatalogQueryKey(storeUser?.userId, "summary"), response);
           setSummaryModels(response.models);
           setSummarySource(response.source);
         } catch {
@@ -251,7 +262,9 @@ export function AiSettingsPage() {
     setErrorMessage(null);
     setSuccessMessage(null);
     try {
+      await queryClient.cancelQueries({ queryKey: aiCatalogQueryKey(storeUser?.userId, purpose) });
       const response = await fetchOpencodeTopModels(accessToken, purpose, refresh);
+      queryClient.setQueryData(aiCatalogQueryKey(storeUser?.userId, purpose), response);
       const paidModels = response.models.filter((model) => !isFreeZenModelId(model.id));
       if (purpose === "ocr") {
         setOcrModels(response.source === "live" ? paidModels : []);
@@ -260,14 +273,12 @@ export function AiSettingsPage() {
       } else {
         setSummaryModels(paidModels);
         setSummarySource(response.source);
-        if (paidModels.length > 0 && !form.opencodeSummaryModel) {
-          setForm((current) => ({ ...current, opencodeSummaryModel: paidModels[0]!.id }));
-        }
       }
       if (response.warning) setErrorMessage(response.warning);
       else if (purpose === "summary" || response.source === "live") setSuccessMessage(`Modelos de ${purpose === "ocr" ? "OCR" : "resúmenes"} actualizados (${response.source === "live" ? "OpenCode en vivo" : "lista curada"}).`);
     } catch (error) {
       if (purpose === "ocr") {
+        queryClient.setQueryData(aiCatalogQueryKey(storeUser?.userId, "ocr"), { source: "live", models: [], warning: error instanceof Error ? error.message : "No se pudo obtener el catalogo OCR OpenCode en vivo." });
         setOcrModels([]);
         setOcrSource(null);
         setOcrCatalogueWarning(error instanceof Error ? error.message : "No se pudo obtener el catalogo OCR OpenCode en vivo.");
@@ -280,13 +291,16 @@ export function AiSettingsPage() {
   }
 
   function toggleVisible(kind: "ocr" | "summary", id: string) {
-    setForm((current) => {
-      const key = kind === "ocr" ? "opencodeOcrVisible" : "opencodeSummaryVisible";
-      const list = kind === "ocr" ? effectiveOcrModels : effectiveSummaryModels;
-      const currentVisible = current[key].length > 0 ? current[key] : list.map((model) => model.id);
-      const next = currentVisible.includes(id) ? currentVisible.filter((item) => item !== id) : [...currentVisible, id];
-      return { ...current, [key]: next };
-    });
+    const key = kind === "ocr" ? "opencodeOcrVisible" : "opencodeSummaryVisible";
+    const list = kind === "ocr" ? effectiveOcrModels : effectiveSummaryModels;
+    const visible = form[key].length > 0 ? form[key] : list.map((model) => model.id);
+    if (visible.includes(id) && !visible.some((item) => item !== id && list.some((model) => model.id === item))) {
+      setErrorMessage("Debes mantener al menos un modelo visible.");
+      return;
+    }
+    setErrorMessage(null);
+    const next = visible.includes(id) ? visible.filter((item) => item !== id) : [...visible, id];
+    setForm((current) => ({ ...current, [key]: next }));
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -294,6 +308,12 @@ export function AiSettingsPage() {
     if (!accessToken) return;
     setErrorMessage(null);
     setSuccessMessage(null);
+    for (const [model, visible] of [[form.opencodeOcrModel, form.opencodeOcrVisible], [form.opencodeSummaryModel, form.opencodeSummaryVisible]] as const) {
+      if (model && visible.length > 0 && !visible.includes(model)) {
+        setErrorMessage("El modelo por defecto debe estar marcado como visible. Elige otro predeterminado o marca el modelo antes de guardar.");
+        return;
+      }
+    }
     setIsSubmitting(true);
     try {
       const response = await updateAiSettings(accessToken, {
@@ -303,8 +323,8 @@ export function AiSettingsPage() {
         ...(form.deepgramApiKey.trim() ? { deepgramApiKey: form.deepgramApiKey.trim() } : {}),
         ...(form.geminiApiKey.trim() ? { geminiApiKey: form.geminiApiKey.trim() } : {}),
         ...(form.opencodeApiKey.trim() ? { opencodeApiKey: form.opencodeApiKey.trim() } : {}),
-        ...(form.opencodeOcrModel.trim() ? { opencodeOcrModel: form.opencodeOcrModel.trim() } : {}),
-        ...(form.opencodeSummaryModel.trim() ? { opencodeSummaryModel: form.opencodeSummaryModel.trim() } : {}),
+        opencodeOcrModel: form.opencodeOcrModel.trim() || null,
+        opencodeSummaryModel: form.opencodeSummaryModel.trim() || null,
         clearAwsCredentials: form.clearAwsCredentials,
         clearDeepgramApiKey: form.clearDeepgramApiKey,
         clearGeminiApiKey: form.clearGeminiApiKey,
@@ -314,16 +334,19 @@ export function AiSettingsPage() {
         opencodeOcrVisibleModels: form.opencodeOcrVisible,
         opencodeSummaryVisibleModels: form.opencodeSummaryVisible
       });
-      useAuthStore.setState((previous) => previous.user
+      useAuthStore.setState((previous) => previous.user && previous.user.userId === storeUser?.userId
         ? { ...previous, user: { ...previous.user, aiCredentials: { ...previous.user.aiCredentials!, ...response.settings } } }
         : previous);
       writeStoredVoiceModel("es", form.deepgramTtsModelEs);
       writeStoredVoiceModel("it", form.deepgramTtsModelIt);
-      await settingsQuery.refetch();
+      const freshSettings = await settingsQuery.refetch();
+      if (freshSettings.isError) throw freshSettings.error;
+      await queryClient.invalidateQueries({ queryKey: aiSettingsQueryKey(storeUser?.userId) });
       await queryClient.invalidateQueries({ queryKey: ["current-user-profile"] });
       // Refrescar las listas de modelos en galería y edición de página,
       // que comparten estas cachés (mismos modelos en ambas pantallas).
-      await queryClient.invalidateQueries({ queryKey: ["opencode-top-models"] });
+      await queryClient.invalidateQueries({ queryKey: aiCatalogQueryKey(storeUser?.userId, "ocr") });
+      await queryClient.invalidateQueries({ queryKey: aiCatalogQueryKey(storeUser?.userId, "summary") });
       setForm((current) => ({
         ...current,
         awsAccessKeyId: "",
@@ -344,25 +367,10 @@ export function AiSettingsPage() {
     }
   }
 
-  const ocrVisibleOptions = (() => {
-    const filtered = effectiveOcrModels.filter((model) => form.opencodeOcrVisible.length === 0 || form.opencodeOcrVisible.includes(model.id));
-    const base = filtered.length > 0 ? filtered : effectiveOcrModels;
-    // Asegurar que el modelo por defecto siempre esté en el desplegable aunque se haya desmarcado arriba.
-    const selected = effectiveOcrModels.find((model) => model.id === form.opencodeOcrModel);
-    if (selected && !base.some((model) => model.id === selected.id)) {
-      return [...base, selected];
-    }
-    return base;
-  })();
-  const summaryVisibleOptions = (() => {
-    const filtered = effectiveSummaryModels.filter((model) => form.opencodeSummaryVisible.length === 0 || form.opencodeSummaryVisible.includes(model.id));
-    const base = filtered.length > 0 ? filtered : effectiveSummaryModels;
-    // Asegurar que el modelo por defecto siempre esté en el desplegable aunque se haya desmarcado arriba.
-    if (form.opencodeSummaryModel.trim() && !base.some((model) => model.id === form.opencodeSummaryModel.trim())) {
-      return [...base, placeholderTopModel(form.opencodeSummaryModel.trim(), "summary")];
-    }
-    return base;
-  })();
+  const ocrVisibleOptions = effectiveOcrModels.filter((model) => form.opencodeOcrVisible.length === 0 || form.opencodeOcrVisible.includes(model.id));
+  const summaryVisibleOptions = effectiveSummaryModels.filter((model) => form.opencodeSummaryVisible.length === 0 || form.opencodeSummaryVisible.includes(model.id));
+  const unavailableOcrDefault = Boolean(form.opencodeOcrModel && !ocrVisibleOptions.some((model) => model.id === form.opencodeOcrModel));
+  const unavailableSummaryDefault = Boolean(form.opencodeSummaryModel && !summaryVisibleOptions.some((model) => model.id === form.opencodeSummaryModel));
 
   return (
     <div className="page-grid profile-layout">
@@ -458,11 +466,13 @@ export function AiSettingsPage() {
           <ModelCheckList models={effectiveOcrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
           <label>
             Modelo OCR por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={ocrVisibleOptions.some((model) => model.id === form.opencodeOcrModel) ? form.opencodeOcrModel : ""}>
-              <option value="" disabled>Selecciona un modelo compatible</option>
+            <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={unavailableOcrDefault ? "unavailable" : form.opencodeOcrModel}>
+              <option value="">Usar servidor</option>
+              {unavailableOcrDefault && <option value="unavailable" disabled>Selecciona un modelo compatible</option>}
               {ocrVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
             </select>
             <span className="helper-text">Marca o desmarca arriba qué modelos quieres ver en esta lista.</span>
+            {!form.opencodeOcrModel && <span className="helper-text">Modelo efectivo del servidor: {settingsQuery.data?.effectiveModels.ocrModel ?? "pendiente"}.</span>}
             {ocrWarning && <span className="error-text" role="alert">{ocrWarning}</span>}
           </label>
 
@@ -480,9 +490,10 @@ export function AiSettingsPage() {
           <ModelCheckList models={effectiveSummaryModels} visible={form.opencodeSummaryVisible} onToggle={(id) => toggleVisible("summary", id)} idPrefix="summary" />
           <label>
             Modelo de resúmenes por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, opencodeSummaryModel: event.target.value }))} value={form.opencodeSummaryModel}>
-              <option value="">Usar el del servidor</option>
-              {(summaryVisibleOptions.length > 0 ? summaryVisibleOptions : effectiveSummaryModels).map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+            <select onChange={(event) => setForm((current) => ({ ...current, opencodeSummaryModel: event.target.value }))} value={unavailableSummaryDefault ? "unavailable" : form.opencodeSummaryModel}>
+              <option value="">Usar servidor</option>
+              {unavailableSummaryDefault && <option value="unavailable" disabled>Selecciona un modelo visible</option>}
+              {summaryVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
             </select>
           </label>
 

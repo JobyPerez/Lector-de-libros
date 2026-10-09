@@ -107,7 +107,7 @@ function galleryHarness(editor: boolean, options: { search?: string; sourceType?
     "../../app/auth-store": { useAuthStore: (selector: (state: unknown) => unknown) => selector({ accessToken: "token", user: { userId: "user" } }) },
     "../../app/api": { isBookEditor: (role: string) => role === "OWNER", reorderBookPages: async (...args: unknown[]) => { calls.push(["reorder", ...args]); return data; }, deleteBookPage: async (...args: unknown[]) => { calls.push(["delete", ...args]); if (args[3] === failedDeleteId) throw new Error("Synthetic failure"); return {}; }, startBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["ocr", ...args]); return { jobId: "synthetic-job" }; } },
     "../../hooks/useUnsavedChanges": { useUnsavedChanges: (dirty: boolean) => calls.push(["dirty", dirty]) },
-    "../../components/OcrConfig": loadOcrConfig({ ocrModel: "server-model", models: [], ocrModelIds: [] }, { effectiveModels: { ocrModel: "user-model" }, settings: { opencodeOcrVisibleModels: ["advanced-model"] } }, { source: "live", models: ["user-model", "advanced-model"].map((id) => ({ id, name: id, supportsVision: options.visionSupported ?? true })) }),
+    "../../components/OcrConfig": loadOcrConfig({ ocrModel: "server-model", models: [], ocrModelIds: [] }, { effectiveModels: { ocrModel: "user-model" }, settings: { opencodeOcrVisibleModels: ["user-model", "advanced-model"] } }, { source: "live", models: ["user-model", "advanced-model"].map((id) => ({ id, name: id, supportsVision: options.visionSupported ?? true })) }),
     "./page-order": { movePages, selectPageRange }, "./book-pages.css": {}
   };
   new Function("exports", "require", code)(exports, (id: string) => mocks[id] ?? require(id));

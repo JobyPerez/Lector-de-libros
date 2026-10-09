@@ -8,7 +8,7 @@ import { processSelectionJob, selectionSchema } from "../src/modules/books/galle
 import { load } from "cheerio";
 import { externalizeContentImages } from "../src/modules/books/content-images.js";
 import { calculateParagraphReadingMetrics } from "../src/services/paragraph-metrics.js";
-import { normalizeParagraphMetadata } from "../src/modules/books/page-elements.js";
+import { geometrySchema, normalizeParagraphMetadata } from "../src/modules/books/page-elements.js";
 import { matchParagraphsWithExplicitIds } from "../src/modules/books/paragraph-ids.js";
 import { normalizeWhitespace } from "../src/modules/books/rich-content.js";
 import { parsePageStyle } from "../src/modules/books/page-style.js";
@@ -80,7 +80,16 @@ test("multipart flags default false, accept explicit booleans and reject invalid
   assert.equal(schemas.rerunOcrPageSchema.safeParse({ advancedLayout: "false" }).success, false);
   assert.match(routes, /advancedLayout: multipartForm.fields.advancedLayout/u);
   assert.match(routes, /undefined, undefined, payload.advancedLayout\)/u);
-  assert.match(routes, /payload.advancedLayout\s+\);/u);
+  assert.match(routes, /payload.advancedLayout,\s+marginHints\s+\);/u);
+});
+
+test("create, append and rerun default to TEXTRACT and preserve explicit engines", () => {
+  for (const schema of [schemas.imageBookFieldsSchema, schemas.importImagesFieldsSchema, schemas.rerunOcrPageSchema]) {
+    assert.equal(schema.parse({ title: "Book" }).ocrMode, "TEXTRACT");
+    for (const ocrMode of ["AUTO", "LOCAL", "VISION", "TEXTRACT"]) {
+      assert.equal(schema.parse({ title: "Book", ocrMode }).ocrMode, ocrMode);
+    }
+  }
 });
 
 test("legacy PUT /ocr rejects every persisted visual document, including unstyled tables and nested layouts, before reconstruction", async () => {
@@ -202,6 +211,7 @@ test("append after failed OCR saves the original image as PENDING without invoki
       getConnection: async () => connection,
       findAccessibleBook: async () => ({ bookId: "book", sourceType: "IMAGES", languageCode: "es", totalPages: 3, totalParagraphs: 10 }),
       getEffectiveUserAiCredentials: async () => ({}),
+      collectBookOcrMarginHints: async () => ({ headers: [], footers: [] }),
       isImportImagesCancellationRequested: () => false,
       ocrImageFiles: async () => { ocrCalls++; throw new Error("OCR provider failed"); },
       countParagraphsUpToPage: async () => 10,
@@ -247,7 +257,7 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
   const credentialUsers: string[] = [], resolvedPages: string[] = [], hintCalls: any[] = [], ocrInputs: any[] = [];
   const credentials = { opencodeOcrModel: "audit-model", opencodeApiKey: "secret", opencodeOcrApiKey: "ocr-secret",
     awsAccessKeyId: "aws-id", awsRegion: "eu-west-1", awsSecretAccessKey: "aws-secret" };
-  const marginHints = { headerTexts: ["Book header"], footerTexts: ["Book footer"] };
+  const marginHints = { headers: ["Book header"], footers: ["Book"] };
   const connection = { execute: async (sql: string, binds: any) => {
     calls.push({ sql, binds });
     if (sql.includes("FROM book_files")) return { rows: [{ contentBlob: Buffer.from("image"), mimeType: "image/png" }] };
@@ -298,6 +308,50 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
       return reply;
     } };
 }
+
+test("append forwards real collected margin hints and the same OCR options as rerun before persistence", async () => {
+  for (const body of [{}, { ocrMode: "VISION", ocrModel: "explicit-model", promptOverride: "Exact prompt", advancedLayout: true }]) {
+    const rerun = rerunSetup();
+    const reply = { status(code: number) { assert.equal(code, 200); return this; }, send() { return this; } };
+    await rerun.run({ currentUser: { userId: "editor" }, params: { bookId: "book", pageNumber: 1 }, body }, reply);
+    const events: string[] = [];
+    let appendOptions: any;
+    const connection = {
+      execute: async (sql: string, binds: any) => {
+        assert.match(sql, /FROM book_paragraphs/u);
+        assert.deepEqual(binds, { bookId: "book", pageNumber: 0 });
+        events.push("hints");
+        return { rows: [1, 2].map((pageNumber) => ({ pageNumber, paragraphText: "Book header",
+          geometryJson: JSON.stringify({ bbox: { left: 0.35, top: 0.07, width: 0.3, height: 0.02 } }) })) };
+      }, rollback: async () => {}, close: async () => {}
+    };
+    const { collectBookOcrMarginHints, ocrImageFiles } = functions(["inferRepeatedOcrMarginHints", "collectBookOcrMarginHints", "ocrImageFiles"], {
+      geometrySchema, visualPageDocumentSchema, isRetryableOcrError: () => false,
+      runOcrOnImage: async (_buffer: unknown, _name: unknown, _mime: unknown, options: any) => {
+        events.push("ocr"); appendOptions = options;
+        return { ...renderVisualDocument(document()), visualDocument: document() };
+      }
+    });
+    const run = handler("post", "/:bookId/import-images", {
+      importImagesParamsSchema: z.object({ bookId: z.string() }), importImagesQuerySchema: z.object({ afterPage: z.number().optional() }),
+      importImagesFieldsSchema: schemas.importImagesFieldsSchema,
+      collectMultipartForm: async () => ({ fields: body, files: [{ buffer: Buffer.from("image"), fileName: "page.png", mimeType: "image/png" }] }),
+      ensureImageFiles: (files: unknown) => files, getConnection: async () => connection,
+      findAccessibleBook: async () => ({ bookId: "book", title: "Book", sourceType: "IMAGES", languageCode: "es", totalPages: 3 }),
+      getEffectiveUserAiCredentials: async () => ({ opencodeOcrModel: "audit-model", opencodeApiKey: "secret", opencodeOcrApiKey: "ocr-secret",
+        awsAccessKeyId: "aws-id", awsRegion: "eu-west-1", awsSecretAccessKey: "aws-secret" }),
+      collectBookOcrMarginHints, ocrImageFiles, isImportImagesCancellationRequested: () => false,
+      countParagraphsUpToPage: async () => { events.push("persistence"); throw new Error("stop before persistence"); }
+    });
+    await assert.rejects(run({ currentUser: { userId: "editor" }, params: { bookId: "book" }, query: {} }, reply), /stop before persistence/u);
+    assert.deepEqual(events, ["hints", "ocr", "persistence"]);
+    assert.deepEqual(appendOptions.marginHints, { headers: ["Book header"], footers: ["Book"] });
+    const { rotation, advancedLayoutLimits, ...rerunOptions } = rerun.options;
+    assert.equal(rotation, 0);
+    assert.deepEqual(appendOptions, rerunOptions);
+    if (body.advancedLayout) assert.deepEqual(advancedLayoutLimits, { maxBlocks: 498, maxDepth: 7 });
+  }
+});
 
 test("initial advanced persistence validates documents before even cover/file writes", async () => {
   const { insertProcessedImagePages } = functions(["insertProcessedImagePages"], common);

@@ -27,7 +27,9 @@ import { recordUserActivity } from "../../services/user-activity.js";
 import { authenticateRequest, requireAdministrator, updateProfileSchema } from "../auth/auth.routes.js";
 
 const aiSettingsUpdateSchema = updateProfileSchema.omit({ displayName: true, themeMode: true, themePalette: true }).extend({
-  email: z.string().email().optional()
+  email: z.string().email().optional(),
+  opencodeOcrModel: updateProfileSchema.shape.opencodeOcrModel.unwrap().nullable().optional(),
+  opencodeSummaryModel: updateProfileSchema.shape.opencodeSummaryModel.unwrap().nullable().optional()
 });
 
 const shareUpdateSchema = z.object({
@@ -266,7 +268,6 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(401).send({ message: "Unauthenticated request." });
     }
     const payload = aiSettingsUpdateSchema.parse(request.body ?? {});
-    const connection = await getConnection();
     const deepgramApiKeyEncrypted = encryptOptionalSecret(payload.deepgramApiKey);
     const awsAccessKeyIdEncrypted = encryptOptionalSecret(payload.awsAccessKeyId);
     const awsSecretAccessKeyEncrypted = encryptOptionalSecret(payload.awsSecretAccessKey);
@@ -274,6 +275,7 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
     const geminiApiKeyEncrypted = encryptOptionalSecret(payload.geminiApiKey);
     const opencodeOcrVisibleModels = payload.opencodeOcrVisibleModels ? serializeVisibleModels(payload.opencodeOcrVisibleModels) : null;
     const opencodeSummaryVisibleModels = payload.opencodeSummaryVisibleModels ? serializeVisibleModels(payload.opencodeSummaryVisibleModels) : null;
+    const connection = await getConnection();
 
     try {
       const ownResult = await connection.execute(
@@ -319,8 +321,8 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
                 WHEN :geminiApiKeyEncrypted IS NOT NULL THEN :geminiApiKeyEncrypted
                 ELSE gemini_api_key_encrypted
               END,
-              opencode_ocr_model = COALESCE(:opencodeOcrModel, opencode_ocr_model),
-              opencode_summary_model = COALESCE(:opencodeSummaryModel, opencode_summary_model)
+              opencode_ocr_model = CASE WHEN :hasOpencodeOcrModel = 1 THEN :opencodeOcrModel ELSE opencode_ocr_model END,
+              opencode_summary_model = CASE WHEN :hasOpencodeSummaryModel = 1 THEN :opencodeSummaryModel ELSE opencode_summary_model END
           WHERE user_id = :userId
         `,
         {
@@ -337,43 +339,28 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
           email: nextEmail,
           geminiApiKeyEncrypted: geminiApiKeyEncrypted ?? null,
           opencodeApiKeyEncrypted: opencodeApiKeyEncrypted ?? null,
+          hasOpencodeOcrModel: payload.opencodeOcrModel !== undefined ? 1 : 0,
+          hasOpencodeSummaryModel: payload.opencodeSummaryModel !== undefined ? 1 : 0,
           opencodeOcrModel: payload.opencodeOcrModel ?? null,
           opencodeSummaryModel: payload.opencodeSummaryModel ?? null,
           userId: request.currentUser.userId
-        },
-        { autoCommit: true }
+        }
       );
 
       // Las columnas opencode_*_visible_models son CLOB: no se pueden mezclar
       // con binds VARCHAR2 dentro de un COALESCE (ORA-00932). Se actualizan
       // por separado con asignación directa, que sí permite VARCHAR2 -> CLOB.
       if (opencodeOcrVisibleModels !== null) {
-        try {
-          await connection.execute(
-            `UPDATE users SET opencode_ocr_visible_models = :visibleModels WHERE user_id = :userId`,
-            { userId: request.currentUser.userId, visibleModels: opencodeOcrVisibleModels },
-            { autoCommit: true }
-          );
-        } catch (clobError) {
-          const message = clobError instanceof Error ? clobError.message : String(clobError);
-          if (!/ORA-00904/i.test(message)) {
-            throw clobError;
-          }
-        }
+        await connection.execute(
+          `UPDATE users SET opencode_ocr_visible_models = :visibleModels WHERE user_id = :userId`,
+          { userId: request.currentUser.userId, visibleModels: opencodeOcrVisibleModels }
+        );
       }
       if (opencodeSummaryVisibleModels !== null) {
-        try {
-          await connection.execute(
-            `UPDATE users SET opencode_summary_visible_models = :visibleModels WHERE user_id = :userId`,
-            { userId: request.currentUser.userId, visibleModels: opencodeSummaryVisibleModels },
-            { autoCommit: true }
-          );
-        } catch (clobError) {
-          const message = clobError instanceof Error ? clobError.message : String(clobError);
-          if (!/ORA-00904/i.test(message)) {
-            throw clobError;
-          }
-        }
+        await connection.execute(
+          `UPDATE users SET opencode_summary_visible_models = :visibleModels WHERE user_id = :userId`,
+          { userId: request.currentUser.userId, visibleModels: opencodeSummaryVisibleModels }
+        );
       }
 
       await recordUserActivity(connection, {
@@ -384,8 +371,10 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       });
 
       const summary = await getUserAiCredentialSummary(request.currentUser.userId, connection);
+      await connection.commit();
       return reply.send({ settings: summary });
     } catch (error) {
+      await connection.rollback();
       if ((error as { errorNum?: number }).errorNum === 1) {
         return reply.status(409).send({ message: "Ya existe un usuario con ese correo." });
       }

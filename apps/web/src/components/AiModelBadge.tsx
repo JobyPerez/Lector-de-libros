@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 
-import { fetchAiConfig, fetchAiSettings, fetchOpencodeTopModels, type AiConfigResponse, type AiFeature } from "../app/api";
+import { aiSettingsQueryKey, aiCatalogQueryKey, fetchAiConfig, fetchAiSettings, fetchOpencodeTopModels, type AiConfigResponse, type AiFeature } from "../app/api";
 import { useAuthStore } from "../app/auth-store";
 
 const AI_CONFIG_QUERY_KEY = ["ai-config"] as const;
@@ -59,6 +59,7 @@ export function useAiConfig() {
 export function useAiModelSelection() {
   const query = useAiConfig();
   const accessToken = useAuthStore((state) => state.accessToken);
+  const userId = useAuthStore((state) => state.user?.userId);
   const [storedModelId, setStoredModelId] = useState<string>(() => {
     if (typeof window === "undefined") {
       return "";
@@ -67,24 +68,24 @@ export function useAiModelSelection() {
   });
 
   const settingsQuery = useQuery({
-    enabled: Boolean(accessToken),
+    enabled: Boolean(accessToken && userId),
     queryFn: async () => {
       if (!accessToken) throw new Error("Sesión no disponible.");
       return fetchAiSettings(accessToken);
     },
-    queryKey: ["ai-settings"],
+    queryKey: aiSettingsQueryKey(userId),
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 60 * 1000
   });
 
   const liveModelsQuery = useQuery({
-    enabled: Boolean(accessToken),
+    enabled: Boolean(accessToken && userId),
     queryFn: async () => {
       if (!accessToken) throw new Error("Sesión no disponible.");
       return fetchOpencodeTopModels(accessToken, "summary");
     },
-    queryKey: ["opencode-top-models", "summary"],
+    queryKey: aiCatalogQueryKey(userId, "summary"),
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 5 * 60 * 1000
