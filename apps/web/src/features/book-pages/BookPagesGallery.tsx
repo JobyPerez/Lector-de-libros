@@ -98,6 +98,7 @@ export function BookPagesGallery() {
   const [target, setTarget] = useState("");
   const [position, setPosition] = useState<"before" | "after">("before");
   const [dragIds, setDragIds] = useState<Set<string> | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -188,7 +189,7 @@ export function BookPagesGallery() {
   }, [bookId, book, highlightedPageId, data]);
   if (!data || !book) return <section className="panel"><h2>Galería de páginas</h2>{pagesQuery.isError || bookQuery.isError ? <><p className="error-text" role="alert">{pagesQuery.error?.message ?? bookQuery.error?.message}</p><button className="secondary-button" onClick={() => { void pagesQuery.refetch(); void bookQuery.refetch(); }}>Reintentar</button></> : <p role="status">Cargando páginas...</p>}</section>;
   return <section className="panel book-gallery" aria-labelledby="gallery-title" data-preview-size={previewSize}>
-    <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button" to={readerHref} state={{ returnTo: galleryHref }}>Volver al lector</Link></div>
+    <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
     {originPageId && !originPage && <p className="helper-text">La página de origen ya no está disponible. No se abrirá otra página en su lugar.</p>}
     <div className="gallery-toolbar">
       <span role="status">{selected.size} de {data.pages.length} seleccionadas</span>
@@ -243,18 +244,28 @@ export function BookPagesGallery() {
       {order.map((id, index) => {
         const page = byId.get(id);
         if (!page) return null;
-        return <article className="gallery-card" data-selected={selected.has(id)} data-origin={id === highlightedPageId} aria-current={id === highlightedPageId ? "page" : undefined} ref={id === highlightedPageId ? originCardRef : undefined} key={id}
-          onDragOver={(event) => { if (canEdit && dragIds && !busy && !activeJob) event.preventDefault(); }}
-          onDrop={(event) => { event.preventDefault(); if (dragIds) changeOrder(movePages(order, dragIds, id, position)); setDragIds(null); }}>
+        return <article className="gallery-card" data-selected={selected.has(id)} data-origin={id === highlightedPageId} data-dragging={dragIds?.has(id) ?? false} data-drop-position={dropTarget?.id === id ? dropTarget.position : undefined} aria-current={id === highlightedPageId ? "page" : undefined} ref={id === highlightedPageId ? originCardRef : undefined} key={id}
+          onDragOver={(event) => {
+            if (!canEdit || !data.capabilities.reorder || !dragIds || busy || activeJob) return;
+            if (dragIds.has(id)) { setDropTarget(null); return; }
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            const rect = event.currentTarget.getBoundingClientRect();
+            const nextPosition = event.clientX < rect.left + rect.width / 2 ? "before" : "after";
+            setDropTarget((current) => current?.id === id && current.position === nextPosition ? current : { id, position: nextPosition });
+          }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget((current) => current?.id === id ? null : current); }}
+          onDrop={(event) => { event.preventDefault(); if (dragIds && dropTarget?.id === id) changeOrder(movePages(order, dragIds, id, dropTarget.position)); setDragIds(null); setDropTarget(null); }}>
+          {dropTarget?.id === id && <span className="gallery-drop-label" role="status">{dropTarget.position === "before" ? "Insertar antes" : "Insertar después"}</span>}
           <div className="gallery-card-heading"><label><input type="checkbox" checked={selected.has(id)} onChange={() => {}} onClick={(event) => {
             setSelected((current) => { if (event.shiftKey) return selectPageRange(order, current, anchor, id); const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
             if (!event.shiftKey) setAnchor(id);
           }} /> Página {index + 1}{page.pageLabel ? ` · ${page.pageLabel}` : ""}</label>{id === highlightedPageId && <span className="gallery-origin-label">Página de origen</span>}
-          {canEdit && <button className="secondary-button gallery-drag" draggable={!busy && !activeJob} disabled={busy || activeJob} aria-label={`Arrastrar página ${index + 1}`} onDragStart={(event) => { const ids = selected.has(id) ? selected : new Set([id]); setDragIds(ids); event.dataTransfer.setData("text/plain", id); event.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => setDragIds(null)}>Mover</button>}</div>
+          {canEdit && <button className="secondary-button gallery-icon-button gallery-drag" draggable={!busy && !activeJob && data.capabilities.reorder} disabled={busy || activeJob || !data.capabilities.reorder} aria-label={`Arrastrar página ${index + 1}`} title="Mover página" onDragStart={(event) => { const ids = selected.has(id) ? selected : new Set([id]); setDragIds(ids); setDropTarget(null); event.dataTransfer.setData("text/plain", id); event.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => { setDragIds(null); setDropTarget(null); }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3" /></svg></button>}</div>
           <PagePreview page={page} bookId={bookId} accessToken={accessToken} image={isImages} />
           <p className="helper-text">Página guardada {page.pageNumber}{isImages ? ` · OCR: ${page.ocrStatus}` : ""}</p>
-          <div className="gallery-card-actions"><Link className="secondary-button" to={`${galleryPath}/${id}/read${gallerySearch}`}>Leer</Link>
-            {canEdit && <>{page.capabilities.edit && <Link className="secondary-button" to={`${galleryPath}/${id}/edit${gallerySearch}`}>Editar</Link>}{page.capabilities.delete && <button className="danger-button" disabled={dirty || busy || activeJob} onClick={() => remove([id])}>Eliminar</button>}</>}
+          <div className="gallery-card-actions"><Link className="secondary-button gallery-icon-button" aria-label="Leer" title="Leer página" to={`${galleryPath}/${id}/read${gallerySearch}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v16m0-16C9 3 5 3 2 4v16c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z" /></svg></Link>
+            {canEdit && <>{page.capabilities.edit && <Link className="secondary-button gallery-icon-button" aria-label="Editar" title="Editar página" to={`${galleryPath}/${id}/edit${gallerySearch}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3Zm-3 3 5 5" /></svg></Link>}{page.capabilities.delete && <button className="danger-button gallery-icon-button" aria-label="Eliminar" title="Eliminar página" disabled={dirty || busy || activeJob} onClick={() => remove([id])}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" /></svg></button>}</>}
           </div>
         </article>;
       })}
@@ -262,6 +273,6 @@ export function BookPagesGallery() {
     {showScrollTop && createPortal(<button type="button" className="primary-button gallery-scroll-top" aria-label="Volver arriba" title="Volver arriba" onClick={() => {
       headingRef.current?.focus({ preventScroll: true });
       window.scrollTo({ top: 0, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
-    }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12" /></svg><span>Subir</span></button>, document.body)}
+    }}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 12 6-6 6 6M12 6v12" /></svg></button>, document.body)}
   </section>;
 }

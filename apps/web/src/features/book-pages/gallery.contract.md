@@ -31,7 +31,7 @@ Builder draft identity is `bookId:pageId`, not position. Visual saves, edited-im
 
 Reader `PUT /books/:bookId/progress` includes `paragraphId` alongside existing numeric progress fields. The backend resolves that paragraph's current page/paragraph/sequence/percentage under the book lock instead of writing stale numeric positions after a reorder. Progress deduplication includes paragraph identity. Audio-block progress also supplies its stable paragraph ID.
 
-Selection uses IDs, including additive Shift/range selection and stable multi-page moves. Drag/drop uses the same before/after operation as mobile/keyboard selects. Order is a local draft until Save order. Cancel discards it. Existing route/unload/logout warnings protect unsaved order; deletion and OCR are disabled until order is saved or cancelled. Mutations require book role and page capabilities. The current known active OCR job disables ordering/deletion; unknown jobs from other devices require server-side protection.
+Selection uses IDs, including additive Shift/range selection and stable multi-page moves. Drag/drop marks insertion before/after the hovered card according to the pointer's horizontal half; dropping applies that marked destination. Mobile/keyboard selects offer the same before/after operation. Order is a local draft until Save order. Cancel discards it. Existing route/unload/logout warnings protect unsaved order; deletion and OCR are disabled until order is saved or cancelled. Mutations require book role and page capabilities. The current known active OCR job disables ordering/deletion; unknown jobs from other devices require server-side protection.
 
 ## Verification
 

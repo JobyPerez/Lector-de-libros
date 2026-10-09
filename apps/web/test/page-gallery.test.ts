@@ -121,7 +121,7 @@ test("viewer gallery shows safely escaped EPUB text and read links without mutat
   assert.equal(document.querySelectorAll(".gallery-card").length, 3);
   assert.equal(document.querySelector("script"), null);
   assert.match(document.querySelector(".gallery-preview")!.textContent!, /<script>not executable/);
-  assert.equal(document.querySelector("a[href='/books/book/pages/a/read']")?.textContent, "Leer");
+  assert.equal(document.querySelector("a[href='/books/book/pages/a/read']")?.getAttribute("aria-label"), "Leer");
   assert.doesNotMatch(html, /Guardar orden|Ejecutar OCR|Eliminar selección|>Editar</);
 });
 
@@ -168,7 +168,7 @@ async function withGalleryDom(options: Parameters<typeof galleryHarness>[1] & { 
   if (options?.storedJobId) dom.window.localStorage.setItem("lector:gallery-ocr:user:book", options.storedJobId);
   const harness = galleryHarness(true, options);
   const root = createRoot(dom.window.document.getElementById("root")!);
-  const button = (text: string) => [...dom.window.document.querySelectorAll("button")].find((node: any) => node.textContent === text) as HTMLButtonElement;
+  const button = (text: string) => [...dom.window.document.querySelectorAll("button")].find((node: any) => node.getAttribute("aria-label") === text || node.textContent === text) as HTMLButtonElement;
   try {
     await act(async () => root.render(React.createElement(harness.Gallery)));
     await run({ ...harness, dom, document: dom.window.document, root, button, scrolls });
@@ -258,14 +258,60 @@ test("gallery highlights and scrolls to the immutable origin once, preserves its
     assert.equal(origin.getAttribute("aria-current"), "page");
     assert.match(origin.textContent, /Página guardada 9/);
     assert.deepEqual(scrolls, [origin]);
-    assert.equal([...document.querySelectorAll("a")].find((link: any) => link.textContent === "Volver al lector").getAttribute("href"), "/books/book?page=9&pageId=b");
-    assert.equal(document.querySelector("a[href='/books/book/pages/a/read?pageId=b&page=2']").textContent, "Leer");
-    assert.equal(document.querySelector("a[href='/books/book/pages/a/edit?pageId=b&page=2']").textContent, "Editar");
+    assert.equal(document.querySelector("a[aria-label='Volver al lector']").getAttribute("href"), "/books/book?page=9&pageId=b");
+    assert.equal(document.querySelector("a[href='/books/book/pages/a/read?pageId=b&page=2']").getAttribute("aria-label"), "Leer");
+    assert.equal(document.querySelector("a[href='/books/book/pages/a/edit?pageId=b&page=2']").getAttribute("aria-label"), "Editar");
     await act(async () => button("Seleccionar todas").click());
     const size = [...document.querySelectorAll("select")].find((select: any) => select.parentElement.textContent.includes("Tamaño de vista previa"));
     await act(async () => { size.value = "compact"; size.dispatchEvent(new dom.window.Event("change", { bubbles: true })); });
     assert.equal(document.querySelector(".book-gallery").dataset.previewSize, "compact");
     assert.equal(scrolls.length, 1, "selection and size changes must not repeatedly jump the viewport");
+  });
+});
+
+test("gallery controls are accessible icons without visible button text", async () => {
+  await withGalleryDom({}, async ({ document }: any) => {
+    const controls = document.querySelectorAll(".gallery-icon-button");
+    assert.equal(controls.length, 13);
+    for (const control of controls) {
+      assert.equal(control.textContent, "");
+      assert.ok(control.getAttribute("aria-label"));
+      assert.ok(control.getAttribute("title"));
+      assert.equal(control.querySelector("svg").getAttribute("aria-hidden"), "true");
+    }
+  });
+});
+
+test("drag marks the pointer's insertion side until drop, and clears on leave or cancel", async () => {
+  await withGalleryDom({}, async ({ document, button, calls }: any) => {
+    const cards = [...document.querySelectorAll(".gallery-card")];
+    const handle = cards[0].querySelector(".gallery-drag");
+    const dataTransfer = { setData() {}, effectAllowed: "", dropEffect: "" };
+    cards[2].getBoundingClientRect = () => ({ left: 100, width: 200 });
+    await act(async () => Simulate.dragStart(handle, { dataTransfer } as any));
+    assert.equal(cards[0].dataset.dragging, "true");
+    await act(async () => Simulate.dragOver(cards[2], { clientX: 150, dataTransfer } as any));
+    assert.equal(cards[2].dataset.dropPosition, "before");
+    assert.equal(cards[2].querySelector(".gallery-drop-label").textContent, "Insertar antes");
+    assert.equal(button("Guardar orden").disabled, true, "hover must not alter the draft");
+    await act(async () => Simulate.dragLeave(cards[2], { relatedTarget: cards[2].querySelector("svg") } as any));
+    assert.equal(cards[2].dataset.dropPosition, "before", "moving over card children preserves the marker");
+    await act(async () => Simulate.dragOver(cards[2], { clientX: 250, dataTransfer } as any));
+    assert.equal(cards[2].dataset.dropPosition, "after");
+    await act(async () => Simulate.drop(cards[2], { dataTransfer } as any));
+    assert.equal(document.querySelector("[data-drop-position]"), null);
+    assert.equal(document.querySelector("[data-dragging='true']"), null);
+    assert.equal(button("Guardar orden").disabled, false);
+    await act(async () => button("Guardar orden").click());
+    assert.deepEqual(calls.find((call: unknown[]) => call[0] === "reorder")[3], { pageIds: ["b", "c", "a"], expectedPageIds: ["a", "b", "c"] });
+    await act(async () => Simulate.dragStart(handle, { dataTransfer } as any));
+    await act(async () => Simulate.dragOver(cards[2], { clientX: 150, dataTransfer } as any));
+    await act(async () => Simulate.dragLeave(cards[2], { relatedTarget: null } as any));
+    assert.equal(document.querySelector("[data-drop-position]"), null);
+    await act(async () => Simulate.dragOver(cards[2], { clientX: 250, dataTransfer } as any));
+    await act(async () => Simulate.dragEnd(handle));
+    assert.equal(document.querySelector("[data-drop-position]"), null);
+    assert.equal(button("Guardar orden").disabled, true);
   });
 });
 
@@ -275,24 +321,25 @@ test("floating back-to-top appears after scrolling and respects reduced motion",
     dom.window.scrollTo = (options: ScrollToOptions) => calls.push(options);
     let reducedMotion = false;
     dom.window.matchMedia = () => ({ matches: reducedMotion });
-    assert.equal(button("Subir"), undefined);
+    assert.equal(button("Volver arriba"), undefined);
     await act(async () => {
       Object.defineProperty(dom.window, "scrollY", { configurable: true, value: 500 });
       dom.window.dispatchEvent(new dom.window.Event("scroll"));
     });
-    assert.equal(button("Subir").getAttribute("aria-label"), "Volver arriba");
-    assert.equal(button("Subir").parentElement, document.body, "fixed button must escape the panel's backdrop-filter containing block");
-    await act(async () => button("Subir").click());
+    assert.equal(button("Volver arriba").textContent, "");
+    assert.ok(button("Volver arriba").querySelector("svg"));
+    assert.equal(button("Volver arriba").parentElement, document.body, "fixed button must escape the panel's backdrop-filter containing block");
+    await act(async () => button("Volver arriba").click());
     assert.deepEqual(calls.at(-1), { top: 0, behavior: "smooth" });
     assert.equal(document.activeElement.id, "gallery-title");
     reducedMotion = true;
-    await act(async () => button("Subir").click());
+    await act(async () => button("Volver arriba").click());
     assert.deepEqual(calls.at(-1), { top: 0, behavior: "instant" });
     await act(async () => {
       Object.defineProperty(dom.window, "scrollY", { configurable: true, value: 0 });
       dom.window.dispatchEvent(new dom.window.Event("scroll"));
     });
-    assert.equal(button("Subir"), undefined);
+    assert.equal(button("Volver arriba"), undefined);
   });
 });
 
@@ -312,7 +359,7 @@ test("a deleted source ID is retained and never replaced by the page now at its 
   const document = new JSDOM(renderToStaticMarkup(React.createElement(Gallery))).window.document;
   assert.equal(document.querySelector("[data-origin='true']"), null);
   assert.match(document.body.textContent!, /página de origen ya no está disponible/);
-  assert.equal([...document.querySelectorAll("a")].find((link) => link.textContent === "Volver al lector")?.getAttribute("href"), "/books/book?page=2&pageId=deleted");
+  assert.equal(document.querySelector("a[aria-label='Volver al lector']")?.getAttribute("href"), "/books/book?page=2&pageId=deleted");
 });
 
 test("OCR pending/failed shortcuts use immutable IDs and prefer job progress to stale listing status", async () => {
