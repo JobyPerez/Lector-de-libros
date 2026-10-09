@@ -169,7 +169,7 @@ function ocrSetup(storedPage: { htmlContent?: string | null; visualDocumentJson?
     insertContentImageAssets: async () => { calls.push("insertAssets"); },
     replaceBookPageParagraphs: async (_connection: unknown, value: unknown) => { calls.push("replace"); replacement = value; page.updatedAt = savedVersion; },
     recordUserActivity: async () => { calls.push("activity"); },
-    getEffectiveUserAiCredentials: async () => ({}), collectBookOcrMarginHints: async () => undefined,
+    getEffectiveUserAiCredentials: async () => ({}), getSharedOcrModelViolation: () => null, getSharedSummaryModelViolation: () => null, collectBookOcrMarginHints: async () => undefined,
     runOcrOnImage: async () => { calls.push("mockOcr"); return buildRichPageFromEditableText("Intentionally reprocessed."); },
     oracledb: { BUFFER: 1 }
   };
@@ -386,7 +386,7 @@ test("in-flight generation cannot overwrite stale flags with a response based on
       listBookParagraphTexts: async () => ["Original"], resolveBookSectionContext: async () => section,
       resolveSelectedSectionContexts: async () => [section], listSelectedSectionParagraphTexts: async () => ["Original"],
       listSectionParagraphTexts: async () => ["Original"], createSelectedSectionsAiTitle: () => "Section",
-      getEffectiveUserAiCredentials: async () => ({}), generateAiRequestResponse: generate, generateSectionSummary: generate,
+      getEffectiveUserAiCredentials: async () => ({}), getSharedOcrModelViolation: () => null, getSharedSummaryModelViolation: () => null, generateAiRequestResponse: generate, generateSectionSummary: generate,
       appEnv: { opencodeModel: "test" }, createAiRequest: async () => { calls.push("create"); },
       findStoredSectionSummaryForSection: async () => { calls.push("findSummary"); }
     });

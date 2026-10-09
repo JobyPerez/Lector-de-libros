@@ -142,9 +142,27 @@ export function useAiModelSelection() {
     ?? undefined;
   // Un por-defecto gratuito guardado ya no sirve: se ignora y se usa el del servidor.
   const userDefaultModel = rawUserDefault && !isFreeZenModelId(rawUserDefault) ? rawUserDefault : undefined;
+  // Compartido = solo el predeterminado del que comparte. Se ignora la lista
+  // visible propia y el modelo guardado en localStorage.
+  const isSharedSummary = !settingsQuery.data?.settings.hasOpencodeApiKey && Boolean(
+    settingsQuery.data?.settings.sharedOpencodeSummaryBy ?? settingsQuery.data?.settings.usingSharedOpencodeSummary
+  );
+  const sharedDefault = settingsQuery.data?.effectiveModels.summaryModel ?? undefined;
+  const sharedDefaultClean = sharedDefault && !isFreeZenModelId(sharedDefault) ? sharedDefault : undefined;
 
   let finalModels: SelectableAiModel[];
-  if (visibleIds.length > 0) {
+  if (isSharedSummary && sharedDefaultClean) {
+    finalModels = [
+      metadataById.get(sharedDefaultClean) ?? {
+        description: settingsQuery.data?.settings.sharedOpencodeSummaryBy
+          ? `Modelo predeterminado compartido por ${settingsQuery.data.settings.sharedOpencodeSummaryBy}.`
+          : "Modelo predeterminado compartido.",
+        id: sharedDefaultClean,
+        name: sharedDefaultClean,
+        pricing: "Compartido"
+      }
+    ];
+  } else if (visibleIds.length > 0) {
     // El usuario marcó qué modelos quiere ver en Configuración IA: respetar exactamente esa lista.
     finalModels = visibleIds.map((id) => metadataById.get(id) ?? {
       description: "Modelo guardado en tu configuración.",
@@ -190,8 +208,10 @@ export function useAiModelSelection() {
     }
   }
 
-  const configuredModel = finalModels.find((model) => model.id === storedModelId);
-  const selectedModelId = configuredModel?.id
+  const configuredModel = isSharedSummary ? undefined : finalModels.find((model) => model.id === storedModelId);
+  const selectedModelId = isSharedSummary && sharedDefaultClean
+    ? sharedDefaultClean
+    : configuredModel?.id
     ?? (userDefaultModel && finalModels.some((model) => model.id === userDefaultModel) ? userDefaultModel : undefined)
     ?? query.data?.defaultModel
     ?? finalModels[0]?.id
@@ -201,15 +221,21 @@ export function useAiModelSelection() {
     if (!selectedModelId || typeof window === "undefined") {
       return;
     }
+    if (isSharedSummary) return;
     window.localStorage.setItem(AI_MODEL_STORAGE_KEY, selectedModelId);
-  }, [selectedModelId]);
+  }, [selectedModelId, isSharedSummary]);
 
   return {
     ...query,
     models: finalModels,
     selectedModel: finalModels.find((model) => model.id === selectedModelId),
     selectedModelId,
-    setSelectedModelId: (modelId: string) => setStoredModelId(modelId)
+    isSharedSummary,
+    sharedBy: settingsQuery.data?.settings.sharedOpencodeSummaryBy ?? null,
+    setSelectedModelId: (modelId: string) => {
+      if (isSharedSummary) return;
+      setStoredModelId(modelId);
+    }
   };
 }
 

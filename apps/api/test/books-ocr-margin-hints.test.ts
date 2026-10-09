@@ -102,6 +102,8 @@ function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: 
       assert.equal(userId, "editor"); assert.equal(db, connection);
       return { awsAccessKeyId: "shared-key", awsSecretAccessKey: "shared-secret", awsRegion: "region", opencodeOcrApiKey: "ocr-key" };
     },
+    getSharedOcrModelViolation: () => null,
+    getSharedSummaryModelViolation: () => null,
     runOcrOnImage: async (bytes: Buffer, fileName: string, mimeType: string, settings: any) => {
       paidCalls++; events.push("ocr");
       assert.equal(bytes.toString(), "stored-image"); assert.equal(fileName, "page.png"); assert.equal(mimeType, "image/png");

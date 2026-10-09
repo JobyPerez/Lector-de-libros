@@ -272,6 +272,8 @@ type SharerKeyRow = {
   opencodeApiKey: string | null;
   geminiApiKey: string | null;
   deepgramApiKey: string | null;
+  opencodeOcrModel: string | null;
+  opencodeSummaryModel: string | null;
 };
 
 async function readSharerKeys(
@@ -286,13 +288,19 @@ async function readSharerKeys(
              aws_secret_access_key_encrypted AS "awsSecretAccessKeyEncrypted",
              opencode_api_key_encrypted AS "opencodeApiKeyEncrypted",
              gemini_api_key_encrypted AS "geminiApiKeyEncrypted",
-             deepgram_api_key_encrypted AS "deepgramApiKeyEncrypted"
+             deepgram_api_key_encrypted AS "deepgramApiKeyEncrypted",
+             opencode_ocr_model AS "opencodeOcrModel",
+             opencode_summary_model AS "opencodeSummaryModel"
       FROM users WHERE user_id = :sharerUserId
     `,
     { sharerUserId }
   );
   const [row] = (result.rows ?? []) as Array<Record<string, unknown>>;
   if (!row) return null;
+  const cleanModel = (value: unknown): string | null => {
+    const text = typeof value === "string" ? value.trim() : "";
+    return text ? text : null;
+  };
   return {
     userId: String(row.userId),
     username: String(row.username ?? ""),
@@ -301,7 +309,9 @@ async function readSharerKeys(
     awsSecretAccessKey: decryptOptionalSecret(row.awsSecretAccessKeyEncrypted as string | null),
     opencodeApiKey: decryptOptionalSecret(row.opencodeApiKeyEncrypted as string | null),
     geminiApiKey: decryptOptionalSecret(row.geminiApiKeyEncrypted as string | null),
-    deepgramApiKey: decryptOptionalSecret(row.deepgramApiKeyEncrypted as string | null)
+    deepgramApiKey: decryptOptionalSecret(row.deepgramApiKeyEncrypted as string | null),
+    opencodeOcrModel: cleanModel(row.opencodeOcrModel),
+    opencodeSummaryModel: cleanModel(row.opencodeSummaryModel)
   };
 }
 
@@ -345,6 +355,8 @@ type LegacyAdminCandidate = {
   opencodeApiKey: string | null;
   geminiApiKey: string | null;
   deepgramApiKey: string | null;
+  opencodeOcrModel: string | null;
+  opencodeSummaryModel: string | null;
   shareAws: boolean;
   shareOpencode: boolean;
   shareGoogle: boolean;
@@ -366,6 +378,8 @@ async function findLegacyAdminCandidates(
           opencode_api_key_encrypted AS "opencodeApiKeyEncrypted",
           gemini_api_key_encrypted AS "geminiApiKeyEncrypted",
           deepgram_api_key_encrypted AS "deepgramApiKeyEncrypted",
+          opencode_ocr_model AS "opencodeOcrModel",
+          opencode_summary_model AS "opencodeSummaryModel",
           share_aws AS "shareAws",
           share_opencode AS "shareOpencode",
           share_google AS "shareGoogle",
@@ -379,19 +393,27 @@ async function findLegacyAdminCandidates(
       { excludeUserId }
     );
     const rows = (result.rows ?? []) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({
-      username: String(row.username ?? ""),
-      awsAccessKeyId: decryptOptionalSecret(row.awsAccessKeyIdEncrypted as string | null),
-      awsRegion: (row.awsRegion as string | null) ?? null,
-      awsSecretAccessKey: decryptOptionalSecret(row.awsSecretAccessKeyEncrypted as string | null),
-      opencodeApiKey: decryptOptionalSecret(row.opencodeApiKeyEncrypted as string | null),
-      geminiApiKey: decryptOptionalSecret(row.geminiApiKeyEncrypted as string | null),
-      deepgramApiKey: decryptOptionalSecret(row.deepgramApiKeyEncrypted as string | null),
-      shareAws: parseShareFlag(row.shareAws as string | null),
-      shareOpencode: parseShareFlag(row.shareOpencode as string | null),
-      shareGoogle: parseShareFlag(row.shareGoogle as string | null),
-      shareDeepgram: parseShareFlag(row.shareDeepgram as string | null)
-    }));
+    return rows.map((row) => {
+      const cleanModel = (value: unknown): string | null => {
+        const text = typeof value === "string" ? value.trim() : "";
+        return text ? text : null;
+      };
+      return {
+        username: String(row.username ?? ""),
+        awsAccessKeyId: decryptOptionalSecret(row.awsAccessKeyIdEncrypted as string | null),
+        awsRegion: (row.awsRegion as string | null) ?? null,
+        awsSecretAccessKey: decryptOptionalSecret(row.awsSecretAccessKeyEncrypted as string | null),
+        opencodeApiKey: decryptOptionalSecret(row.opencodeApiKeyEncrypted as string | null),
+        geminiApiKey: decryptOptionalSecret(row.geminiApiKeyEncrypted as string | null),
+        deepgramApiKey: decryptOptionalSecret(row.deepgramApiKeyEncrypted as string | null),
+        opencodeOcrModel: cleanModel(row.opencodeOcrModel),
+        opencodeSummaryModel: cleanModel(row.opencodeSummaryModel),
+        shareAws: parseShareFlag(row.shareAws as string | null),
+        shareOpencode: parseShareFlag(row.shareOpencode as string | null),
+        shareGoogle: parseShareFlag(row.shareGoogle as string | null),
+        shareDeepgram: parseShareFlag(row.shareDeepgram as string | null)
+      };
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/ORA-00904/i.test(message)) return [];
@@ -401,8 +423,8 @@ async function findLegacyAdminCandidates(
 
 type ResolvedShares = {
   aws: { username: string; awsRegion: string; awsAccessKeyId: string; awsSecretAccessKey: string } | null;
-  opencodeOcr: { username: string; opencodeApiKey: string } | null;
-  opencodeSummary: { username: string; opencodeApiKey: string } | null;
+  opencodeOcr: { username: string; opencodeApiKey: string; opencodeOcrModel: string | null } | null;
+  opencodeSummary: { username: string; opencodeApiKey: string; opencodeSummaryModel: string | null } | null;
   google: { username: string; geminiApiKey: string } | null;
   deepgram: { username: string; deepgramApiKey: string } | null;
 };
@@ -423,12 +445,14 @@ async function resolveRecipientShares(
     } else if (share.iaType === "OPENCODE_OCR" && !resolved.opencodeOcr) {
       const keys = await readSharerKeys(share.sharerUserId, existingConnection);
       if (keys?.opencodeApiKey) {
-        resolved.opencodeOcr = { username: share.sharerUsername, opencodeApiKey: keys.opencodeApiKey };
+        // Solo se comparte el modelo predeterminado del que comparte, nunca toda su lista visible.
+        resolved.opencodeOcr = { username: share.sharerUsername, opencodeApiKey: keys.opencodeApiKey, opencodeOcrModel: keys.opencodeOcrModel };
       }
     } else if (share.iaType === "OPENCODE_SUMMARY" && !resolved.opencodeSummary) {
       const keys = await readSharerKeys(share.sharerUserId, existingConnection);
       if (keys?.opencodeApiKey) {
-        resolved.opencodeSummary = { username: share.sharerUsername, opencodeApiKey: keys.opencodeApiKey };
+        // Solo se comparte el modelo predeterminado del que comparte, nunca toda su lista visible.
+        resolved.opencodeSummary = { username: share.sharerUsername, opencodeApiKey: keys.opencodeApiKey, opencodeSummaryModel: keys.opencodeSummaryModel };
       }
     } else if (share.iaType === "GOOGLE" && !resolved.google) {
       const keys = await readSharerKeys(share.sharerUserId, existingConnection);
@@ -451,10 +475,10 @@ async function resolveRecipientShares(
         resolved.aws = { username: candidate.username, awsRegion: candidate.awsRegion, awsAccessKeyId: candidate.awsAccessKeyId, awsSecretAccessKey: candidate.awsSecretAccessKey };
       }
       if (!resolved.opencodeOcr && candidate.shareOpencode && candidate.opencodeApiKey) {
-        resolved.opencodeOcr = { username: candidate.username, opencodeApiKey: candidate.opencodeApiKey };
+        resolved.opencodeOcr = { username: candidate.username, opencodeApiKey: candidate.opencodeApiKey, opencodeOcrModel: candidate.opencodeOcrModel };
       }
       if (!resolved.opencodeSummary && candidate.shareOpencode && candidate.opencodeApiKey) {
-        resolved.opencodeSummary = { username: candidate.username, opencodeApiKey: candidate.opencodeApiKey };
+        resolved.opencodeSummary = { username: candidate.username, opencodeApiKey: candidate.opencodeApiKey, opencodeSummaryModel: candidate.opencodeSummaryModel };
       }
       if (!resolved.google && candidate.shareGoogle && candidate.geminiApiKey) {
         resolved.google = { username: candidate.username, geminiApiKey: candidate.geminiApiKey };
@@ -604,6 +628,22 @@ export async function getEffectiveUserAiCredentials(
       deepgram: hasOwnDeepgram ? "own" : resolved.deepgram ? "shared" : appEnv.deepgramApiKey ? "env" : "none"
     };
 
+    // Compartido = solo el predeterminado del que comparte. Nunca se heredan
+    // sus listas visibles ni se permite que el receptor elija otro modelo con
+    // la clave compartida. Con clave propia se respeta la config del usuario.
+    const effectiveOcrModel = hasOwnOpencode
+      ? own.opencodeOcrModel
+      : (resolved.opencodeOcr?.opencodeOcrModel ?? own.opencodeOcrModel ?? null);
+    const effectiveSummaryModel = hasOwnOpencode
+      ? own.opencodeSummaryModel
+      : (resolved.opencodeSummary?.opencodeSummaryModel ?? own.opencodeSummaryModel ?? null);
+    const effectiveOcrVisibleModels = hasOwnOpencode
+      ? own.opencodeOcrVisibleModels
+      : (effectiveOcrModel ? [effectiveOcrModel] : []);
+    const effectiveSummaryVisibleModels = hasOwnOpencode
+      ? own.opencodeSummaryVisibleModels
+      : (effectiveSummaryModel ? [effectiveSummaryModel] : []);
+
     return {
       ...own,
       awsRegion,
@@ -614,6 +654,10 @@ export async function getEffectiveUserAiCredentials(
       deepgramApiKey,
       opencodeOcrApiKey,
       opencodeSummaryApiKey,
+      opencodeOcrModel: effectiveOcrModel,
+      opencodeSummaryModel: effectiveSummaryModel,
+      opencodeOcrVisibleModels: effectiveOcrVisibleModels,
+      opencodeSummaryVisibleModels: effectiveSummaryVisibleModels,
       sources,
       sharedBy: {
         aws: hasOwnAws ? null : (resolved.aws?.username ?? null),
@@ -702,4 +746,48 @@ export function serializeVisibleModels(models: string[] | undefined): string | n
   if (!models) return null;
   const cleaned = models.map((item) => item.trim()).filter(Boolean);
   return JSON.stringify(cleaned);
+}
+
+// Compartido = solo el predeterminado. Devuelve el id permitido cuando la
+// fuente es compartida, o null si no hay restricción (clave propia o sin default).
+export function getSharedOnlyOcrModelId(effective: Partial<EffectiveUserAiCredentials> & Record<string, unknown>): string | null {
+  const sources = (effective as { sources?: { opencodeOcr?: string } }).sources;
+  if (sources?.opencodeOcr !== "shared") return null;
+  const model = (effective as { opencodeOcrModel?: string | null }).opencodeOcrModel;
+  return model ?? appEnv.opencodeOcrModel ?? null;
+}
+
+export function getSharedOnlySummaryModelId(effective: Partial<EffectiveUserAiCredentials> & Record<string, unknown>): string | null {
+  const sources = (effective as { sources?: { opencodeSummary?: string } }).sources;
+  if (sources?.opencodeSummary !== "shared") return null;
+  const model = (effective as { opencodeSummaryModel?: string | null }).opencodeSummaryModel;
+  return model ?? appEnv.opencodeModel ?? null;
+}
+
+export function getSharedOcrModelViolation(
+  effective: Partial<EffectiveUserAiCredentials> & Record<string, unknown>,
+  requestedModelId: string | null | undefined
+): string | null {
+  const allowed = getSharedOnlyOcrModelId(effective);
+  if (!allowed) return null;
+  const requested = (requestedModelId ?? "").trim();
+  if (!requested || requested === allowed) return null;
+  const sharer = (effective as { sharedBy?: { opencodeOcr?: string | null } }).sharedBy?.opencodeOcr;
+  return sharer
+    ? `Solo puedes usar el modelo OCR predeterminado compartido por ${sharer} (${allowed}).`
+    : `Solo puedes usar el modelo OCR predeterminado compartido (${allowed}).`;
+}
+
+export function getSharedSummaryModelViolation(
+  effective: Partial<EffectiveUserAiCredentials> & Record<string, unknown>,
+  requestedModelId: string | null | undefined
+): string | null {
+  const allowed = getSharedOnlySummaryModelId(effective);
+  if (!allowed) return null;
+  const requested = (requestedModelId ?? "").trim();
+  if (!requested || requested === allowed) return null;
+  const sharer = (effective as { sharedBy?: { opencodeSummary?: string | null } }).sharedBy?.opencodeSummary;
+  return sharer
+    ? `Solo puedes usar el modelo de resúmenes predeterminado compartido por ${sharer} (${allowed}).`
+    : `Solo puedes usar el modelo de resúmenes predeterminado compartido (${allowed}).`;
 }

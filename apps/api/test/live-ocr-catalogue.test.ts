@@ -53,6 +53,8 @@ async function catalogue(fetcher: typeof fetch, keys: Record<string, string | un
     getOpenCodeRequestHeaders: (key: string) => ({ Authorization: `Bearer ${key}` }),
     getEffectiveUserAiCredentials: async (id: string) => ({ opencodeApiKey: keys[id],
       opencodeOcrVisibleModels: ["saved-only"], opencodeOcrModel: "saved-only" }),
+    getSharedOnlyOcrModelId: () => null,
+    getSharedOnlySummaryModelId: () => null,
     appEnv: {}, curatedFallback: () => [{ id: "must-not-use" }],
     opencodeModelsQuerySchema: z.object({ purpose: z.enum(["ocr", "summary"]).default("ocr"), refresh: z.string().optional() }),
     authenticateRequest: async (request: any) => { request.currentUser = { userId: request.headers["x-user"] ?? "a" }; } };

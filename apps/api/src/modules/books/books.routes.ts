@@ -13,7 +13,7 @@ import { appEnv } from "../../config/env.js";
 import { assertBookRole, requireBookRole } from "../../services/book-access.js";
 import { calculateParagraphReadingMetrics } from "../../services/paragraph-metrics.js";
 import { recordBookView, recordUserActivity } from "../../services/user-activity.js";
-import { getEffectiveUserAiCredentials } from "../../services/user-ai-credentials.js";
+import { getEffectiveUserAiCredentials, getSharedOcrModelViolation, getSharedSummaryModelViolation } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildImagePdfExport, buildPdfExport } from "./book-export.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
@@ -4797,6 +4797,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     });
     const imageFiles = ensureImageFiles(multipartForm.files);
     const aiCredentials = await getEffectiveUserAiCredentials(request.currentUser.userId);
+    const sharedOcrViolation = getSharedOcrModelViolation(aiCredentials, payload.ocrModel);
+    if (sharedOcrViolation) {
+      return reply.status(403).send({ message: sharedOcrViolation });
+    }
     const processedPages = await ocrImageFiles(imageFiles, payload.ocrMode, payload.languageCode, payload.ocrModel ?? aiCredentials.opencodeOcrModel ?? undefined, payload.promptOverride, {
       accessKeyId: aiCredentials.awsAccessKeyId,
       region: aiCredentials.awsRegion,
@@ -4933,6 +4937,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       nextAfterPage = requestedInsertionAfterPage;
       latestBook = existingBook;
       const aiCredentials = await getEffectiveUserAiCredentials(currentUser.userId, connection);
+      const sharedOcrViolation = getSharedOcrModelViolation(aiCredentials, payload.ocrModel);
+      if (sharedOcrViolation) {
+        return reply.status(403).send({ message: sharedOcrViolation });
+      }
       const awsCredentials = {
         accessKeyId: aiCredentials.awsAccessKeyId,
         region: aiCredentials.awsRegion,
@@ -6351,6 +6359,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const aiCredentials = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
+      const sharedOcrViolation = getSharedOcrModelViolation(aiCredentials, payload.ocrModel);
+      if (sharedOcrViolation) {
+        return reply.status(403).send({ message: sharedOcrViolation });
+      }
 
       const marginHints = await collectBookOcrMarginHints(connection, params.bookId, params.pageNumber, book.title);
       const ocrResult = await runOcrOnImage(
@@ -6558,6 +6570,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
+      const sharedSummaryViolation = getSharedSummaryModelViolation(effectiveAi, body.model);
+      if (sharedSummaryViolation) {
+        return reply.status(403).send({ message: sharedSummaryViolation });
+      }
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         languageCode: book.languageCode,
@@ -6681,6 +6697,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
+      const sharedSummaryViolation = getSharedSummaryModelViolation(effectiveAi, body.model);
+      if (sharedSummaryViolation) {
+        return reply.status(403).send({ message: sharedSummaryViolation });
+      }
       const responseText = await generateAiRequestResponse({
         kind: body.kind,
         languageCode: book.languageCode,
@@ -6964,6 +6984,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const effectiveAi = await getEffectiveUserAiCredentials(request.currentUser.userId, connection);
+      const sharedSummaryViolation = getSharedSummaryModelViolation(effectiveAi, body.model);
+      if (sharedSummaryViolation) {
+        return reply.status(403).send({ message: sharedSummaryViolation });
+      }
       const modelId = body.model ?? effectiveAi.opencodeSummaryModel ?? appEnv.opencodeModel;
       const summaryText = await generateSectionSummary(section.title, paragraphs, { languageCode: book.languageCode, model: modelId, promptOverride: body.promptOverride, providerKeys: { geminiApiKey: effectiveAi.geminiApiKey, opencodeApiKey: effectiveAi.opencodeSummaryApiKey ?? effectiveAi.opencodeApiKey } });
       if (await findBookContentVersion(connection, params.bookId, true) !== contentVersion) {

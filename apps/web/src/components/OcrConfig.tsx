@@ -35,22 +35,34 @@ export function resolveOcrModels(config?: AiConfigResponse, settings?: AiSetting
     const known = config?.models.find((entry) => entry.id === model.id);
     metadata.set(model.id, { ...known, ...model });
   }
-  const selectedModelId = override ?? settings?.effectiveModels.ocrModel ?? "";
-  const visible = settings?.settings.opencodeOcrVisibleModels ?? [];
+  // Compartido = solo el predeterminado del que comparte. Se ignora la lista
+  // visible propia y cualquier override: el receptor usa el modelo efectivo.
+  const isSharedOcr = !settings?.settings.hasOpencodeApiKey && Boolean(settings?.settings.sharedOpencodeOcrBy ?? settings?.settings.usingSharedOpencodeOcr);
+  const effectiveDefault = settings?.effectiveModels.ocrModel ?? "";
+  const selectedModelId = isSharedOcr ? effectiveDefault : (override ?? effectiveDefault);
+  const visible = isSharedOcr
+    ? (effectiveDefault ? [effectiveDefault] : [])
+    : (settings?.settings.opencodeOcrVisibleModels ?? []);
   const models: OcrSelectableModel[] = [...metadata.values()]
     .filter((model) => model.supportsVision === true && (!visible.length || visible.includes(model.id)))
     .map((model) => ({ ...model, visionStatus: "supported" }));
+  // Con compartido, el backend ya filtra el catálogo al predeterminado; si el
+  // vivo trae más (caché), limitar aquí también al predeterminado.
+  const sharedModels = isSharedOcr && effectiveDefault ? models.filter((model) => model.id === effectiveDefault) : models;
   const selectedMetadata = metadata.get(selectedModelId);
-  const selectedModel: OcrSelectableModel = models.find((model) => model.id === selectedModelId) ?? {
+  const selectedModel: OcrSelectableModel = sharedModels.find((model) => model.id === selectedModelId) ?? {
     ...(selectedMetadata ?? { id: selectedModelId, name: selectedModelId, description: "Modelo no disponible en el catalogo OpenCode en vivo.", pricing: "" }),
     supportsVision: false,
     visionStatus: selectedMetadata?.supportsVision === false ? "unsupported" : "unconfirmed"
   };
   const supportsVision = selectedModel.visionStatus === "supported";
-  const compatibilityMessage = live?.warning ?? (selectedMetadata?.supportsVision === true && visible.length && !visible.includes(selectedModelId)
+  const sharedNotice = isSharedOcr && settings?.settings.sharedOpencodeOcrBy
+    ? `Usas el modelo OCR predeterminado compartido por ${settings.settings.sharedOpencodeOcrBy}.`
+    : null;
+  const compatibilityMessage = sharedNotice ?? live?.warning ?? (selectedMetadata?.supportsVision === true && visible.length && !visible.includes(selectedModelId)
     ? `${selectedMetadata.name}: tu modelo OCR por defecto no esta marcado como visible. Marca el modelo en Configuracion IA o elige uno de los modelos visibles; tu preferencia guardada no se ha cambiado.`
     : ocrCompatibilityMessage(selectedModel));
-  return { models, selectedModelId, selectedModel, supportsVision, status: selectedModel.visionStatus, compatibilityMessage,
+  return { models: sharedModels, selectedModelId, selectedModel, supportsVision, status: selectedModel.visionStatus, compatibilityMessage, isSharedOcr,
     canRunOcr: (mode: ImageOcrMode, advanced: boolean) => !usesOcrModel(mode, advanced) || supportsVision };
 }
 

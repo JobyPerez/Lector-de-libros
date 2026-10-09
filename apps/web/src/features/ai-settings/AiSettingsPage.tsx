@@ -176,6 +176,13 @@ function AiSettingsForm() {
   const settings = settingsQuery.data?.settings;
   const isAdmin = settingsQuery.data?.isAdmin ?? storeUser?.role === "ADMIN";
 
+  // Compartido = solo el predeterminado del que comparte. Mientras no tengas
+  // clave propia, no puedes elegir ni cambiar modelos: usas su predeterminado.
+  const isSharedOcrLocked = !settings?.hasOpencodeApiKey && Boolean(settings?.sharedOpencodeOcrBy ?? settings?.usingSharedOpencodeOcr);
+  const isSharedSummaryLocked = !settings?.hasOpencodeApiKey && Boolean(settings?.sharedOpencodeSummaryBy ?? settings?.usingSharedOpencodeSummary);
+  const sharedOcrDefault = settingsQuery.data?.effectiveModels.ocrModel ?? "";
+  const sharedSummaryDefault = settingsQuery.data?.effectiveModels.summaryModel ?? "";
+
   useEffect(() => {
     if (!settings) return;
     setForm((current) => ({
@@ -308,7 +315,10 @@ function AiSettingsForm() {
     if (!accessToken) return;
     setErrorMessage(null);
     setSuccessMessage(null);
-    for (const [model, visible] of [[form.opencodeOcrModel, form.opencodeOcrVisible], [form.opencodeSummaryModel, form.opencodeSummaryVisible]] as const) {
+    const checks: Array<[string, string[]]> = [];
+    if (!isSharedOcrLocked) checks.push([form.opencodeOcrModel, form.opencodeOcrVisible]);
+    if (!isSharedSummaryLocked) checks.push([form.opencodeSummaryModel, form.opencodeSummaryVisible]);
+    for (const [model, visible] of checks) {
       if (model && visible.length > 0 && !visible.includes(model)) {
         setErrorMessage("El modelo por defecto debe estar marcado como visible. Elige otro predeterminado o marca el modelo antes de guardar.");
         return;
@@ -323,16 +333,16 @@ function AiSettingsForm() {
         ...(form.deepgramApiKey.trim() ? { deepgramApiKey: form.deepgramApiKey.trim() } : {}),
         ...(form.geminiApiKey.trim() ? { geminiApiKey: form.geminiApiKey.trim() } : {}),
         ...(form.opencodeApiKey.trim() ? { opencodeApiKey: form.opencodeApiKey.trim() } : {}),
-        opencodeOcrModel: form.opencodeOcrModel.trim() || null,
-        opencodeSummaryModel: form.opencodeSummaryModel.trim() || null,
+        ...(isSharedOcrLocked ? {} : { opencodeOcrModel: form.opencodeOcrModel.trim() || null }),
+        ...(isSharedSummaryLocked ? {} : { opencodeSummaryModel: form.opencodeSummaryModel.trim() || null }),
         clearAwsCredentials: form.clearAwsCredentials,
         clearDeepgramApiKey: form.clearDeepgramApiKey,
         clearGeminiApiKey: form.clearGeminiApiKey,
         clearOpencodeApiKey: form.clearOpencodeApiKey,
         deepgramTtsModel: form.deepgramTtsModelEs,
         deepgramTtsModelIt: form.deepgramTtsModelIt,
-        opencodeOcrVisibleModels: form.opencodeOcrVisible,
-        opencodeSummaryVisibleModels: form.opencodeSummaryVisible
+        ...(isSharedOcrLocked ? {} : { opencodeOcrVisibleModels: form.opencodeOcrVisible }),
+        ...(isSharedSummaryLocked ? {} : { opencodeSummaryVisibleModels: form.opencodeSummaryVisible })
       });
       useAuthStore.setState((previous) => previous.user && previous.user.userId === storeUser?.userId
         ? { ...previous, user: { ...previous.user, aiCredentials: { ...previous.user.aiCredentials!, ...response.settings } } }
@@ -423,7 +433,7 @@ function AiSettingsForm() {
             <div>
               <p className="eyebrow">OpenCode</p>
               <h3>OCR con visión y resúmenes</h3>
-              <p className="helper-text">Una sola clave OpenCode sirve para OCR con visión (modo VISION) y para resúmenes y peticiones IA. Elige OCR entre todos los modelos compatibles del catálogo en vivo y resúmenes entre los 5 mejores calidad-precio. El administrador puede compartirte el OCR y los resúmenes por separado.</p>
+              <p className="helper-text">Una sola clave OpenCode sirve para OCR con visión (modo VISION) y para resúmenes y peticiones IA. Elige OCR entre todos los modelos compatibles del catálogo en vivo y resúmenes entre los 5 mejores calidad-precio. El administrador puede compartirte el OCR y los resúmenes por separado; en ese caso solo recibes su modelo predeterminado, no toda su lista.</p>
             </div>
             <StatusChip active={Boolean(settings?.hasOpencodeApiKey)} sharedBy={settings?.sharedOpencodeBy} activeLabel="OpenCode configurado" pendingLabel="OpenCode pendiente" />
           </div>
@@ -436,9 +446,9 @@ function AiSettingsForm() {
           {(settings?.usingSharedOpencodeOcr || settings?.usingSharedOpencodeSummary) && !settings?.hasOpencodeApiKey ? (
             <p className="helper-text">
               Estás usando OpenCode compartido
-              {settings?.sharedOpencodeOcrBy ? ` para OCR por ${settings.sharedOpencodeOcrBy}` : ""}
+              {settings?.sharedOpencodeOcrBy ? ` para OCR por ${settings.sharedOpencodeOcrBy} (solo su predeterminado: ${settingsQuery.data?.effectiveModels.ocrModel ?? "pendiente"})` : ""}
               {settings?.sharedOpencodeOcrBy && settings?.sharedOpencodeSummaryBy ? " y" : ""}
-              {settings?.sharedOpencodeSummaryBy ? ` para resúmenes por ${settings.sharedOpencodeSummaryBy}` : ""}.
+              {settings?.sharedOpencodeSummaryBy ? ` para resúmenes por ${settings.sharedOpencodeSummaryBy} (solo su predeterminado: ${settingsQuery.data?.effectiveModels.summaryModel ?? "pendiente"})` : ""}.
               Puedes poner tu propia clave debajo.
             </p>
           ) : null}
@@ -456,46 +466,80 @@ function AiSettingsForm() {
               <p className="eyebrow">OpenCode · OCR</p>
               <h3>Modelo para OCR</h3>
             </div>
-            <button className="secondary-button" disabled={isRefreshingOcr} onClick={() => void refreshModels("ocr")} type="button">
+            <button className="secondary-button" disabled={isRefreshingOcr || isSharedOcrLocked} onClick={() => void refreshModels("ocr")} type="button">
               {isRefreshingOcr ? "Refrescando..." : "Refrescar modelos OCR"}
             </button>
           </div>
-          <p className="helper-text">Catálogo completo: {effectiveOcrModels.length} modelos OCR compatibles, sin límite. Fuente: {ocrSource === "live" ? "OpenCode en vivo" : "OpenCode en vivo pendiente"}. Capacidades de imagen y texto confirmadas mediante la metadata OpenCode de models.dev. Sin modelos guardados ni lista curada.</p>
-          {ocrCatalogueWarning && <p className="error-text" role="alert">{ocrCatalogueWarning}</p>}
-          {savedFreeOcrIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeOcrIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago.</p> : null}
-          <ModelCheckList models={effectiveOcrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
-          <label>
-            Modelo OCR por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={unavailableOcrDefault ? "unavailable" : form.opencodeOcrModel}>
-              <option value="">Usar servidor</option>
-              {unavailableOcrDefault && <option value="unavailable" disabled>Selecciona un modelo compatible</option>}
-              {ocrVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
-            </select>
-            <span className="helper-text">Marca o desmarca arriba qué modelos quieres ver en esta lista.</span>
-            {!form.opencodeOcrModel && <span className="helper-text">Modelo efectivo del servidor: {settingsQuery.data?.effectiveModels.ocrModel ?? "pendiente"}.</span>}
-            {ocrWarning && <span className="error-text" role="alert">{ocrWarning}</span>}
-          </label>
+          {isSharedOcrLocked ? (
+            <>
+              <p className="helper-text">
+                Usas el modelo OCR predeterminado compartido por {settings?.sharedOpencodeOcrBy ?? "el administrador"}: <strong>{sharedOcrDefault || "pendiente"}</strong>.
+                Solo ese modelo. Pon tu propia clave OpenCode arriba para elegir otros.
+              </p>
+              <label>
+                Modelo OCR por defecto (compartido)
+                <select disabled value={sharedOcrDefault}>
+                  <option value={sharedOcrDefault}>{sharedOcrDefault || "pendiente"}</option>
+                </select>
+              </label>
+            </>
+          ) : (
+            <>
+              <p className="helper-text">Catálogo completo: {effectiveOcrModels.length} modelos OCR compatibles, sin límite. Fuente: {ocrSource === "live" ? "OpenCode en vivo" : "OpenCode en vivo pendiente"}. Capacidades de imagen y texto confirmadas mediante la metadata OpenCode de models.dev. Sin modelos guardados ni lista curada.</p>
+              {ocrCatalogueWarning && <p className="error-text" role="alert">{ocrCatalogueWarning}</p>}
+              {savedFreeOcrIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeOcrIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago.</p> : null}
+              <ModelCheckList models={effectiveOcrModels} visible={form.opencodeOcrVisible} onToggle={(id) => toggleVisible("ocr", id)} idPrefix="ocr" />
+              <label>
+                Modelo OCR por defecto
+                <select onChange={(event) => setForm((current) => ({ ...current, opencodeOcrModel: event.target.value }))} value={unavailableOcrDefault ? "unavailable" : form.opencodeOcrModel}>
+                  <option value="">Usar servidor</option>
+                  {unavailableOcrDefault && <option value="unavailable" disabled>Selecciona un modelo compatible</option>}
+                  {ocrVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+                </select>
+                <span className="helper-text">Marca o desmarca arriba qué modelos quieres ver en esta lista.</span>
+                {!form.opencodeOcrModel && <span className="helper-text">Modelo efectivo del servidor: {settingsQuery.data?.effectiveModels.ocrModel ?? "pendiente"}.</span>}
+                {ocrWarning && <span className="error-text" role="alert">{ocrWarning}</span>}
+              </label>
+            </>
+          )}
 
           <div className="settings-section">
             <div>
               <p className="eyebrow">OpenCode · Resúmenes</p>
               <h3>Modelo para resúmenes</h3>
             </div>
-            <button className="secondary-button" disabled={isRefreshingSummary} onClick={() => void refreshModels("summary")} type="button">
+            <button className="secondary-button" disabled={isRefreshingSummary || isSharedSummaryLocked} onClick={() => void refreshModels("summary")} type="button">
               {isRefreshingSummary ? "Refrescando..." : "Refrescar top-5 resúmenes"}
             </button>
           </div>
-          {summarySource ? <p className="helper-text">Fuente: {summarySource === "live" ? "OpenCode en vivo" : "lista curada"}.</p> : null}
-          {savedFreeSummaryIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeSummaryIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago o el gratis de Google.</p> : null}
-          <ModelCheckList models={effectiveSummaryModels} visible={form.opencodeSummaryVisible} onToggle={(id) => toggleVisible("summary", id)} idPrefix="summary" />
-          <label>
-            Modelo de resúmenes por defecto
-            <select onChange={(event) => setForm((current) => ({ ...current, opencodeSummaryModel: event.target.value }))} value={unavailableSummaryDefault ? "unavailable" : form.opencodeSummaryModel}>
-              <option value="">Usar servidor</option>
-              {unavailableSummaryDefault && <option value="unavailable" disabled>Selecciona un modelo visible</option>}
-              {summaryVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
-            </select>
-          </label>
+          {isSharedSummaryLocked ? (
+            <>
+              <p className="helper-text">
+                Usas el modelo de resúmenes predeterminado compartido por {settings?.sharedOpencodeSummaryBy ?? "el administrador"}: <strong>{sharedSummaryDefault || "pendiente"}</strong>.
+                Solo ese modelo. Pon tu propia clave OpenCode arriba para elegir otros.
+              </p>
+              <label>
+                Modelo de resúmenes por defecto (compartido)
+                <select disabled value={sharedSummaryDefault}>
+                  <option value={sharedSummaryDefault}>{sharedSummaryDefault || "pendiente"}</option>
+                </select>
+              </label>
+            </>
+          ) : (
+            <>
+              {summarySource ? <p className="helper-text">Fuente: {summarySource === "live" ? "OpenCode en vivo" : "lista curada"}.</p> : null}
+              {savedFreeSummaryIds.length > 0 ? <p className="helper-text">Tus modelos gratuitos de Zen ({savedFreeSummaryIds.join(", ")}) solo funcionan dentro de OpenCode y se han ocultado: elige modelos Zen de pago o el gratis de Google.</p> : null}
+              <ModelCheckList models={effectiveSummaryModels} visible={form.opencodeSummaryVisible} onToggle={(id) => toggleVisible("summary", id)} idPrefix="summary" />
+              <label>
+                Modelo de resúmenes por defecto
+                <select onChange={(event) => setForm((current) => ({ ...current, opencodeSummaryModel: event.target.value }))} value={unavailableSummaryDefault ? "unavailable" : form.opencodeSummaryModel}>
+                  <option value="">Usar servidor</option>
+                  {unavailableSummaryDefault && <option value="unavailable" disabled>Selecciona un modelo visible</option>}
+                  {summaryVisibleOptions.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.id})</option>)}
+                </select>
+              </label>
+            </>
+          )}
 
           <div className="settings-section">
             <div>
@@ -644,7 +688,7 @@ function AdminShareMatrix({ accessToken, hasAws, hasDeepgram, hasGemini, hasOpen
           <h3>Compartir mis IAs por usuario</h3>
           <p className="helper-text">
             Elige con qué usuarios compartes cada IA por separado. OpenCode OCR y resúmenes van por separado:
-            puedes compartir el OCR y no los resúmenes, o viceversa. Quien no tenga clave propia usará la tuya automáticamente.
+            puedes compartir el OCR y no los resúmenes, o viceversa. Solo se comparte tu modelo predeterminado, no toda tu lista de modelos. Quien no tenga clave propia usará tu predeterminado automáticamente.
           </p>
           {!hasOpencode ? <p className="helper-text">Configura primero tu clave OpenCode arriba para poder compartir OCR y resúmenes.</p> : null}
           {!hasAws ? <p className="helper-text">Configura tu AWS arriba para poder compartirlo.</p> : null}

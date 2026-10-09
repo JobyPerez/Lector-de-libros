@@ -230,6 +230,8 @@ function pageSaveSetup(kind: "ocr" | "image" | "rerun-ocr", options: { changedDu
     replaceBookPageParagraphs: async () => { calls.push("replaceParagraphs"); state.text = "edited"; updatedAt = savedVersion; },
     getUserAiCredentials: async () => ({}),
     getEffectiveUserAiCredentials: async () => ({}),
+    getSharedOcrModelViolation: () => null,
+    getSharedSummaryModelViolation: () => null,
     collectBookOcrMarginHints: async () => ({ headers: [], footers: [] }),
     oracledb: { BUFFER: 1 },
     runOcrOnImage: async () => {

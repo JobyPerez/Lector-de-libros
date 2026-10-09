@@ -211,6 +211,8 @@ test("append after failed OCR saves the original image as PENDING without invoki
       getConnection: async () => connection,
       findAccessibleBook: async () => ({ bookId: "book", sourceType: "IMAGES", languageCode: "es", totalPages: 3, totalParagraphs: 10 }),
       getEffectiveUserAiCredentials: async () => ({}),
+      getSharedOcrModelViolation: () => null,
+      getSharedSummaryModelViolation: () => null,
       collectBookOcrMarginHints: async () => ({ headers: [], footers: [] }),
       isImportImagesCancellationRequested: () => false,
       ocrImageFiles: async () => { ocrCalls++; throw new Error("OCR provider failed"); },
@@ -285,6 +287,8 @@ function rerunSetup(failure?: "provider" | "missing-document" | "invalid-documen
     getEffectiveUserAiCredentials: async (userId: string, db: unknown) => {
       assert.equal(db, connection); credentialUsers.push(userId); return credentials;
     },
+    getSharedOcrModelViolation: () => null,
+    getSharedSummaryModelViolation: () => null,
     collectBookOcrMarginHints: async (db: unknown, ...args: any[]) => {
       assert.equal(db, connection); hintCalls.push(args); return marginHints;
     },
@@ -340,6 +344,8 @@ test("append forwards real collected margin hints and the same OCR options as re
       findAccessibleBook: async () => ({ bookId: "book", title: "Book", sourceType: "IMAGES", languageCode: "es", totalPages: 3 }),
       getEffectiveUserAiCredentials: async () => ({ opencodeOcrModel: "audit-model", opencodeApiKey: "secret", opencodeOcrApiKey: "ocr-secret",
         awsAccessKeyId: "aws-id", awsRegion: "eu-west-1", awsSecretAccessKey: "aws-secret" }),
+      getSharedOcrModelViolation: () => null,
+      getSharedSummaryModelViolation: () => null,
       collectBookOcrMarginHints, ocrImageFiles, isImportImagesCancellationRequested: () => false,
       countParagraphsUpToPage: async () => { events.push("persistence"); throw new Error("stop before persistence"); }
     });

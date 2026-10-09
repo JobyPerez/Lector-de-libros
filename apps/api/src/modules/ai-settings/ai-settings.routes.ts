@@ -16,6 +16,8 @@ import {
   SHARED_IA_TYPES,
   encryptOptionalSecret,
   getEffectiveUserAiCredentials,
+  getSharedOnlyOcrModelId,
+  getSharedOnlySummaryModelId,
   getUserAiCredentialSummary,
   getUserAiCredentials,
   listAiSharesForSharer,
@@ -527,7 +529,15 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
     }
     const cacheKey = `${request.currentUser.userId}:${query.purpose}:${createHash("sha256").update(apiKey).digest("hex")}`;
     const cached = modelsCache.get(cacheKey);
-    if (query.refresh !== "true" && cached && cached.expiresAt > Date.now()) return reply.send(cached.payload);
+    if (query.refresh !== "true" && cached && cached.expiresAt > Date.now()) {
+      const cachedPayload = cached.payload as { models?: Array<{ id: string }> } & Record<string, unknown>;
+      // Aunque haya caché con el catálogo completo, al compartido solo se le muestra su predeterminado.
+      const sharedOnlyId = query.purpose === "ocr" ? getSharedOnlyOcrModelId(effective) : getSharedOnlySummaryModelId(effective);
+      if (sharedOnlyId && Array.isArray(cachedPayload.models)) {
+        return reply.send({ ...cachedPayload, models: cachedPayload.models.filter((model) => model.id === sharedOnlyId), returnedModelCount: cachedPayload.models.filter((model) => model.id === sharedOnlyId).length });
+      }
+      return reply.send(cached.payload);
+    }
     modelsCache.delete(cacheKey);
 
     try {
@@ -550,7 +560,10 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       }
       const payload = (await response.json()) as unknown;
       const metadata = await metadataRequest;
-      const models = normalizeZenModels(payload, query.purpose, metadata.payload);
+      const allModels = normalizeZenModels(payload, query.purpose, metadata.payload);
+      // Compartido = solo el predeterminado del que comparte.
+      const sharedOnlyId = query.purpose === "ocr" ? getSharedOnlyOcrModelId(effective) : getSharedOnlySummaryModelId(effective);
+      const models = sharedOnlyId ? allModels.filter((model) => model.id === sharedOnlyId) : allModels;
       const liveModelCount = new Set(zenModelEntries(payload).map((entry) => entry.id)).size;
       const result = {
         models: query.purpose === "ocr" || models.length > 0 ? models : curatedFallback(query.purpose),
@@ -567,11 +580,14 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
       if (!metadata.warning) modelsCache.set(cacheKey, { expiresAt: Date.now() + catalogueCacheMs, payload: result });
       return reply.send(result);
     } catch (error) {
+      const sharedOnlyId = query.purpose === "ocr" ? getSharedOnlyOcrModelId(effective) : getSharedOnlySummaryModelId(effective);
+      const fallbackModels = query.purpose === "ocr" ? [] : curatedFallback(query.purpose);
+      const models = sharedOnlyId ? fallbackModels.filter((model) => model.id === sharedOnlyId) : fallbackModels;
       return reply.send({
-        models: query.purpose === "ocr" ? [] : curatedFallback(query.purpose),
+        models,
         source: query.purpose === "ocr" ? "live" : "curated",
         purpose: query.purpose,
-        ...(query.purpose === "ocr" ? { liveModelCount: 0, returnedModelCount: 0 } : {}),
+        ...(query.purpose === "ocr" ? { liveModelCount: 0, returnedModelCount: models.length } : {}),
         warning: error instanceof Error ? error.message : "No se pudo refrescar desde OpenCode."
       });
     }

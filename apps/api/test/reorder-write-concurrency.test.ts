@@ -193,7 +193,7 @@ function ocrFixture(options: { revokeAt?: "lock" | "provider" | "commit"; lock?:
     pageParamsSchema: z.object({ bookId: z.string().uuid(), pageNumber: z.number() }), rerunOcrPageSchema: z.object({ advancedLayout: z.boolean().default(false) }),
     getConnection: async () => connection, findAccessibleBook: async () => ({ sourceType: "IMAGES", languageCode: "es", title: "Book" }),
     findBookPage: async () => { events.push("page"); return structuredClone(page); }, resolveGalleryPage: async () => { assert.ok(events.includes("locked")); },
-    getEffectiveUserAiCredentials: async () => ({}), collectBookOcrMarginHints: async () => ({}), oracledb: { BUFFER: 1 },
+    getEffectiveUserAiCredentials: async () => ({}), getSharedOcrModelViolation: () => null, getSharedSummaryModelViolation: () => null, collectBookOcrMarginHints: async () => ({}), oracledb: { BUFFER: 1 },
     runOcrOnImage: async () => { events.push("provider"); if (options.revokeAt === "provider") role = "viewer";
       return { editedText: "OCR", htmlContent: "<p>OCR</p>", rawText: "OCR", paragraphs: ["OCR"] }; },
     externalizeContentImages: (contents: string[]) => ({ contents, assets: [] }),
