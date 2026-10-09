@@ -35,6 +35,8 @@ import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, normalizeBookLanguageCode,
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { playCompletionSound, prepareCompletionSound, type CompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
+import { filterTocByMaxLevel, useTocMaxLevel } from "../../app/toc-level";
+import { TocLevelSelector } from "../../components/TocLevelSelector";
 import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
@@ -824,6 +826,7 @@ export function BookBuilderPage() {
   const [selectedAppendFiles, setSelectedAppendFiles] = useState<File[]>([]);
   const [selectedBookId, setSelectedBookId] = useState("");
   const [reviewBookId, setReviewBookId] = useState("");
+  const [reviewTocMaxLevel, setReviewTocMaxLevel] = useTocMaxLevel(reviewBookId);
   const [reviewPageNumber, setReviewPageNumber] = useState(1);
   const [reviewPageId, setReviewPageId] = useState(searchParams.get("reviewPageId")?.trim() ?? "");
   const [visualHistory, setVisualHistory] = useState<VisualHistory | null>(null);
@@ -3169,7 +3172,7 @@ export function BookBuilderPage() {
     ? reviewActiveReadingSection?.nextStartPageNumber ?? null
     : reviewNavigationQuery.data?.toc[0]?.pageNumber ?? null;
   const orderedNavigationItems = useMemo<ReviewNavigationItem[]>(() => {
-    const tocItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.toc ?? []).map((entry) => ({
+    const tocItems: ReviewNavigationItem[] = filterTocByMaxLevel(reviewNavigationQuery.data?.toc ?? [], reviewTocMaxLevel).map((entry) => ({
       isActive: activeTocEntryKey === tocEntryKey(entry),
       key: `toc:${tocEntryKey(entry)}`,
       level: entry.level,
@@ -3233,7 +3236,9 @@ export function BookBuilderPage() {
 
       return sortWeight[left.type] - sortWeight[right.type];
     });
-  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.highlights, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber]);
+  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.highlights, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber, reviewTocMaxLevel]);
+  const fullReviewTocCount = (reviewNavigationQuery.data?.toc ?? []).length;
+  const visibleReviewTocCount = orderedNavigationItems.filter((item) => item.type === "toc").length;
   const reviewIndexItems = orderedNavigationItems.filter(
     (item): item is Extract<ReviewNavigationItem, { type: "bookmark" | "toc" }> => item.type === "toc" || item.type === "bookmark"
   );
@@ -4255,8 +4260,9 @@ export function BookBuilderPage() {
                       <div className="reader-navigation-section-heading-copy">
                         <strong>Índice del libro</strong>
                       </div>
-                      <span>{orderedNavigationItems.filter((item) => item.type === "toc").length}</span>
+                      <span title={fullReviewTocCount !== visibleReviewTocCount ? `${visibleReviewTocCount} de ${fullReviewTocCount} apartados` : undefined}>{visibleReviewTocCount}</span>
                     </div>
+                    <TocLevelSelector id="review-navigation-toc-level" onChange={setReviewTocMaxLevel} value={reviewTocMaxLevel} />
                     {reviewIndexItems.length ? (
                       <div className="reader-navigation-list">
                         {reviewIndexItems.map((item) => item.type === "bookmark" ? (
@@ -4348,7 +4354,7 @@ export function BookBuilderPage() {
                                   "{item.excerpt}"
                                 </blockquote>
                                 <div className="reader-navigation-note-meta">
-                                  <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, reviewNavigationQuery.data?.toc ?? [])}</span>
+                                  <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, filterTocByMaxLevel(reviewNavigationQuery.data?.toc ?? [], reviewTocMaxLevel))}</span>
                                 </div>
                               </div>
 
