@@ -49,6 +49,7 @@ import {
   writeStoredVoiceModel
 } from "../../app/book-language";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
+import { useTocMaxLevel } from "../../app/toc-level";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
@@ -1241,6 +1242,7 @@ export function ReaderPage() {
   const [screenLockHoldProgress, setScreenLockHoldProgress] = useState(0);
   const [activeSearchTarget, setActiveSearchTarget] = useState<ActiveSearchTarget | null>(null);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
+  const [tocMaxLevel, setTocMaxLevel] = useTocMaxLevel(bookId);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteColor, setEditingNavigationNoteColor] = useState<HighlightColor | null>(null);
   const [editingNavigationNoteText, setEditingNavigationNoteText] = useState("");
@@ -5647,10 +5649,12 @@ export function ReaderPage() {
             onSelectToc={(item) => handleNavigationPanelSelection(item.pageNumber, item.paragraphNumber)}
             onSummaryClick={closeNavigationPanel}
             onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+            onTocMaxLevelChange={setTocMaxLevel}
             onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
             onUpdateNoteShares={(noteId, sharedWithUserIds) => handleUpdateNoteShares(noteId, sharedWithUserIds)}
             sharableUsers={sharableUsers}
             summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
+            tocMaxLevel={tocMaxLevel}
           />
         </ReaderNavigationPopover>
         <button

@@ -10,7 +10,7 @@ export function validElementGeometry(geometry: PageElementGeometry | null | unde
 
 export function PageElementOverlay({ imageSrc, elements, selectedKey, selectedKeys, onSelect, onGeometryChange, onCreateGeometry, onDrawingChange, marking = false, disabled = false }: {
   imageSrc: string;
-  elements: { key: string; text: string; number?: number; active?: boolean; geometry?: PageElementGeometry | null | undefined }[];
+  elements: { key: string; text: string; number?: number; label?: string; kind?: string; active?: boolean; geometry?: PageElementGeometry | null | undefined }[];
   selectedKey: string | null;
   selectedKeys?: readonly string[];
   onSelect: (key: string, modifiers?: { ctrlKey: boolean; metaKey: boolean }) => void;
@@ -61,9 +61,9 @@ export function PageElementOverlay({ imageSrc, elements, selectedKey, selectedKe
     onLostPointerCapture={() => { start.current = null; setDraft(null); onDrawingChange?.(false); }}>
     <img src={imageSrc} alt="Original de la pagina con zonas de elementos" draggable={false} />
     {!disabled && elements.map((element, index) => validElementGeometry(element.geometry) ? <button type="button" key={element.key}
-      className={`page-element-zone${selectedKey === element.key || selectedKeys?.includes(element.key) ? " is-selected" : ""}${element.active === false ? " is-inactive" : ""}`} style={style(element.geometry)}
+      className={`page-element-zone${selectedKey === element.key || selectedKeys?.includes(element.key) ? " is-selected" : ""}${element.active === false ? " is-inactive" : ""}`} data-kind={element.kind} style={style(element.geometry)}
       aria-label={`Seleccionar elemento ${element.number ?? index + 1}${element.active === false ? " anulado" : ""}: ${element.text.slice(0, 80)}`} aria-pressed={selectedKey === element.key || (selectedKeys?.includes(element.key) ?? false)}
-      disabled={marking} onClick={(event) => onSelect(element.key, { ctrlKey: event.ctrlKey, metaKey: event.metaKey })}><span>{element.number ?? index + 1}</span></button> : null)}
+      disabled={marking} onClick={(event) => onSelect(element.key, { ctrlKey: event.ctrlKey, metaKey: event.metaKey })}><span>{element.label ?? element.number ?? index + 1}{element.active === false ? " (anulado)" : ""}</span></button> : null)}
     {!disabled && marking && draft ? <div className="page-element-zone is-selected" style={style(draft)} /> : null}
   </div>;
 }

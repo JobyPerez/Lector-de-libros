@@ -30,9 +30,10 @@ function FragmentEditor({ block, index, onChange, onMark, geometryDisabled }: {
   </section>;
 }
 
-export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, disabled, geometryDisabled }: {
+export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, disabled, geometryDisabled, simpleTypography = false }: {
   doc: VisualPageDocument; node: VisualContainer; onChange: (doc: VisualPageDocument) => void;
   onMarkGeometry: (id: string) => void; disabled: boolean; geometryDisabled: boolean;
+  simpleTypography?: boolean;
 }) {
   const [destination, setDestination] = useState("");
   const [position, setPosition] = useState(1);
@@ -42,8 +43,27 @@ export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, 
   const number = units.findIndex((unit) => unit.id === node.id) + 1;
   const containers = flattenVisualLayout(doc.layout).filter((item): item is VisualContainer => item.type !== "block" && !item.content && !flattenVisualLayout(node).some((child) => child.id === item.id));
   const target = containers.find((item) => item.id === destination);
+  function clearScale(next: VisualPageDocument): VisualPageDocument {
+    const ids = new Set(members.map((member) => member.id));
+    return { ...next, blocks: next.blocks.map((block) => {
+      if (!ids.has(block.id)) return block;
+      const clean = { ...block, style: { ...block.style } };
+      delete clean.fontScale;
+      delete clean.style.fontScale;
+      return clean;
+    }), layout: updateVisualNode(next.layout, node.id, (item) => {
+      if (item.type === "block" || !item.content) return item;
+      const clean = { ...item, content: { ...item.content }, style: { ...item.style } };
+      delete clean.content.fontScale;
+      delete clean.style.fontScale;
+      return clean;
+    }) };
+  }
   function patch(patch: Partial<VisualCompositeContent>) {
-    onChange({ ...doc, layout: updateVisualNode(doc.layout, node.id, (item) => ({ ...item, content: { ...content, ...patch } } as VisualContainer)) });
+    const nextContent = { ...content, ...patch };
+    let next = { ...doc, layout: updateVisualNode(doc.layout, node.id, (item) => ({ ...item, content: nextContent } as VisualContainer)) };
+    if (simpleTypography && (patch.kind !== undefined || patch.headingLevel !== undefined)) next = clearScale(next);
+    onChange(next);
   }
   function bulk(patch: Partial<VisualBlock>) {
     const ids = new Set(members.map((member) => member.id));
@@ -62,7 +82,7 @@ export function VisualCompositeInspector({ doc, node, onChange, onMarkGeometry, 
         <label className="visual-check"><input type="checkbox" checked={content.includeInToc} onChange={(event) => patch({ includeInToc: event.target.checked })} />Incluir en el indice</label>
       </> : null}
       <AlignmentControl value={content.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
-      <FontScaleControl value={content.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} />
+      {!(simpleTypography && content.kind === "heading") ? <FontScaleControl simple={simpleTypography} value={content.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
       <p className="helper-text">Una sola unidad visual. Los textos, zonas y preferencias originales se conservan por fragmento.</p>
       {members.map((member, index) => <FragmentEditor key={member.id} block={member} index={index} onChange={(patch) => onChange(updateVisualBlock(doc, member.id, patch))} onMark={() => onMarkGeometry(member.id)} geometryDisabled={geometryDisabled} />)}
       <button type="button" onClick={() => onChange(separateVisualContent(doc, node.id))}>Separar contenido</button>

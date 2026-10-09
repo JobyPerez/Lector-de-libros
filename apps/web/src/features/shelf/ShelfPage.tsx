@@ -6,6 +6,7 @@ import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBookImportProgr
 import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
+import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { ShareBookModal } from "../sharing/ShareBookModal";
 
 export type ShelfSortMode = "lastOpened" | "rating";
@@ -401,6 +402,10 @@ export function ShelfPage() {
   const [exportingBookId, setExportingBookId] = useState<string | null>(null);
   const [exportingFormatCard, setExportingFormatCard] = useState<"epub" | "pdf" | "pdf-images" | null>(null);
   const [isSavingBook, setIsSavingBook] = useState(false);
+  const savingBookRef = useRef(false);
+  const confirmingBookExitRef = useRef(false);
+  const [isConfirmingBookExit, setIsConfirmingBookExit] = useState(false);
+  const bookEditFormRef = useRef<HTMLFormElement>(null);
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
@@ -798,14 +803,27 @@ export function ShelfPage() {
     setDownloadMenuBookId(null);
   }
 
-  function handleCancelOrBack() {
-    if (hasUnsavedChanges()) {
-      const confirmLeave = window.confirm("Tienes cambios sin guardar. Si vuelves a la estantería, se perderán las modificaciones. ¿Deseas continuar?");
-      if (!confirmLeave) {
-        return;
-      }
+  async function handleCancelOrBack() {
+    if (isSavingBook || savingBookRef.current || confirmingBookExitRef.current) {
+      return;
     }
-    resetBookForm();
+    confirmingBookExitRef.current = true;
+    setIsConfirmingBookExit(true);
+    try {
+      if (hasUnsavedChanges()) {
+        const leave = await confirmUnsavedChanges({
+          save: handleUpdateBook,
+          canSave: Boolean(accessToken && editingBook),
+          message: "Tienes cambios sin guardar en los datos del libro. ¿Quieres guardarlos, descartarlos o volver a la edición?",
+          unavailableReason: "No hay una sesión activa para guardar los cambios."
+        });
+        if (!leave) return;
+      }
+      resetBookForm();
+    } finally {
+      confirmingBookExitRef.current = false;
+      setIsConfirmingBookExit(false);
+    }
   }
 
   async function handleDownloadExport(format: "epub" | "pdf" | "pdf-images") {
@@ -885,13 +903,22 @@ export function ShelfPage() {
     void handleDownloadOriginal(book);
   }
 
-  async function handleUpdateBook(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
+  async function handleUpdateBook(): Promise<boolean> {
+    if (savingBookRef.current) return false;
     if (!accessToken || !editingBook) {
-      return;
+      setBookActionError("No hay una sesión activa para guardar los cambios.");
+      return false;
+    }
+    if (!bookForm.title.trim()) {
+      setBookActionError("El título del libro no puede estar vacío.");
+      return false;
+    }
+    if (!bookEditFormRef.current?.reportValidity()) {
+      setBookActionError("Revisa los campos del formulario antes de guardar.");
+      return false;
     }
 
+    savingBookRef.current = true;
     setBookActionError(null);
     setBookActionSuccess(null);
     setIsSavingBook(true);
@@ -907,15 +934,28 @@ export function ShelfPage() {
         userComments: bookForm.userComments.trim() || null
       });
 
-      await queryClient.invalidateQueries({ queryKey: ["books"] });
-      await booksQuery.refetch();
-      setBookActionSuccess(`Se actualizó el libro ${bookForm.title.trim()}.`);
-      setViewTransitionDirection("back");
-      setEditingBook(null);
+      try {
+        await queryClient.invalidateQueries({ queryKey: ["books"] });
+        await booksQuery.refetch();
+      } catch {
+        setBookActionSuccess("Los cambios se guardaron, pero no se pudo actualizar la estantería.");
+      }
+      return true;
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : "No se pudo actualizar el libro.");
+      return false;
     } finally {
+      savingBookRef.current = false;
       setIsSavingBook(false);
+    }
+  }
+
+  async function handleSubmitBook(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (confirmingBookExitRef.current) return;
+    if (await handleUpdateBook()) {
+      resetBookForm();
+      setBookActionSuccess(`Se actualizó el libro ${bookForm.title.trim()}.`);
     }
   }
 
@@ -1509,6 +1549,7 @@ export function ShelfPage() {
               aria-label="Volver a la estantería"
               className="secondary-button reader-header-icon-button"
               onClick={handleCancelOrBack}
+              disabled={isSavingBook || isConfirmingBookExit}
               title="Volver a la estantería"
               type="button"
             >
@@ -1516,7 +1557,8 @@ export function ShelfPage() {
             </button>
           </div>
 
-          <form className="stack-form auth-form-compact" onSubmit={handleUpdateBook}>
+          <form className="stack-form auth-form-compact" onSubmit={handleSubmitBook} ref={bookEditFormRef}>
+            <fieldset className="stack-form" disabled={isSavingBook} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             <label>
               Título
               <input
@@ -1603,7 +1645,7 @@ export function ShelfPage() {
             {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
 
             <div className="import-panel-actions">
-              <button className="primary-button" disabled={isSavingBook} type="submit">
+              <button className="primary-button" disabled={isSavingBook || isConfirmingBookExit} type="submit">
                 {isSavingBook ? "Guardando..." : "Guardar cambios"}
               </button>
               <button className={["secondary-button", exportingFormat === "epub" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={exportingFormat === "epub"} onClick={() => void handleDownloadExport("epub")} type="button">
@@ -1626,10 +1668,11 @@ export function ShelfPage() {
                   </span>
                 </button>
               ) : null}
-              <button className="secondary-button" onClick={handleCancelOrBack} type="button">
+              <button className="secondary-button" disabled={isSavingBook || isConfirmingBookExit} onClick={handleCancelOrBack} type="button">
                 Cancelar
               </button>
             </div>
+            </fieldset>
           </form>
         </section>
       ) : null}

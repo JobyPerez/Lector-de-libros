@@ -563,8 +563,8 @@ function ProtectedShell() {
           ) : null}
         </nav>
         <div className="topbar-actions">
-          <ProfileMenu onLogout={() => {
-            if (confirmPendingNavigation()) {
+          <ProfileMenu onLogout={async () => {
+            if (await confirmPendingNavigation()) {
               clearSession();
             }
           }} user={user} />

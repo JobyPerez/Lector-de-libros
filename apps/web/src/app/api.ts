@@ -791,6 +791,7 @@ export type BookOutlineEntry = {
   paragraphNumber: number;
   sequenceNumber?: number | null;
   title: string;
+  beginsPageContent?: boolean;
 };
 
 export type ReadingProgress = {
@@ -1210,6 +1211,10 @@ export type BookPageOrderInput = {
 // Reorder must be atomic and return 409 if expectedPageIds no longer matches.
 export function fetchBookPages(accessToken: string, bookId: string) {
   return request<BookPagesResponse>(`/books/${bookId}/pages`, { accessToken });
+}
+
+export function fetchBookOutline(accessToken: string, bookId: string) {
+  return request<{ outline: BookOutlineEntry[]; outlineSource: BookOutlineSource }>(`/books/${bookId}/outline`, { accessToken });
 }
 export function reorderBookPages(accessToken: string, bookId: string, body: BookPageOrderInput) {
   return request<BookPagesResponse>(`/books/${bookId}/pages/reorder`, { accessToken, body, method: "POST" });

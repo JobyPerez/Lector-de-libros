@@ -1,9 +1,11 @@
 import { load } from "cheerio";
+import type { AnyNode } from "domhandler";
 
 import { getConnection } from "../../config/database.js";
 import { renderVisualDocument, visualPageDocumentSchema } from "./visual-document.js";
 
 export type BookOutlineEntry = {
+  beginsPageContent: boolean;
   chapterId: string;
   isGenerated: boolean;
   level: number;
@@ -82,14 +84,14 @@ export function buildOutlineFromTitles(
   paragraphs: OutlineParagraphRecord[]
 ): BookOutlineEntry[] {
   const paragraphLookup = new Map<string, OutlineParagraphRecord>();
+  const paragraphIdLookup = new Map<string, OutlineParagraphRecord>();
   for (const row of paragraphs) {
-    if (row.active === 0 || row.active === false) {
-      continue;
-    }
-    paragraphLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, {
+    const paragraph = {
       ...row,
       sequenceNumber: Number(row.sequenceNumber)
-    });
+    };
+    paragraphLookup.set(`${row.pageNumber}:${row.paragraphNumber}`, paragraph);
+    paragraphIdLookup.set(`${row.pageNumber}:${row.paragraphId}`, paragraph);
   }
 
   const outline: BookOutlineEntry[] = [];
@@ -103,37 +105,53 @@ export function buildOutlineFromTitles(
     }
 
     const document = load(htmlContent);
-    document("h1, h2, h3, h4, h5, h6").each((_, node) => {
+    let hasPageContent = false;
+    const visit = (node: AnyNode): void => {
+      if (node.type === "text") {
+        if (normalizeWhitespace(node.data)) hasPageContent = true;
+        return;
+      }
+      if (node.type !== "tag") return;
       const element = document(node);
-      const composite = element.attr("data-composite-anchor-number") !== undefined;
-      const title = normalizeWhitespace(composite ? element.attr("data-composite-title") ?? "" : element.text());
-      const paragraphNumber = Number.parseInt(element.attr(composite ? "data-composite-anchor-number" : "data-paragraph-number") ?? "", 10);
-      const level = Number.parseInt((node.tagName?.toLowerCase() ?? "h1").slice(1), 10);
-      const paragraph = paragraphLookup.get(`${row.pageNumber}:${paragraphNumber}`);
+      const blockId = element.attr("data-visual-block-id") ?? element.attr("data-paragraph-id");
+      const block = blockId ? paragraphIdLookup.get(`${row.pageNumber}:${blockId}`)
+        : paragraphLookup.get(`${row.pageNumber}:${Number.parseInt(element.attr("data-paragraph-number") ?? "", 10)}`);
+      if (block?.active === 0 || block?.active === false
+        || ["data-active", "data-is-active"].some((attribute) => ["false", "0"].includes(element.attr(attribute)?.trim().toLowerCase() ?? ""))
+        || [block?.elementRole, element.attr("data-element-role")].some((role) => ["header", "footer", "pageNumber"].includes(role ?? ""))
+        || ["head", "script", "style", "template"].includes(node.tagName.toLowerCase())) return;
 
-      if (!title || !paragraph || !Number.isInteger(level) || seenParagraphIds.has(paragraph.paragraphId)) {
-        return;
+      if (/^h[1-6]$/u.test(node.tagName.toLowerCase())) {
+        const composite = element.attr("data-composite-anchor-number") !== undefined;
+        const title = normalizeWhitespace(composite ? element.attr("data-composite-title") ?? "" : element.text());
+        const level = Number.parseInt(node.tagName.slice(1), 10);
+        const paragraph = composite
+          ? paragraphIdLookup.get(`${row.pageNumber}:${element.attr("data-composite-anchor-id")}`) : block;
+        const includeInToc = composite ? element.attr("data-composite-include-in-toc") === "true" : paragraph?.includeInToc == null
+          ? level <= 3
+          : paragraph.includeInToc === 1 || paragraph.includeInToc === true;
+        if (title && paragraph && paragraph.active !== 0 && paragraph.active !== false
+          && !seenParagraphIds.has(paragraph.paragraphId) && includeInToc) {
+          seenParagraphIds.add(paragraph.paragraphId);
+          outline.push({
+            beginsPageContent: !hasPageContent,
+            chapterId: paragraph.paragraphId,
+            isGenerated: true,
+            level,
+            pageNumber: row.pageNumber,
+            paragraphNumber: paragraph.paragraphNumber,
+            sequenceNumber: paragraph.sequenceNumber,
+            title
+          });
+        }
       }
-      if (composite ? element.attr("data-composite-anchor-id") !== paragraph.paragraphId
-        : ["header", "footer", "pageNumber"].includes(paragraph.elementRole ?? "")) return;
-      const includeInToc = composite ? element.attr("data-composite-include-in-toc") === "true" : paragraph.includeInToc == null
-        ? level <= 3
-        : paragraph.includeInToc === 1 || paragraph.includeInToc === true;
-      if (!includeInToc) {
-        return;
-      }
-
-      seenParagraphIds.add(paragraph.paragraphId);
-      outline.push({
-        chapterId: paragraph.paragraphId,
-        isGenerated: true,
-        level,
-        pageNumber: row.pageNumber,
-        paragraphNumber,
-        sequenceNumber: paragraph.sequenceNumber,
-        title
-      });
-    });
+      // Visit heading wrappers before their atoms: a compound's own children are not preceding content.
+      if ((node.tagName === "img" && normalizeWhitespace(element.attr("src") ?? ""))
+        || node.tagName === "svg"
+        || (node.tagName === "image" && normalizeWhitespace(element.attr("href") ?? element.attr("xlink:href") ?? ""))) hasPageContent = true;
+      node.children.forEach(visit);
+    };
+    document.root().children().each((_, node) => visit(node));
   }
 
   return outline.sort((left, right) => left.sequenceNumber - right.sequenceNumber);

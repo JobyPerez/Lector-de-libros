@@ -38,6 +38,7 @@ import {
 } from "../../app/book-language";
 import { playCompletionSound, prepareCompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
+import { useTocMaxLevel } from "../../app/toc-level";
 import { AiModelBadge, AiModelSelector, useAiModelSelection } from "../../components/AiModelBadge";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderNavigationListItem } from "./ReaderFloatingPanels";
@@ -223,6 +224,7 @@ export function SectionSummaryPage() {
   const [isAudioSettingsVisible, setIsAudioSettingsVisible] = useState(false);
   const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
   const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [tocMaxLevel, setTocMaxLevel] = useTocMaxLevel(bookId);
   const [expandedNavigationNoteId, setExpandedNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteId, setEditingNavigationNoteId] = useState<string | null>(null);
   const [editingNavigationNoteColor, setEditingNavigationNoteColor] = useState<HighlightColor | null>(null);
@@ -1315,10 +1317,12 @@ export function SectionSummaryPage() {
               onSelectToc={(item) => goToReaderLocation(item.pageNumber)}
               onSummaryClick={closeNavigationPanel}
               onToggleNoteExpansion={(noteId) => setExpandedNavigationNoteId((current) => current === noteId ? null : noteId)}
+              onTocMaxLevelChange={setTocMaxLevel}
               onUpdateBookmarkShares={(bookmarkId, sharedWithUserIds) => handleUpdateBookmarkShares(bookmarkId, sharedWithUserIds)}
               onUpdateNoteShares={(noteId, sharedWithUserIds) => handleUpdateNoteShares(noteId, sharedWithUserIds)}
               sharableUsers={sharableUsers}
               summaryHrefBuilder={(targetChapterId) => sectionSummaryHref(bookId, targetChapterId)}
+              tocMaxLevel={tocMaxLevel}
             />
           </ReaderNavigationPopover>
 

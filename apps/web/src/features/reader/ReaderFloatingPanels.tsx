@@ -3,7 +3,9 @@ import { type CSSProperties, type MutableRefObject, type ReactNode, type Ref, us
 
 import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
+import { TOC_DEFAULT_MAX_LEVEL, filterTocByMaxLevel, type TocMaxLevel } from "../../app/toc-level";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
+import { TocLevelSelector } from "../../components/TocLevelSelector";
 
 type AudioEngineOption = {
   description: string;
@@ -208,10 +210,12 @@ type NavigationPanelContentProps = {
   onSelectToc: (item: Extract<ReaderNavigationListItem, { type: "toc" }>) => void;
   onSummaryClick?: () => void;
   onToggleNoteExpansion: (noteId: string) => void;
+  onTocMaxLevelChange?: (level: TocMaxLevel) => void;
   onUpdateBookmarkShares: (bookmarkId: string, sharedWithUserIds: string[]) => Promise<void>;
   onUpdateNoteShares?: (noteId: string, sharedWithUserIds: string[]) => Promise<void>;
   sharableUsers: { displayName: string | null; userId: string; username: string }[];
   summaryHrefBuilder?: (chapterId: string) => string;
+  tocMaxLevel?: TocMaxLevel;
 };
 
 type BookmarkNavigationItem = Extract<ReaderNavigationListItem, { type: "bookmark" }>;
@@ -839,14 +843,19 @@ export function ReaderNavigationPanelContent({
   onSelectToc,
   onSummaryClick,
   onToggleNoteExpansion,
+  onTocMaxLevelChange,
   onUpdateBookmarkShares,
   onUpdateNoteShares,
   sharableUsers,
-  summaryHrefBuilder
+  summaryHrefBuilder,
+  tocMaxLevel = TOC_DEFAULT_MAX_LEVEL
 }: NavigationPanelContentProps) {
-  const indexItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "bookmark" | "toc" }> => item.type === "bookmark" || item.type === "toc");
+  const allIndexItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "bookmark" | "toc" }> => item.type === "bookmark" || item.type === "toc");
   const noteItems = items.filter((item): item is Extract<ReaderNavigationListItem, { type: "highlight" | "note" }> => item.type === "highlight" || item.type === "note");
-  const tocItems = indexItems.filter((item): item is TocNavigationItem => item.type === "toc");
+  const allTocItems = allIndexItems.filter((item): item is TocNavigationItem => item.type === "toc");
+  const tocItems = filterTocByMaxLevel(allTocItems, tocMaxLevel);
+  const visibleTocIds = new Set(tocItems.map((item) => item.key));
+  const indexItems = allIndexItems.filter((item) => item.type === "bookmark" || visibleTocIds.has(item.key));
   const tocItemCount = tocItems.length;
   const tabsId = useId();
   const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
@@ -1273,9 +1282,12 @@ export function ReaderNavigationPanelContent({
               <strong>Índice del libro</strong>
             </div>
             <div className="reader-navigation-section-actions">
-              <span>{tocItemCount}</span>
+              <span title={allTocItems.length !== tocItemCount ? `${tocItemCount} de ${allTocItems.length} apartados` : undefined}>{tocItemCount}</span>
             </div>
           </div>
+          {onTocMaxLevelChange ? (
+            <TocLevelSelector id={`${tabsId}-toc-level`} onChange={onTocMaxLevelChange} value={tocMaxLevel} />
+          ) : null}
 
           {indexItems.length ? (
             <div className="reader-navigation-list">

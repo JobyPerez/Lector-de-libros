@@ -53,13 +53,14 @@ const roles: { value: PageElementRole; label: string }[] = [
   { value: "imageCaption", label: "Pie de imagen" }, { value: "header", label: "Cabecera" }, { value: "footer", label: "Pie de pagina" }, { value: "pageNumber", label: "Numero de pagina" }
 ];
 
-export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry, disabled, geometryDisabled }: {
+export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry, disabled, geometryDisabled, simpleTypography = false }: {
   doc: VisualPageDocument;
   selectedId: string | null;
   onChange: (doc: VisualPageDocument) => void;
   onMarkGeometry: (id: string) => void;
   disabled: boolean;
   geometryDisabled: boolean;
+  simpleTypography?: boolean;
 }) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const nodes = flattenVisualLayout(doc.layout);
@@ -69,7 +70,20 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
   const [position, setPosition] = useState(1);
   const units = visualUnits(doc);
   const number = block ? units.findIndex((unit) => unit.type === "block" && unit.blockId === block.id) + 1 : 0;
-  function patch(patch: Partial<VisualBlock>) { if (block) onChange(updateVisualBlock(doc, block.id, patch)); }
+  function patch(patch: Partial<VisualBlock>) {
+    if (!block) return;
+    let next = updateVisualBlock(doc, block.id, patch);
+    if (simpleTypography && (patch.kind !== undefined || patch.headingLevel !== undefined)) {
+      next = { ...next, blocks: next.blocks.map((item) => {
+        if (item.id !== block.id) return item;
+        const clean = { ...item, style: { ...item.style } };
+        delete clean.fontScale;
+        delete clean.style.fontScale;
+        return clean;
+      }) };
+    }
+    onChange(next);
+  }
   function patchStyle(key: keyof PageStyle, value: string | number) {
     if (!block) return;
     const style = { ...block.style };
@@ -134,7 +148,7 @@ export function VisualBlockInspector({ doc, selectedId, onChange, onMarkGeometry
           <VisualImageSourceFields key={block.id} block={block} images={doc.blocks} onChange={patch} />
         </>}
         <AlignmentControl value={block.alignment ?? block.style?.alignment ?? "left"} onChange={(alignment) => patch({ alignment })} />
-        {block.kind !== "image" ? <FontScaleControl value={block.fontScale ?? block.style?.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
+        {block.kind !== "image" && !(simpleTypography && block.kind === "heading") ? <FontScaleControl simple={simpleTypography} value={block.fontScale ?? block.style?.fontScale ?? 1} onChange={(fontScale) => patch({ fontScale })} /> : null}
         <details className="visual-style-fields"><summary>Estilo editorial</summary>
           {([["color", "Color del texto"], ["backgroundColor", "Color del fondo"], ["borderColor", "Color del borde"]] as const).map(([key, label]) => <label key={key}>{label} (#RRGGBB)
             <input key={`${block.id}:${block.style?.[key] ?? ""}`} defaultValue={block.style?.[key] ?? ""} placeholder="Heredado" maxLength={7} pattern="#[0-9a-fA-F]{6}" onBlur={(event) => { const value = event.target.value.trim(); if (!value || /^#[0-9a-f]{6}$/i.test(value)) patchStyle(key, value.toLowerCase()); else event.target.reportValidity(); }} />

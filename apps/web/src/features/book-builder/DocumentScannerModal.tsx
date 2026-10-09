@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
+import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 
 import {
   analyzeDocumentCanvas,
@@ -55,6 +56,7 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
   const overlayRef = useRef<SVGSVGElement | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
   const dragSessionRef = useRef<ScannerDragSession | null>(null);
+  const exitConfirmationPendingRef = useRef(false);
   const currentFile = files[fileIndex] ?? null;
 
   useEffect(() => {
@@ -99,9 +101,10 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if (exitConfirmationPendingRef.current) return;
       if (event.key === "Escape" && !isProcessing) {
         event.preventDefault();
-        handleCancel();
+        void handleCancel();
       }
       if (event.key !== "Tab" || !modalRef.current) return;
       const focusable = Array.from(modalRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), [tabindex='0']"));
@@ -121,7 +124,7 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isProcessing, processedFiles]);
+  }, [isProcessing, processedFiles, activeDragTarget, currentFile]);
 
   useEffect(() => {
     if (!activeDragTarget) return;
@@ -202,18 +205,32 @@ export function DocumentScannerModal({ files, onCancel, onComplete }: DocumentSc
     };
   }, [activeDragTarget, scan]);
 
-  function handleCancel() {
-    if (processedFiles.length === 0) {
-      onCancel();
-      return;
+  async function handleCancel() {
+    if (isProcessing || exitConfirmationPendingRef.current) return;
+    exitConfirmationPendingRef.current = true;
+    let keptProcessed = false;
+    try {
+      const confirmed = await confirmUnsavedChanges({
+        canSave: processedFiles.length > 0 && !activeDragTarget,
+        message: `Tienes ${processedFiles.length} ${processedFiles.length === 1 ? "imagen procesada" : "imágenes procesadas"}. Salir guardando conserva solo esas imágenes para continuar con el OCR, sin guardarlas aún en el servidor. La imagen actual (${currentFile?.name ?? "sin imagen"}), sus ajustes y las restantes no se conservarán. Elige Volver para terminar la imagen actual, o Salir sin guardar para descartar todo el lote.`,
+        unavailableReason: activeDragTarget
+          ? "Termina de ajustar el marco antes de conservar las imágenes."
+          : "Aún no hay imágenes procesadas que conservar. Vuelve y procesa la imagen actual primero.",
+        save: () => {
+          if (processedFiles.length === 0 || isProcessing || activeDragTarget) return false;
+          onComplete(processedFiles);
+          keptProcessed = true;
+          return true;
+        }
+      });
+      if (confirmed && !keptProcessed) onCancel();
+    } finally {
+      exitConfirmationPendingRef.current = false;
     }
-    const keepProcessed = window.confirm(`Ya has corregido ${processedFiles.length} ${processedFiles.length === 1 ? "imagen" : "imágenes"}. Pulsa Aceptar para conservarlas o Cancelar para descartar todo el lote.`);
-    if (keepProcessed) onComplete(processedFiles);
-    else onCancel();
   }
 
   function startDrag(target: ScannerDragTarget, event: ReactPointerEvent) {
-    if (!scan || isProcessing) return;
+    if (!scan || isProcessing || exitConfirmationPendingRef.current) return;
     const bounds = overlayRef.current?.getBoundingClientRect();
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
 

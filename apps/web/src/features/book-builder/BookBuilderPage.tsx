@@ -901,6 +901,7 @@ export function BookBuilderPage() {
   const [reviewImageUrl, setReviewImageUrl] = useState<string | null>(null);
   const reviewDraftVersionRef = useRef<ReadingDraftVersion | null>(null);
   const reviewDraftDirtyRef = useRef(false);
+  const reviewPageNavigationPendingRef = useRef(false);
   reviewDraftDirtyRef.current = visualDocumentDirty
     || reviewPartialSave
     || reviewImageRotation !== originalReviewImageRotation
@@ -937,6 +938,7 @@ export function BookBuilderPage() {
   const appendDragCounterRef = useRef(0);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
+  const requestedInsertSideParam = searchParams.get("insertSide")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
   const requestedReviewPageParam = searchParams.get("reviewPage")?.trim() ?? "";
   const requestedReviewPageId = searchParams.get("reviewPageId")?.trim() ?? "";
@@ -989,6 +991,12 @@ export function BookBuilderPage() {
   const selectedAppendBook = imageBooks.find((book) => book.bookId === selectedBookId) ?? null;
   const requestedReviewPage = requestedReviewPageParam ? Number(requestedReviewPageParam) : Number.NaN;
   const requestedInsertAfterPage = requestedInsertAfterPageParam ? Number(requestedInsertAfterPageParam) : Number.NaN;
+  // insertSide=before preselecciona "Antes" en el banner de posición (la galería lo usa
+  // para sus botones de inserción). insertAfterPage=0 heredado equivale a antes de la 1.
+  const initialAppendInsertionSide: AppendInsertionSide =
+    requestedInsertSideParam === "before" || (requestedInsertSideParam !== "after" && requestedInsertAfterPage === 0)
+      ? "before"
+      : "after";
   const appendReferencePageMax = Math.max(selectedAppendBook?.totalPages ?? 1, 1);
   const initialAppendReferencePage = selectedAppendBook && selectedAppendBook.bookId === requestedAppendBookId && Number.isInteger(requestedInsertAfterPage)
     ? Math.min(Math.max(requestedInsertAfterPage, 1), appendReferencePageMax)
@@ -1038,9 +1046,9 @@ export function BookBuilderPage() {
   }, [isAppendCancelRequested]);
 
   useEffect(() => {
-    setAppendInsertionSide("after");
+    setAppendInsertionSide(initialAppendInsertionSide);
     resetAppendResumeState();
-  }, [requestedAppendBookId, requestedInsertAfterPageParam]);
+  }, [requestedAppendBookId, requestedInsertAfterPageParam, requestedInsertSideParam]);
 
   useEffect(() => {
     if (initialAppendReferencePage !== undefined) {
@@ -2551,7 +2559,11 @@ export function BookBuilderPage() {
         setReviewPageId("");
       }
       completionSound = skippedFailedOcr ? "error" : "success";
-      navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
+      if (returnTo && returnTo.startsWith(`/books/${lastBookId}/pages`)) {
+        navigate(returnTo);
+      } else {
+        navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
+      }
     } catch (error) {
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
       completionSound = "error";
@@ -2617,27 +2629,27 @@ export function BookBuilderPage() {
     );
   }
 
-  async function handleSaveOcr(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleSaveOcr(event?: React.FormEvent<HTMLFormElement>): Promise<boolean> {
+    event?.preventDefault();
 
     if (!accessToken || !reviewBookId || reviewBlockLoadError || reviewPartialSave || !visualDocument || isSavingReview || isReviewCropMode || isVisualEditorBusy || !reviewPageQuery.data?.page.pageId || reviewPageQuery.isFetching || reviewDraftVersionRef.current?.identity !== reviewPageIdentity) {
-      return;
+      return false;
     }
 
     const hasDocumentChanges = visualDocumentDirty;
     const hasImageChanges = reviewImageRotation !== originalReviewImageRotation || !equalReviewImageCrop(reviewImageCrop, originalReviewImageCrop);
 
     if (!hasDocumentChanges && !hasImageChanges) {
-      return;
+      return false;
     }
 
     if (reviewDraftConflict) {
       setReviewError("La pagina ha cambiado en el servidor. Conserva tu borrador y vuelve a cargar la pagina antes de guardar para evitar sobrescribir la version remota.");
-      return;
+      return false;
     }
 
     if (hasDocumentChanges && !confirmReviewTextReplacement("guardar el documento visual")) {
-      return;
+      return false;
     }
 
     setReviewError(null);
@@ -2680,8 +2692,13 @@ export function BookBuilderPage() {
 
       await queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes(reviewBookId) && query.queryKey[0] !== "builder-page-visual" });
       await Promise.all([reviewPageQuery.refetch(), reviewAnnotationsQuery.refetch(), reviewNavigationQuery.refetch(), booksQuery.refetch()]);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudieron guardar los cambios de la pagina.";
+      if (draftSaved) {
+        setReviewError(`Los cambios se guardaron, pero no se pudo actualizar la pagina: ${message}`);
+        return true;
+      }
       if (imageSaved && !draftSaved) {
         await preservePartialReviewSave(message);
       } else {
@@ -2691,6 +2708,7 @@ export function BookBuilderPage() {
           await reviewPageQuery.refetch();
         }
       }
+      return false;
     } finally {
       setIsSavingReview(false);
     }
@@ -2850,8 +2868,8 @@ export function BookBuilderPage() {
     }
   }
 
-  function changeReviewPage(delta: -1 | 1) {
-    jumpToReviewPage(reviewPageNumber + delta);
+  async function changeReviewPage(delta: -1 | 1) {
+    await jumpToReviewPage(reviewPageNumber + delta);
   }
 
   function rotateReviewImage(direction: -1 | 1) {
@@ -2912,18 +2930,24 @@ export function BookBuilderPage() {
     setReviewError(null);
   }
 
-  function jumpToReviewPage(pageNumber: number) {
-    const totalPages = selectedReviewBook?.totalPages ?? 0;
-    const nextPage = Math.min(Math.max(pageNumber, 1), Math.max(totalPages, 1));
-    if (nextPage !== reviewPageNumber && !confirmDiscardReviewChanges()) {
-      setReviewPageJumpValue(String(reviewPageNumber));
-      return;
+  async function jumpToReviewPage(pageNumber: number) {
+    if (reviewPageNavigationPendingRef.current) return;
+    reviewPageNavigationPendingRef.current = true;
+    try {
+      const totalPages = selectedReviewBook?.totalPages ?? 0;
+      const nextPage = Math.min(Math.max(pageNumber, 1), Math.max(totalPages, 1));
+      if (nextPage !== reviewPageNumber && !(await confirmDiscardReviewChanges())) {
+        setReviewPageJumpValue(String(reviewPageNumber));
+        return;
+      }
+      setReviewPageNumber(nextPage);
+      if (nextPage !== reviewPageNumber) setReviewPageId("");
+      setReviewMessage(null);
+      setReviewError(null);
+      setIsReviewIndexVisible(false);
+    } finally {
+      reviewPageNavigationPendingRef.current = false;
     }
-    setReviewPageNumber(nextPage);
-    if (nextPage !== reviewPageNumber) setReviewPageId("");
-    setReviewMessage(null);
-    setReviewError(null);
-    setIsReviewIndexVisible(false);
   }
 
   const changeReviewPageRef = useRef(changeReviewPage);
@@ -2957,7 +2981,7 @@ export function BookBuilderPage() {
   };
 
   useEffect(() => {
-    function handleReviewKeyboardNavigation(event: KeyboardEvent) {
+    async function handleReviewKeyboardNavigation(event: KeyboardEvent) {
       if (event.ctrlKey || event.metaKey || event.altKey) {
         return;
       }
@@ -2986,7 +3010,7 @@ export function BookBuilderPage() {
       }
 
       event.preventDefault();
-      changeReviewPageRef.current(event.key === "PageUp" ? -1 : 1);
+      await changeReviewPageRef.current(event.key === "PageUp" ? -1 : 1);
     }
 
     document.addEventListener("keydown", handleReviewKeyboardNavigation);
@@ -3010,7 +3034,7 @@ export function BookBuilderPage() {
     return Math.min(Math.max(parsedValue, 1), Math.max(totalPages, 1));
   }
 
-  function handleReviewPageJumpSubmit(event?: React.FormEvent<HTMLFormElement>) {
+  async function handleReviewPageJumpSubmit(event?: React.FormEvent<HTMLFormElement>) {
     event?.preventDefault();
 
     const nextPageNumber = parseReviewPageJumpValue();
@@ -3020,7 +3044,7 @@ export function BookBuilderPage() {
     }
 
     setIsReviewPageJumpActive(false);
-    jumpToReviewPage(nextPageNumber);
+    await jumpToReviewPage(nextPageNumber);
   }
 
   function handleBackFromReview() {
@@ -3069,7 +3093,7 @@ export function BookBuilderPage() {
     ? {
       hash: "#append-pages",
       pathname: "/builder",
-      search: `?appendBookId=${encodeURIComponent(reviewBookId)}&insertAfterPage=${encodeURIComponent(String(reviewPageNumber))}`
+      search: `?appendBookId=${encodeURIComponent(reviewBookId)}&insertAfterPage=${encodeURIComponent(String(reviewPageNumber))}&insertSide=after`
     }
     : null;
   const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
@@ -3077,7 +3101,29 @@ export function BookBuilderPage() {
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
   const isReviewDirty = visualDocumentDirty || hasPendingReviewImageEdits || reviewPartialSave;
   const hasPendingReviewCrop = isReviewCropMode && !equalReviewImageCrop(reviewRectToCrop(reviewCropDraft), reviewImageCrop);
-  const confirmDiscardReviewChanges = useUnsavedChanges(isReviewOnlyMode && (isReviewDirty || hasPendingReviewCrop || isVisualEditorBusy));
+  const reviewSaveUnavailableReason = reviewPartialSave
+    ? "El guardado anterior fue parcial. Reconcilia el borrador con la version remota antes de guardar."
+    : reviewDraftConflict
+      ? "La pagina ha cambiado en el servidor. Resuelve el conflicto antes de guardar."
+      : isReviewCropMode || hasPendingReviewCrop
+        ? "Aplica o cancela el recorte antes de guardar."
+        : isVisualEditorBusy
+          ? "Termina la interaccion con el editor antes de guardar."
+          : reviewBlockLoadError
+            ? "No se puede guardar mientras haya un error al cargar el documento."
+            : isSavingReview || isRerunningOcr || isDeletingReviewPage || reviewPageQuery.isFetching
+              ? "Espera a que termine la operacion en curso antes de guardar."
+              : !accessToken || !reviewBookId || !visualDocument || !reviewPageQuery.data?.page.pageId || reviewDraftVersionRef.current?.identity !== reviewPageIdentity || !reviewDraftVersionRef.current?.updatedAt
+                ? "La pagina y su version deben estar disponibles antes de guardar."
+                : hasPendingReviewImageEdits && (!reviewImageSourceBlob || reviewImageSourceBlob.key !== reviewSourceImageKey)
+                  ? "Espera a que la imagen original este disponible antes de guardar sus ajustes."
+                  : visualDocumentSaveError(visualDocument, hasPendingReviewImageEdits)
+                    || (!isReviewDirty ? "No hay cambios confirmados para guardar." : undefined);
+  const confirmDiscardReviewChanges = useUnsavedChanges(isReviewOnlyMode && (isReviewDirty || hasPendingReviewCrop || isVisualEditorBusy), {
+    save: () => handleSaveOcr(),
+    canSave: !reviewSaveUnavailableReason,
+    unavailableReason: reviewSaveUnavailableReason || "No se pueden guardar los cambios en este momento."
+  });
   useEffect(() => {
     const page = reviewPageQuery.data?.page;
     if (!isReviewOnlyMode || !page || reviewPageQuery.isFetching || isReviewDirty || hasPendingReviewCrop || isVisualEditorBusy || location.pathname !== "/builder") return;
@@ -4149,7 +4195,7 @@ export function BookBuilderPage() {
               ) : null} /> : null}
               {reviewBlockLoadError ? <p role="alert" className="error-text">{reviewBlockLoadError} La edicion y el guardado estan bloqueados para conservar el contenido.{canRerunReviewOcr && !reviewPartialSave && !reviewDraftConflict ? " Puedes volver a ejecutar el OCR desde su menu." : ""}</p> : null}
               {reviewDraftConflict ? <p aria-live="assertive" className="error-text">La pagina ha cambiado en el servidor. Se conserva tu borrador sin sobrescribirlo.</p> : null}
-              {reviewDraftConflict || reviewPartialSave ? <button type="button" disabled={isSavingReview || isRerunningOcr} onClick={() => { if (!confirmDiscardReviewChanges()) return; reviewDraftVersionRef.current = null; reviewDraftDirtyRef.current = false; void reviewPageQuery.refetch(); }}>Descartar borrador y cargar version remota</button> : null}
+              {reviewDraftConflict || reviewPartialSave ? <button type="button" disabled={isSavingReview || isRerunningOcr} onClick={async () => { if (!(await confirmDiscardReviewChanges())) return; reviewDraftVersionRef.current = null; reviewDraftDirtyRef.current = false; await reviewPageQuery.refetch(); }}>Descartar borrador y cargar version remota</button> : null}
               {reviewError && !shouldShowReviewSourcePanel ? <p role="alert" className="error-text">{reviewError}</p> : null}
               {reviewMessage ? <p className="success-text">{reviewMessage}</p> : null}
             </form>

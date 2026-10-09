@@ -3,11 +3,60 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRequire } from "node:module";
 import ts from "typescript";
 import type { VisualPageDocument } from "../../app/api";
 import { compositeForBlock, createVisualBlock, flattenVisualLayout, mergeVisualBlocks, moveVisualNode, orderedVisualBlocks, reorderVisualBlock, separateVisualContent, ungroupVisualNode, updateVisualBlock, visualDocumentSaveError } from "./visual-page";
 
 const source = ts.createSourceFile("VisualPageEditor.tsx", readFileSync(new URL("./VisualPageEditor.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+
+test("original overlay hides annulled duplicates and keeps stable numbers when explicitly shown", () => {
+  const doc = fixture();
+  doc.blocks[0] = { ...doc.blocks[0]!, kind: "heading", headingLevel: 1, text: "Current" };
+  doc.blocks[2] = { ...doc.blocks[2]!, kind: "heading", headingLevel: 2, text: "Old", active: false, geometry: doc.blocks[0]!.geometry! };
+  const overlaySource = ts.createSourceFile("PageElementOverlay.tsx", readFileSync(new URL("../../components/PageElementOverlay.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const functions = overlaySource.statements.filter(ts.isFunctionDeclaration).map((node) => node.getText(overlaySource)).join("\n");
+  const PageElementOverlay = evaluate(functions, "PageElementOverlay", { exports: {}, React, useRef: React.useRef, useState: React.useState });
+  const statement = component("VisualPageEditor").body!.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(source) === "overlay"));
+  assert.ok(statement);
+  const { JSDOM } = createRequire(import.meta.url)("jsdom");
+  for (const showInactive of [false, true]) {
+    const element = evaluate(statement.getText(source), "overlay", {
+      React, PageElementOverlay, order: orderedVisualBlocks(doc), doc, showInactive, compositeForBlock,
+      sourceImage: "source.png", simpleTypography: true, unitNumber: (id: string) => doc.blocks.findIndex((block) => block.id === id) + 1,
+      selectedId: null, multiple: false, selection: [], compoundMemberIds: [], select() {}, marking: null,
+      geometryDisabled: false, disabled: false, onChange() {}, updateVisualBlock, setMarking() {}
+    });
+    const document = new JSDOM(renderToStaticMarkup(element)).window.document;
+    assert.equal(document.querySelectorAll(".page-element-zone").length, showInactive ? 3 : 2);
+    assert.equal(document.querySelector(".page-element-zone span").textContent, "1 · T1");
+    const old = document.querySelector(".page-element-zone.is-inactive");
+    assert.equal(!!old, showInactive);
+    if (old) assert.equal(old.textContent, "3 · T2 (anulado)");
+  }
+});
+
+test("direct editing reveals annulled blocks only when the target is itself annulled", () => {
+  const effects: ts.ArrowFunction[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === "useEffect" && node.arguments[0] && ts.isArrowFunction(node.arguments[0]) && node.arguments[0].getText(source).includes("initialEditOpenedRef")) effects.push(node.arguments[0]);
+    ts.forEachChild(node, visit);
+  }
+  visit(component("VisualPageEditor"));
+  assert.equal(effects.length, 1);
+  for (const active of [true, false]) {
+    const doc = fixture();
+    doc.blocks[0]!.active = active;
+    const changes: boolean[] = [];
+    const effect = evaluate(`const effect = ${effects[0]!.getText(source)};`, "effect", {
+      initialEditId: doc.blocks[0]!.id, initialEditOpenedRef: { current: false }, disabled: false,
+      doc, compositeForBlock, flattenVisualLayout, sourceImage: "source.png", onSelect() {}, setEditing() {},
+      setShowInactive: (show: boolean) => changes.push(show), requestAnimationFrame: (callback: () => void) => { callback(); return 1; }, cancelAnimationFrame() {}
+    });
+    effect();
+    assert.deepEqual(changes, active ? [] : [true]);
+  }
+});
 
 function component(name: string) {
   const node = source.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === name);
@@ -57,7 +106,7 @@ function dialogHarness(doc: VisualPageDocument, initialSelectedId = doc.blocks[0
       const returned = component("VisualInspectorDialog").body!.statements.find(ts.isReturnStatement);
       assert.ok(returned?.expression);
       const element = evaluate(`const element = ${returned.expression.getText(source)};`, "element", {
-        ...bindings(), React, composite: null, sourceImage: null, geometryDisabled: false,
+        ...bindings(), React, composite: null, sourceImage: null, geometryDisabled: false, simpleTypography: false,
         onCancel() {}, accept() {}, changeDraft() {}, setMarking() {},
         EditorDialog: ({ children }: { children: React.ReactNode }) => React.createElement("section", null, children),
         VisualBlockInspector: () => null, VisualCompositeInspector: () => null

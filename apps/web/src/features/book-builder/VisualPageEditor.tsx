@@ -46,9 +46,10 @@ function EditorDialog({ title, children, onClose, className = "" }: { title: str
   </dialog>, document.body);
 }
 
-function VisualInspectorDialog({ doc, initialSelectedId, sourceImage, disabled, geometryDisabled, stale, onAccept, onCancel }: {
+function VisualInspectorDialog({ doc, initialSelectedId, sourceImage, disabled, geometryDisabled, stale, onAccept, onCancel, simpleTypography = false }: {
   doc: VisualPageDocument; initialSelectedId: string; sourceImage: string | null; disabled: boolean; geometryDisabled: boolean; stale: boolean;
   onAccept: (doc: VisualPageDocument, selectedId: string) => void; onCancel: () => void;
+  simpleTypography?: boolean;
 }) {
   const [draft, setDraft] = useState(doc);
   const [selectedId, setSelectedId] = useState(initialSelectedId);
@@ -80,12 +81,12 @@ function VisualInspectorDialog({ doc, initialSelectedId, sourceImage, disabled, 
     <div className="visual-edit-body">
       {marking && sourceImage ? <div className="visual-edit-geometry" ref={geometryRef} tabIndex={-1}>
         <p role="status">Arrastra un rectangulo sobre el original para marcar la zona. <button type="button" onClick={() => setMarking(null)}>Cancelar marcado</button></p>
-        <PageElementOverlay imageSrc={sourceImage} elements={orderedVisualBlocks(draft).map((block, index) => ({ key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: index + 1 }))}
+        <PageElementOverlay imageSrc={sourceImage} elements={orderedVisualBlocks(draft).map((block, index) => ({ key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: index + 1 })).filter((element) => element.active || element.key === selectedId || composite?.children.some((child) => child.type === "block" && child.blockId === element.key))}
           selectedKey={marking} onSelect={setMarking} marking disabled={disabled || geometryDisabled || stale}
           onGeometryChange={(id, geometry) => { changeDraft(updateVisualBlock(draft, id, { geometry })); setMarking(null); }} />
       </div> : null}
-      {composite ? <VisualCompositeInspector key={selectedId} doc={draft} node={composite} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />
-        : <VisualBlockInspector key={selectedId} doc={draft} selectedId={selectedId} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />}
+      {composite ? <VisualCompositeInspector simpleTypography={simpleTypography} key={selectedId} doc={draft} node={composite} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />
+        : <VisualBlockInspector simpleTypography={simpleTypography} key={selectedId} doc={draft} selectedId={selectedId} onChange={changeDraft} onMarkGeometry={setMarking} disabled={disabled || stale} geometryDisabled={geometryDisabled || stale} />}
       <p className="helper-text">Aceptar actualiza la previsualizacion. Los cambios se guardan en el servidor al pulsar Guardar cambios en la pagina.</p>
     </div>
     <footer className="visual-edit-footer">
@@ -146,7 +147,7 @@ function CompositePreview({ node, blocks, number, selected, showInactive, onSele
   </div>;
 }
 
-export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelect, onChange, source, sourceImage, accessToken, bookId, disabled, geometryDisabled, canUndo, canRedo, onUndo, onRedo, onInteractionChange, onAmplify }: {
+export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelect, onChange, source, sourceImage, accessToken, bookId, disabled, geometryDisabled, canUndo, canRedo, onUndo, onRedo, onInteractionChange, onAmplify, initialEditId, simpleTypography = false }: {
   doc: VisualPageDocument;
   page: BookPageResponse["page"];
   savedDocument: VisualPageDocument;
@@ -165,6 +166,8 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
   onRedo: () => void;
   onInteractionChange: (busy: boolean) => void;
   onAmplify: (image: { src: string; alt: string }) => void;
+  initialEditId?: string;
+  simpleTypography?: boolean;
 }) {
   const [showInactive, setShowInactive] = useState(false);
   const [marking, setMarking] = useState<string | null>(null);
@@ -180,6 +183,7 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
   const editorRef = useRef<HTMLDivElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const dragTimerRef = useRef<number | null>(null);
+  const initialEditOpenedRef = useRef(false);
   const order = orderedVisualBlocks(doc);
   const units = visualUnits(doc);
   const selectedComposite = flattenVisualLayout(doc.layout).find((node): node is VisualContainer => node.id === selectedId && node.type !== "block" && Boolean(node.content));
@@ -187,6 +191,19 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
   const unitNumber = (blockId: string) => units.findIndex((unit) => unit.type === "block" ? unit.blockId === blockId : unit.children.some((child) => child.type === "block" && child.blockId === blockId)) + 1;
   const sourceHtml = useMemo(() => page.hasSourceImage ? null : importedVisualSourceHtml(page, savedDocument), [page.hasSourceImage, page.sourceHtmlContent, page.htmlContent, page.paragraphs, savedDocument]);
   const importedHtml = useBookContentImageHtml(sourceHtml, accessToken, bookId);
+  useEffect(() => {
+    if (!initialEditId || initialEditOpenedRef.current || disabled) return;
+    const compound = compositeForBlock(doc, initialEditId);
+    const id = compound?.id ?? initialEditId;
+    if (!doc.blocks.some((block) => block.id === id) && !flattenVisualLayout(doc.layout).some((node) => node.id === id)) return;
+    const frame = requestAnimationFrame(() => {
+      initialEditOpenedRef.current = true;
+      onSelect(id);
+      if (compound ? !compound.children.some((child) => child.type === "block" && doc.blocks.some((block) => block.id === child.blockId && block.active)) : doc.blocks.some((block) => block.id === id && !block.active)) setShowInactive(true);
+      setEditing({ id, doc, sourceImage });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [initialEditId, disabled, doc, sourceImage, onSelect]);
   useEffect(() => { onInteractionChange(Boolean(editing || marking || dragging || newBlock || joining)); return () => onInteractionChange(false); }, [editing, marking, dragging, newBlock, joining, onInteractionChange]);
   useEffect(() => { if (geometryDisabled || disabled) setMarking(null); }, [geometryDisabled, disabled]);
   useEffect(() => () => { if (dragTimerRef.current !== null) window.clearTimeout(dragTimerRef.current); }, []);
@@ -254,7 +271,10 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       }
     });
   }
-  const overlay = sourceImage ? <PageElementOverlay imageSrc={sourceImage} elements={order.map((block) => ({ key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: unitNumber(block.id) }))}
+  const overlay = sourceImage ? <PageElementOverlay imageSrc={sourceImage} elements={order.filter((block) => block.active || showInactive).map((block) => {
+    const content = compositeForBlock(doc, block.id)?.content ?? block;
+    return { key: block.id, text: block.text, geometry: block.geometry, active: block.active, number: unitNumber(block.id), ...(simpleTypography ? { kind: content.kind, label: content.kind === "heading" ? `${unitNumber(block.id)} · T${content.headingLevel ?? 1}` : String(unitNumber(block.id)) } : {}) };
+  })}
     selectedKey={selectedId} selectedKeys={multiple ? selection : compoundMemberIds} onSelect={select} marking={Boolean(marking)} disabled={geometryDisabled || disabled}
     onGeometryChange={(id, geometry) => { onChange(updateVisualBlock(doc, id, { geometry })); setMarking(null); }}
     {...(marking === "new" ? { onCreateGeometry: (geometry: PageElementGeometry) => { setNewBlock(createVisualBlock("text", geometry)); setMarking(null); } } : {})} /> : null;
@@ -336,7 +356,7 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       <div className="visual-preview-canvas">{renderNode(doc.layout, true)}</div>
       {!order.some((block) => block.active) ? <p className="helper-text">No hay bloques activos. Activa Mostrar anulados para restaurarlos o crea uno nuevo.</p> : null}
     </article>
-    {editing ? <VisualInspectorDialog doc={editing.doc} initialSelectedId={editing.id} sourceImage={editing.sourceImage} disabled={disabled} stale={doc !== editing.doc}
+    {editing ? <VisualInspectorDialog simpleTypography={simpleTypography} doc={editing.doc} initialSelectedId={editing.id} sourceImage={editing.sourceImage} disabled={disabled} stale={doc !== editing.doc}
       geometryDisabled={geometryDisabled || sourceImage !== editing.sourceImage} onCancel={() => closeInspector()} onAccept={closeInspector} /> : null}
     {joining ? <EditorDialog title="Unir contenido" onClose={() => setJoining(false)}><fieldset disabled={disabled}>
       <p>Los fragmentos se unen en el orden de lectura, conservando sus textos, IDs, zonas y anotaciones.</p>

@@ -1,61 +1,65 @@
 import { useEffect, useRef } from "react";
 import { useBlocker } from "react-router-dom";
+import { confirmUnsavedChanges, type ConfirmUnsavedChangesOptions } from "../components/confirmUnsavedChanges";
 
 const confirmNavigationEvent = "lector:confirm-navigation";
-const unsavedChangesMessage = "Tienes cambios sin guardar en esta página. Si sales, se perderán. ¿Quieres salir sin guardar?";
+type NavigationRequest = CustomEvent<Promise<boolean>[]>;
 
-export function confirmPendingNavigation() {
-  return window.dispatchEvent(new Event(confirmNavigationEvent, { cancelable: true }));
+export async function confirmPendingNavigation() {
+  const event: NavigationRequest = new CustomEvent(confirmNavigationEvent, { detail: [] });
+  window.dispatchEvent(event);
+  return (await Promise.all(event.detail)).every(Boolean);
 }
 
-export function useUnsavedChanges(hasUnsavedChanges: boolean) {
-  const confirmedExitRef = useRef(false);
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => hasUnsavedChanges && !confirmedExitRef.current && (
+export function registerPendingNavigation(confirm: () => Promise<boolean>) {
+  const listener = (event: Event) => {
+    (event as NavigationRequest).detail.push(confirm());
+  };
+  window.addEventListener(confirmNavigationEvent, listener);
+  return () => window.removeEventListener(confirmNavigationEvent, listener);
+}
+
+export function useUnsavedChanges(hasUnsavedChanges: boolean, options: ConfirmUnsavedChangesOptions) {
+  const current = useRef({ hasUnsavedChanges, options });
+  current.current = { hasUnsavedChanges, options };
+  const alive = useRef(false);
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => current.current.hasUnsavedChanges && (
     currentLocation.pathname !== nextLocation.pathname
     || currentLocation.search !== nextLocation.search
     || currentLocation.hash !== nextLocation.hash
   ));
+  const blockerRef = useRef(blocker);
+  blockerRef.current = blocker;
 
-  function confirmDiscardChanges() {
-    return !hasUnsavedChanges || window.confirm(unsavedChangesMessage);
+  async function confirmDiscardChanges() {
+    return !current.current.hasUnsavedChanges || await confirmUnsavedChanges(current.current.options);
   }
 
   useEffect(() => {
-    if (blocker.state !== "blocked") {
-      return;
-    }
-
-    if (window.confirm(unsavedChangesMessage)) {
-      blocker.proceed();
-    } else {
-      blocker.reset();
-    }
-  }, [blocker]);
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
 
   useEffect(() => {
-    if (!hasUnsavedChanges) {
-      return;
-    }
+    if (blocker.state !== "blocked") return;
+    // Saving re-renders the form; retain the pending destination until the decision resolves.
+    void confirmDiscardChanges().then((allowed) => {
+      const pending = blockerRef.current;
+      if (!alive.current || pending.state !== "blocked") return;
+      if (allowed) pending.proceed(); else pending.reset();
+    });
+  }, [blocker.state, blocker.location?.key]);
 
-    function handleBeforeUnload(event: BeforeUnloadEvent) {
+  useEffect(() => registerPendingNavigation(confirmDiscardChanges), []);
+
+  useEffect(() => {
+    if (!hasUnsavedChanges) return;
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
-    }
-
-    function handleConfirmNavigation(event: Event) {
-      if (!window.confirm(unsavedChangesMessage)) {
-        event.preventDefault();
-      } else {
-        confirmedExitRef.current = true;
-      }
-    }
-
-    window.addEventListener("beforeunload", handleBeforeUnload);
-    window.addEventListener(confirmNavigationEvent, handleConfirmNavigation);
-    return () => {
-      window.removeEventListener("beforeunload", handleBeforeUnload);
-      window.removeEventListener(confirmNavigationEvent, handleConfirmNavigation);
     };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
   return confirmDiscardChanges;

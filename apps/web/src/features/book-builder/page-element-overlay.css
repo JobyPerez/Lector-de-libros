@@ -2,8 +2,12 @@
 .page-element-overlay > img { display: block; width: 100%; height: auto; }
 .page-element-overlay.is-marking { touch-action: none; cursor: crosshair; }
 .page-element-zone { position: absolute; padding: 0; border: 2px solid #a76b29; background: rgb(167 107 41 / 8%); border-radius: 2px; cursor: pointer; }
+.page-element-zone:not(.is-inactive) { z-index: 1; }
+.page-element-zone.is-inactive { z-index: 0; border-style: dashed; opacity: .55; filter: grayscale(1); }
+.page-element-zone.is-selected { z-index: 2; }
 .page-element-zone.is-selected, .page-element-zone:focus-visible { border-color: #216b91; background: rgb(33 107 145 / 18%); outline: 2px solid white; }
 .page-element-zone > span { position: absolute; left: 0; top: 0; background: #a76b29; color: white; padding: 3px; font-size: 12px; line-height: 1; }
+.page-element-zone.is-inactive > span { top: 100%; }
 .reading-element { margin-top: .6rem; padding: .6rem; border: 1px solid var(--border-color, #cfc6b9); border-radius: .4rem; }
 .reading-element.is-selected { border-color: #216b91; box-shadow: inset 3px 0 #216b91; }
 .reading-element summary { cursor: pointer; overflow-wrap: anywhere; }
