@@ -8336,6 +8336,18 @@ textarea {
   border: 0;
 }
 
+.builder-form-card-dragging {
+  outline: 2px dashed rgba(42, 87, 66, 0.55);
+  outline-offset: 6px;
+  border-radius: 18px;
+  background: rgba(42, 87, 66, 0.06);
+}
+
+.builder-drop-hint {
+  font-weight: 700;
+  color: var(--forest-700);
+}
+
 .file-pill-list-append {
   margin-top: 0.1rem;
   flex-direction: column;

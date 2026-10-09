@@ -306,6 +306,54 @@ function moveFileInList(files: File[], fromIndex: number, toIndex: number): File
   return nextFiles;
 }
 
+function extensionForImageMimeType(mimeType: string): string {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/webp") return "webp";
+  return "jpg";
+}
+
+function normalizePastedImageFile(file: File, index: number): File {
+  if (file.name && /\.(jpe?g|png|webp)$/iu.test(file.name.trim())) {
+    return file;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+  const extension = extensionForImageMimeType(file.type);
+  const fileName = `pegado-${stamp}-${index + 1}.${extension}`;
+  return new File([file], fileName, { type: file.type || `image/${extension}` });
+}
+
+type FileTransferSource = {
+  files?: FileList | null;
+  items?: DataTransferItemList | null;
+} | null;
+
+function extractImageFilesFromTransfer(source: FileTransferSource): File[] {
+  if (!source) return [];
+  const collected: File[] = [];
+  if (source.files && source.files.length > 0) {
+    collected.push(...Array.from(source.files));
+  }
+  if (collected.length === 0 && source.items) {
+    for (const item of Array.from(source.items)) {
+      if (item.kind !== "file") continue;
+      const file = item.getAsFile();
+      if (file) collected.push(file);
+    }
+  }
+  return collected.map((file, index) => normalizePastedImageFile(file, index));
+}
+
+function transferContainsFiles(dataTransfer: DataTransfer | null): boolean {
+  if (!dataTransfer) return false;
+  try {
+    if (Array.from(dataTransfer.types ?? []).includes("Files")) return true;
+  } catch {
+    return (dataTransfer.files?.length ?? 0) > 0;
+  }
+  return (dataTransfer.files?.length ?? 0) > 0;
+}
+
 type ReviewNavigationItem =
   | {
       isActive: boolean;
@@ -819,6 +867,8 @@ export function BookBuilderPage() {
   const [scannerRequest, setScannerRequest] = useState<{ files: File[]; target: ScannerTarget } | null>(null);
   const [shouldAdjustCreateBorders, setShouldAdjustCreateBorders] = useState(false);
   const [shouldAdjustAppendBorders, setShouldAdjustAppendBorders] = useState(false);
+  const [isCreateDragging, setIsCreateDragging] = useState(false);
+  const [isAppendDragging, setIsAppendDragging] = useState(false);
   const [reviewOcrMode, setReviewOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [createPromptOverride, setCreatePromptOverride] = useState(defaultVisionOcrEditablePrompt);
   const [appendPromptOverride, setAppendPromptOverride] = useState(defaultVisionOcrEditablePrompt);
@@ -883,6 +933,8 @@ export function BookBuilderPage() {
   const appendCancelHoldIntervalRef = useRef<number | null>(null);
   const isAppendCancelRequestedRef = useRef(false);
   const activeOcrOperationsRef = useRef(new Set<"append" | OcrRetryContext>());
+  const createDragCounterRef = useRef(0);
+  const appendDragCounterRef = useRef(0);
   const requestedAppendBookId = searchParams.get("appendBookId")?.trim() ?? "";
   const requestedInsertAfterPageParam = searchParams.get("insertAfterPage")?.trim() ?? "";
   const requestedReviewBookId = searchParams.get("reviewBookId")?.trim() ?? "";
@@ -1700,6 +1752,85 @@ export function BookBuilderPage() {
     appendFiles(toFileArray(event.target.files));
     event.target.value = "";
   }
+
+  function handleCreateDragEnter(event: React.DragEvent) {
+    if (isCreating || !transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    createDragCounterRef.current += 1;
+    setIsCreateDragging(true);
+  }
+
+  function handleCreateDragOver(event: React.DragEvent) {
+    if (isCreating || !transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsCreateDragging(true);
+  }
+
+  function handleCreateDragLeave(event: React.DragEvent) {
+    if (!isCreateDragging) return;
+    createDragCounterRef.current = Math.max(0, createDragCounterRef.current - 1);
+    if (createDragCounterRef.current === 0) setIsCreateDragging(false);
+  }
+
+  function handleCreateDrop(event: React.DragEvent) {
+    if (isCreating) return;
+    const files = extractImageFilesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    createDragCounterRef.current = 0;
+    setIsCreateDragging(false);
+    createFiles(files);
+  }
+
+  function handleAppendDragEnter(event: React.DragEvent) {
+    if (isAppending || !transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    appendDragCounterRef.current += 1;
+    setIsAppendDragging(true);
+  }
+
+  function handleAppendDragOver(event: React.DragEvent) {
+    if (isAppending || !transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsAppendDragging(true);
+  }
+
+  function handleAppendDragLeave(event: React.DragEvent) {
+    if (!isAppendDragging) return;
+    appendDragCounterRef.current = Math.max(0, appendDragCounterRef.current - 1);
+    if (appendDragCounterRef.current === 0) setIsAppendDragging(false);
+  }
+
+  function handleAppendDrop(event: React.DragEvent) {
+    if (isAppending) return;
+    const files = extractImageFilesFromTransfer(event.dataTransfer);
+    if (!files.length) return;
+    event.preventDefault();
+    appendDragCounterRef.current = 0;
+    setIsAppendDragging(false);
+    appendFiles(files);
+  }
+
+  useEffect(() => {
+    if (isReviewOnlyMode || typeof document === "undefined") return;
+    function handleGlobalPaste(event: ClipboardEvent) {
+      const files = extractImageFilesFromTransfer(event.clipboardData);
+      if (!files.length) return;
+      if (isAppendOnlyMode) {
+        if (isAppending) return;
+        event.preventDefault();
+        appendFiles(files);
+      } else {
+        if (isCreating) return;
+        event.preventDefault();
+        createFiles(files);
+      }
+    }
+    document.addEventListener("paste", handleGlobalPaste);
+    return () => document.removeEventListener("paste", handleGlobalPaste);
+  }, [isAppendOnlyMode, isReviewOnlyMode, isAppending, isCreating, shouldAdjustAppendBorders, shouldAdjustCreateBorders]);
 
   function stopCreateCameraStream() {
     setCreateCameraStream((currentStream) => {
@@ -3106,7 +3237,13 @@ export function BookBuilderPage() {
 
           <div className={isAppendOnlyMode ? "builder-board builder-board-append" : "builder-board"}>
             {!isAppendOnlyMode ? (
-              <article className="builder-form-card">
+              <article
+                className={isCreateDragging ? "builder-form-card builder-form-card-dragging" : "builder-form-card"}
+                onDragEnter={handleCreateDragEnter}
+                onDragLeave={handleCreateDragLeave}
+                onDragOver={handleCreateDragOver}
+                onDrop={handleCreateDrop}
+              >
                 <h3>Crear un libro nuevo</h3>
 
                 <form className="stack-form" onSubmit={handleCreateFromImages}>
@@ -3177,6 +3314,8 @@ export function BookBuilderPage() {
                       </span>
                     </button>
                   </div>
+                  <p className="helper-text">También puedes arrastrar imágenes hasta aquí o pegarlas con Ctrl + V.</p>
+                  {isCreateDragging ? <p className="helper-text builder-drop-hint" role="status">Suelta las imágenes para añadirlas.</p> : null}
 
                   <input
                     accept="image/*"
@@ -3342,7 +3481,13 @@ export function BookBuilderPage() {
             ) : null}
 
             {isAppendOnlyMode ? (
-              <article className="builder-form-card builder-form-card-append">
+              <article
+                className={isAppendDragging ? "builder-form-card builder-form-card-append builder-form-card-dragging" : "builder-form-card builder-form-card-append"}
+                onDragEnter={handleAppendDragEnter}
+                onDragLeave={handleAppendDragLeave}
+                onDragOver={handleAppendDragOver}
+                onDrop={handleAppendDrop}
+              >
                 <form className="stack-form" id="append-pages" onSubmit={handleAppendImages}>
                   {selectedAppendBook && appendReferencePageNumber !== undefined ? (
                     <div className="selected-book-banner append-position-banner">
@@ -3414,6 +3559,8 @@ export function BookBuilderPage() {
                       </span>
                     </button>
                   </div>
+                  <p className="helper-text">También puedes arrastrar imágenes hasta aquí o pegarlas con Ctrl + V.</p>
+                  {isAppendDragging ? <p className="helper-text builder-drop-hint" role="status">Suelta las imágenes para añadirlas.</p> : null}
 
                   <input
                     accept="image/*"
