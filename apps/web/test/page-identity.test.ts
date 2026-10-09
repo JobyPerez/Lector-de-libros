@@ -160,15 +160,30 @@ test("gallery image previews alone opt into thumbnail transport and use a thumbn
   assert.equal(new URL(calls[1]!.url).searchParams.has("thumbnail"), false, "existing reader/editor requests remain full size");
 });
 
-test("reader gallery links retain current identity/position and gallery-return recognition accepts origin search", () => {
+test("reader gallery links retain current identity/position", () => {
   const node = find(reader, (node) => ts.isJsxOpeningElement(node) && node.getText(reader).includes('aria-label="Galería de páginas"')) as ts.JsxOpeningElement;
   const to = node.attributes.properties.find((property) => ts.isJsxAttribute(property) && property.name.getText(reader) === "to") as ts.JsxAttribute;
   const href = evaluate((to.initializer as ts.JsxExpression).expression!.getText(reader), { bookId: "book", currentPageId: "page-a", currentPageNumber: 9,
     pageQuery: { data: { page: { pageId: "stale-cache" } } } });
   assert.equal(href, "/books/book/pages?pageId=page-a&page=9");
-  const flag = find(reader, (node) => ts.isVariableDeclaration(node) && node.name.getText(reader) === "isReturningToGallery") as ts.VariableDeclaration;
-  assert.equal(evaluate(flag.initializer!.getText(reader), { bookId: "book", readerReturnTo: href }), true);
-  assert.equal(evaluate(flag.initializer!.getText(reader), { bookId: "book", readerReturnTo: "/books/other/pages?pageId=page-a" }), false);
+});
+
+test("reader returns to the shelf from gallery or shelf and preserves global search return", () => {
+  const flag = find(reader, (node) => ts.isVariableDeclaration(node) && node.name.getText(reader) === "isReturningToGlobalSearch") as ts.VariableDeclaration;
+  const link = find(reader, (node) => ts.isJsxOpeningElement(node) && node.getText(reader).includes("shelfAnchorBookId, shelfReturnTo")) as ts.JsxOpeningElement;
+  for (const readerReturnTo of ["", "/books/book/pages", "/books/book/pages?pageId=page-a&page=9", "/search?q=book"]) {
+    const isReturningToGlobalSearch = evaluate(flag.initializer!.getText(reader), { readerReturnTo });
+    const bindings = { readerReturnTo, isReturningToGlobalSearch, shelfReturnTo: "/?shelf=reading", shelfAnchorBookId: "book" };
+    for (const [name, expected] of Object.entries({
+      to: isReturningToGlobalSearch ? readerReturnTo : bindings.shelfReturnTo,
+      state: isReturningToGlobalSearch ? undefined : { shelfAnchorBookId: "book", shelfReturnTo: bindings.shelfReturnTo },
+      "aria-label": isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería",
+      title: isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"
+    })) {
+      const attribute = link.attributes.properties.find((property) => ts.isJsxAttribute(property) && property.name.getText(reader) === name) as ts.JsxAttribute;
+      assert.deepEqual(evaluate((attribute.initializer as ts.JsxExpression).expression!.getText(reader), bindings), expected, `${readerReturnTo}: ${name}`);
+    }
+  }
 });
 
 test("builder image editing snapshots the loaded page ID before asynchronous image rendering", async () => {

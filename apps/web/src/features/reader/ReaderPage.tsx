@@ -1309,7 +1309,6 @@ export function ReaderPage() {
   const navigationState = (location.state as ReaderNavigationState | null) ?? null;
   const readerReturnTo = navigationState?.returnTo?.trim() ?? "";
   const isReturningToGlobalSearch = readerReturnTo.startsWith("/search");
-  const isReturningToGallery = readerReturnTo.split("?")[0] === `/books/${bookId}/pages`;
   const shelfAnchorBookId = bookId;
   const shelfReturnToFromState = isValidShelfReturnTo(navigationState?.shelfReturnTo)
     ? (navigationState?.shelfReturnTo as string)
@@ -5072,14 +5071,14 @@ export function ReaderPage() {
     return (
       <>
         {showPrimaryActions ? <Link
-          aria-label={isReturningToGallery ? "Volver a la galería" : isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          aria-label={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
           className={buttonClassName}
           onClick={onAction}
-          state={isReturningToGlobalSearch || isReturningToGallery ? undefined : { shelfAnchorBookId, shelfReturnTo }}
-          title={isReturningToGallery ? "Volver a la galería" : isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
-          to={isReturningToGlobalSearch || isReturningToGallery ? readerReturnTo : shelfReturnTo}
+          state={isReturningToGlobalSearch ? undefined : { shelfAnchorBookId, shelfReturnTo }}
+          title={isReturningToGlobalSearch ? "Volver a la búsqueda global" : "Volver a la estantería"}
+          to={isReturningToGlobalSearch ? readerReturnTo : shelfReturnTo}
         >
-          {isReturningToGlobalSearch || isReturningToGallery ? <BackIcon /> : <ShelfIcon />}
+          {isReturningToGlobalSearch ? <BackIcon /> : <ShelfIcon />}
         </Link> : null}
         {showSecondaryActions ? <Link
           aria-label="Buscar dentro del libro"
