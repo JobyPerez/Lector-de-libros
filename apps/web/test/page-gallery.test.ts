@@ -111,7 +111,7 @@ function galleryHarness(editor: boolean, options: { outline?: BookOutlineEntry[]
     "@tanstack/react-query": { useQueryClient: () => client, useQuery: (query: { queryKey: string[] }) => query.queryKey[0] === "book-pages-ocr-job" ? { data: options.job, isError: !!options.jobError, error: options.jobError, refetch: async () => calls.push(["refetch-job"]) } : ({ data: query.queryKey[0] === "book-pages" ? data : query.queryKey[0] === "book" ? book : query.queryKey[0] === "book-outline" ? { outline: options.outline ?? [] } : undefined }) },
     "react-router-dom": { useBlocker: (shouldBlock: (locations: any) => boolean) => { calls.push(["dirty", shouldBlock({ currentLocation: { pathname: "/gallery", search: "", hash: "" }, nextLocation: { pathname: "/reader", search: "", hash: "" } })]); return { state: "unblocked" }; }, useParams: () => ({ bookId: "book", ...options.params }), useSearchParams: () => [searchParams], Link: ({ to, state, ...props }: any) => React.createElement("a", { ...props, href: typeof to === "string" ? to : `${to.pathname}${to.search}${to.hash}`, "data-return-to": state?.returnTo }), Navigate: ({ to, state }: any) => React.createElement("a", { href: to, "data-return-to": state?.returnTo }) },
     "../../app/auth-store": { useAuthStore: (selector: (state: unknown) => unknown) => selector({ accessToken: "token", user: { userId: "user" } }) },
-    "../../app/api": { isBookEditor: (role: string) => role === "OWNER", reorderBookPages: async (...args: unknown[]) => { calls.push(["reorder", ...args]); await options.reorder?.(); return data; }, deleteBookPage: async (...args: unknown[]) => { calls.push(["delete", ...args]); if (args[3] === failedDeleteId) throw new Error("Synthetic failure"); return {}; }, startBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["ocr", ...args]); return { jobId: "synthetic-job" }; } },
+    "../../app/api": { isBookEditor: (role: string) => role === "OWNER", reorderBookPages: async (...args: unknown[]) => { calls.push(["reorder", ...args]); await options.reorder?.(); return data; }, deleteBookPage: async (...args: unknown[]) => { calls.push(["delete", ...args]); if (args[3] === failedDeleteId) throw new Error("Synthetic failure"); return {}; }, startBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["ocr", ...args]); return { jobId: "synthetic-job" }; }, updateBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["update-ocr", ...args]); return { ...options.job, status: "PENDING", attemptCount: options.job.attemptCount + 1 }; } },
     "../../hooks/useUnsavedChanges": { useUnsavedChanges: (dirty: boolean) => calls.push(["dirty", dirty]), registerPendingNavigation: () => () => {} },
     "../../components/confirmUnsavedChanges": { confirmUnsavedChanges: async (confirmation: { save: () => Promise<boolean> }) => options.unsavedDecision === "save" ? confirmation.save() : options.unsavedDecision !== "back" },
     "../../components/OcrConfig": loadOcrConfig({ ocrModel: "server-model", models: [], ocrModelIds: [] }, { effectiveModels: { ocrModel: "user-model" }, settings: { opencodeOcrVisibleModels: ["user-model", "advanced-model"] } }, { source: "live", models: ["user-model", "advanced-model"].map((id) => ({ id, name: id, supportsVision: options.visionSupported ?? true })) }),
@@ -567,13 +567,84 @@ test("OCR pending/failed shortcuts use immutable IDs and prefer job progress to 
       { pageId: "a", status: "READY" }, { pageId: "b", status: "FAILED" }, { pageId: "c", status: "PENDING" }, { pageId: "deleted", status: "FAILED" }
     ]
   } }, async ({ document, button }: any) => {
+    const cards = [...document.querySelectorAll(".gallery-card")];
+    assert.deepEqual(cards.map((card: any) => card.dataset.ocrStatus), ["READY", "FAILED", "PENDING"]);
+    assert.deepEqual(cards.map((card: any) => card.querySelector(".gallery-ocr-badge").textContent), ["OCR completado", "OCR fallido", "OCR en curso"]);
+    assert.equal(cards[2].querySelector(".gallery-ocr-badge").dataset.ocrActive, "true");
     await act(async () => button("Seleccionar OCR pendiente").click());
     assert.equal(document.querySelectorAll(".gallery-card[data-selected='true']").length, 1);
     assert.match(document.querySelector(".gallery-card[data-selected='true']").textContent, /Página 3/);
     await act(async () => button("Seleccionar OCR fallido").click());
     assert.equal(document.querySelectorAll(".gallery-card[data-selected='true']").length, 1);
     assert.match(document.querySelector(".gallery-card[data-selected='true']").textContent, /Página 2/);
+    await act(async () => button("Seleccionar pendientes y fallidas").click());
+    assert.deepEqual([...document.querySelectorAll(".gallery-card[data-selected='true']")].map((card: any) => card.dataset.galleryPageId), ["b", "c"]);
+    assert.match(document.querySelector(".gallery-toolbar").textContent, /Sin OCR completado: 2 \(1 pendientes, 1 fallidas\)/);
   });
+});
+
+test("combined OCR selection uses listing fallback and executes only pending and failed pages", async () => {
+  await withGalleryDom({ sourceType: "IMAGES", statuses: ["PENDING", "FAILED", "READY"] }, async ({ document, button, dom, calls }: any) => {
+    assert.deepEqual([...document.querySelectorAll(".gallery-ocr-badge")].map((badge: any) => badge.textContent), ["Pendiente de OCR", "OCR fallido", "OCR completado"]);
+    await act(async () => button("Seleccionar pendientes y fallidas").click());
+    dom.window.confirm = () => true;
+    await act(async () => button("Ejecutar OCR").click());
+    assert.deepEqual(calls.find((call: any[]) => call[0] === "ocr"), ["ocr", "token", "book", { pageIds: ["a", "b"], ocrMode: "TEXTRACT", advancedLayout: false }]);
+  });
+  await withGalleryDom({ sourceType: "IMAGES" }, async ({ button }: any) => {
+    assert.equal(button("Seleccionar pendientes y fallidas").disabled, true);
+  });
+});
+
+test("only pending pages in an active tracked job show OCR in progress", async () => {
+  for (const status of ["PENDING", "RUNNING", "CANCELLED", "FAILED"]) {
+    await withGalleryDom({ sourceType: "IMAGES", storedJobId: "job", statuses: ["READY", "PENDING", "READY"], job: {
+      jobId: "job", status, attemptCount: 1, processed: 0, total: 1, failed: 0, pages: [{ pageId: "a", status: "PENDING" }]
+    } }, async ({ document, button }: any) => {
+      const active = status === "PENDING" || status === "RUNNING";
+      assert.deepEqual([...document.querySelectorAll(".gallery-ocr-badge")].map((badge: any) => badge.textContent), [active ? "OCR en curso" : "Pendiente de OCR", "Pendiente de OCR", "OCR completado"]);
+      await act(async () => button("Seleccionar pendientes y fallidas").click());
+      assert.deepEqual([...document.querySelectorAll(".gallery-card[data-selected='true']")].map((card: any) => card.dataset.galleryPageId), ["a", "b"]);
+      assert.equal(document.querySelector("fieldset:last-of-type").disabled, active);
+    });
+  }
+});
+
+test("terminal tracking keeps long errors collapsed, retries original options, and selects existing missing OCR for adjustment", async () => {
+  for (const status of ["FAILED", "CANCELLED"]) {
+    const job = { jobId: "job", status, attemptCount: 8, processed: 8, total: 8, failed: 7,
+      ocrMode: "TEXTRACT", advancedLayout: true, ocrModel: "original-model", promptOverride: "original prompt",
+      pages: [{ pageId: "a", status: "READY" }, ...["b", "c", "deleted", "gone-1", "gone-2", "gone-3", "gone-4"].map((pageId) => ({ pageId, status: "FAILED", error: "x".repeat(2000) }))] };
+    await withGalleryDom({ sourceType: "IMAGES", storedJobId: "job", statuses: ["FAILED", "READY", "READY"], job }, async ({ document, button, calls }: any) => {
+      const panel = document.querySelector(".gallery-job");
+      assert.ok(panel.compareDocumentPosition(document.querySelector(".gallery-toolbar")) & 4, "tracking precedes toolbar");
+      assert.match(panel.querySelector("[role='status']").textContent, /1 reconocidas · 7 fallidas · 0 pendientes/);
+      const errors = panel.querySelector("details");
+      assert.equal(errors.open, false);
+      assert.equal(errors.querySelectorAll(".error-text").length, 7);
+      assert.match(panel.textContent, /Reintentar conserva los ajustes del trabajo original/);
+      assert.match(panel.textContent, /desactivar la maquetación avanzada o cambiar el modelo/);
+      await act(async () => button("Seleccionar pendientes y fallidas para ajustar OCR").click());
+      assert.deepEqual([...document.querySelectorAll(".gallery-card[data-selected='true']")].map((card: any) => card.dataset.galleryPageId), ["b", "c"]);
+      assert.equal(calls.some((call: any[]) => call[0] === "ocr" || call[0] === "update-ocr"), false, "selection creates no job");
+      await act(async () => button("Reintentar páginas pendientes").click());
+      assert.deepEqual(calls.filter((call: any[]) => call[0] === "update-ocr"), [["update-ocr", "token", "book", "job", "retry"]], "retry sends only the action, never selection-panel options");
+      assert.equal(calls.some((call: any[]) => call[0] === "ocr"), false);
+      const cached = calls.find((call: any[]) => call[0] === "cache")[2];
+      assert.equal(cached.advancedLayout, true);
+      assert.equal(cached.ocrModel, "original-model");
+      assert.equal(cached.promptOverride, "original prompt");
+      assert.equal(cached.attemptCount, 9);
+    });
+  }
+});
+
+test("viewer image gallery shows OCR badges without OCR selection or tracking controls", () => {
+  const { Gallery } = galleryHarness(false, { sourceType: "IMAGES", search: "ocrJobId=job", statuses: ["PENDING", "FAILED", "READY"], job: { jobId: "job", status: "FAILED", pages: [] } });
+  const document = new JSDOM(renderToStaticMarkup(React.createElement(Gallery))).window.document;
+  assert.deepEqual([...document.querySelectorAll(".gallery-ocr-badge")].map((badge: any) => badge.textContent), ["Pendiente de OCR", "OCR fallido", "OCR completado"]);
+  assert.equal(document.querySelector(".gallery-job"), null);
+  assert.doesNotMatch(document.body.textContent!, /Seleccionar OCR|Seleccionar pendientes y fallidas|Ejecutar OCR|Reintentar páginas|Cancelar OCR/);
 });
 
 test("all restored job tracking errors can be closed without cancellation and without permanently locking the gallery", async () => {

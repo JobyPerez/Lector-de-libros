@@ -56,6 +56,15 @@ fieldset.gallery-toolbar { border: 1px solid var(--border-focus); border-radius:
 .gallery-card-actions > *, .gallery-toolbar button { min-height: 44px; }
 .gallery-job { padding: .75rem; margin-block: .75rem; background: var(--paper-muted); border-radius: .5rem; overflow-wrap: anywhere; }
 .gallery-job progress { display: block; width: 100%; margin-top: .5rem; }
+.gallery-job-actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: .75rem; }
+.gallery-job-actions button { min-height: 44px; }
+.gallery-job-errors { margin-top: .75rem; }
+.gallery-job-errors summary { cursor: pointer; padding-block: .5rem; font-weight: 600; }
+.gallery-job-errors > div { max-height: 16rem; overflow-y: auto; }
+.gallery-ocr-badge { display: inline-block; margin-top: .75rem; padding: .25rem .6rem; border: 1px solid currentColor; border-radius: .5rem; font-size: .85rem; font-weight: 600; color: #604b16; background: #faf3df; }
+.gallery-ocr-badge[data-ocr-status="FAILED"] { color: #853b35; background: #fbeeea; }
+.gallery-ocr-badge[data-ocr-status="READY"] { color: #285b3c; background: #edf5ee; }
+.gallery-ocr-badge[data-ocr-active="true"] { color: #305774; background: #edf3f9; }
 .book-gallery :focus-visible, .gallery-scroll-top:focus-visible { outline: 3px solid var(--forest-700); outline-offset: 3px; }
 .gallery-scroll-top { position: fixed; right: calc(1rem + env(safe-area-inset-right, 0px)); bottom: calc(1rem + env(safe-area-inset-bottom, 0px)); z-index: 30; display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; padding: 0; box-shadow: 0 4px 16px rgb(0 0 0 / 20%); }
 @media (max-width: 600px) { .gallery-toolbar label { width: 100%; } .gallery-preview { height: min(var(--gallery-preview-height, 260px), 230px); } .gallery-outline-children { padding-inline-start: .5rem; } }

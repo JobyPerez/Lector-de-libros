@@ -105,8 +105,16 @@ export function BookPagesGallery() {
   const client = useQueryClient();
   const userId = useAuthStore((state) => state.user?.userId) ?? "";
   const jobStorageKey = `lector:gallery-ocr:${userId}:${bookId}`;
-  const [jobId, setJobId] = useState(() => { try { return localStorage.getItem(jobStorageKey) ?? ""; } catch { return ""; } });
-  useEffect(() => { try { setJobId(localStorage.getItem(jobStorageKey) ?? ""); } catch { setJobId(""); } }, [jobStorageKey]);
+  const requestedOcrJobId = searchParams.get("ocrJobId") ?? "";
+  const [jobId, setJobId] = useState(() => { try { return requestedOcrJobId || localStorage.getItem(jobStorageKey) || ""; } catch { return requestedOcrJobId; } });
+  useEffect(() => {
+    if (requestedOcrJobId) {
+      setJobId(requestedOcrJobId);
+      try { localStorage.setItem(jobStorageKey, requestedOcrJobId); } catch { /* The URL still preserves job tracking. */ }
+    } else {
+      try { setJobId(localStorage.getItem(jobStorageKey) ?? ""); } catch { setJobId(""); }
+    }
+  }, [jobStorageKey, requestedOcrJobId]);
   const [draft, setDraft] = useState<string[] | null>(null);
   const [baseline, setBaseline] = useState<string[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -140,7 +148,7 @@ export function BookPagesGallery() {
     enabled: !!accessToken && canEdit && isImages && !!jobId,
     refetchInterval: (query) => !query.state.data || query.state.data.status === "PENDING" || query.state.data.status === "RUNNING" ? 2000 : false
   });
-  const jobs = jobId && jobsQuery.data ? [jobsQuery.data] : [];
+  const jobs = canEdit && isImages && jobId && jobsQuery.data ? [jobsQuery.data] : [];
   const activeJob = canEdit && isImages && !!jobId && (!jobsQuery.data || jobs.some((job) => job.status === "PENDING" || job.status === "RUNNING"));
   const orderChanged = dirty && persisted.join(",") !== baseline.join(",");
   const exitOptions = {
@@ -180,6 +188,7 @@ export function BookPagesGallery() {
   const jobPageStatuses = new Map(jobs.flatMap((job) => job.pages.map((page) => [page.pageId, page.status] as const)));
   const pendingOcrPageIds = data?.pages.filter((page) => page.capabilities.ocr && (jobPageStatuses.get(page.pageId) ?? page.ocrStatus) === "PENDING").map((page) => page.pageId) ?? [];
   const failedOcrPageIds = data?.pages.filter((page) => page.capabilities.ocr && (jobPageStatuses.get(page.pageId) ?? page.ocrStatus) === "FAILED").map((page) => page.pageId) ?? [];
+  const missingOcrPageIds = [...pendingOcrPageIds, ...failedOcrPageIds];
   const terminalJobs = jobs.filter((job) => job.status === "READY" || job.status === "FAILED" || job.status === "CANCELLED").map((job) => `${job.jobId}:${job.attemptCount}:${job.status}`).join(",");
   useEffect(() => {
     if (terminalJobs) void invalidate();
@@ -302,11 +311,24 @@ export function BookPagesGallery() {
   return <section className="panel book-gallery" aria-labelledby="gallery-title" data-preview-size={previewSize}>
     <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
     {originPageId && !originPage && <p className="helper-text">La página de origen ya no está disponible. No se abrirá otra página en su lugar.</p>}
+    {canEdit && isImages && jobId && jobsQuery.isError && <div className="gallery-job" role="alert"><p className="error-text">No se pudo consultar el OCR: {jobsQuery.error.message}</p><p className="helper-text">Cerrar el seguimiento no cancela el trabajo OCR del servidor.</p><button className="secondary-button" onClick={() => void jobsQuery.refetch()}>Reintentar</button><button className="secondary-button" disabled={busy} onClick={() => { setJobId(""); try { localStorage.removeItem(jobStorageKey); } catch { /* Storage may be unavailable. */ } setNotice("Seguimiento cerrado. El OCR del servidor no se ha cancelado."); }}>Cerrar seguimiento</button></div>}
+    {jobs.map((job) => <section className="gallery-job" key={job.jobId} aria-label="Seguimiento OCR">
+      <div role="status" aria-live="polite"><strong>OCR: {{ PENDING: "Pendiente", RUNNING: "En curso", READY: "Completado", FAILED: "Finalizado con errores", CANCELLED: "Cancelado" }[job.status]}</strong><p>{job.pages.filter((page) => page.status === "READY").length} reconocidas · {job.pages.filter((page) => page.status === "FAILED").length} fallidas · {job.pages.filter((page) => page.status === "PENDING").length} pendientes</p></div>
+      <progress max={Math.max(1, job.total)} value={job.processed} aria-label="Progreso OCR" />
+      {(job.error || job.pages.some((page) => page.error)) && <details className="gallery-job-errors"><summary>Ver detalles de los errores OCR</summary><div>{job.error && <p className="error-text">{job.error}</p>}{job.pages.filter((page) => page.error).map((failure) => <p className="error-text" key={failure.pageId}>Página {byId.get(failure.pageId)?.pageNumber ?? failure.pageId}: {failure.error}</p>)}</div></details>}
+      <div className="gallery-job-actions">
+        {(job.status === "PENDING" || job.status === "RUNNING") && <button className="secondary-button" disabled={busy || job.cancelRequested} onClick={() => void perform(async () => { const next = await updateBookPagesOcrJob(accessToken, bookId, job.jobId, "cancel"); client.setQueryData(["book-pages-ocr-job", bookId, job.jobId], next); })}>{job.cancelRequested ? "Cancelando OCR..." : "Cancelar OCR"}</button>}
+        {(job.status === "FAILED" || job.status === "CANCELLED") && <button className="secondary-button" disabled={busy || dirty} onClick={() => void perform(async () => { const next = await updateBookPagesOcrJob(accessToken, bookId, job.jobId, "retry"); client.setQueryData(["book-pages-ocr-job", bookId, job.jobId], next); })}>Reintentar páginas pendientes</button>}
+        {!activeJob && <button className="secondary-button" disabled={busy || dirty || !missingOcrPageIds.length} onClick={() => { setSelected(new Set(missingOcrPageIds)); setAnchor(null); }}>Seleccionar pendientes y fallidas para ajustar OCR</button>}
+      </div>
+      {!activeJob && <p className="helper-text">Reintentar conserva los ajustes del trabajo original. Para cambiarlos, selecciona las páginas pendientes y fallidas y usa OCR de la selección: puedes desactivar la maquetación avanzada o cambiar el modelo antes de ejecutar OCR.</p>}
+    </section>)}
     <div className="gallery-toolbar">
       <span role="status">{selected.size} de {data.pages.length} seleccionadas</span>
       <button className="secondary-button" onClick={() => setSelected(new Set(order))}>Seleccionar todas</button>
       <button className="secondary-button" onClick={() => { setSelected(new Set()); setAnchor(null); }}>Limpiar selección</button>
       {canEdit && isImages && <><button className="secondary-button" disabled={!pendingOcrPageIds.length} onClick={() => { setSelected(new Set(pendingOcrPageIds)); setAnchor(null); }}>Seleccionar OCR pendiente</button><button className="secondary-button" disabled={!failedOcrPageIds.length} onClick={() => { setSelected(new Set(failedOcrPageIds)); setAnchor(null); }}>Seleccionar OCR fallido</button></>}
+      {canEdit && isImages && <><button className="secondary-button" disabled={!missingOcrPageIds.length} onClick={() => { setSelected(new Set(missingOcrPageIds)); setAnchor(null); }}>Seleccionar pendientes y fallidas</button><span className="helper-text">Sin OCR completado: {missingOcrPageIds.length} ({pendingOcrPageIds.length} pendientes, {failedOcrPageIds.length} fallidas)</span></>}
       {canEdit && <button className="danger-button" disabled={!selected.size || dirty || busy || activeJob || [...selected].some((id) => !byId.get(id)?.capabilities.delete)} onClick={() => remove([...selected])}>Eliminar selección</button>}
       {canAddPages && (insertBlocked
         ? <button className="secondary-button" disabled title="Guarda o cancela el orden antes de añadir páginas.">Añadir páginas</button>
@@ -350,11 +372,6 @@ export function BookPagesGallery() {
     {dirty && <p className="helper-text" role="status">Orden sin guardar. Guarda o cancela antes de editar, añadir o eliminar páginas o ejecutar OCR. Leer usa la numeración guardada.</p>}
     {error && <p className="error-text" role="alert">{error} Si el libro ha cambiado, cancela el orden y vuelve a intentarlo.</p>}
     <p role="status" aria-live="polite">{notice}</p>
-    {jobId && jobsQuery.isError && <div className="gallery-job" role="alert"><p className="error-text">No se pudo consultar el OCR: {jobsQuery.error.message}</p><p className="helper-text">Cerrar el seguimiento no cancela el trabajo OCR del servidor.</p><button className="secondary-button" onClick={() => void jobsQuery.refetch()}>Reintentar</button><button className="secondary-button" disabled={busy} onClick={() => { setJobId(""); try { localStorage.removeItem(jobStorageKey); } catch { /* Storage may be unavailable. */ } setNotice("Seguimiento cerrado. El OCR del servidor no se ha cancelado."); }}>Cerrar seguimiento</button></div>}
-    {jobs.map((job) => <div className="gallery-job" key={job.jobId} role="status"><strong>OCR: {job.status} ({job.processed}/{job.total}; {job.failed} fallidas)</strong><progress max={Math.max(1, job.total)} value={job.processed} aria-label="Progreso OCR" />{job.error && <p className="error-text">{job.error}</p>}{job.pages.filter((page) => page.error).map((failure) => <p className="error-text" key={failure.pageId}>Página {byId.get(failure.pageId)?.pageNumber ?? failure.pageId}: {failure.error}</p>)}
-      {(job.status === "PENDING" || job.status === "RUNNING") && <button className="secondary-button" disabled={busy || job.cancelRequested} onClick={() => void perform(async () => { const next = await updateBookPagesOcrJob(accessToken, bookId, job.jobId, "cancel"); client.setQueryData(["book-pages-ocr-job", bookId, job.jobId], next); })}>{job.cancelRequested ? "Cancelando OCR..." : "Cancelar OCR"}</button>}
-      {(job.status === "FAILED" || job.status === "CANCELLED") && <button className="secondary-button" disabled={busy || dirty} onClick={() => void perform(async () => { const next = await updateBookPagesOcrJob(accessToken, bookId, job.jobId, "retry"); client.setQueryData(["book-pages-ocr-job", bookId, job.jobId], next); })}>Reintentar páginas pendientes</button>}
-    </div>)}
     {!order.length && <p>Este libro todavía no tiene páginas.{canAddPages && !insertBlocked ? " Usa Añadir páginas para crear la primera." : ""}</p>}
     {showOutline && outlineQuery.isPending && <p role="status">Cargando índice...</p>}
     {showOutline && outlineQuery.isError && <p role="alert" className="error-text">No se pudo cargar el índice. <button className="secondary-button" onClick={() => void outlineQuery.refetch()}>Reintentar índice</button></p>}
@@ -376,7 +393,9 @@ export function BookPagesGallery() {
         const index = order.indexOf(id);
         const page = byId.get(id);
         if (!page) return null;
-        return <article className="gallery-card" data-gallery-page-id={id} data-selected={selected.has(id)} data-origin={id === highlightedPageId} data-dragging={dragIds?.has(id) ?? false} data-drop-position={dropTarget?.id === id ? dropTarget.position : undefined} aria-current={id === highlightedPageId ? "page" : undefined} ref={id === highlightedPageId ? originCardRef : undefined} key={id}
+        const ocrStatus = jobPageStatuses.get(id) ?? page.ocrStatus;
+        const ocrInProgress = ocrStatus === "PENDING" && activeJob && jobPageStatuses.has(id);
+        return <article className="gallery-card" data-gallery-page-id={id} data-ocr-status={isImages ? ocrStatus : undefined} data-selected={selected.has(id)} data-origin={id === highlightedPageId} data-dragging={dragIds?.has(id) ?? false} data-drop-position={dropTarget?.id === id ? dropTarget.position : undefined} aria-current={id === highlightedPageId ? "page" : undefined} ref={id === highlightedPageId ? originCardRef : undefined} key={id}
           onDragOver={(event) => {
             if (!canEdit || !data.capabilities.reorder || !dragIds || busy || activeJob) return;
             if (dragIds.has(id)) { setDropTarget(null); return; }
@@ -403,7 +422,8 @@ export function BookPagesGallery() {
             onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && canEdit && page.capabilities.edit && !busy && !activeJob && !dirty) { event.preventDefault(); setEditing({ page }); } }}>
             <PagePreview page={page} bookId={bookId} accessToken={accessToken} image={isImages} />
           </div>
-          <p className="helper-text">Página guardada {page.pageNumber}{isImages ? ` · OCR: ${page.ocrStatus}` : ""}</p>
+          {isImages && <span className="gallery-ocr-badge" data-ocr-status={ocrStatus} data-ocr-active={ocrInProgress}>{ocrStatus === "READY" ? "OCR completado" : ocrStatus === "FAILED" ? "OCR fallido" : ocrInProgress ? "OCR en curso" : "Pendiente de OCR"}</span>}
+          <p className="helper-text">Página guardada {page.pageNumber}</p>
           <div className="gallery-card-actions"><Link className="secondary-button gallery-icon-button" aria-label="Leer" title="Leer página" to={`${galleryPath}/${id}/read${gallerySearch}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v16m0-16C9 3 5 3 2 4v16c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z" /></svg></Link>
             {canEdit && <>{page.capabilities.edit && <button className="secondary-button gallery-icon-button" aria-label="Editar" title="Editar página" disabled={dirty || busy || activeJob} onClick={() => setEditing({ page })}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3Zm-3 3 5 5" /></svg></button>}{page.capabilities.delete && <button className="danger-button gallery-icon-button" aria-label="Eliminar" title="Eliminar página" disabled={dirty || busy || activeJob} onClick={() => remove([id])}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" /></svg></button>}</>}
           </div>

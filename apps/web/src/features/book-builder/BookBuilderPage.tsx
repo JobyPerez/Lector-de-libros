@@ -12,14 +12,17 @@ import {
   fetchAwsCostMonthToDate,
   fetchBookPage,
   fetchBookPageImage,
+  fetchBookPagesOcrJob,
   fetchBooks,
   fetchPageAnnotations,
   fetchReaderNavigation,
   isRetryableRateLimitError,
   rerunOcrPage,
+  startBookPagesOcrJob,
   uploadBookPageImage,
   saveVisualPageDocument,
   type AppendImagesImportProgress,
+  type BookPagesOcrInput,
   type ImageRotation,
   type ImageOcrMode,
   type OcrWaitReason,
@@ -772,13 +775,22 @@ type AppendResumeState = {
   nextAfterPage: number | null;
 };
 
-type AppendOcrFailureChoice = "retry" | "skip";
+type AppendOcrFailureChoice = "retry" | "skip" | "cancel";
 
 type AppendOcrFailureState = {
   fileName: string;
   message: string;
   pageIndex: number;
   totalPages: number;
+  deadline: number;
+};
+
+type AppendOcrSummary = {
+  bookId: string;
+  destination: string;
+  failedCount: number;
+  totalPages: number;
+  ocrInput: BookPagesOcrInput;
 };
 
 type BuilderWakeLockSentinel = {
@@ -857,6 +869,21 @@ export function BookBuilderPage() {
   const [appendProgressOffset, setAppendProgressOffset] = useState(0);
   const [appendResumeState, setAppendResumeState] = useState<AppendResumeState | null>(null);
   const [appendOcrFailure, setAppendOcrFailure] = useState<AppendOcrFailureState | null>(null);
+  const [appendOcrFailureSeconds, setAppendOcrFailureSeconds] = useState(60);
+  const [appendFailedFileIndices, setAppendFailedFileIndices] = useState<number[]>([]);
+  const [appendPendingOcrPageIds, setAppendPendingOcrPageIds] = useState<string[]>([]);
+  const [appendOcrSummary, setAppendOcrSummary] = useState<AppendOcrSummary | null>(null);
+  const [isStartingAppendRecovery, setIsStartingAppendRecovery] = useState(false);
+  const [appendRecoveryJobId, setAppendRecoveryJobId] = useState("");
+  const appendRecoveryBusyRef = useRef(false);
+  const appendRecoveryQuery = useQuery({
+    queryKey: ["book-pages-ocr-job", appendOcrSummary?.bookId, appendRecoveryJobId],
+    queryFn: () => fetchBookPagesOcrJob(accessToken!, appendOcrSummary!.bookId, appendRecoveryJobId),
+    enabled: !!accessToken && !!appendOcrSummary && !!appendRecoveryJobId,
+    refetchInterval: (query) => !query.state.data || query.state.data.status === "PENDING" || query.state.data.status === "RUNNING" ? 2000 : false
+  });
+  const appendRecoveryJob = appendRecoveryJobId ? appendRecoveryQuery.data : undefined;
+  const appendRecoveryActive = !!appendRecoveryJobId && (!appendRecoveryJob || appendRecoveryJob.status === "PENDING" || appendRecoveryJob.status === "RUNNING");
   const [appendCancelHoldProgress, setAppendCancelHoldProgress] = useState(0);
   const [isAppendCancelRequested, setIsAppendCancelRequested] = useState(false);
   const [isCreateCameraModalOpen, setIsCreateCameraModalOpen] = useState(false);
@@ -1015,7 +1042,7 @@ export function BookBuilderPage() {
       : appendReferencePageNumber;
   const appendCompletedFileCount = Math.min(
     selectedAppendFiles.length,
-    Math.max(0, appendProgressOffset + (isAppending ? appendImportProgress?.completedFiles ?? 0 : appendResumeState?.completedFiles ?? 0))
+    Math.max(0, isAppending ? appendProgressOffset + (appendImportProgress?.completedFiles ?? 0) : appendResumeState?.completedFiles ?? 0)
   );
   const appendCurrentFileIndex = isAppending && appendImportProgress?.currentFileIndex !== null && appendImportProgress?.currentFileIndex !== undefined
     ? Math.min(selectedAppendFiles.length - 1, appendProgressOffset + appendImportProgress.currentFileIndex)
@@ -1031,6 +1058,10 @@ export function BookBuilderPage() {
 
     return () => {
       isMountedRef.current = false;
+      isAppendCancelRequestedRef.current = true;
+      const resolver = appendOcrFailureResolverRef.current;
+      appendOcrFailureResolverRef.current = null;
+      resolver?.("cancel");
       if (ocrRetryIntervalRef.current !== null) {
         window.clearInterval(ocrRetryIntervalRef.current);
         ocrRetryIntervalRef.current = null;
@@ -1043,6 +1074,21 @@ export function BookBuilderPage() {
       void releaseAppendScreenWakeLock();
     };
   }, []);
+
+  useEffect(() => {
+    if (!appendOcrFailure) return;
+    const resolver = appendOcrFailureResolverRef.current;
+    const tick = () => {
+      // A stale timer must never decide for a subsequent page's error.
+      if (!resolver || appendOcrFailureResolverRef.current !== resolver) return;
+      const seconds = Math.max(0, Math.ceil((appendOcrFailure.deadline - Date.now()) / 1000));
+      setAppendOcrFailureSeconds(seconds);
+      if (seconds === 0) resolveAppendOcrFailure("skip");
+    };
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [appendOcrFailure]);
 
   useEffect(() => {
     isAppendCancelRequestedRef.current = isAppendCancelRequested;
@@ -1720,7 +1766,9 @@ export function BookBuilderPage() {
     setIsAppendCancelRequested(false);
     isAppendCancelRequestedRef.current = false;
     setAppendCancelHoldProgress(0);
-    setAppendOcrFailure(null);
+    resolveAppendOcrFailure("cancel");
+    setAppendFailedFileIndices([]);
+    setAppendPendingOcrPageIds([]);
   }
 
   function appendFiles(files: File[]) {
@@ -2272,8 +2320,9 @@ export function BookBuilderPage() {
     }
   }
 
-  function requestAppendOcrFailureChoice(failure: AppendOcrFailureState): Promise<AppendOcrFailureChoice> {
-    setAppendOcrFailure(failure);
+  function requestAppendOcrFailureChoice(failure: Omit<AppendOcrFailureState, "deadline">): Promise<AppendOcrFailureChoice> {
+    setAppendOcrFailureSeconds(60);
+    setAppendOcrFailure({ ...failure, deadline: Date.now() + 60000 });
 
     return new Promise((resolve) => {
       appendOcrFailureResolverRef.current = resolve;
@@ -2285,6 +2334,28 @@ export function BookBuilderPage() {
     appendOcrFailureResolverRef.current = null;
     setAppendOcrFailure(null);
     resolver?.(choice);
+  }
+
+  async function handleAppendOcrRecovery() {
+    if (!accessToken || !appendOcrSummary || appendRecoveryBusyRef.current || appendRecoveryJobId) return;
+    appendRecoveryBusyRef.current = true;
+    setIsStartingAppendRecovery(true);
+    setAppendError(null);
+    try {
+      const job = await startBookPagesOcrJob(accessToken, appendOcrSummary.bookId, appendOcrSummary.ocrInput);
+      queryClient.setQueryData(["book-pages-ocr-job", appendOcrSummary.bookId, job.jobId], job);
+      setAppendRecoveryJobId(job.jobId);
+      // Keep the result dialog open; navigation alone concealed the background reattempt.
+      try {
+        const userId = useAuthStore.getState().user?.userId ?? "";
+        localStorage.setItem(`lector:gallery-ocr:${userId}:${appendOcrSummary.bookId}`, job.jobId);
+      } catch { /* The gallery link also carries the job ID. */ }
+    } catch (error) {
+      setAppendError(error instanceof Error ? error.message : "No se pudo iniciar el OCR de las páginas pendientes.");
+    } finally {
+      appendRecoveryBusyRef.current = false;
+      setIsStartingAppendRecovery(false);
+    }
   }
 
   async function handleCreateFromImages(event: React.FormEvent<HTMLFormElement>) {
@@ -2397,7 +2468,8 @@ export function BookBuilderPage() {
     });
 
     let completionSound: CompletionSound | null = null;
-    let skippedFailedOcr = false;
+    const failedFileIndices = new Set(appendFailedFileIndices);
+    const pendingOcrPageIds = [...appendPendingOcrPageIds];
 
     try {
       let completedFiles = alreadyCompletedFiles;
@@ -2488,6 +2560,8 @@ export function BookBuilderPage() {
             }
 
             const message = error instanceof Error ? error.message : "No se pudo hacer OCR de esta página.";
+            failedFileIndices.add(absoluteFileIndex);
+            setAppendFailedFileIndices([...failedFileIndices]);
             setAppendImportProgress((currentProgress) => currentProgress
               ? { ...currentProgress, errorMessage: message, stage: "failed" }
               : currentProgress);
@@ -2501,8 +2575,7 @@ export function BookBuilderPage() {
             if (choice === "retry") {
               continue;
             }
-
-            skippedFailedOcr = true;
+            if (choice === "cancel" || !isMountedRef.current || isAppendCancelRequestedRef.current) return;
 
             const skipFormData = new FormData();
             skipFormData.append("images", file);
@@ -2532,6 +2605,8 @@ export function BookBuilderPage() {
             });
 
             completedFiles += skipResponse.addedPages;
+            pendingOcrPageIds.push(...skipResponse.addedPageIds);
+            setAppendPendingOcrPageIds([...pendingOcrPageIds]);
             insertionStartPageNumber = insertionStartPageNumber ?? skipResponse.insertionStartPageNumber;
             nextAfterPage = skipResponse.nextAfterPage ?? nextAfterPage;
             lastBookId = skipResponse.book.bookId;
@@ -2561,11 +2636,19 @@ export function BookBuilderPage() {
         setReviewPageNumber(targetPageNumber);
         setReviewPageId("");
       }
-      completionSound = skippedFailedOcr ? "error" : "success";
-      if (returnTo && returnTo.startsWith(`/books/${lastBookId}/pages`)) {
-        navigate(returnTo);
+      completionSound = pendingOcrPageIds.length ? "error" : "success";
+      const destination = returnTo && returnTo.startsWith(`/books/${lastBookId}/pages`)
+        ? returnTo : `/books/${lastBookId}?page=${targetPageNumber}`;
+      if (failedFileIndices.size) {
+        setAppendOcrSummary({
+          bookId: lastBookId,
+          destination,
+          failedCount: failedFileIndices.size,
+          totalPages: selectedAppendFiles.length,
+          ocrInput: { pageIds: pendingOcrPageIds, ...normalizeOcrOptions(appendOcrMode, appendAdvancedLayout, appendSelection.selectedModelId, appendPromptOverride) }
+        });
       } else {
-        navigate(`/books/${lastBookId}?page=${targetPageNumber}`);
+        navigate(destination);
       }
     } catch (error) {
       setAppendError(error instanceof Error ? error.message : "No se pudieron añadir nuevas páginas.");
@@ -3834,6 +3917,9 @@ export function BookBuilderPage() {
                 <p className="append-ocr-lock-detail">
                   {appendCurrentFileIndex !== null ? selectedAppendFiles[appendCurrentFileIndex]?.name ?? "Procesando imagen" : "Terminando proceso"}
                 </p>
+                <p aria-live="polite" className="append-ocr-lock-detail">
+                  {`Páginas con error de OCR: ${appendFailedFileIndices.length}. Añadidas sin OCR: ${appendPendingOcrPageIds.length}.`}
+                </p>
                 {appendOcrFailure ? (
                   <div className="append-ocr-failure-panel">
                     <p className="append-ocr-failure-title">
@@ -3841,6 +3927,9 @@ export function BookBuilderPage() {
                     </p>
                     <p className="append-ocr-failure-file">{appendOcrFailure.fileName}</p>
                     <p className="append-ocr-failure-message">{appendOcrFailure.message}</p>
+                    <p role="status" className="append-ocr-lock-detail">
+                      {`Si no eliges una opción, se añadirá sin OCR y continuará en ${appendOcrFailureSeconds} s.`}
+                    </p>
                     <div className="append-ocr-failure-actions">
                       <button className="secondary-button" onClick={() => resolveAppendOcrFailure("retry")} type="button">
                         Reintentar OCR
@@ -3867,6 +3956,53 @@ export function BookBuilderPage() {
               </div>
             </div>,
             document.body
+          ) : null}
+
+          {appendOcrSummary ? createPortal(
+            <div className="append-ocr-lock-backdrop" role="presentation">
+              <div aria-label="Resultado del OCR" aria-modal="true" className="append-ocr-lock-dialog" role="dialog">
+                <div className="append-ocr-lock-header">
+                  <p className="eyebrow">{appendRecoveryActive ? "OCR en curso" : "Proceso terminado"}</p>
+                  <h3>{appendRecoveryJobId ? "Reintento de OCR" : "Páginas añadidas"}</h3>
+                </div>
+                <p>{`Se añadieron ${appendOcrSummary.totalPages} páginas. ${appendOcrSummary.failedCount} dieron error de OCR.`}</p>
+                {appendRecoveryJobId ? (
+                  <div aria-live="polite">
+                    <p role="status">{!appendRecoveryJob || appendRecoveryJob.status === "PENDING"
+                      ? "OCR iniciado. Esperando a que el servidor procese las páginas..."
+                      : appendRecoveryJob.status === "RUNNING" ? "Reintentando el OCR de las páginas pendientes..."
+                        : appendRecoveryJob.status === "READY" ? "Reintento terminado. Todas las páginas tienen OCR."
+                          : "Reintento terminado con páginas pendientes. Puedes seleccionarlas y ajustar el OCR en la galería."}</p>
+                    {appendRecoveryJob ? <>
+                      <progress aria-label="Progreso del reintento OCR" max={appendRecoveryJob.total} value={appendRecoveryJob.processed} />
+                      <p>{`${appendRecoveryJob.processed} de ${appendRecoveryJob.total} procesadas: ${appendRecoveryJob.completed} reconocidas, ${appendRecoveryJob.failed} fallidas, ${appendRecoveryJob.total - appendRecoveryJob.processed} por procesar.`}</p>
+                      {appendRecoveryJob.pages.some((page) => page.error) ? <details>
+                        <summary>Ver errores del reintento</summary>
+                        {appendRecoveryJob.pages.filter((page) => page.error).map((page, index) => <p className="error-text" key={page.pageId}>{`Página pendiente ${index + 1}: ${page.error}`}</p>)}
+                      </details> : null}
+                    </> : null}
+                    {appendRecoveryQuery.isError ? <p role="alert" className="error-text">No se pudo consultar el progreso. El trabajo sigue en el servidor. <button className="secondary-button" onClick={() => void appendRecoveryQuery.refetch()} type="button">Consultar de nuevo</button></p> : null}
+                  </div>
+                ) : appendOcrSummary.ocrInput.pageIds.length ? (
+                  <p>{`${appendOcrSummary.ocrInput.pageIds.length} quedaron guardadas sin OCR. ¿Quieres volver a pasar el OCR de esas páginas? No se añadirán páginas duplicadas.`}</p>
+                ) : <p>Los reintentos resolvieron todos los errores. No quedan páginas pendientes de OCR.</p>}
+                {appendError ? <p role="alert" className="error-text">{appendError}</p> : null}
+                <div className="append-ocr-failure-actions">
+                  <button className="secondary-button" disabled={isStartingAppendRecovery} onClick={() => {
+                    navigate(appendRecoveryJobId
+                      ? `/books/${appendOcrSummary.bookId}/pages?ocrJobId=${encodeURIComponent(appendRecoveryJobId)}`
+                      : appendOcrSummary.destination);
+                    setAppendOcrSummary(null);
+                    setAppendRecoveryJobId("");
+                  }} type="button">{appendRecoveryJobId ? "Ver en galería" : appendOcrSummary.ocrInput.pageIds.length ? "Ahora no" : "Continuar"}</button>
+                  {!appendRecoveryJobId && appendOcrSummary.ocrInput.pageIds.length ? (
+                    <button className="primary-button" disabled={isStartingAppendRecovery} onClick={() => void handleAppendOcrRecovery()} type="button">
+                      {isStartingAppendRecovery ? "Iniciando OCR..." : "Reintentar páginas sin OCR"}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>, document.body
           ) : null}
 
           {isCreateCameraModalOpen ? (

@@ -1137,6 +1137,7 @@ export async function appendImagesToBook(accessToken: string, bookId: string, pa
 
   return response.json() as Promise<{
     addedPages: number;
+    addedPageIds: string[];
     addedParagraphs: number;
     book: BookSummary;
     cancelled?: boolean;

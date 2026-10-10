@@ -154,6 +154,7 @@ test("OCR flow defaults false and initial/append persistence uses canonical DFS 
       } }, randomUUID(), pages, startingPageNumber, 10);
       assert.equal(externalizations, 1);
       const page = calls.find(({ sql }) => sql.includes("INSERT INTO book_pages"))!.binds;
+      assert.deepEqual(result.addedPageIds, [page.pageId]);
       const paragraphs = calls.filter(({ sql }) => sql.includes("INSERT INTO book_paragraphs")).map(({ binds }) => binds);
       assert.equal(page.pageNumber, startingPageNumber);
       assert.equal(result.addedParagraphs, advancedLayout ? 2 : 1);
@@ -180,7 +181,7 @@ test("OCR flow defaults false and initial/append persistence uses canonical DFS 
   }
 });
 
-test("append after failed OCR saves the original image as PENDING without invoking OCR again", async () => {
+test("append after failed OCR saves the original image as PENDING and returns committed page IDs without invoking OCR again", async () => {
   const schema = readFileSync(new URL("../sql/001_initial_schema.sql", import.meta.url), "utf8");
   const constraint = schema.match(/CONSTRAINT ck_book_pages_ocr_status CHECK \(ocr_status IN \(([^)]+)\)\)/u);
   assert.ok(constraint);
@@ -234,6 +235,8 @@ test("append after failed OCR saves the original image as PENDING without invoki
     assert.equal(reply.body.addedParagraphs, 0);
     assert.equal(reply.body.nextAfterPage, 4);
     const page = calls.find(({ sql }) => sql.includes("INSERT INTO book_pages"))!.binds;
+    assert.deepEqual(reply.body.addedPageIds, [page.pageId]);
+    assert.equal(z.string().uuid().parse(reply.body.addedPageIds[0]), page.pageId);
     assert.equal(page.ocrStatus, "PENDING");
     assert.equal(page.pageNumber, 4);
     assert.equal(page.visualDocumentJson, null);

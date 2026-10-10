@@ -3603,7 +3603,7 @@ async function insertProcessedImagePages(
   processedPages: ProcessedImagePage[],
   startingPageNumber: number,
   startingSequenceNumber: number
-): Promise<{ addedPages: number; addedParagraphs: number }> {
+): Promise<{ addedPageIds: string[]; addedPages: number; addedParagraphs: number }> {
   for (const page of processedPages) {
     if (page.advancedLayout && page.ocrStatus !== "PENDING" && !page.visualDocument) throw new Error("El OCR avanzado no devolvio un documento visual.");
     if (page.visualDocument) renderVisualDocument(page.visualDocument, { includeInactive: true });
@@ -3671,6 +3671,7 @@ async function insertProcessedImagePages(
 
   let pageNumber = startingPageNumber;
   let sequenceNumber = startingSequenceNumber;
+  const addedPageIds: string[] = [];
 
   for (const processedPage of processedPages) {
     const fileId = randomUUID();
@@ -3857,10 +3858,12 @@ async function insertProcessedImagePages(
       }
     );
 
+    addedPageIds.push(pageId);
     pageNumber += 1;
   }
 
   return {
+    addedPageIds,
     addedPages: processedPages.length,
     addedParagraphs: sequenceNumber - startingSequenceNumber
   };
@@ -4912,6 +4915,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const imageFiles = ensureImageFiles(multipartForm.files);
     const connection = await getConnection();
     const progressId = query.progressId;
+    const addedPageIds: string[] = [];
     let addedPages = 0;
     let addedParagraphs = 0;
     let insertionStartPageNumber: number | null = null;
@@ -5161,6 +5165,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
         await connection.commit();
 
+        addedPageIds.push(...insertionSummary.addedPageIds);
         addedPages += insertionSummary.addedPages;
         addedParagraphs += insertionSummary.addedParagraphs;
         nextAfterPage += insertionSummary.addedPages;
@@ -5211,6 +5216,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       }
 
       return reply.status(wasCancelled ? 200 : 201).send({
+        addedPageIds,
         addedPages,
         addedParagraphs,
         cancelled: wasCancelled,
