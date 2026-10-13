@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, Navigate, useBlocker, useParams, useSearchParams } from "react-router-dom";
-import { deleteBookPage, fetchBook, fetchBookOutline, fetchBookPage, fetchBookPageImage, fetchBookPages, fetchBookPagesOcrJob, isBookEditor, reorderBookPages, startBookPagesOcrJob, updateBookPagesOcrJob, type BookGalleryPage, type BookOutlineEntry, type BookPagesResponse, type ImageOcrMode } from "../../app/api";
+import { Link, Navigate, useBlocker, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { createBookDownloadUrl, deleteBookPage, fetchBook, fetchBookOutline, fetchBookPage, fetchBookPageImage, fetchBookPages, fetchBookPagesOcrJob, isBookEditor, reorderBookPages, startBookPagesOcrJob, updateBookPagesOcrJob, type BookGalleryPage, type BookOutlineEntry, type BookPagesResponse, type ImageOcrMode } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { registerPendingNavigation } from "../../hooks/useUnsavedChanges";
@@ -73,6 +73,9 @@ function PagePreview({ page, bookId, accessToken, image }: { page: BookGalleryPa
 
 export function BookPagesGallery() {
   const { bookId = "" } = useParams();
+  const location = useLocation();
+  const importNotice = typeof location.state?.importNotice === "string" ? location.state.importNotice : "";
+  const ocrControlsRef = useRef<HTMLFieldSetElement>(null);
   const [searchParams] = useSearchParams();
   const originPageId = searchParams.get("pageId") ?? "";
   const originPageNumber = Number(searchParams.get("page"));
@@ -128,6 +131,7 @@ export function BookPagesGallery() {
   const confirmingRef = useRef(false);
   const [orderConflict, setOrderConflict] = useState(false);
   const [error, setError] = useState("");
+  const [downloadingOriginal, setDownloadingOriginal] = useState(false);
   const [notice, setNotice] = useState("");
   const [ocrMode, setOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [advancedLayout, setAdvancedLayout] = useState(false);
@@ -251,6 +255,24 @@ export function BookPagesGallery() {
       return false;
     } finally { busyRef.current = false; setBusy(false); }
   }
+  async function downloadOriginal() {
+    if (!accessToken || downloadingOriginal) return;
+    setDownloadingOriginal(true);
+    setError("");
+    try {
+      const downloadUrl = await createBookDownloadUrl(accessToken, bookId, { kind: "original" });
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.rel = "noreferrer";
+      document.body.append(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo descargar el PDF original del libro.");
+    } finally {
+      setDownloadingOriginal(false);
+    }
+  }
   function remove(ids: string[]) {
     if (!canEdit || busy || dirty || activeJob || !ids.length || ids.some((id) => !data?.pages.find((page) => page.pageId === id)?.capabilities.delete)) return;
     if (!window.confirm(`¿Eliminar ${ids.length} página(s) y su contenido? Esta acción no se puede deshacer.`)) return;
@@ -310,6 +332,16 @@ export function BookPagesGallery() {
   if (!data || !book) return <section className="panel"><h2>Galería de páginas</h2>{pagesQuery.isError || bookQuery.isError ? <><p className="error-text" role="alert">{pagesQuery.error?.message ?? bookQuery.error?.message}</p><button className="secondary-button" onClick={() => { void pagesQuery.refetch(); void bookQuery.refetch(); }}>Reintentar</button></> : <p role="status">Cargando páginas...</p>}</section>;
   return <section className="panel book-gallery" aria-labelledby="gallery-title" data-preview-size={previewSize}>
     <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
+    {importNotice && <aside className="gallery-job" aria-label="Aviso de importación">
+      <div role="status"><strong>Importación completada</strong><p>{importNotice}</p></div>
+      {isImages && <button className="secondary-button" disabled={!accessToken || downloadingOriginal} onClick={() => void downloadOriginal()}>{downloadingOriginal ? "Preparando descarga..." : "Descargar PDF original"}</button>}
+      {canEdit && isImages && <><p className="helper-text">Selecciona las páginas y ejecuta OCR para reconocer su texto antes de leerlo.</p><button className="secondary-button" disabled={busy || dirty || activeJob} onClick={() => {
+        setSelected(new Set(missingOcrPageIds));
+        setAnchor(null);
+        ocrControlsRef.current?.scrollIntoView({ block: "center" });
+        ocrControlsRef.current?.focus({ preventScroll: true });
+      }}>Configurar OCR de páginas pendientes</button></>}
+    </aside>}
     {originPageId && !originPage && <p className="helper-text">La página de origen ya no está disponible. No se abrirá otra página en su lugar.</p>}
     {canEdit && isImages && jobId && jobsQuery.isError && <div className="gallery-job" role="alert"><p className="error-text">No se pudo consultar el OCR: {jobsQuery.error.message}</p><p className="helper-text">Cerrar el seguimiento no cancela el trabajo OCR del servidor.</p><button className="secondary-button" onClick={() => void jobsQuery.refetch()}>Reintentar</button><button className="secondary-button" disabled={busy} onClick={() => { setJobId(""); try { localStorage.removeItem(jobStorageKey); } catch { /* Storage may be unavailable. */ } setNotice("Seguimiento cerrado. El OCR del servidor no se ha cancelado."); }}>Cerrar seguimiento</button></div>}
     {jobs.map((job) => <section className="gallery-job" key={job.jobId} aria-label="Seguimiento OCR">
@@ -350,7 +382,7 @@ export function BookPagesGallery() {
         <button className="primary-button" disabled={!dirty || orderConflict || orderChanged} onClick={() => void saveOrder()}>Guardar orden</button>
         <button className="secondary-button" disabled={draft === null} onClick={() => void cancelOrder()}>Cancelar</button>
       </fieldset>
-      {isImages && <fieldset className="gallery-toolbar" disabled={busy || dirty || activeJob}><legend>OCR de la selección</legend>
+      {isImages && <fieldset className="gallery-toolbar" ref={ocrControlsRef} tabIndex={-1} disabled={busy || dirty || activeJob}><legend>OCR de la selección</legend>
         <label>Motor <select value={ocrMode} onChange={(event) => { const mode = event.target.value as ImageOcrMode; setOcrMode(mode); if (mode === "LOCAL") setAdvancedLayout(false); }}><option value="TEXTRACT">AWS Textract</option><option value="VISION">Visión IA</option><option value="LOCAL">Local</option></select></label>
         <AdvancedLayoutCheckbox value={advancedLayout} onChange={setAdvancedLayout} mode={ocrMode} disabled={busy || dirty || activeJob} modelLabel={selectedModel.name} />
         {usesOcrModel(ocrMode, advancedLayout) && <>

@@ -1,4 +1,8 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import sharp from "sharp";
+import { createCanvas } from "@napi-rs/canvas";
 import type { BookImportProgressCallback, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 import { buildRichPageFromParagraphs } from "./rich-content.js";
 
@@ -672,110 +676,220 @@ async function extractPdfOutlineEntries(
 export async function parsePdfBuffer(fileBuffer: Buffer, onProgress?: BookImportProgressCallback): Promise<ImportedDocument> {
   onProgress?.({ completedUnits: null, message: "Abriendo el PDF...", progress: 0, totalUnits: null, unit: null });
   const pdfModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const pdfDocument = await pdfModule.getDocument(new Uint8Array(fileBuffer)).promise;
-
-  const pages: ImportedPage[] = [];
-
-  for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-    const page = await pdfDocument.getPage(pageNumber);
-    const textContent = await page.getTextContent();
-    const textItems = (textContent.items as PdfTextItem[])
-      .map((item) => ({
-        hasLineBreak: Boolean(item.hasEOL),
-        height: Math.max(Math.abs(item.height ?? 0), Math.abs(item.transform?.[3] ?? 0), 0),
-        text: normalizeWhitespace(item.str ?? ""),
-        width: Math.abs(item.width ?? 0),
-        x: item.transform?.[4] ?? 0,
-        y: item.transform?.[5] ?? 0
-      }))
-      .filter((item) => item.text.length > 0);
-
-    const lines = buildLines(textItems);
-    
-    // Heurística para eliminar números de página del encabezado y pie de página
-    if (lines.length > 0 && isPdfPageNumberLine(lines[0]?.text ?? "")) {
-      lines.shift();
+  const pdfDocument = await pdfModule.getDocument(new Uint8Array(fileBuffer)).promise.catch((error: unknown) => {
+    if (error instanceof Error && error.name === "InvalidPDFException") {
+      throw Object.assign(new Error("No se puede abrir el PDF: su estructura no es válida o el archivo está incompleto. Comprueba que se abre correctamente y vuelve a descargarlo o expórtalo de nuevo como PDF."), {
+        statusCode: 422
+      });
     }
-    if (lines.length > 0 && isPdfPageNumberLine(lines[lines.length - 1]?.text ?? "")) {
-      lines.pop();
+    throw error;
+  });
+
+  let temporaryDirectory: string | undefined;
+  const cleanup = async (): Promise<void> => {
+    if (temporaryDirectory) {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
+  };
+
+  try {
+    let hasExtractableText = false;
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const content = await page.getTextContent();
+      hasExtractableText = content.items.some((item) => "str" in item && normalizeWhitespace(item.str).length > 0);
+      page.cleanup();
+      onProgress?.({
+        completedUnits: pageNumber,
+        message: `Analizando texto de la página ${pageNumber} de ${pdfDocument.numPages}`,
+        progress: pageNumber / pdfDocument.numPages * 0.2,
+        totalUnits: pdfDocument.numPages,
+        unit: "pages"
+      });
+      if (hasExtractableText) break;
     }
 
-    const paragraphs = linesToParagraphs(lines);
+    if (!hasExtractableText) {
+      if (pdfDocument.numPages > 1000) {
+        throw Object.assign(new Error("El PDF supera el límite de 1000 páginas para convertirlo a imágenes."), {
+          statusCode: 422
+        });
+      }
+      temporaryDirectory = await mkdtemp(join(tmpdir(), "lector-pdf-"));
+      const pageImages: NonNullable<ImportedDocument["pageImages"]> = [];
+      let totalBytes = 0;
+      for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+        const page = await pdfDocument.getPage(pageNumber);
+        const originalViewport = page.getViewport({ scale: 1 });
+        // Aim for 200 dpi, bounding both the surface area and either dimension.
+        const scale = Math.min(
+          200 / 72,
+          4096 / originalViewport.width,
+          4096 / originalViewport.height,
+          Math.sqrt(8_000_000 / (originalViewport.width * originalViewport.height))
+        );
+        const viewport = page.getViewport({ scale });
+        // Round down so the canvas never exceeds the pixel or dimension limits.
+        const canvas = createCanvas(Math.max(1, Math.floor(viewport.width)), Math.max(1, Math.floor(viewport.height)));
+        try {
+          await page.render({
+            canvasContext: canvas.getContext("2d") as unknown as CanvasRenderingContext2D,
+            viewport,
+            background: "white"
+          }).promise;
+          const buffer = await canvas.encode("jpeg", 95);
+          totalBytes += buffer.length;
+          if (totalBytes > 1024 * 1024 * 1024) {
+            throw Object.assign(
+              new Error("Las imágenes del PDF superan el límite de almacenamiento total de 1 GiB. Divide el PDF en libros más pequeños."),
+              { statusCode: 422 }
+            );
+          }
+          const fileName = `pagina-${pageNumber}.jpg`;
+          const filePath = join(temporaryDirectory, fileName);
+          await writeFile(filePath, buffer);
+          pageImages.push({ filePath, fileName, mimeType: "image/jpeg" });
+        } finally {
+          canvas.width = 1;
+          canvas.height = 1;
+          page.cleanup();
+          // No render is active here; release shared and worker caches for the next page.
+          await pdfDocument.cleanup();
+        }
+        onProgress?.({
+          completedUnits: pageNumber,
+          message: `PDF sin texto: convirtiendo página ${pageNumber} de ${pdfDocument.numPages} a imagen (OCR pendiente)`,
+          progress: 0.2 + pageNumber / pdfDocument.numPages * 0.74,
+          totalUnits: pdfDocument.numPages,
+          unit: "pages"
+        });
+      }
+      return {
+        cleanup,
+        pageImages,
+        pages: pageImages.map((_, index) => ({
+          pageNumber: index + 1,
+          paragraphs: [],
+          rawText: ""
+        })),
+        totalPages: pageImages.length,
+        totalParagraphs: 0
+      };
+    }
 
-    try {
-      const operatorList = await page.getOperatorList();
-      let imageIndex = 1;
+    const pages: ImportedPage[] = [];
 
-      for (let i = 0; i < operatorList.fnArray.length; i += 1) {
-        const fn = operatorList.fnArray[i];
-        if (fn === pdfModule.OPS.paintImageXObject || fn === pdfModule.OPS.paintInlineImageXObject) {
-          const objId = operatorList.argsArray[i]?.[0];
-          if (!objId) continue;
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const textItems = (textContent.items as PdfTextItem[])
+        .map((item) => ({
+          hasLineBreak: Boolean(item.hasEOL),
+          height: Math.max(Math.abs(item.height ?? 0), Math.abs(item.transform?.[3] ?? 0), 0),
+          text: normalizeWhitespace(item.str ?? ""),
+          width: Math.abs(item.width ?? 0),
+          x: item.transform?.[4] ?? 0,
+          y: item.transform?.[5] ?? 0
+        }))
+        .filter((item) => item.text.length > 0);
 
-          try {
-            const imgData = await page.objs.get(objId);
-            if (imgData && imgData.data && imgData.width >= 30 && imgData.height >= 30) {
-              let channels = 3;
-              if (imgData.kind === 1) channels = 1;
-              else if (imgData.kind === 2) channels = 3;
-              else if (imgData.kind === 3) channels = 4;
+      const lines = buildLines(textItems);
 
-              const expectedLength = imgData.width * imgData.height * channels;
-              if (imgData.data.length >= expectedLength) {
-                const pixelBuffer = Buffer.from(imgData.data).subarray(0, expectedLength);
-                const pngBuffer = await sharp(pixelBuffer, {
-                  raw: {
-                    width: imgData.width,
-                    height: imgData.height,
-                    channels: channels as 1 | 3 | 4
-                  }
-                }).png().toBuffer();
+      // Heurística para eliminar números de página del encabezado y pie de página
+      if (lines.length > 0 && isPdfPageNumberLine(lines[0]?.text ?? "")) {
+        lines.shift();
+      }
+      if (lines.length > 0 && isPdfPageNumberLine(lines[lines.length - 1]?.text ?? "")) {
+        lines.pop();
+      }
 
-                paragraphs.push(`![Imagen ${imageIndex} de la página ${pageNumber}](data:image/png;base64,${pngBuffer.toString("base64")})`);
-                imageIndex += 1;
+      const paragraphs = linesToParagraphs(lines);
+
+      try {
+        const operatorList = await page.getOperatorList();
+        let imageIndex = 1;
+
+        for (let i = 0; i < operatorList.fnArray.length; i += 1) {
+          const fn = operatorList.fnArray[i];
+          if (fn === pdfModule.OPS.paintImageXObject || fn === pdfModule.OPS.paintInlineImageXObject) {
+            const objId = operatorList.argsArray[i]?.[0];
+            if (!objId) continue;
+
+            try {
+              const imgData = await page.objs.get(objId);
+              if (imgData && imgData.data && imgData.width >= 30 && imgData.height >= 30) {
+                let channels = 3;
+                if (imgData.kind === 1) channels = 1;
+                else if (imgData.kind === 2) channels = 3;
+                else if (imgData.kind === 3) channels = 4;
+
+                const expectedLength = imgData.width * imgData.height * channels;
+                if (imgData.data.length >= expectedLength) {
+                  const pixelBuffer = Buffer.from(imgData.data).subarray(0, expectedLength);
+                  const pngBuffer = await sharp(pixelBuffer, {
+                    raw: {
+                      width: imgData.width,
+                      height: imgData.height,
+                      channels: channels as 1 | 3 | 4
+                    }
+                  }).png().toBuffer();
+
+                  paragraphs.push(`![Imagen ${imageIndex} de la página ${pageNumber}](data:image/png;base64,${pngBuffer.toString("base64")})`);
+                  imageIndex += 1;
+                }
               }
+            } catch (error) {
+              // Ignorar errores de extracción de imágenes individuales
             }
-          } catch (error) {
-            // Ignorar errores de extracción de imágenes individuales
           }
         }
+      } catch (error) {
+        // Ignorar errores al obtener la lista de operadores o de extracción general
       }
-    } catch (error) {
-      // Ignorar errores al obtener la lista de operadores o de extracción general
+
+      const richContent = buildRichPageFromParagraphs(paragraphs);
+
+      pages.push({
+        editedText: paragraphs.join("\n\n") || richContent.editedText,
+        htmlContent: richContent.htmlContent,
+        pageNumber,
+        paragraphs: richContent.paragraphs,
+        rawText: paragraphs.join("\n\n") || lines.map((line) => line.text).join("\n")
+      });
+
+      onProgress?.({
+        completedUnits: pageNumber,
+        message: `Procesando página ${pageNumber} de ${pdfDocument.numPages}`,
+        progress: 0.2 + pageNumber / pdfDocument.numPages * 0.74,
+        totalUnits: pdfDocument.numPages,
+        unit: "pages"
+      });
     }
 
-    const richContent = buildRichPageFromParagraphs(paragraphs);
-
-    pages.push({
-      editedText: paragraphs.join("\n\n") || richContent.editedText,
-      htmlContent: richContent.htmlContent,
-      pageNumber,
-      paragraphs: richContent.paragraphs,
-      rawText: paragraphs.join("\n\n") || lines.map((line) => line.text).join("\n")
-    });
-
     onProgress?.({
-      completedUnits: pageNumber,
-      message: `Procesando página ${pageNumber} de ${pdfDocument.numPages}`,
-      progress: pageNumber / pdfDocument.numPages * 0.94,
+      completedUnits: pdfDocument.numPages,
+      message: "Construyendo el índice del PDF...",
+      progress: 0.95,
       totalUnits: pdfDocument.numPages,
       unit: "pages"
     });
+    const outlineEntries = await extractPdfOutlineEntries(pdfDocument, pages);
+
+    return {
+      ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
+      pages,
+      totalPages: pages.length,
+      totalParagraphs: pages.reduce((count, page) => count + page.paragraphs.length, 0)
+    };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  } finally {
+    try {
+      await pdfDocument.destroy();
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
-
-  onProgress?.({
-    completedUnits: pdfDocument.numPages,
-    message: "Construyendo el índice del PDF...",
-    progress: 0.95,
-    totalUnits: pdfDocument.numPages,
-    unit: "pages"
-  });
-  const outlineEntries = await extractPdfOutlineEntries(pdfDocument, pages);
-
-  return {
-    ...(outlineEntries.length > 0 ? { outlineEntries } : {}),
-    pages,
-    totalPages: pages.length,
-    totalParagraphs: pages.reduce((count, page) => count + page.paragraphs.length, 0)
-  };
 }

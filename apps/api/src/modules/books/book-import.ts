@@ -35,6 +35,9 @@ export type ImportedOutlineEntry = {
 };
 
 export type ImportedDocument = {
+  pageImages?: { filePath: string; fileName: string; mimeType: string }[];
+  // The consumer must call cleanup in a finally block after consuming temporary assets.
+  cleanup?: () => Promise<void>;
   coverImage?: ImportedBinaryAsset | null;
   metadataLanguageCode?: BookLanguageCode;
   outlineEntries?: ImportedOutlineEntry[];
@@ -274,6 +277,9 @@ export async function parseUploadedBook(
     ? await parsePdfBuffer(fileBuffer, onProgress)
     : await parseEpubBuffer(fileBuffer, onProgress);
 
+  // Image-only PDFs retain every original page, including blank pages.
+  if (importedDocument.pageImages) return importedDocument;
+
   onProgress?.({
     completedUnits: importedDocument.pages.length,
     message: "Normalizando el contenido extraído...",
@@ -334,7 +340,7 @@ export async function parseUploadedBook(
   const hasRenderableContent = normalizedPages.some((page) => Boolean(page.htmlContent) || page.rawText.length > 0);
 
   if (normalizedPages.length === 0 || !hasRenderableContent) {
-    throw Object.assign(new Error("No se ha podido extraer texto legible del archivo. Si es un PDF escaneado, el flujo OCR se implementará en el siguiente corte."), {
+    throw Object.assign(new Error("No se ha podido extraer contenido legible del archivo."), {
       statusCode: 422
     });
   }

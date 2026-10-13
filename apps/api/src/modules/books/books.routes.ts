@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { readFile, unlink } from "node:fs/promises";
 import { extname } from "node:path";
 
 import type { MultipartFile } from "@fastify/multipart";
@@ -675,6 +676,12 @@ async function readUploadedFile(file: MultipartFile, options?: { fileName?: stri
     chunks.push(bufferChunk);
   }
 
+  if (file.file.truncated) {
+    throw Object.assign(new Error("El archivo supera el tamaño máximo de subida. Se ha recibido incompleto y no se puede importar."), {
+      statusCode: 413
+    });
+  }
+
   return Buffer.concat(chunks);
 }
 
@@ -1147,22 +1154,18 @@ async function assembleOriginalBookDownload(
   connection: DatabaseConnection,
   book: OwnedBookRecord
 ): Promise<DownloadFilePayload | "IMAGES_SOURCE" | null> {
-  if (book.sourceType === "IMAGES") {
-    return "IMAGES_SOURCE";
-  }
-
-  const originalFileKind = book.sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB";
+  const originalFileKind = book.sourceType === "EPUB" ? "ORIGINAL_EPUB" : "ORIGINAL_PDF";
   const originalFile = await findBookFileByKind(connection, book.bookId, originalFileKind);
   if (!originalFile?.contentBlob) {
-    return null;
+    return book.sourceType === "IMAGES" ? "IMAGES_SOURCE" : null;
   }
 
-  const extension = book.sourceType === "PDF" ? "pdf" : "epub";
+  const extension = book.sourceType === "EPUB" ? "epub" : "pdf";
 
   return {
     buffer: originalFile.contentBlob,
     fileName: originalFile.fileName?.trim() || buildDownloadFileName(book.title, extension),
-    mimeType: originalFile.mimeType?.trim() || (book.sourceType === "PDF" ? "application/pdf" : "application/epub+zip")
+    mimeType: originalFile.mimeType?.trim() || (extension === "pdf" ? "application/pdf" : "application/epub+zip")
   };
 }
 
@@ -4461,7 +4464,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       userId: request.currentUser.userId
     });
 
-    const uploadedFile = await request.file();
+    const uploadedFile = await request.file({ limits: { fileSize: 100 * 1024 * 1024 } });
     if (!uploadedFile) {
       return reply.status(400).send({ message: "Debes adjuntar un archivo PDF o EPUB." });
     }
@@ -4506,110 +4509,77 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         throw error;
       }
     })();
-    const languageCode = parsedFields.languageCode ?? importedDocument.metadataLanguageCode ?? "es";
-    const externalizedPages = importedDocument.pages.map((page) => {
-      const editedText = page.editedText ?? page.paragraphs.join("\n");
-      const values = [page.rawText, page.htmlContent ?? "", editedText, ...page.paragraphs];
-      const externalized = externalizeContentImages(values);
-      return {
-        ...page,
-        contentImageAssets: externalized.assets,
-        editedText: externalized.contents[2] ?? editedText,
-        htmlContent: page.htmlContent === null || page.htmlContent === undefined
-          ? page.htmlContent
-          : externalized.contents[1] ?? page.htmlContent,
-        paragraphs: externalized.contents.slice(3),
-        rawText: externalized.contents[0] ?? page.rawText
-      };
-    });
-    const bookId = randomUUID();
-    const originalFileId = randomUUID();
-    const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
-    const connection = await getConnection();
-    updateBookImportProgress(query.progressId, {
-      completedUnits: 0,
-      message: "Preparando el guardado del libro...",
-      percentage: 74,
-      stage: "saving",
-      totalUnits: importedDocument.totalPages,
-      unit: "pages"
-    });
-
     try {
-      await connection.execute(
-        `
-          INSERT INTO books (
-            book_id,
-            owner_user_id,
+      const languageCode = parsedFields.languageCode ?? importedDocument.metadataLanguageCode ?? "es";
+      const importedSourceType = importedDocument.pageImages ? "IMAGES" : sourceType;
+      const externalizedPages = importedDocument.pages.map((page) => {
+        const editedText = page.editedText ?? page.paragraphs.join("\n");
+        const values = [page.rawText, page.htmlContent ?? "", editedText, ...page.paragraphs];
+        const externalized = externalizeContentImages(values);
+        return {
+          ...page,
+          contentImageAssets: externalized.assets,
+          editedText: externalized.contents[2] ?? editedText,
+          htmlContent: page.htmlContent === null || page.htmlContent === undefined
+            ? page.htmlContent
+            : externalized.contents[1] ?? page.htmlContent,
+          paragraphs: externalized.contents.slice(3),
+          rawText: externalized.contents[0] ?? page.rawText
+        };
+      });
+      const bookId = randomUUID();
+      const originalFileId = randomUUID();
+      const title = parsedFields.title ?? deriveTitleFromFileName(uploadedFile.filename);
+      const connection = await getConnection();
+      updateBookImportProgress(query.progressId, {
+        completedUnits: 0,
+        message: "Preparando el guardado del libro...",
+        percentage: 74,
+        stage: "saving",
+        totalUnits: importedDocument.totalPages,
+        unit: "pages"
+      });
+
+      try {
+        await connection.execute(
+          `
+            INSERT INTO books (
+              book_id,
+              owner_user_id,
+              title,
+              author_name,
+              synopsis,
+              language_code,
+              source_type,
+              status,
+              total_pages,
+              total_paragraphs
+            ) VALUES (
+              :bookId,
+              :ownerUserId,
+              :title,
+              :authorName,
+              :synopsis,
+              :languageCode,
+              :sourceType,
+              'READY',
+              :totalPages,
+              :totalParagraphs
+            )
+          `,
+          {
+            authorName: parsedFields.authorName ?? null,
+            bookId,
+            languageCode,
+            ownerUserId: request.currentUser.userId,
+            sourceType: importedSourceType,
+            synopsis: parsedFields.synopsis ?? null,
             title,
-            author_name,
-            synopsis,
-            language_code,
-            source_type,
-            status,
-            total_pages,
-            total_paragraphs
-          ) VALUES (
-            :bookId,
-            :ownerUserId,
-            :title,
-            :authorName,
-            :synopsis,
-            :languageCode,
-            :sourceType,
-            'READY',
-            :totalPages,
-            :totalParagraphs
-          )
-        `,
-        {
-          authorName: parsedFields.authorName ?? null,
-          bookId,
-          languageCode,
-          ownerUserId: request.currentUser.userId,
-          sourceType,
-          synopsis: parsedFields.synopsis ?? null,
-          title,
-          totalPages: importedDocument.totalPages,
-          totalParagraphs: importedDocument.totalParagraphs
-        }
-      );
+            totalPages: importedDocument.totalPages,
+            totalParagraphs: importedDocument.totalParagraphs
+          }
+        );
 
-      await connection.execute(
-        `
-          INSERT INTO book_files (
-            file_id,
-            book_id,
-            file_kind,
-            file_name,
-            mime_type,
-            byte_size,
-            checksum_sha256,
-            content_blob
-          ) VALUES (
-            :fileId,
-            :bookId,
-            :fileKind,
-            :fileName,
-            :mimeType,
-            :byteSize,
-            :checksumSha256,
-            :contentBlob
-          )
-        `,
-        {
-          bookId,
-          byteSize: fileBuffer.length,
-          checksumSha256: computeChecksum(fileBuffer),
-          contentBlob: fileBuffer,
-          fileId: originalFileId,
-          fileKind: sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB",
-          fileName: uploadedFile.filename,
-          mimeType: uploadedFile.mimetype
-        }
-      );
-
-      if (importedDocument.coverImage) {
         await connection.execute(
           `
             INSERT INTO book_files (
@@ -4624,7 +4594,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             ) VALUES (
               :fileId,
               :bookId,
-              'COVER_IMAGE',
+              :fileKind,
               :fileName,
               :mimeType,
               :byteSize,
@@ -4634,129 +4604,207 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           `,
           {
             bookId,
-            byteSize: importedDocument.coverImage.buffer.length,
-            checksumSha256: computeChecksum(importedDocument.coverImage.buffer),
-            contentBlob: importedDocument.coverImage.buffer,
-            fileId: randomUUID(),
-            fileName: importedDocument.coverImage.fileName,
-            mimeType: importedDocument.coverImage.mimeType
-          }
-        );
-      }
-
-      let sequenceNumber = 1;
-
-      for (const [pageIndex, page] of externalizedPages.entries()) {
-        const pageId = randomUUID();
-        await connection.execute(
-          `
-            INSERT INTO book_pages (
-              page_id,
-              book_id,
-              page_number,
-              raw_text,
-              html_content,
-              edited_text,
-              ocr_status
-            ) VALUES (
-              :pageId,
-              :bookId,
-              :pageNumber,
-              :rawText,
-              :htmlContent,
-              :editedText,
-              'SKIPPED'
-            )
-          `,
-          {
-            bookId,
-            editedText: page.editedText,
-            htmlContent: page.htmlContent ?? null,
-            pageId,
-            pageNumber: page.pageNumber,
-            rawText: page.rawText
+            byteSize: fileBuffer.length,
+            checksumSha256: computeChecksum(fileBuffer),
+            contentBlob: fileBuffer,
+            fileId: originalFileId,
+            fileKind: sourceType === "PDF" ? "ORIGINAL_PDF" : "ORIGINAL_EPUB",
+            fileName: uploadedFile.filename,
+            mimeType: uploadedFile.mimetype
           }
         );
 
-        await insertContentImageAssets(connection, bookId, page.pageNumber, page.contentImageAssets);
-
-        const paragraphMetadata = normalizeParagraphMetadata(page.paragraphMetadata, page.paragraphs.length);
-        for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
-          const metrics = calculateParagraphReadingMetrics(paragraphText);
-          const metadata = paragraphMetadata[paragraphIndex]!;
+        if (importedDocument.coverImage) {
           await connection.execute(
             `
-              INSERT INTO book_paragraphs (
-                paragraph_id,
+              INSERT INTO book_files (
+                file_id,
                 book_id,
-                page_id,
-                page_number,
-                paragraph_number,
-                sequence_number,
-                paragraph_text,
-                word_count,
-                tts_character_count, element_role, read_aloud, geometry_json
+                file_kind,
+                file_name,
+                mime_type,
+                byte_size,
+                checksum_sha256,
+                content_blob
               ) VALUES (
-                :paragraphId,
+                :fileId,
                 :bookId,
-                :pageId,
-                :pageNumber,
-                :paragraphNumber,
-                :sequenceNumber,
-                :paragraphText,
-                :wordCount,
-                :characterCount, :elementRole, :readAloud, :geometryJson
+                'COVER_IMAGE',
+                :fileName,
+                :mimeType,
+                :byteSize,
+                :checksumSha256,
+                :contentBlob
               )
             `,
             {
               bookId,
-              characterCount: metrics.characterCount,
-              elementRole: metadata.role,
-              readAloud: metadata.readAloud ? 1 : 0,
-              geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
+              byteSize: importedDocument.coverImage.buffer.length,
+              checksumSha256: computeChecksum(importedDocument.coverImage.buffer),
+              contentBlob: importedDocument.coverImage.buffer,
+              fileId: randomUUID(),
+              fileName: importedDocument.coverImage.fileName,
+              mimeType: importedDocument.coverImage.mimeType
+            }
+          );
+        }
+
+        let sequenceNumber = 1;
+
+        if (importedDocument.pageImages) {
+          for (const [pageIndex, image] of importedDocument.pageImages.entries()) {
+            await insertProcessedImagePages(connection, bookId, [{
+              buffer: await readFile(image.filePath),
+              fileName: image.fileName,
+              mimeType: image.mimeType,
+              fieldName: "file",
+              editedText: "",
+              htmlContent: null,
+              ocrStatus: "PENDING",
+              paragraphs: [],
+              rawText: ""
+            }], pageIndex + 1, 1);
+            await unlink(image.filePath);
+            updateBookImportProgress(query.progressId, {
+              completedUnits: pageIndex + 1,
+              message: `Guardando página ${pageIndex + 1} de ${importedDocument.totalPages} (OCR pendiente)`,
+              percentage: Math.round(75 + (pageIndex + 1) / importedDocument.totalPages * 22),
+              totalUnits: importedDocument.totalPages
+            });
+          }
+        }
+
+        for (const [pageIndex, page] of (importedDocument.pageImages ? [] : externalizedPages).entries()) {
+          const pageId = randomUUID();
+          await connection.execute(
+            `
+              INSERT INTO book_pages (
+                page_id,
+                book_id,
+                page_number,
+                raw_text,
+                html_content,
+                edited_text,
+                ocr_status
+              ) VALUES (
+                :pageId,
+                :bookId,
+                :pageNumber,
+                :rawText,
+                :htmlContent,
+                :editedText,
+                'SKIPPED'
+              )
+            `,
+            {
+              bookId,
+              editedText: page.editedText,
+              htmlContent: page.htmlContent ?? null,
               pageId,
               pageNumber: page.pageNumber,
-              paragraphId: randomUUID(),
-              paragraphNumber: paragraphIndex + 1,
-              paragraphText,
-              sequenceNumber,
-              wordCount: metrics.wordCount
+              rawText: page.rawText
             }
           );
 
-          sequenceNumber += 1;
+          await insertContentImageAssets(connection, bookId, page.pageNumber, page.contentImageAssets);
+
+          const paragraphMetadata = normalizeParagraphMetadata(page.paragraphMetadata, page.paragraphs.length);
+          for (const [paragraphIndex, paragraphText] of page.paragraphs.entries()) {
+            const metrics = calculateParagraphReadingMetrics(paragraphText);
+            const metadata = paragraphMetadata[paragraphIndex]!;
+            await connection.execute(
+              `
+                INSERT INTO book_paragraphs (
+                  paragraph_id,
+                  book_id,
+                  page_id,
+                  page_number,
+                  paragraph_number,
+                  sequence_number,
+                  paragraph_text,
+                  word_count,
+                  tts_character_count, element_role, read_aloud, geometry_json
+                ) VALUES (
+                  :paragraphId,
+                  :bookId,
+                  :pageId,
+                  :pageNumber,
+                  :paragraphNumber,
+                  :sequenceNumber,
+                  :paragraphText,
+                  :wordCount,
+                  :characterCount, :elementRole, :readAloud, :geometryJson
+                )
+              `,
+              {
+                bookId,
+                characterCount: metrics.characterCount,
+                elementRole: metadata.role,
+                readAloud: metadata.readAloud ? 1 : 0,
+                geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
+                pageId,
+                pageNumber: page.pageNumber,
+                paragraphId: randomUUID(),
+                paragraphNumber: paragraphIndex + 1,
+                paragraphText,
+                sequenceNumber,
+                wordCount: metrics.wordCount
+              }
+            );
+
+            sequenceNumber += 1;
+          }
+
+          updateBookImportProgress(query.progressId, {
+            completedUnits: pageIndex + 1,
+            message: `Guardando página ${pageIndex + 1} de ${importedDocument.totalPages}`,
+            percentage: Math.round(75 + (pageIndex + 1) / importedDocument.totalPages * 22),
+            totalUnits: importedDocument.totalPages
+          });
         }
 
         updateBookImportProgress(query.progressId, {
-          completedUnits: pageIndex + 1,
-          message: `Guardando página ${pageIndex + 1} de ${importedDocument.totalPages}`,
-          percentage: Math.round(75 + (pageIndex + 1) / importedDocument.totalPages * 22),
-          totalUnits: importedDocument.totalPages
+          message: "Finalizando la importación...",
+          percentage: 98,
+          stage: "finalizing"
         });
+        await recordUserActivity(connection, {
+          action: "BOOK_IMPORTED",
+          bookId,
+          bookTitle: title,
+          userId: request.currentUser.userId
+        });
+        await connection.commit();
+        updateBookImportProgress(query.progressId, {
+          completedUnits: importedDocument.totalPages,
+          message: "Importación completada.",
+          percentage: 100,
+          stage: "completed",
+          totalUnits: importedDocument.totalPages,
+          unit: "pages"
+        });
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        await connection.close();
       }
 
-      updateBookImportProgress(query.progressId, {
-        message: "Finalizando la importación...",
-        percentage: 98,
-        stage: "finalizing"
-      });
-      await recordUserActivity(connection, {
-        action: "BOOK_IMPORTED",
-        bookId,
-        bookTitle: title,
-        userId: request.currentUser.userId
-      });
-      await connection.commit();
-      updateBookImportProgress(query.progressId, {
-        completedUnits: importedDocument.totalPages,
-        message: "Importación completada.",
-        percentage: 100,
-        stage: "completed",
-        totalUnits: importedDocument.totalPages,
-        unit: "pages"
+      return reply.status(201).send({
+        ...(importedDocument.pageImages ? { importNotice: `Este PDF no contiene texto extraíble. Se ha importado como un libro de imágenes con ${importedDocument.totalPages} páginas pendientes de OCR. Puedes ejecutar el OCR desde la edición de una página o desde esta galería.` } : {}),
+        book: {
+          authorName: parsedFields.authorName ?? null,
+          bookId,
+          languageCode,
+          sourceType: importedSourceType,
+          status: "READY",
+          synopsis: parsedFields.synopsis ?? null,
+          title,
+          totalPages: importedDocument.totalPages,
+          totalParagraphs: importedDocument.totalParagraphs
+        }
       });
     } catch (error) {
-      await connection.rollback();
       updateBookImportProgress(query.progressId, {
         errorMessage: error instanceof Error ? error.message : "No se pudo importar el libro.",
         message: "La importación ha fallado.",
@@ -4764,22 +4812,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       });
       throw error;
     } finally {
-      await connection.close();
+      await importedDocument.cleanup?.();
     }
-
-    return reply.status(201).send({
-      book: {
-        authorName: parsedFields.authorName ?? null,
-        bookId,
-        languageCode,
-        sourceType,
-        status: "READY",
-        synopsis: parsedFields.synopsis ?? null,
-        title,
-        totalPages: importedDocument.totalPages,
-        totalParagraphs: importedDocument.totalParagraphs
-      }
-    });
   });
 
   app.post("/from-images", { preHandler: authenticateRequest }, async (request, reply) => {

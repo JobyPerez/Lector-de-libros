@@ -1002,7 +1002,7 @@ export async function importBook(accessToken: string, payload: FormData, options
     throw await createApiRequestError(response, "No se pudo importar el libro.");
   }
 
-  return response.json() as Promise<{ book: BookSummary }>;
+  return response.json() as Promise<{ book: BookSummary; importNotice?: string }>;
 }
 
 export type BookImportProgress = {

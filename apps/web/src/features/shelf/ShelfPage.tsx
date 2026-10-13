@@ -547,7 +547,11 @@ export function ShelfPage() {
       } catch {
         // La navegación a lectura no depende del refetch de la estantería.
       }
-      navigate(`/books/${importResponse.book.bookId}`);
+      if (importResponse.importNotice) {
+        navigate(`/books/${importResponse.book.bookId}/pages`, { state: { importNotice: importResponse.importNotice } });
+      } else {
+        navigate(`/books/${importResponse.book.bookId}`);
+      }
     } catch (error) {
       setCreateError(error instanceof Error ? error.message : "No se pudo crear el libro.");
     } finally {

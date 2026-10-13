@@ -88,7 +88,7 @@ test("gallery transports authentication, optimistic order, stable deletion and p
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom");
-function galleryHarness(editor: boolean, options: { outline?: BookOutlineEntry[]; search?: string; sourceType?: string; numbers?: number[]; statuses?: string[]; job?: any; jobError?: Error; params?: Record<string, string>; visionSupported?: boolean; unsavedDecision?: "save" | "discard" | "back"; navigation?: ReturnType<typeof loadUnsavedChanges>; reorder?: () => Promise<void> } = {}) {
+function galleryHarness(editor: boolean, options: { download?: () => Promise<string>; importNotice?: unknown; outline?: BookOutlineEntry[]; search?: string; sourceType?: string; numbers?: number[]; statuses?: string[]; job?: any; jobError?: Error; params?: Record<string, string>; visionSupported?: boolean; unsavedDecision?: "save" | "discard" | "back"; navigation?: ReturnType<typeof loadUnsavedChanges>; reorder?: () => Promise<void> } = {}) {
   const calls: unknown[][] = [];
   const invalidated: string[] = [];
   let failedDeleteId = "";
@@ -120,6 +120,8 @@ function galleryHarness(editor: boolean, options: { outline?: BookOutlineEntry[]
     "../../components/TocLevelSelector": { TocLevelSelector: () => null },
     "./GalleryPageEditor": { GalleryPageEditor: ({ page, initialBlockId, onClose, onSaved, onPendingChange }: any) => React.createElement("div", { "data-editor-page": page.pageId, "data-editor-block": initialBlockId }, React.createElement("button", { onClick: onClose }, "Cerrar editor"), React.createElement("button", { onClick: onSaved }, "Guardar editor"), React.createElement("button", { onClick: () => onPendingChange(true) }, "Modificar editor")) }
   };
+  mocks["react-router-dom"] = { ...(mocks["react-router-dom"] as object), useLocation: () => ({ state: { importNotice: options.importNotice } }) };
+  mocks["../../app/api"] = { ...(mocks["../../app/api"] as object), createBookDownloadUrl: async (...args: unknown[]) => { calls.push(["download", ...args]); return options.download ? options.download() : "http://synthetic.invalid/books/download/token"; } };
   if (options.navigation) {
     mocks["react-router-dom"] = realRouter;
     mocks["../../hooks/useUnsavedChanges"] = options.navigation;
@@ -193,6 +195,71 @@ async function withGalleryDom(options: Parameters<typeof galleryHarness>[1] & { 
     for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   }
 }
+
+test("import notice persists through selection changes and gives access to pending OCR", async () => {
+  const importNotice = "PDF convertido a imágenes. <script>aviso</script>";
+  await withGalleryDom({ importNotice, sourceType: "IMAGES", statuses: ["PENDING", "READY", "FAILED"] }, async ({ document, button, scrolls }: any) => {
+    const notice = () => document.querySelector("aside[aria-label='Aviso de importación']");
+    assert.ok(notice().textContent.includes(importNotice));
+    assert.equal(notice().querySelector("script"), null);
+    await act(async () => button("Configurar OCR de páginas pendientes").click());
+    assert.deepEqual([...document.querySelectorAll(".gallery-card[data-selected='true']")].map((card: any) => card.dataset.galleryPageId), ["a", "c"]);
+    assert.equal(document.activeElement.tagName, "FIELDSET");
+    assert.equal(scrolls.at(-1), document.activeElement);
+    assert.equal(button("Ejecutar OCR").disabled, false);
+    await act(async () => button("Limpiar selección").click());
+    assert.ok(notice().textContent.includes(importNotice));
+  });
+});
+
+test("import notice does not grant OCR controls to viewers and ignores invalid state", () => {
+  const { Gallery } = galleryHarness(false, { sourceType: "IMAGES", importNotice: "Converted PDF" });
+  const html = renderToStaticMarkup(React.createElement(Gallery));
+  assert.match(html, /Converted PDF/);
+  assert.doesNotMatch(html, /Configurar OCR|Ejecutar OCR/);
+  const invalid = galleryHarness(true, { importNotice: { message: "invalid" } });
+  assert.doesNotMatch(renderToStaticMarkup(React.createElement(invalid.Gallery)), /Aviso de importación/);
+});
+
+test("import notice downloads original PDF without OCR, selection changes or cache invalidation", async () => {
+  const pending = deferred<string>();
+  await withGalleryDom({ importNotice: "Converted PDF", sourceType: "IMAGES", download: () => pending.promise }, async ({ dom, document, button, calls, invalidated }: any) => {
+    const downloads: { href: string; rel: string }[] = [];
+    dom.window.HTMLAnchorElement.prototype.click = function () { downloads.push({ href: this.href, rel: this.rel }); };
+    await act(async () => button("Seleccionar todas").click());
+    await act(async () => button("Descargar PDF original").click());
+    assert.equal(button("Preparando descarga...").disabled, true);
+    assert.deepEqual(calls.filter((call: unknown[]) => call[0] === "download"), [["download", "token", "book", { kind: "original" }]]);
+    await act(async () => pending.resolve("http://synthetic.invalid/books/download/original-token"));
+    assert.deepEqual(downloads, [{ href: "http://synthetic.invalid/books/download/original-token", rel: "noreferrer" }]);
+    assert.equal(document.querySelector("a[href$='original-token']"), null);
+    assert.equal(document.querySelectorAll(".gallery-card[data-selected='true']").length, 3);
+    assert.equal(button("Descargar PDF original").disabled, false);
+    assert.equal(calls.some((call: unknown[]) => call[0] === "ocr"), false);
+    assert.deepEqual(invalidated, []);
+  });
+});
+
+test("original PDF download failures use the gallery error and allow retry without OCR", async () => {
+  for (const failure of [new Error("Original PDF unavailable"), "unexpected failure"]) {
+    await withGalleryDom({ importNotice: "Converted PDF", sourceType: "IMAGES", download: async () => { throw failure; } }, async ({ document, button, calls }: any) => {
+      await act(async () => button("Descargar PDF original").click());
+      assert.ok(document.querySelector(".error-text[role='alert']").textContent.includes(failure instanceof Error ? failure.message : "No se pudo descargar el PDF original del libro."));
+      assert.equal(button("Descargar PDF original").disabled, false);
+      assert.equal(calls.some((call: unknown[]) => call[0] === "ocr"), false);
+      assert.ok(document.querySelector("aside[aria-label='Aviso de importación']"));
+    });
+  }
+});
+
+test("original PDF shortcut is limited to image books with an import notice", () => {
+  for (const options of [{ sourceType: "IMAGES" }, { sourceType: "EPUB", importNotice: "Notice" }]) {
+    const { Gallery } = galleryHarness(true, options);
+    assert.doesNotMatch(renderToStaticMarkup(React.createElement(Gallery)), /Descargar PDF original/);
+  }
+  const { Gallery } = galleryHarness(false, { sourceType: "IMAGES", importNotice: "Converted PDF" });
+  assert.match(renderToStaticMarkup(React.createElement(Gallery)), /Descargar PDF original/);
+});
 
 test("outline folds parent and child independently, leaves siblings visible, and editing refreshes the outline", async () => {
   const outline: BookOutlineEntry[] = [
