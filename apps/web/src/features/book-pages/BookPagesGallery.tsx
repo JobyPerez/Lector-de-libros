@@ -127,6 +127,7 @@ export function BookPagesGallery() {
   const [dragIds, setDragIds] = useState<Set<string> | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deletionProgress, setDeletionProgress] = useState("");
   const busyRef = useRef(false);
   const confirmingRef = useRef(false);
   const [orderConflict, setOrderConflict] = useState(false);
@@ -202,9 +203,9 @@ export function BookPagesGallery() {
     const ids = new Set(data.pages.map((page) => page.pageId));
     setSelected((current) => new Set([...current].filter((id) => ids.has(id))));
   }, [data]);
-  async function invalidate() {
+  async function invalidate(reportGalleryError = false) {
     await Promise.all(["book-outline", "book-pages", "book", "books", "builder-books", "book-page", "book-page-image", "reader-annotations", "reader-navigation", "reader-readable-neighbors", "progress", "builder-page-visual", "builder-page-annotations", "builder-navigation", "ai-requests", "section-summary"].map((key) =>
-      client.invalidateQueries({ predicate: (query) => query.queryKey[0] === key && (query.queryKey[1] === bookId || key === "books" || key === "builder-books") })));
+      client.invalidateQueries({ predicate: (query) => query.queryKey[0] === key && (query.queryKey[1] === bookId || key === "books" || key === "builder-books") }, { throwOnError: reportGalleryError && key === "book-pages" })));
   }
   function changeOrder(next: string[]) {
     if (!canEdit || !data?.capabilities.reorder || busy || activeJob || next.join(",") === order.join(",")) return;
@@ -236,24 +237,25 @@ export function BookPagesGallery() {
     if (!await confirmExit(true)) return;
     setDraft(null); setOrderConflict(false); setError(""); setNotice("Sin cambios pendientes en el orden.");
   }
-  async function perform(action: () => Promise<BookPagesResponse | void>): Promise<boolean> {
+  async function perform(action: () => Promise<BookPagesResponse | void>, successNotice = "Cambios guardados."): Promise<boolean> {
     if (busyRef.current) return false;
     busyRef.current = true;
     setBusy(true); setError(""); setNotice("");
     try {
       const result = await action();
       if (result) { client.setQueryData(["book-pages", bookId], result); setDraft(null); setOrderConflict(false); }
-      setNotice("Cambios guardados.");
-      try { await invalidate(); } catch (cause) {
+      setDeletionProgress((current) => current ? "Actualizando galería..." : "");
+      try { await invalidate(true); setNotice(successNotice); } catch (cause) {
         setError(`Los cambios se guardaron, pero no se pudo actualizar la galeria: ${cause instanceof Error ? cause.message : "Error inesperado."}`);
       }
       return true;
     } catch (cause) {
       if (dirty && cause instanceof Error && "statusCode" in cause && cause.statusCode === 409) setOrderConflict(true);
       setError(cause instanceof Error ? cause.message : "No se pudo completar la operación.");
+      setDeletionProgress((current) => current ? "Actualizando galería..." : "");
       try { await invalidate(); } catch { /* Preserve the operation error and draft. */ }
       return false;
-    } finally { busyRef.current = false; setBusy(false); }
+    } finally { busyRef.current = false; setBusy(false); setDeletionProgress(""); }
   }
   async function downloadOriginal() {
     if (!accessToken || downloadingOriginal) return;
@@ -274,12 +276,13 @@ export function BookPagesGallery() {
     }
   }
   function remove(ids: string[]) {
-    if (!canEdit || busy || dirty || activeJob || !ids.length || ids.some((id) => !data?.pages.find((page) => page.pageId === id)?.capabilities.delete)) return;
+    if (!canEdit || busyRef.current || dirty || activeJob || !ids.length || ids.some((id) => !data?.pages.find((page) => page.pageId === id)?.capabilities.delete)) return;
     if (!window.confirm(`¿Eliminar ${ids.length} página(s) y su contenido? Esta acción no se puede deshacer.`)) return;
     void perform(async () => {
       let deleted = 0;
       try {
         for (const id of ids) {
+          setDeletionProgress(ids.length === 1 ? "Eliminando página..." : `Eliminando página ${deleted + 1} de ${ids.length}...`);
           const page = data?.pages.find((entry) => entry.pageId === id);
           if (!page) throw new Error("La página seleccionada ya no está disponible.");
           await deleteBookPage(accessToken, bookId, page.pageNumber, id);
@@ -288,7 +291,7 @@ export function BookPagesGallery() {
       } catch (cause) {
         throw new Error(`${deleted} de ${ids.length} páginas eliminadas. ${cause instanceof Error ? cause.message : "No se pudo completar la eliminación."}`);
       }
-    });
+    }, ids.length === 1 ? "Página eliminada." : `${ids.length} páginas eliminadas.`);
   }
   const byId = new Map(data?.pages.map((page) => [page.pageId, page]));
   const fullOutline = outlineQuery.data?.outline ?? [];
@@ -331,7 +334,7 @@ export function BookPagesGallery() {
   }, [bookId, book, highlightedPageId, data]);
   if (!data || !book) return <section className="panel"><h2>Galería de páginas</h2>{pagesQuery.isError || bookQuery.isError ? <><p className="error-text" role="alert">{pagesQuery.error?.message ?? bookQuery.error?.message}</p><button className="secondary-button" onClick={() => { void pagesQuery.refetch(); void bookQuery.refetch(); }}>Reintentar</button></> : <p role="status">Cargando páginas...</p>}</section>;
   return <section className="panel book-gallery" aria-labelledby="gallery-title" data-preview-size={previewSize}>
-    <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
+    <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" aria-disabled={busy} tabIndex={busy ? -1 : undefined} onClick={(event) => { if (busyRef.current) event.preventDefault(); }} title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
     {importNotice && <aside className="gallery-job" aria-label="Aviso de importación">
       <div role="status"><strong>Importación completada</strong><p>{importNotice}</p></div>
       {isImages && <button className="secondary-button" disabled={!accessToken || downloadingOriginal} onClick={() => void downloadOriginal()}>{downloadingOriginal ? "Preparando descarga..." : "Descargar PDF original"}</button>}
@@ -357,11 +360,11 @@ export function BookPagesGallery() {
     </section>)}
     <div className="gallery-toolbar">
       <span role="status">{selected.size} de {data.pages.length} seleccionadas</span>
-      <button className="secondary-button" onClick={() => setSelected(new Set(order))}>Seleccionar todas</button>
-      <button className="secondary-button" onClick={() => { setSelected(new Set()); setAnchor(null); }}>Limpiar selección</button>
-      {canEdit && isImages && <><button className="secondary-button" disabled={!pendingOcrPageIds.length} onClick={() => { setSelected(new Set(pendingOcrPageIds)); setAnchor(null); }}>Seleccionar OCR pendiente</button><button className="secondary-button" disabled={!failedOcrPageIds.length} onClick={() => { setSelected(new Set(failedOcrPageIds)); setAnchor(null); }}>Seleccionar OCR fallido</button></>}
-      {canEdit && isImages && <><button className="secondary-button" disabled={!missingOcrPageIds.length} onClick={() => { setSelected(new Set(missingOcrPageIds)); setAnchor(null); }}>Seleccionar pendientes y fallidas</button><span className="helper-text">Sin OCR completado: {missingOcrPageIds.length} ({pendingOcrPageIds.length} pendientes, {failedOcrPageIds.length} fallidas)</span></>}
-      {canEdit && <button className="danger-button" disabled={!selected.size || dirty || busy || activeJob || [...selected].some((id) => !byId.get(id)?.capabilities.delete)} onClick={() => remove([...selected])}>Eliminar selección</button>}
+      <button className="secondary-button" disabled={busy} onClick={() => setSelected(new Set(order))}>Seleccionar todas</button>
+      <button className="secondary-button" disabled={busy} onClick={() => { setSelected(new Set()); setAnchor(null); }}>Limpiar selección</button>
+      {canEdit && isImages && <><button className="secondary-button" disabled={busy || !pendingOcrPageIds.length} onClick={() => { setSelected(new Set(pendingOcrPageIds)); setAnchor(null); }}>Seleccionar OCR pendiente</button><button className="secondary-button" disabled={busy || !failedOcrPageIds.length} onClick={() => { setSelected(new Set(failedOcrPageIds)); setAnchor(null); }}>Seleccionar OCR fallido</button></>}
+      {canEdit && isImages && <><button className="secondary-button" disabled={busy || !missingOcrPageIds.length} onClick={() => { setSelected(new Set(missingOcrPageIds)); setAnchor(null); }}>Seleccionar pendientes y fallidas</button><span className="helper-text">Sin OCR completado: {missingOcrPageIds.length} ({pendingOcrPageIds.length} pendientes, {failedOcrPageIds.length} fallidas)</span></>}
+      {canEdit && <button className="danger-button" disabled={!selected.size || dirty || busy || activeJob || [...selected].some((id) => !byId.get(id)?.capabilities.delete)} onClick={() => remove([...selected])}>{deletionProgress ? "Eliminando..." : "Eliminar selección"}</button>}
       {canAddPages && (insertBlocked
         ? <button className="secondary-button" disabled title="Guarda o cancela el orden antes de añadir páginas.">Añadir páginas</button>
         : <Link className="secondary-button" to={lastOrderPage ? appendPagesLink(lastOrderPage.pageNumber, "after") : appendPagesLink(1, "before")} state={{ returnTo: galleryHref }} title={lastOrderPage ? `Añadir páginas después de la página ${order.length}` : "Añadir páginas"}>Añadir páginas</Link>)}
@@ -371,8 +374,8 @@ export function BookPagesGallery() {
     </div>
     <p className="helper-text">Selecciona varias páginas; Mayús + selección añade un rango. También puedes usar los controles de rango.</p>
     <div className="gallery-toolbar">
-      <label>Desde <select value={anchor ?? ""} onChange={(event) => setAnchor(event.target.value || null)}><option value="">Elegir página</option>{order.map((id, index) => <option key={id} value={id}>{index + 1}</option>)}</select></label>
-      <label>Hasta <select value="" onChange={(event) => { setSelected(selectPageRange(order, selected, anchor, event.target.value)); }}><option value="">Añadir rango</option>{order.map((id, index) => <option key={id} value={id}>{index + 1}</option>)}</select></label>
+      <label>Desde <select disabled={busy} value={anchor ?? ""} onChange={(event) => setAnchor(event.target.value || null)}><option value="">Elegir página</option>{order.map((id, index) => <option key={id} value={id}>{index + 1}</option>)}</select></label>
+      <label>Hasta <select disabled={busy} value="" onChange={(event) => { setSelected(selectPageRange(order, selected, anchor, event.target.value)); }}><option value="">Añadir rango</option>{order.map((id, index) => <option key={id} value={id}>{index + 1}</option>)}</select></label>
     </div>
     {canEdit && <>
       <fieldset className="gallery-toolbar" disabled={busy || activeJob || !data.capabilities.reorder}><legend>Organizar páginas</legend>
@@ -412,6 +415,7 @@ export function BookPagesGallery() {
     {showOutline && dirty && <p className="helper-text">La agrupación por índice se reanudará al guardar o cancelar el orden.</p>}
     {grouped ? roots.map(renderNode) : renderPages(order)}
     {editing && <GalleryPageEditor accessToken={accessToken} bookId={bookId} page={editing.page} {...(editing.blockId ? { initialBlockId: editing.blockId } : {})} onClose={() => { setEditing(null); setEditingDirty(false); registerEditorExit(null); }} onSaved={invalidate} onPendingChange={setEditingDirty} onExitChange={registerEditorExit} />}
+    {deletionProgress && createPortal(<div className="gallery-deletion-progress" role="status" aria-live="polite" aria-atomic="true"><span className="gallery-progress-spinner" aria-hidden="true" /><div><strong>{deletionProgress}</strong><p>Espera a que termine antes de continuar.</p></div></div>, document.body)}
     {showScrollTop && createPortal(<button type="button" className="primary-button gallery-scroll-top" aria-label="Volver arriba" title="Volver arriba" onClick={() => {
       headingRef.current?.focus({ preventScroll: true });
       window.scrollTo({ top: 0, behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
@@ -420,7 +424,7 @@ export function BookPagesGallery() {
 
   function renderPages(pageIds: string[]) {
     if (!data) return null;
-    return <div className="gallery-grid">
+    return <div className="gallery-grid" aria-busy={busy}>
       {pageIds.map((id) => {
         const index = order.indexOf(id);
         const page = byId.get(id);
@@ -444,19 +448,19 @@ export function BookPagesGallery() {
             <Link className="gallery-insert gallery-insert-before" to={appendPagesLink(page.pageNumber, "before")} state={{ returnTo: galleryHref }} aria-label={`Añadir páginas antes de la página ${index + 1}`} title={`Añadir páginas antes de la página ${index + 1}`}><span aria-hidden="true">+</span></Link>
             <Link className="gallery-insert gallery-insert-after" to={appendPagesLink(page.pageNumber, "after")} state={{ returnTo: galleryHref }} aria-label={`Añadir páginas después de la página ${index + 1}`} title={`Añadir páginas después de la página ${index + 1}`}><span aria-hidden="true">+</span></Link>
           </>}
-          <div className="gallery-card-heading"><label><input type="checkbox" checked={selected.has(id)} onChange={() => {}} onClick={(event) => {
+          <div className="gallery-card-heading"><label><input type="checkbox" disabled={busy} checked={selected.has(id)} onChange={() => {}} onClick={(event) => {
             setSelected((current) => { if (event.shiftKey) return selectPageRange(order, current, anchor, id); const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
             if (!event.shiftKey) setAnchor(id);
           }} /> Página {index + 1}{page.pageLabel ? ` · ${page.pageLabel}` : ""}</label>{id === highlightedPageId && <span className="gallery-origin-label">Página de origen</span>}
           {canEdit && <button className="secondary-button gallery-icon-button gallery-drag" draggable={!busy && !activeJob && data.capabilities.reorder} disabled={busy || activeJob || !data.capabilities.reorder} aria-label={`Arrastrar página ${index + 1}`} title="Mover página" onDragStart={(event) => { const ids = selected.has(id) ? selected : new Set([id]); setDragIds(ids); setDropTarget(null); event.dataTransfer.setData("text/plain", id); event.dataTransfer.effectAllowed = "move"; }} onDragEnd={() => { setDragIds(null); setDropTarget(null); }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3" /></svg></button>}</div>
-          <div className="gallery-open-preview" role={canEdit && page.capabilities.edit ? "button" : undefined} tabIndex={canEdit && page.capabilities.edit ? 0 : undefined} aria-label={canEdit && page.capabilities.edit ? `Editar bloques de página ${page.pageNumber}` : undefined}
+          <div className="gallery-open-preview" role={canEdit && page.capabilities.edit ? "button" : undefined} aria-disabled={canEdit && page.capabilities.edit ? busy || activeJob || dirty : undefined} tabIndex={canEdit && page.capabilities.edit && !busy && !activeJob && !dirty ? 0 : undefined} aria-label={canEdit && page.capabilities.edit ? `Editar bloques de página ${page.pageNumber}` : undefined}
             onClick={(event) => { if (!(event.target as Element).closest("button") && canEdit && page.capabilities.edit && !busy && !activeJob && !dirty) setEditing({ page }); }}
             onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && canEdit && page.capabilities.edit && !busy && !activeJob && !dirty) { event.preventDefault(); setEditing({ page }); } }}>
             <PagePreview page={page} bookId={bookId} accessToken={accessToken} image={isImages} />
           </div>
           {isImages && <span className="gallery-ocr-badge" data-ocr-status={ocrStatus} data-ocr-active={ocrInProgress}>{ocrStatus === "READY" ? "OCR completado" : ocrStatus === "FAILED" ? "OCR fallido" : ocrInProgress ? "OCR en curso" : "Pendiente de OCR"}</span>}
           <p className="helper-text">Página guardada {page.pageNumber}</p>
-          <div className="gallery-card-actions"><Link className="secondary-button gallery-icon-button" aria-label="Leer" title="Leer página" to={`${galleryPath}/${id}/read${gallerySearch}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v16m0-16C9 3 5 3 2 4v16c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z" /></svg></Link>
+          <div className="gallery-card-actions"><Link className="secondary-button gallery-icon-button" aria-label="Leer" aria-disabled={busy} tabIndex={busy ? -1 : undefined} onClick={(event) => { if (busyRef.current) event.preventDefault(); }} title="Leer página" to={`${galleryPath}/${id}/read${gallerySearch}`}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v16m0-16C9 3 5 3 2 4v16c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Z" /></svg></Link>
             {canEdit && <>{page.capabilities.edit && <button className="secondary-button gallery-icon-button" aria-label="Editar" title="Editar página" disabled={dirty || busy || activeJob} onClick={() => setEditing({ page })}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m16 3 5 5L8 21H3v-5L16 3Zm-3 3 5 5" /></svg></button>}{page.capabilities.delete && <button className="danger-button gallery-icon-button" aria-label="Eliminar" title="Eliminar página" disabled={dirty || busy || activeJob} onClick={() => remove([id])}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" /></svg></button>}</>}
           </div>
         </article>;

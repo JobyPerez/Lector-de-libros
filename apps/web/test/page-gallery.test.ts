@@ -88,7 +88,7 @@ test("gallery transports authentication, optimistic order, stable deletion and p
 
 const require = createRequire(import.meta.url);
 const { JSDOM } = require("jsdom");
-function galleryHarness(editor: boolean, options: { download?: () => Promise<string>; importNotice?: unknown; outline?: BookOutlineEntry[]; search?: string; sourceType?: string; numbers?: number[]; statuses?: string[]; job?: any; jobError?: Error; params?: Record<string, string>; visionSupported?: boolean; unsavedDecision?: "save" | "discard" | "back"; navigation?: ReturnType<typeof loadUnsavedChanges>; reorder?: () => Promise<void> } = {}) {
+function galleryHarness(editor: boolean, options: { download?: () => Promise<string>; importNotice?: unknown; outline?: BookOutlineEntry[]; search?: string; sourceType?: string; numbers?: number[]; statuses?: string[]; job?: any; jobError?: Error; params?: Record<string, string>; visionSupported?: boolean; unsavedDecision?: "save" | "discard" | "back"; navigation?: ReturnType<typeof loadUnsavedChanges>; reorder?: () => Promise<void>; deletePage?: (id: string) => Promise<void>; refresh?: () => Promise<void> } = {}) {
   const calls: unknown[][] = [];
   const invalidated: string[] = [];
   let failedDeleteId = "";
@@ -103,6 +103,7 @@ function galleryHarness(editor: boolean, options: { download?: () => Promise<str
       if (predicate({ queryKey: [key, "book"] })) invalidated.push(key);
       assert.equal(predicate({ queryKey: [key, "unrelated-book"] }), false);
     }
+    if (predicate({ queryKey: ["book-pages", "book"] })) await options.refresh?.();
   }, setQueryData: (...args: unknown[]) => calls.push(["cache", ...args]) };
   const source = readFileSync(new URL("../src/features/book-pages/BookPagesGallery.tsx", import.meta.url), "utf8");
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
@@ -111,7 +112,7 @@ function galleryHarness(editor: boolean, options: { download?: () => Promise<str
     "@tanstack/react-query": { useQueryClient: () => client, useQuery: (query: { queryKey: string[] }) => query.queryKey[0] === "book-pages-ocr-job" ? { data: options.job, isError: !!options.jobError, error: options.jobError, refetch: async () => calls.push(["refetch-job"]) } : ({ data: query.queryKey[0] === "book-pages" ? data : query.queryKey[0] === "book" ? book : query.queryKey[0] === "book-outline" ? { outline: options.outline ?? [] } : undefined }) },
     "react-router-dom": { useBlocker: (shouldBlock: (locations: any) => boolean) => { calls.push(["dirty", shouldBlock({ currentLocation: { pathname: "/gallery", search: "", hash: "" }, nextLocation: { pathname: "/reader", search: "", hash: "" } })]); return { state: "unblocked" }; }, useParams: () => ({ bookId: "book", ...options.params }), useSearchParams: () => [searchParams], Link: ({ to, state, ...props }: any) => React.createElement("a", { ...props, href: typeof to === "string" ? to : `${to.pathname}${to.search}${to.hash}`, "data-return-to": state?.returnTo }), Navigate: ({ to, state }: any) => React.createElement("a", { href: to, "data-return-to": state?.returnTo }) },
     "../../app/auth-store": { useAuthStore: (selector: (state: unknown) => unknown) => selector({ accessToken: "token", user: { userId: "user" } }) },
-    "../../app/api": { isBookEditor: (role: string) => role === "OWNER", reorderBookPages: async (...args: unknown[]) => { calls.push(["reorder", ...args]); await options.reorder?.(); return data; }, deleteBookPage: async (...args: unknown[]) => { calls.push(["delete", ...args]); if (args[3] === failedDeleteId) throw new Error("Synthetic failure"); return {}; }, startBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["ocr", ...args]); return { jobId: "synthetic-job" }; }, updateBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["update-ocr", ...args]); return { ...options.job, status: "PENDING", attemptCount: options.job.attemptCount + 1 }; } },
+    "../../app/api": { isBookEditor: (role: string) => role === "OWNER", reorderBookPages: async (...args: unknown[]) => { calls.push(["reorder", ...args]); await options.reorder?.(); return data; }, deleteBookPage: async (...args: unknown[]) => { calls.push(["delete", ...args]); if (args[3] === failedDeleteId) throw new Error("Synthetic failure"); await options.deletePage?.(String(args[3])); return {}; }, startBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["ocr", ...args]); return { jobId: "synthetic-job" }; }, updateBookPagesOcrJob: async (...args: unknown[]) => { calls.push(["update-ocr", ...args]); return { ...options.job, status: "PENDING", attemptCount: options.job.attemptCount + 1 }; } },
     "../../hooks/useUnsavedChanges": { useUnsavedChanges: (dirty: boolean) => calls.push(["dirty", dirty]), registerPendingNavigation: () => () => {} },
     "../../components/confirmUnsavedChanges": { confirmUnsavedChanges: async (confirmation: { save: () => Promise<boolean> }) => options.unsavedDecision === "save" ? confirmation.save() : options.unsavedDecision !== "back" },
     "../../components/OcrConfig": loadOcrConfig({ ocrModel: "server-model", models: [], ocrModelIds: [] }, { effectiveModels: { ocrModel: "user-model" }, settings: { opencodeOcrVisibleModels: ["user-model", "advanced-model"] } }, { source: "live", models: ["user-model", "advanced-model"].map((id) => ({ id, name: id, supportsVision: options.visionSupported ?? true })) }),
@@ -195,6 +196,73 @@ async function withGalleryDom(options: Parameters<typeof galleryHarness>[1] & { 
     for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
   }
 }
+
+test("deletion shows sequential progress and stays locked until the gallery refresh completes", async () => {
+  const deletions = [deferred<void>(), deferred<void>(), deferred<void>()];
+  const refresh = deferred<void>();
+  await withGalleryDom({ deletePage: (id) => deletions[["a", "b", "c"].indexOf(id)]!.promise, refresh: () => refresh.promise }, async ({ dom, document, button, calls }: any) => {
+    dom.window.confirm = () => true;
+    await act(async () => button("Seleccionar todas").click());
+    await act(async () => button("Eliminar selección").click());
+    const progress = () => document.querySelector(".gallery-deletion-progress");
+    assert.match(progress().textContent, /Eliminando página 1 de 3/);
+    assert.equal(progress().getAttribute("role"), "status");
+    assert.equal(button("Eliminando...").disabled, true);
+    assert.equal(button("Limpiar selección").disabled, true);
+    assert.equal(button("Seleccionar todas").disabled, true);
+    assert.ok([...document.querySelectorAll(".gallery-card input, .gallery-card button")].every((node: any) => node.disabled));
+    assert.ok([...document.querySelectorAll(".gallery-toolbar select")].filter((node: any) => ["Elegir página", "Añadir rango"].includes(node.options[0].text)).every((node: any) => node.disabled));
+    assert.ok([...document.querySelectorAll("a[aria-label='Leer'], a[aria-label='Volver al lector']")].every((node: any) => node.getAttribute("aria-disabled") === "true" && node.tabIndex === -1));
+    assert.equal(document.querySelector(".gallery-open-preview").getAttribute("aria-disabled"), "true");
+    for (let index = 0; index < deletions.length; index++) {
+      await act(async () => deletions[index]!.resolve());
+      assert.match(progress().textContent, index === 2 ? /Actualizando galería/ : new RegExp(`Eliminando página ${index + 2} de 3`));
+    }
+    assert.doesNotMatch(document.querySelector(".book-gallery").textContent, /3 páginas eliminadas|Cambios guardados/);
+    await act(async () => button("Eliminando...").click());
+    assert.equal(calls.filter((call: unknown[]) => call[0] === "delete").length, 3);
+    await act(async () => refresh.resolve());
+    assert.equal(progress(), null);
+    assert.match(document.querySelector(".book-gallery").textContent, /3 páginas eliminadas/);
+    assert.equal(button("Limpiar selección").disabled, false);
+    assert.equal(document.querySelector(".gallery-grid").getAttribute("aria-busy"), "false");
+  });
+});
+
+test("single deletion shows an indeterminate message and reports refresh failures without success", async () => {
+  const deletion = deferred<void>();
+  const refresh = deferred<void>();
+  await withGalleryDom({ deletePage: () => deletion.promise, refresh: () => refresh.promise }, async ({ dom, document, button }: any) => {
+    dom.window.confirm = () => true;
+    await act(async () => button("Eliminar").click());
+    assert.match(document.querySelector(".gallery-deletion-progress").textContent, /Eliminando página\.\.\./);
+    await act(async () => deletion.resolve());
+    assert.match(document.querySelector(".gallery-deletion-progress").textContent, /Actualizando galería/);
+    await act(async () => refresh.reject(new Error("Synthetic refresh failure")));
+    assert.equal(document.querySelector(".gallery-deletion-progress"), null);
+    assert.match(document.querySelector("[role='alert']").textContent, /no se pudo actualizar.*Synthetic refresh failure/);
+    assert.doesNotMatch(document.querySelector(".book-gallery").textContent, /Página eliminada\.|Cambios guardados/);
+    assert.equal(button("Eliminar").disabled, false);
+  });
+});
+
+test("partial deletion keeps progress during refresh and preserves the error afterwards", async () => {
+  const refresh = deferred<void>();
+  await withGalleryDom({ refresh: () => refresh.promise }, async ({ dom, document, button, failDelete, calls }: any) => {
+    dom.window.confirm = () => true;
+    failDelete("b");
+    await act(async () => button("Seleccionar todas").click());
+    await act(async () => button("Eliminar selección").click());
+    assert.match(document.querySelector(".gallery-deletion-progress").textContent, /Actualizando galería/);
+    assert.match(document.querySelector("[role='alert']").textContent, /1 de 3 páginas eliminadas/);
+    assert.equal(button("Limpiar selección").disabled, true);
+    assert.equal(calls.filter((call: unknown[]) => call[0] === "delete").length, 2);
+    await act(async () => refresh.resolve());
+    assert.equal(document.querySelector(".gallery-deletion-progress"), null);
+    assert.match(document.querySelector("[role='alert']").textContent, /1 de 3 páginas eliminadas/);
+    assert.equal(button("Limpiar selección").disabled, false);
+  });
+});
 
 test("import notice persists through selection changes and gives access to pending OCR", async () => {
   const importNotice = "PDF convertido a imágenes. <script>aviso</script>";
