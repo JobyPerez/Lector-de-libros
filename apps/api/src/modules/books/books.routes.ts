@@ -3527,13 +3527,13 @@ export async function replaceBookPageParagraphs(
   await connection.execute(
     `
       UPDATE books
-      SET total_paragraphs = total_paragraphs + :delta,
+      SET total_pages = (SELECT COUNT(*) FROM book_pages WHERE book_id = :bookId),
+          total_paragraphs = (SELECT COUNT(*) FROM book_paragraphs WHERE book_id = :bookId),
           status = 'READY'
       WHERE book_id = :bookId
     `,
     {
-      bookId: options.bookId,
-      delta
+      bookId: options.bookId
     }
   );
 
@@ -5131,6 +5131,10 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
         const insertionAfterPage = nextAfterPage;
         const startingSequenceNumber = (await countParagraphsUpToPage(connection, existingBook.bookId, insertionAfterPage)) + 1;
+        await connection.execute(
+          "SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE",
+          { bookId: existingBook.bookId }
+        );
         const pageParagraphCount = processedPage.paragraphs.length;
 
         try {
@@ -5174,11 +5178,26 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           throw new Error(`Error al insertar las nuevas paginas: ${message}`);
         }
 
+        const bookTotalsResult = await connection.execute(
+          `
+            SELECT
+              (SELECT COUNT(*) FROM book_pages WHERE book_id = :bookId) AS "totalPages",
+              (SELECT COUNT(*) FROM book_paragraphs WHERE book_id = :bookId) AS "totalParagraphs"
+            FROM dual
+          `,
+          {
+            bookId: existingBook.bookId
+          }
+        );
+        const bookTotals = ((bookTotalsResult.rows ?? []) as Array<{ totalPages?: number; totalParagraphs?: number }>)[0];
+        const nextTotalPages: number = Number(bookTotals?.totalPages ?? (Number(latestBook.totalPages) + insertionSummary.addedPages));
+        const nextTotalParagraphs: number = Number(bookTotals?.totalParagraphs ?? (Number(latestBook.totalParagraphs) + insertionSummary.addedParagraphs));
+
         latestBook = {
           ...latestBook,
           status: "READY",
-          totalPages: Number(latestBook.totalPages) + insertionSummary.addedPages,
-          totalParagraphs: Number(latestBook.totalParagraphs) + insertionSummary.addedParagraphs
+          totalPages: nextTotalPages,
+          totalParagraphs: nextTotalParagraphs
         };
 
         await connection.execute(
@@ -5190,9 +5209,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             WHERE book_id = :bookId
           `,
           {
-            bookId: latestBook.bookId,
-            totalPages: latestBook.totalPages,
-            totalParagraphs: latestBook.totalParagraphs
+            bookId: existingBook.bookId,
+            totalPages: nextTotalPages,
+            totalParagraphs: nextTotalParagraphs
           }
         );
 
@@ -5325,19 +5344,27 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
       const countResult = await connection.execute(
         `
-          SELECT COUNT(*) AS "paragraphCount"
-          FROM book_paragraphs
-          WHERE book_id = :bookId
-            AND page_number = :pageNumber
+          SELECT
+            (SELECT COUNT(*) FROM book_pages WHERE book_id = :bookId) AS "pageCount",
+            (SELECT COUNT(*) FROM book_paragraphs WHERE book_id = :bookId) AS "bookParagraphCount",
+            (SELECT COUNT(*) FROM book_paragraphs WHERE book_id = :bookId AND page_number = :pageNumber) AS "paragraphCount"
+          FROM dual
         `,
         {
           bookId: params.bookId,
           pageNumber: params.pageNumber
         }
       );
-      const deletedParagraphCount = Number(((countResult.rows ?? []) as Array<{ paragraphCount: number }>)[0]?.paragraphCount ?? 0);
-      const updatedTotalPages = Math.max(Number(book.totalPages) - 1, 0);
-      const updatedTotalParagraphs = Math.max(Number(book.totalParagraphs) - deletedParagraphCount, 0);
+      const counts = ((countResult.rows ?? []) as Array<{
+        bookParagraphCount?: number;
+        pageCount?: number;
+        paragraphCount?: number;
+      }>)[0];
+      const deletedParagraphCount = Number(counts?.paragraphCount ?? 0);
+      const currentTotalPages = Number(counts?.pageCount ?? book.totalPages);
+      const currentTotalParagraphs = Number(counts?.bookParagraphCount ?? book.totalParagraphs);
+      const updatedTotalPages = Math.max(currentTotalPages - 1, 0);
+      const updatedTotalParagraphs = Math.max(currentTotalParagraphs - deletedParagraphCount, 0);
       const nextPageNumber = updatedTotalPages === 0
         ? null
         : Math.min(params.pageNumber, updatedTotalPages);

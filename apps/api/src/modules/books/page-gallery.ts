@@ -157,5 +157,5 @@ export async function reorderGalleryPages(connection: Connection, bookId: string
   await connection.execute(`UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId`, { bookId });
   // Historical AI responses remain available but no longer claim a contiguous section range.
   await connection.execute(`UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId`, { bookId });
-  await connection.execute(`UPDATE books SET updated_at = SYSTIMESTAMP WHERE book_id = :bookId`, { bookId });
+  await connection.execute(`UPDATE books SET total_pages = :totalPages, total_paragraphs = :totalParagraphs, updated_at = SYSTIMESTAMP WHERE book_id = :bookId`, { bookId, totalPages: pages.length, totalParagraphs: paragraphs.length });
 }
