@@ -554,7 +554,20 @@ export const registerAiSettingsRoutes: FastifyPluginAsync = async (app) => {
         }
       });
       if (!response.ok) {
-        throw Object.assign(new Error(`OpenCode devolvio ${response.status} al listar modelos.`), {
+        let message = `OpenCode devolvio ${response.status} al listar modelos.`;
+        if (response.status === 401) {
+          const errorPayload = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+          const source = query.purpose === "ocr" ? effective.sources.opencodeOcr : effective.sources.opencodeSummary;
+          const action = source === "env"
+            ? "El administrador debe generar una nueva clave en OpenCode Console, actualizar OPENCODE_GO_API_KEY en el servidor y reiniciar la API."
+            : source === "shared"
+              ? "La persona que te comparte OpenCode debe generar una nueva clave en OpenCode Console y actualizarla en Configuracion IA."
+              : "Genera una nueva clave en OpenCode Console y actualizala en Configuracion IA.";
+          message = errorPayload?.error?.code === "api_key_expired"
+            ? `La clave de OpenCode ha caducado. ${action} Volver a iniciar sesion no renueva la clave.`
+            : `OpenCode rechazo la clave configurada (401). ${action}`;
+        }
+        throw Object.assign(new Error(message), {
           statusCode: 502
         });
       }

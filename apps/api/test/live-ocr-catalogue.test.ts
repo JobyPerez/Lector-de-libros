@@ -43,7 +43,7 @@ const start = sourceText.indexOf('  app.get("/ai-settings/opencode-models",');
 const end = sourceText.indexOf("\n  });", start) + "\n  });".length;
 const metadataSource = readFileSync(new URL("../src/config/opencode-model-metadata.ts", import.meta.url), "utf8").replace(/^export /gmu, "");
 
-async function catalogue(fetcher: typeof fetch, keys: Record<string, string | undefined> = { a: "key-a", b: "key-b" }) {
+async function catalogue(fetcher: typeof fetch, keys: Record<string, string | undefined> = { a: "key-a", b: "key-b" }, credentialSource = "own") {
   const app = Fastify();
   const fetchModelMetadata = new Function("fetch", ts.transpile(`${metadataSource}\nreturn fetchModelMetadata;`,
     { target: ts.ScriptTarget.ES2022 }))(fetcher);
@@ -52,6 +52,7 @@ async function catalogue(fetcher: typeof fetch, keys: Record<string, string | un
     OPENCODE_ZEN_MODELS_ENDPOINT: "https://opencode.ai/zen/v1/models", OPENCODE_USER_AGENT: "test",
     getOpenCodeRequestHeaders: (key: string) => ({ Authorization: `Bearer ${key}` }),
     getEffectiveUserAiCredentials: async (id: string) => ({ opencodeApiKey: keys[id],
+      sources: { opencodeOcr: credentialSource, opencodeSummary: credentialSource },
       opencodeOcrVisibleModels: ["saved-only"], opencodeOcrModel: "saved-only" }),
     getSharedOnlyOcrModelId: () => null,
     getSharedOnlySummaryModelId: () => null,
@@ -148,4 +149,25 @@ test("refresh metadata failure does not reuse previously successful metadata", a
   const response = (await app.inject("/ai-settings/opencode-models?refresh=true")).json();
   assert.deepEqual(response.models, []);
   assert.ok(response.warning);
+});
+
+test("401 explains expired credentials and where to replace them without exposing provider messages", async (t) => {
+  for (const source of ["own", "shared", "env"]) {
+    for (const expired of [true, false]) {
+      const app = await catalogue(async (url) => {
+        if (String(url).includes("models.dev")) return Response.json(metadata({}));
+        return expired
+          ? Response.json({ error: { code: "api_key_expired", message: "private upstream body key-a" } }, { status: 401 })
+          : new Response("private upstream body key-a", { status: 401 });
+      }, undefined, source);
+      t.after(() => app.close());
+      for (const purpose of ["ocr", "summary"]) {
+        const result = (await app.inject(`/ai-settings/opencode-models?purpose=${purpose}`)).json();
+        assert.match(result.warning, expired ? /ha caducado/ : /rechazo la clave configurada \(401\)/);
+        assert.match(result.warning, source === "env" ? /OPENCODE_GO_API_KEY/ : source === "shared" ? /persona que te comparte/ : /actualizala en Configuracion IA/);
+        assert.doesNotMatch(JSON.stringify(result), /private upstream body|key-a/);
+        if (purpose === "ocr") assert.deepEqual(result.models, []);
+      }
+    }
+  }
 });
