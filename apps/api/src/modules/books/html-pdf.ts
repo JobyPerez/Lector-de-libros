@@ -1,10 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { chromium } from "playwright";
+import type { HydratableContentImage } from "./content-images.js";
+import { preparePdfAssets, optimizePdfAssets } from "./pdf-assets.js";
+import type { PdfProfile } from "./pdf-profile.js";
 
 // This is the same content stylesheet used by the reader, without mobile UI rules.
 const readerCssUrl = new URL("../../../../web/src/features/reader/reading-document.css", import.meta.url);
 
-export async function renderBookHtmlPdf(title: string, language: string, sheets: string[]): Promise<Buffer> {
+export async function renderBookHtmlPdf(title: string, language: string, sheets: string[], contentImages?: ReadonlyMap<string, HydratableContentImage>, profile: PdfProfile = "original"): Promise<Buffer> {
+  const assets = await optimizePdfAssets(preparePdfAssets(sheets, contentImages), profile);
   const readerCss = await readFile(readerCssUrl, "utf8");
   const browser = await chromium.launch({
     ...(process.env.PDF_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PDF_CHROMIUM_EXECUTABLE_PATH } : {}),
@@ -12,11 +16,17 @@ export async function renderBookHtmlPdf(title: string, language: string, sheets:
   });
   try {
     const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, javaScriptEnabled: false });
-    // Book HTML is untrusted. Assets have already been hydrated as data URLs by the API.
-    await page.route("**/*", (route) => route.abort());
+    // Book HTML is untrusted. Fulfil only this export's known image resources.
+    await page.route("**/*", async (route) => {
+      const image = assets.resources.get(route.request().url());
+      if (!image || route.request().resourceType() !== "image" || route.request().method() !== "GET") {
+        return route.abort();
+      }
+      await route.fulfill({ body: image.buffer, contentType: image.mimeType });
+    });
     await page.emulateMedia({ media: "screen" });
     await page.setContent(`<!doctype html><html lang="${language}"><head><meta charset="utf-8">
-      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:">
+      <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: https://lector-pdf-assets.invalid; style-src 'unsafe-inline'; font-src data:">
       <style>
         @page { size: A4; margin: 0; }
         html { font: 16px/1.5 "Aptos", "Trebuchet MS", sans-serif; color: #1f2b23; --ink: #1f2b23; }
@@ -31,8 +41,12 @@ export async function renderBookHtmlPdf(title: string, language: string, sheets:
         .pdf-content * { break-before: auto !important; break-after: auto !important; break-inside: auto !important; }
         .pdf-footer { position: absolute; bottom: 35pt; left: 0; width: 100%; text-align: center; font: 10pt sans-serif; color: #666; }
         .pdf-cover { display: block; width: 100%; height: 970px; object-fit: contain; }
-        .pdf-toc a { display: flex; justify-content: space-between; gap: 1em; color: inherit; text-decoration: none; margin-block: .5em; }
-      </style></head><body>${sheets.join("")}</body></html>`, { waitUntil: "load" });
+        .pdf-content.pdf-toc { width: calc(210mm - 100pt); font: 12pt/1.5 "Aptos", "Trebuchet MS", sans-serif; }
+        .pdf-toc h1 { margin: 0 0 18pt; font-size: 22pt; }
+        .pdf-toc a { display: flex; justify-content: space-between; align-items: baseline; gap: 1em; color: inherit; text-decoration: none; margin-block: .5em; }
+        .pdf-toc a > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+        .pdf-toc-page-number { flex: 0 0 4ch; text-align: right; }
+      </style></head><body>${assets.sheets.join("")}</body></html>`, { waitUntil: "load" });
     await page.evaluate(async () => {
       await document.fonts.ready;
       await Promise.all(Array.from(document.images).map((image) => image.decode().catch(() => undefined)));
@@ -70,9 +84,53 @@ export async function renderBookHtmlPdf(title: string, language: string, sheets:
         const blockGeometry = block ? geometry.bbox(block) : null;
         if (imageGeometry && blockGeometry?.width > 0) figure.style.setProperty("--reader-image-width", `${Math.min(1, imageGeometry.width / blockGeometry.width) * 100}%`);
       });
-      for (const sheet of Array.from(document.querySelectorAll<HTMLElement>(".pdf-sheet"))) {
+      const inset = 50 * 96 / 72;
+      // Paginate the index at its final reading size before fitting book content.
+      // Measure actual wrapped titles rather than assuming a fixed entry count.
+      for (const toc of Array.from(document.querySelectorAll<HTMLElement>(".pdf-toc"))) {
+        let sheet = toc.closest<HTMLElement>(".pdf-sheet")!;
+        let content = toc;
+        const heading = toc.querySelector("h1")!;
+        const entries = Array.from(toc.querySelectorAll<HTMLAnchorElement>("a"));
+        for (const entry of entries) entry.remove();
+        const availableHeight = sheet.clientHeight - inset * 2;
+        let entryCount = 0;
+        for (const entry of entries) {
+          content.append(entry);
+          if (content.offsetHeight > availableHeight && entryCount > 0) {
+            entry.remove();
+            const nextSheet = sheet.cloneNode(false) as HTMLElement;
+            const nextContent = toc.cloneNode(false) as HTMLElement;
+            const nextHeading = heading.cloneNode(true) as HTMLElement;
+            nextHeading.textContent = `${heading.textContent} (${document.documentElement.lang === "it" ? "continua" : "continuación"})`;
+            nextContent.append(nextHeading, entry);
+            nextSheet.append(nextContent, sheet.querySelector(".pdf-footer")!.cloneNode(true));
+            sheet.after(nextSheet);
+            sheet = nextSheet;
+            content = nextContent;
+            entryCount = 0;
+          }
+          entryCount += 1;
+        }
+      }
+      const sheets = Array.from(document.querySelectorAll<HTMLElement>(".pdf-sheet"));
+      const physicalPages = new Map<string, number>();
+      for (const [index, sheet] of sheets.entries()) {
+        if (sheet.id) physicalPages.set(sheet.id, index + 1);
+        const footer = sheet.querySelector<HTMLElement>(".pdf-footer");
+        if (footer) footer.textContent = String(index + 1);
+      }
+      document.querySelectorAll<HTMLAnchorElement>(".pdf-toc a").forEach((link) => {
+        const number = physicalPages.get(link.getAttribute("href")!.slice(1));
+        link.querySelector(".pdf-toc-page-number")!.textContent = number ? String(number) : "";
+      });
+      for (const sheet of sheets) {
         const content = sheet.querySelector<HTMLElement>(".pdf-content")!;
-        const inset = 50 * 96 / 72;
+        if (content.classList.contains("pdf-toc")) {
+          content.style.top = `${inset}px`;
+          content.style.left = `${inset}px`;
+          continue;
+        }
         const width = Math.max(content.offsetWidth, content.scrollWidth);
         const height = Math.max(content.offsetHeight, content.scrollHeight, 1);
         const scale = Math.min(1, (sheet.clientWidth - inset * 2) / width, (sheet.clientHeight - inset * 2) / height);

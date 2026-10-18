@@ -122,7 +122,7 @@ function galleryHarness(editor: boolean, options: { download?: () => Promise<str
     "./GalleryPageEditor": { GalleryPageEditor: ({ page, initialBlockId, onClose, onSaved, onPendingChange }: any) => React.createElement("div", { "data-editor-page": page.pageId, "data-editor-block": initialBlockId }, React.createElement("button", { onClick: onClose }, "Cerrar editor"), React.createElement("button", { onClick: onSaved }, "Guardar editor"), React.createElement("button", { onClick: () => onPendingChange(true) }, "Modificar editor")) }
   };
   mocks["react-router-dom"] = { ...(mocks["react-router-dom"] as object), useLocation: () => ({ state: { importNotice: options.importNotice } }) };
-  mocks["../../app/api"] = { ...(mocks["../../app/api"] as object), createBookDownloadUrl: async (...args: unknown[]) => { calls.push(["download", ...args]); return options.download ? options.download() : "http://synthetic.invalid/books/download/token"; } };
+  mocks["../../app/book-download"] = { downloadBookToDevice: async (...args: unknown[]) => { calls.push(["download", ...args]); await options.download?.(); } };
   if (options.navigation) {
     mocks["react-router-dom"] = realRouter;
     mocks["../../hooks/useUnsavedChanges"] = options.navigation;
@@ -291,16 +291,15 @@ test("import notice does not grant OCR controls to viewers and ignores invalid s
 
 test("import notice downloads original PDF without OCR, selection changes or cache invalidation", async () => {
   const pending = deferred<string>();
-  await withGalleryDom({ importNotice: "Converted PDF", sourceType: "IMAGES", download: () => pending.promise }, async ({ dom, document, button, calls, invalidated }: any) => {
-    const downloads: { href: string; rel: string }[] = [];
-    dom.window.HTMLAnchorElement.prototype.click = function () { downloads.push({ href: this.href, rel: this.rel }); };
+  await withGalleryDom({ importNotice: "Converted PDF", sourceType: "IMAGES", download: () => pending.promise }, async ({ document, button, calls, invalidated }: any) => {
     await act(async () => button("Seleccionar todas").click());
     await act(async () => button("Descargar PDF original").click());
     assert.equal(button("Preparando descarga...").disabled, true);
-    assert.deepEqual(calls.filter((call: unknown[]) => call[0] === "download"), [["download", "token", "book", { kind: "original" }]]);
+    assert.ok([...document.querySelectorAll("[role='status']")].some((element: any) => element.textContent.includes("La descarga comenzará automáticamente")));
+    await act(async () => button("Preparando descarga...").click());
+    assert.deepEqual(calls.filter((call: unknown[]) => call[0] === "download"), [["download", "token", "book", "libro"]]);
     await act(async () => pending.resolve("http://synthetic.invalid/books/download/original-token"));
-    assert.deepEqual(downloads, [{ href: "http://synthetic.invalid/books/download/original-token", rel: "noreferrer" }]);
-    assert.equal(document.querySelector("a[href$='original-token']"), null);
+    assert.equal(document.querySelector("button[aria-busy='true']"), null);
     assert.equal(document.querySelectorAll(".gallery-card[data-selected='true']").length, 3);
     assert.equal(button("Descargar PDF original").disabled, false);
     assert.equal(calls.some((call: unknown[]) => call[0] === "ocr"), false);

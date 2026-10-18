@@ -2,7 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, Navigate, useBlocker, useLocation, useParams, useSearchParams } from "react-router-dom";
-import { createBookDownloadUrl, deleteBookPage, fetchBook, fetchBookOutline, fetchBookPage, fetchBookPageImage, fetchBookPages, fetchBookPagesOcrJob, isBookEditor, reorderBookPages, startBookPagesOcrJob, updateBookPagesOcrJob, type BookGalleryPage, type BookOutlineEntry, type BookPagesResponse, type ImageOcrMode } from "../../app/api";
+import { deleteBookPage, fetchBook, fetchBookOutline, fetchBookPage, fetchBookPageImage, fetchBookPages, fetchBookPagesOcrJob, isBookEditor, reorderBookPages, startBookPagesOcrJob, updateBookPagesOcrJob, type BookGalleryPage, type BookOutlineEntry, type BookPagesResponse, type ImageOcrMode } from "../../app/api";
+import { downloadBookToDevice } from "../../app/book-download";
 import { useAuthStore } from "../../app/auth-store";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { registerPendingNavigation } from "../../hooks/useUnsavedChanges";
@@ -133,6 +134,7 @@ export function BookPagesGallery() {
   const [orderConflict, setOrderConflict] = useState(false);
   const [error, setError] = useState("");
   const [downloadingOriginal, setDownloadingOriginal] = useState(false);
+  const downloadingOriginalRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [ocrMode, setOcrMode] = useState<ImageOcrMode>(defaultOcrMode);
   const [advancedLayout, setAdvancedLayout] = useState(false);
@@ -258,20 +260,16 @@ export function BookPagesGallery() {
     } finally { busyRef.current = false; setBusy(false); setDeletionProgress(""); }
   }
   async function downloadOriginal() {
-    if (!accessToken || downloadingOriginal) return;
+    if (!accessToken || downloadingOriginalRef.current) return;
+    downloadingOriginalRef.current = true;
     setDownloadingOriginal(true);
     setError("");
     try {
-      const downloadUrl = await createBookDownloadUrl(accessToken, bookId, { kind: "original" });
-      const anchor = document.createElement("a");
-      anchor.href = downloadUrl;
-      anchor.rel = "noreferrer";
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
+      await downloadBookToDevice(accessToken, bookId, "libro");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo descargar el PDF original del libro.");
     } finally {
+      downloadingOriginalRef.current = false;
       setDownloadingOriginal(false);
     }
   }
@@ -337,7 +335,8 @@ export function BookPagesGallery() {
     <div className="panel-header"><div><p className="eyebrow">Galería de páginas · {book.sourceType}</p><h2 id="gallery-title" ref={headingRef} tabIndex={-1}>{book.title}</h2></div><Link className="secondary-button gallery-icon-button" aria-label="Volver al lector" aria-disabled={busy} tabIndex={busy ? -1 : undefined} onClick={(event) => { if (busyRef.current) event.preventDefault(); }} title="Volver al lector" to={readerHref} state={{ returnTo: galleryHref }}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m12 5-7 7 7 7M5 12h14" /></svg></Link></div>
     {importNotice && <aside className="gallery-job" aria-label="Aviso de importación">
       <div role="status"><strong>Importación completada</strong><p>{importNotice}</p></div>
-      {isImages && <button className="secondary-button" disabled={!accessToken || downloadingOriginal} onClick={() => void downloadOriginal()}>{downloadingOriginal ? "Preparando descarga..." : "Descargar PDF original"}</button>}
+      {isImages && <button className="secondary-button" aria-busy={downloadingOriginal} disabled={!accessToken || downloadingOriginal} onClick={() => void downloadOriginal()}>{downloadingOriginal ? "Preparando descarga..." : "Descargar PDF original"}</button>}
+      {downloadingOriginal && <p role="status">Preparando descarga… Los libros grandes pueden tardar unos minutos. La descarga comenzará automáticamente; no hace falta volver a pulsar.</p>}
       {canEdit && isImages && <><p className="helper-text">Selecciona las páginas y ejecuta OCR para reconocer su texto antes de leerlo.</p><button className="secondary-button" disabled={busy || dirty || activeJob} onClick={() => {
         setSelected(new Set(missingOcrPageIds));
         setAnchor(null);

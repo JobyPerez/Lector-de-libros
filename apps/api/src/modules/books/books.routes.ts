@@ -17,6 +17,7 @@ import { recordBookView, recordUserActivity } from "../../services/user-activity
 import { getEffectiveUserAiCredentials, getSharedOcrModelViolation, getSharedSummaryModelViolation } from "../../services/user-ai-credentials.js";
 import { authenticateRequest } from "../auth/auth.routes.js";
 import { buildEpubExport, buildImagePdfExport, buildPdfExport } from "./book-export.js";
+import { pdfProfileSchema, pdfExportQuerySchema, validatePdfProfile, type PdfProfile } from "./pdf-profile.js";
 import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedBookLanguageCodes, supportedBookSourceTypes, type BookLanguageCode, type SupportedBookSourceType } from "./book-import.js";
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
@@ -99,6 +100,7 @@ const downloadTokenParamsSchema = z.object({
 
 const createDownloadTokenSchema = z.object({
   format: z.enum(["epub", "pdf", "pdf-images"]).optional(),
+  profile: pdfProfileSchema.default("original"),
   kind: z.enum(["export", "original"])
 });
 
@@ -293,6 +295,7 @@ type DownloadTokenRecord = {
   bookId: string;
   expiresAt: number;
   format?: "epub" | "pdf" | "pdf-images";
+  profile?: PdfProfile;
   kind: "export" | "original";
   userId: string;
 };
@@ -988,20 +991,24 @@ async function buildOwnedBookExportDownload(
   connection: DatabaseConnection,
   bookId: string,
   userId: string,
-  format: "epub" | "pdf" | "pdf-images"
+  format: "epub" | "pdf" | "pdf-images",
+  profile: PdfProfile = "original"
 ): Promise<DownloadFilePayload | null> {
   const book = await findOwnedBook(connection, bookId, userId);
   if (!book) {
     return null;
   }
-  return assembleBookExportDownload(connection, book, format);
+  return assembleBookExportDownload(connection, book, format, profile);
 }
 
 async function assembleBookExportDownload(
   connection: DatabaseConnection,
   book: OwnedBookRecord,
-  format: "epub" | "pdf" | "pdf-images"
+  format: "epub" | "pdf" | "pdf-images",
+  profile: PdfProfile = "original"
 ): Promise<DownloadFilePayload> {
+  validatePdfProfile(format, profile);
+  const suffix = profile === "original" ? "" : profile === "balanced" ? "-equilibrado" : profile === "compact" ? "-compacto" : "-solo-texto";
   if (format === "pdf-images") {
     if (book.sourceType !== "IMAGES") {
       throw Object.assign(new Error("El PDF de imágenes solo está disponible para libros creados desde imágenes."), { statusCode: 409 });
@@ -1023,9 +1030,10 @@ async function assembleBookExportDownload(
     return {
       buffer: await buildImagePdfExport({
         title: book.title,
+        profile,
         pages: (result.rows ?? []) as Array<{ buffer: Buffer | null; pageNumber: number }>
       }),
-      fileName: buildDownloadFileName(`${book.title}-imagenes`, "pdf"),
+      fileName: buildDownloadFileName(`${book.title}-imagenes${suffix}`, "pdf"),
       mimeType: "application/pdf"
     };
   }
@@ -1063,8 +1071,8 @@ async function assembleBookExportDownload(
       { bookId: book.bookId }
     ),
     resolveBookOutline(connection, book.bookId),
-    resolveBookCoverAsset(connection, book),
-    connection.execute(
+    profile === "text-only" ? Promise.resolve(null) : resolveBookCoverAsset(connection, book),
+    profile === "text-only" ? Promise.resolve({ rows: [] }) : connection.execute(
       `
         SELECT
           file_id AS "assetId",
@@ -1105,7 +1113,7 @@ async function assembleBookExportDownload(
     const htmlContent = row.visualDocumentJson
       ? renderVisualDocument(visualPageDocumentSchema.parse(JSON.parse(row.visualDocumentJson)), { languageCode: book.languageCode }).htmlContent
       : projectActivePageHtml(annotatePageElementHtml(row.htmlContent, paragraphs), paragraphs);
-    return { htmlContent: htmlContent ? hydrateContentImages(htmlContent, contentImages) : null,
+    return { htmlContent: htmlContent ? (format === "epub" ? hydrateContentImages(htmlContent, contentImages) : htmlContent) : null,
       pageLabel: row.pageLabel, pageNumber: row.pageNumber, paragraphs: paragraphs.filter((paragraph) => paragraph.active !== false) };
   });
 
@@ -1124,6 +1132,8 @@ async function assembleBookExportDownload(
         }
       : null,
     outline: outlineResult,
+    contentImages,
+    profile,
     pages
   };
 
@@ -1133,7 +1143,7 @@ async function assembleBookExportDownload(
 
   return {
     buffer,
-    fileName: buildDownloadFileName(book.title, format),
+    fileName: buildDownloadFileName(`${book.title}${suffix}`, format),
     mimeType: format === "epub" ? "application/epub+zip" : "application/pdf"
   };
 }
@@ -1173,13 +1183,14 @@ async function buildAccessibleBookExportDownload(
   connection: DatabaseConnection,
   bookId: string,
   userId: string,
-  format: "epub" | "pdf" | "pdf-images"
+  format: "epub" | "pdf" | "pdf-images",
+  profile: PdfProfile = "original"
 ): Promise<DownloadFilePayload | null> {
   const book = await findAccessibleBook(connection, bookId, userId);
   if (!book) {
     return null;
   }
-  return assembleBookExportDownload(connection, book, format);
+  return assembleBookExportDownload(connection, book, format, profile);
 }
 
 async function buildAccessibleOriginalBookDownload(
@@ -7213,10 +7224,13 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ message: "El formato de exportación es obligatorio." });
     }
 
+    validatePdfProfile(payload.kind === "export" ? payload.format! : "epub", payload.profile);
+
     const token = createDownloadToken({
       bookId: params.bookId,
       ...(payload.format ? { format: payload.format } : {}),
       kind: payload.kind,
+      profile: payload.profile,
       userId: request.currentUser.userId
     });
 
@@ -7237,7 +7251,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const download = tokenRecord.kind === "export"
-        ? await buildAccessibleBookExportDownload(connection, tokenRecord.bookId, tokenRecord.userId, tokenRecord.format ?? "epub")
+        ? await buildAccessibleBookExportDownload(connection, tokenRecord.bookId, tokenRecord.userId, tokenRecord.format ?? "epub", tokenRecord.profile)
         : await buildAccessibleOriginalBookDownload(connection, tokenRecord.bookId, tokenRecord.userId);
 
       if (download === "IMAGES_SOURCE") {
@@ -7266,10 +7280,12 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       bookId: z.string().uuid(),
       format: z.enum(["epub", "pdf", "pdf-images"])
     }).parse(request.params);
+    const { profile } = pdfExportQuerySchema.parse(request.query);
+    validatePdfProfile(params.format, profile);
     const connection = await getConnection();
 
     try {
-      const download = await buildAccessibleBookExportDownload(connection, params.bookId, request.currentUser.userId, params.format);
+      const download = await buildAccessibleBookExportDownload(connection, params.bookId, request.currentUser.userId, params.format, profile);
       if (!download) {
         return reply.status(404).send({ message: "Book not found." });
       }

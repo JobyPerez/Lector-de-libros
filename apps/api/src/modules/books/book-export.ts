@@ -8,6 +8,8 @@ import sharp from "sharp";
 import type { BookOutlineEntry } from "./book-outline.js";
 import type { BookLanguageCode } from "./book-import.js";
 import { renderBookHtmlPdf } from "./html-pdf.js";
+import type { HydratableContentImage } from "./content-images.js";
+import { optimizePdfImage, type PdfProfile } from "./pdf-profile.js";
 
 type ExportBook = {
   authorName: string | null;
@@ -20,7 +22,7 @@ type ExportPage = {
   htmlContent: string | null;
   pageLabel: string | null;
   pageNumber: number;
-  paragraphs: Array<{ paragraphText: string; paragraphNumber?: number; active?: boolean | number }>;
+  paragraphs: Array<{ paragraphText: string; paragraphNumber?: number; active?: boolean | number; role?: string }>;
 };
 
 type ExportCoverAsset = {
@@ -202,7 +204,9 @@ export async function buildEpubExport(options: {
 export async function buildImagePdfExport(options: {
   title: string;
   pages: Array<{ buffer: Buffer | null; pageNumber: number }>;
+  profile?: PdfProfile;
 }): Promise<Buffer> {
+  if (options.profile === "text-only") throw Object.assign(new Error("Solo texto no está disponible para PDF de imágenes."), { statusCode: 400 });
   if (options.pages.length === 0 || options.pages.some((page) => !page.buffer?.length)) {
     throw Object.assign(new Error("No se puede generar el PDF: faltan imágenes de las páginas."), { statusCode: 409 });
   }
@@ -219,10 +223,11 @@ export async function buildImagePdfExport(options: {
     void (async () => {
       for (const page of options.pages) {
         const { data, info } = await sharp(page.buffer!).rotate().png().toBuffer({ resolveWithObject: true });
+        const image = await optimizePdfImage({ buffer: data, mimeType: "image/png" }, options.profile ?? "original");
         const width = 595.28;
         const height = width * info.height / info.width;
         document.addPage({ margin: 0, size: [width, height] });
-        document.image(data, 0, 0, { width, height });
+        document.image(image.buffer, 0, 0, { width, height });
       }
       document.end();
     })().catch((error) => {
@@ -237,22 +242,29 @@ export async function buildPdfExport(options: {
   coverAsset: ExportCoverAsset;
   outline: BookOutlineEntry[];
   pages: ExportPage[];
+  contentImages?: ReadonlyMap<string, HydratableContentImage>;
+  profile?: PdfProfile;
 }): Promise<Buffer> {
   const sheets: string[] = [];
-  const prefixPages = Number(Boolean(options.coverAsset)) + Number(options.outline.length > 0);
-  if (options.coverAsset) {
+  if (options.coverAsset && options.profile !== "text-only") {
     const cover = await sharp(options.coverAsset.buffer).rotate().jpeg({ quality: 92 }).toBuffer();
     sheets.push(`<section class="pdf-sheet"><div class="pdf-content"><img class="pdf-cover" alt="" src="data:image/jpeg;base64,${cover.toString("base64")}"></div></section>`);
   }
   if (options.outline.length > 0) {
     const entries = options.outline.flatMap((entry) => {
       const index = options.pages.findIndex((page) => page.pageNumber === entry.pageNumber);
-      return index < 0 ? [] : [`<a href="#page-${entry.pageNumber}" style="padding-left:${Math.max(0, entry.level - 1) * 14}px"><span>${escapeXml(entry.title)}</span><span>${prefixPages + index + 1}</span></a>`];
+      return index < 0 ? [] : [`<a href="#page-${entry.pageNumber}" style="padding-left:${Math.min(8, Math.max(0, entry.level - 1)) * 14}px"><span>${escapeXml(entry.title)}</span><span class="pdf-toc-page-number"></span></a>`];
     }).join("");
-    sheets.push(`<section class="pdf-sheet"><div class="pdf-content pdf-toc"><h1>${options.book.languageCode === "it" ? "Indice" : "Índice"}</h1>${entries}</div><div class="pdf-footer">${prefixPages}</div></section>`);
+    sheets.push(`<section class="pdf-sheet"><div class="pdf-content pdf-toc"><h1>${options.book.languageCode === "it" ? "Indice" : "Índice"}</h1>${entries}</div><div class="pdf-footer"></div></section>`);
   }
-  for (const [index, page] of options.pages.entries()) {
-    const html = load(getActivePageHtml(page), null, false);
+  for (const page of options.pages) {
+    const textOnlyHtml = options.profile === "text-only" ? page.paragraphs
+      .filter((paragraph) => paragraph.active !== false && paragraph.active !== 0 && paragraph.role !== "image" && paragraph.paragraphText.trim())
+      .map((paragraph) => {
+        const tag = paragraph.role === "heading" ? "h2" : "p";
+        return `<${tag}>${escapeXml(paragraph.paragraphText)}</${tag}>`;
+      }).join("") : null;
+    const html = load(textOnlyHtml ?? getActivePageHtml(page), null, false);
     html("script, iframe, object, embed, base, link, meta, form").remove();
     html("*").each((_, node) => {
       const element = html(node);
@@ -262,7 +274,7 @@ export async function buildPdfExport(options: {
       const targetPage = Number(element.attr("data-book-page"));
       if (element.is("a") && targetPage > 0) element.attr("href", `#page-${targetPage}`);
     });
-    sheets.push(`<section class="pdf-sheet reader-layout reader-ocr-layout" id="page-${page.pageNumber}"><div class="pdf-content reader-rich-content">${html.html()}</div><div class="pdf-footer">${prefixPages + index + 1}</div></section>`);
+    sheets.push(`<section class="pdf-sheet reader-layout reader-ocr-layout" id="page-${page.pageNumber}"><div class="pdf-content reader-rich-content">${html.html()}</div><div class="pdf-footer"></div></section>`);
   }
-  return renderBookHtmlPdf(options.book.title, options.book.languageCode, sheets);
+  return renderBookHtmlPdf(options.book.title, options.book.languageCode, sheets, options.profile === "text-only" ? undefined : options.contentImages, options.profile);
 }

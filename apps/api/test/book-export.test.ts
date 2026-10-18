@@ -136,26 +136,75 @@ test("PDF OCR preserves columns, relative font sizes, line breaks and captions, 
   }
 });
 
-test("PDF cover and a long index do not split book pages and index links point to physical sheets", async () => {
+test("PDF paginates long indices at a readable size and updates physical page numbers and links", async () => {
   const cover = await sharp({ create: { width: 80, height: 120, channels: 3, background: "blue" } }).png().toBuffer();
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const pdf = await getDocument({ data: new Uint8Array(await buildPdfExport({
     book: { authorName: null, languageCode: "es", synopsis: null, title: "Index regression" },
     coverAsset: { buffer: cover, fileName: "cover.png", mimeType: "image/png" },
-    outline: Array.from({ length: 80 }, (_, i) => ({ title: `Entry ${i}`, level: 1, pageNumber: i < 40 ? 5 : 9, paragraphNumber: 1 })),
+    outline: Array.from({ length: 80 }, (_, i) => ({
+      title: `Entry ${i}${i % 7 === 0 ? " with a long chapter title that wraps across several lines while retaining the entire heading and its page reference" : ""}`,
+      level: i % 4 + 1, pageNumber: i < 40 ? 5 : 9, paragraphNumber: 1
+    })),
     pages: [5, 9].map((pageNumber) => ({ pageNumber, pageLabel: null, htmlContent: `<p>Book page ${pageNumber}</p>`, paragraphs: [] }))
   })), useSystemFonts: true }).promise;
   try {
-    assert.equal(pdf.numPages, 4);
-    const toc = await pdf.getPage(2);
-    const text = (await toc.getTextContent()).items.map((item) => "str" in item ? item.str : "").join(" ");
-    assert.match(text, /Entry 79/);
-    const links = (await toc.getAnnotations()).filter((annotation) => annotation.dest);
-    assert.equal(links.length, 80);
-    for (const [annotation, index] of [[links[0]!, 2], [links[79]!, 3]] as const) {
-      const destination = typeof annotation.dest === "string" ? await pdf.getDestination(annotation.dest) : annotation.dest;
-      assert.equal(await pdf.getPageIndex(destination[0]), index);
+    assert.ok(pdf.numPages > 4, "the index must occupy multiple A4 pages");
+    const firstBookPage = pdf.numPages - 1;
+    const links: any[] = [];
+    const visiblePageNumbers: string[] = [];
+    let indexText = "";
+    for (let number = 2; number < firstBookPage; number += 1) {
+      const toc = await pdf.getPage(number);
+      const items = (await toc.getTextContent()).items.filter((item) => "str" in item);
+      const text = items.map((item) => item.str).join(" ");
+      assert.match(text, /Índice/);
+      if (number > 2) assert.match(text, /continuación/);
+      indexText += ` ${text}`;
+      for (const item of items.filter((item) => item.str.trim() && item.transform[5] > 50)) {
+        assert.ok(item.height >= 11.9, "index text must retain its 12pt size");
+        assert.ok(item.transform[5] >= 50, "index entries must stay above the bottom margin");
+        if (/^\d+$/u.test(item.str)) visiblePageNumbers.push(item.str);
+      }
+      assert.ok(items.some((item) => item.str === String(number) && item.transform[5] < 50), "footer must match the physical page");
+      const annotations = (await toc.getAnnotations()).filter((annotation) => annotation.dest);
+      for (const annotation of annotations) assert.ok(annotation.rect[1] >= 49, "index links must not overflow the page");
+      links.push(...annotations);
     }
+    for (let i = 0; i < 80; i += 1) assert.match(indexText, new RegExp(`Entry ${i}(?!\\d)`));
+    assert.equal(links.length, 80);
+    assert.deepEqual(visiblePageNumbers, Array.from({ length: 80 }, (_, i) => String(firstBookPage + Number(i >= 40))));
+    for (const [i, annotation] of links.entries()) {
+      const destination = typeof annotation.dest === "string" ? await pdf.getDestination(annotation.dest) : annotation.dest;
+      assert.equal(await pdf.getPageIndex(destination[0]), firstBookPage - 1 + Number(i >= 40));
+    }
+    for (const [index, bookPage] of [5, 9].entries()) {
+      const text = (await (await pdf.getPage(firstBookPage + index)).getTextContent()).items.map((item) => "str" in item ? item.str : "").join(" ");
+      assert.match(text, new RegExp(`Book page ${bookPage}`));
+    }
+  } finally {
+    await pdf.destroy();
+  }
+});
+
+test("a short Italian PDF index stays on one page without a cover and keeps correct references", async () => {
+  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const pdf = await getDocument({ data: new Uint8Array(await buildPdfExport({
+    book: { authorName: null, languageCode: "it", synopsis: null, title: "Libro" },
+    coverAsset: null,
+    outline: [{ title: "Primo capitolo", level: 1, pageNumber: 7, paragraphNumber: 1 }],
+    pages: [{ pageNumber: 7, pageLabel: null, htmlContent: "<p>Contenuto</p>", paragraphs: [] }]
+  })), useSystemFonts: true }).promise;
+  try {
+    assert.equal(pdf.numPages, 2);
+    const toc = await pdf.getPage(1);
+    const text = (await toc.getTextContent()).items.map((item) => "str" in item ? item.str : "").join(" ");
+    assert.match(text, /Indice/);
+    assert.match(text, /Primo capitolo/);
+    assert.match(text, /\b2\b/u);
+    const [link] = (await toc.getAnnotations()).filter((annotation) => annotation.dest);
+    const destination = typeof link!.dest === "string" ? await pdf.getDestination(link!.dest) : link!.dest;
+    assert.equal(await pdf.getPageIndex(destination[0]), 1);
   } finally {
     await pdf.destroy();
   }

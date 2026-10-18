@@ -1570,15 +1570,18 @@ export async function uploadBookPageImage(accessToken: string, bookId: string, p
   return response.json() as Promise<{ updatedAt: string }>;
 }
 
-export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf" | "pdf-images") {
-  return requestBlobDownload(`/books/${bookId}/export/${format}`, accessToken);
+export type PdfProfile = "original" | "balanced" | "compact" | "text-only";
+
+export function downloadBookExport(accessToken: string, bookId: string, format: "epub" | "pdf" | "pdf-images", profile: PdfProfile = "original") {
+  const query = profile === "original" ? "" : `?profile=${encodeURIComponent(profile)}`;
+  return requestBlobDownload(`/books/${bookId}/export/${format}${query}`, accessToken);
 }
 
 export function downloadOriginalBook(accessToken: string, bookId: string) {
   return requestBlobDownload(`/books/${bookId}/download-original`, accessToken);
 }
 
-export async function createBookDownloadUrl(accessToken: string, bookId: string, payload: { format?: "epub" | "pdf" | "pdf-images"; kind: "export" | "original" }) {
+export async function createBookDownloadUrl(accessToken: string, bookId: string, payload: { format?: "epub" | "pdf" | "pdf-images"; kind: "export" | "original"; profile?: PdfProfile }) {
   const response = await fetchWithAutoRefresh(`/books/${bookId}/download-token`, {
     accessToken,
     body: JSON.stringify(payload),

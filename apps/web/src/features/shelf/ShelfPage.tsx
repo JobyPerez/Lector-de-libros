@@ -2,7 +2,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
-import { createBookDownloadUrl, deleteBook, fetchBookCover, fetchBookImportProgress, fetchBooks, importBook, leaveBookShare, updateBook, type BookImportProgress, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
+import { deleteBook, fetchBookCover, fetchBookImportProgress, fetchBooks, importBook, leaveBookShare, updateBook, type BookImportProgress, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
+import { downloadBookToDevice } from "../../app/book-download";
+import { choosePdfDownloadProfile } from "../../components/choosePdfDownloadProfile";
 import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
@@ -285,15 +287,6 @@ function StarRatingInput({
   );
 }
 
-function startBrowserDownload(downloadUrl: string) {
-  const anchor = document.createElement("a");
-  anchor.href = downloadUrl;
-  anchor.rel = "noreferrer";
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-}
-
 function buildBookMonogram(title: string): string {
   const titleWords = title
     .trim()
@@ -409,6 +402,8 @@ export function ShelfPage() {
   const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
   const [removingBookId, setRemovingBookId] = useState<string | null>(null);
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
+  const downloadInProgressRef = useRef(false);
+  const [downloadTitle, setDownloadTitle] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
   const [expandedBookIds, setExpandedBookIds] = useState<ReadonlySet<string>>(new Set());
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
@@ -831,61 +826,77 @@ export function ShelfPage() {
   }
 
   async function handleDownloadExport(format: "epub" | "pdf" | "pdf-images") {
-    if (!accessToken || !editingBook) {
+    if (!accessToken || !editingBook || downloadInProgressRef.current) {
       return;
     }
 
+    downloadInProgressRef.current = true;
+    const profile = format === "epub" ? "original" : await choosePdfDownloadProfile(editingBook.title, format);
+    if (profile === null) { downloadInProgressRef.current = false; return; }
+    setDownloadTitle(editingBook.title);
     setBookActionError(null);
     setBookActionSuccess(null);
     setExportingFormat(format);
 
     try {
-      const downloadUrl = await createBookDownloadUrl(accessToken, editingBook.bookId, { format, kind: "export" });
-      startBrowserDownload(downloadUrl);
+      await downloadBookToDevice(accessToken, editingBook.bookId, editingBook.title, format, profile);
+      setBookActionSuccess("Archivo listo. La descarga se ha enviado al navegador.");
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
+      downloadInProgressRef.current = false;
+      setDownloadTitle(null);
       setExportingFormat(null);
     }
   }
 
   async function handleDownloadOriginal(book: BookSummary) {
-    if (!accessToken) {
+    if (!accessToken || downloadInProgressRef.current) {
       return;
     }
 
+    downloadInProgressRef.current = true;
+    setDownloadTitle(book.title);
     setBookActionError(null);
     setBookActionSuccess(null);
     setDownloadMenuBookId(null);
     setDownloadingBookId(book.bookId);
 
     try {
-      const downloadUrl = await createBookDownloadUrl(accessToken, book.bookId, { kind: "original" });
-      startBrowserDownload(downloadUrl);
+      await downloadBookToDevice(accessToken, book.bookId, book.title);
+      setBookActionSuccess("Archivo listo. La descarga se ha enviado al navegador.");
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : "No se pudo descargar el archivo original del libro.");
     } finally {
+      downloadInProgressRef.current = false;
+      setDownloadTitle(null);
       setDownloadingBookId(null);
     }
   }
 
   async function handleExportFromCard(book: BookSummary, format: "epub" | "pdf" | "pdf-images") {
-    if (!accessToken) {
+    if (!accessToken || downloadInProgressRef.current) {
       return;
     }
 
+    downloadInProgressRef.current = true;
+    setDownloadMenuBookId(null);
+    const profile = format === "epub" ? "original" : await choosePdfDownloadProfile(book.title, format);
+    if (profile === null) { downloadInProgressRef.current = false; return; }
+    setDownloadTitle(book.title);
     setBookActionError(null);
     setBookActionSuccess(null);
-    setDownloadMenuBookId(null);
     setExportingBookId(book.bookId);
     setExportingFormatCard(format);
 
     try {
-      const downloadUrl = await createBookDownloadUrl(accessToken, book.bookId, { format, kind: "export" });
-      startBrowserDownload(downloadUrl);
+      await downloadBookToDevice(accessToken, book.bookId, book.title, format, profile);
+      setBookActionSuccess("Archivo listo. La descarga se ha enviado al navegador.");
     } catch (error) {
       setBookActionError(error instanceof Error ? error.message : `No se pudo exportar el libro a ${format.toUpperCase()}.`);
     } finally {
+      downloadInProgressRef.current = false;
+      setDownloadTitle(null);
       setExportingBookId(null);
       setExportingFormatCard(null);
     }
@@ -895,7 +906,7 @@ export function ShelfPage() {
     event.preventDefault();
     event.stopPropagation();
 
-    if (downloadingBookId === book.bookId) {
+    if (downloadInProgressRef.current) {
       return;
     }
 
@@ -1200,11 +1211,12 @@ export function ShelfPage() {
               <button
                 aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
                 aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
-                aria-label={book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
-                className={["book-card-icon-button book-card-download-button", exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
-                disabled={isBookRemoving || downloadingBookId === book.bookId || exportingBookId === book.bookId}
+                aria-busy={downloadingBookId === book.bookId || exportingBookId === book.bookId}
+                aria-label={downloadingBookId === book.bookId || exportingBookId === book.bookId ? `Preparando descarga de ${book.title}` : book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
+                className={["book-card-icon-button book-card-download-button", downloadingBookId === book.bookId || exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
+                disabled={isBookRemoving || downloadTitle !== null}
                 onClick={(event) => handleDownloadAction(book, event)}
-                title={book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
+                title={downloadingBookId === book.bookId || exportingBookId === book.bookId ? "Preparando descarga..." : book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
                 type="button"
               >
                 <DownloadIcon />
@@ -1325,6 +1337,15 @@ export function ShelfPage() {
 
   return (
     <div className="page-stack shelf-layout">
+      {downloadTitle !== null ? (
+        <div className="book-download-progress" role="status" aria-live="polite" aria-atomic="true">
+          <span className="book-download-spinner" aria-hidden="true" />
+          <div>
+            <strong>Preparando descarga…</strong>
+            <p>{downloadTitle}. Los libros grandes pueden tardar unos minutos. La descarga comenzará automáticamente; no hace falta volver a pulsar.</p>
+          </div>
+        </div>
+      ) : null}
       {activeView === "shelf" ? (
       <section className="panel wide-panel overflow-visible-panel screen-scene" data-direction={viewTransitionDirection}>
         <div className="panel-header shelf-header">
@@ -1501,7 +1522,7 @@ export function ShelfPage() {
         {booksQuery.isLoading ? <p>Cargando libros...</p> : null}
         {booksQuery.isError ? <p className="error-text">No se pudo cargar la estantería.</p> : null}
         {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
-        {bookActionSuccess ? <p className="success-text">{bookActionSuccess}</p> : null}
+        {bookActionSuccess ? <p className="success-text" role="status">{bookActionSuccess}</p> : null}
 
         {!booksQuery.isLoading && allBooks.length === 0 ? (
           <div className="shelf-empty-state">
@@ -1647,25 +1668,26 @@ export function ShelfPage() {
             </label>
 
             {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
+            {bookActionSuccess ? <p className="success-text" role="status">{bookActionSuccess}</p> : null}
 
             <div className="import-panel-actions">
               <button className="primary-button" disabled={isSavingBook || isConfirmingBookExit} type="submit">
                 {isSavingBook ? "Guardando..." : "Guardar cambios"}
               </button>
-              <button className={["secondary-button", exportingFormat === "epub" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={exportingFormat === "epub"} onClick={() => void handleDownloadExport("epub")} type="button">
+              <button className={["secondary-button", exportingFormat === "epub" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={downloadTitle !== null} onClick={() => void handleDownloadExport("epub")} type="button">
                 <span className="export-button-content">
                   <DownloadIcon />
                   {exportingFormat === "epub" ? "Exportando EPUB..." : "Exportar EPUB"}
                 </span>
               </button>
-              <button className={["secondary-button", exportingFormat === "pdf" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={exportingFormat === "pdf"} onClick={() => void handleDownloadExport("pdf")} type="button">
+              <button className={["secondary-button", exportingFormat === "pdf" ? "icon-spin" : ""].filter(Boolean).join(" ")} disabled={downloadTitle !== null} onClick={() => void handleDownloadExport("pdf")} type="button">
                 <span className="export-button-content">
                   <DownloadIcon />
                   {exportingFormat === "pdf" ? "Exportando PDF..." : "Exportar PDF"}
                 </span>
               </button>
               {editingBook?.sourceType === "IMAGES" ? (
-                <button className="secondary-button" disabled={exportingFormat !== null} onClick={() => void handleDownloadExport("pdf-images")} title="Descargar las imágenes guardadas con sus recortes actuales" type="button">
+                <button className="secondary-button" disabled={downloadTitle !== null} onClick={() => void handleDownloadExport("pdf-images")} title="Descargar las imágenes guardadas con sus recortes actuales" type="button">
                   <span className="export-button-content">
                     <DownloadIcon />
                     {exportingFormat === "pdf-images" ? "Exportando imágenes..." : "PDF de imágenes"}
