@@ -48,6 +48,8 @@ import { AdvancedLayoutCheckbox, OcrModelSelect, OcrPromptEditor, defaultOcrMode
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { useUnsavedChanges } from "../../hooks/useUnsavedChanges";
 import { DocumentScannerModal } from "./DocumentScannerModal";
+import { CameraCaptureModeDialog } from "./CameraCaptureModeDialog";
+import { CameraPhotoPreview } from "./CameraPhotoPreview";
 import { readingDraftSyncAction, type ReadingDraftVersion } from "./reading-blocks";
 import { VisualPageEditor } from "./VisualPageEditor";
 import { clearVisualGeometry, pushVisualHistory, redoVisualHistory, undoVisualHistory, visualDocumentFromPage, visualDocumentSaveError, type VisualHistory } from "./visual-page";
@@ -887,6 +889,10 @@ export function BookBuilderPage() {
   const [appendCancelHoldProgress, setAppendCancelHoldProgress] = useState(0);
   const [isAppendCancelRequested, setIsAppendCancelRequested] = useState(false);
   const [isCreateCameraModalOpen, setIsCreateCameraModalOpen] = useState(false);
+  const [cameraModeTarget, setCameraModeTarget] = useState<ScannerTarget | null>(null);
+  const [isMultipleCameraCapture, setIsMultipleCameraCapture] = useState(false);
+  const [cameraCapturedFiles, setCameraCapturedFiles] = useState<File[]>([]);
+  const [pendingCameraPhoto, setPendingCameraPhoto] = useState<File | null>(null);
   const [createCameraStream, setCreateCameraStream] = useState<MediaStream | null>(null);
   const [isCreateCameraStarting, setIsCreateCameraStarting] = useState(false);
   const [isCreateCameraCapturing, setIsCreateCameraCapturing] = useState(false);
@@ -1133,6 +1139,13 @@ export function BookBuilderPage() {
   }, [reviewBookId, reviewPageNumber]);
 
   useEffect(() => {
+    if (!cameraModeTarget && !isCreateCameraModalOpen && !isAppendCameraModalOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, [cameraModeTarget, isCreateCameraModalOpen, isAppendCameraModalOpen]);
+
+  useEffect(() => {
     if (!isCreateCameraModalOpen || !createCameraStream || !createCameraVideoRef.current) {
       return;
     }
@@ -1154,7 +1167,8 @@ export function BookBuilderPage() {
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape" && !isCreateCameraCapturing) {
-        closeCreateCameraModal();
+        if (pendingCameraPhoto) setPendingCameraPhoto(null);
+        else closeCreateCameraModal();
       }
     }
 
@@ -1163,7 +1177,7 @@ export function BookBuilderPage() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isCreateCameraCapturing, isCreateCameraModalOpen]);
+  }, [isCreateCameraCapturing, isCreateCameraModalOpen, cameraCapturedFiles, pendingCameraPhoto]);
 
   useEffect(() => {
     if (!isAppendCameraModalOpen || !appendCameraStream || !appendCameraVideoRef.current) {
@@ -1187,7 +1201,8 @@ export function BookBuilderPage() {
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape" && !isAppendCameraCapturing) {
-        closeAppendCameraModal();
+        if (pendingCameraPhoto) setPendingCameraPhoto(null);
+        else closeAppendCameraModal();
       }
     }
 
@@ -1196,7 +1211,7 @@ export function BookBuilderPage() {
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isAppendCameraCapturing, isAppendCameraModalOpen]);
+  }, [isAppendCameraCapturing, isAppendCameraModalOpen, cameraCapturedFiles, pendingCameraPhoto]);
 
   useEffect(() => {
     if (!isAppending || !appendProgressId || !accessToken) {
@@ -1899,6 +1914,9 @@ export function BookBuilderPage() {
   }
 
   function closeCreateCameraModal() {
+    setPendingCameraPhoto(null);
+    if (cameraCapturedFiles.length) createFiles(cameraCapturedFiles);
+    setCameraCapturedFiles([]);
     setIsCreateCameraCapturing(false);
     setIsCreateCameraStarting(false);
     setIsCreateCameraModalOpen(false);
@@ -1913,6 +1931,9 @@ export function BookBuilderPage() {
   }
 
   function closeAppendCameraModal() {
+    setPendingCameraPhoto(null);
+    if (cameraCapturedFiles.length) appendFiles(cameraCapturedFiles);
+    setCameraCapturedFiles([]);
     setIsAppendCameraCapturing(false);
     setIsAppendCameraStarting(false);
     setIsAppendCameraModalOpen(false);
@@ -1927,18 +1948,20 @@ export function BookBuilderPage() {
     return /Android|iPhone|iPad|iPod|Mobile/iu.test(navigator.userAgent);
   }
 
-  async function handleOpenCreateCamera() {
+  async function handleOpenCreateCamera(multiple: boolean) {
     if (isCreating || isCreateCameraStarting) {
       return;
     }
 
-    if (shouldPreferNativeCameraCapture()) {
+    setIsMultipleCameraCapture(multiple);
+    setCameraCapturedFiles([]);
+    if (!multiple && shouldPreferNativeCameraCapture()) {
       createCameraInputRef.current?.click();
       return;
     }
 
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setCreateError("Este navegador no puede abrir la camara en escritorio. Usa la subida de archivos o prueba otro navegador.");
+      setCreateError("Este navegador no puede abrir la cámara integrada. Usa Una foto o la subida de archivos, o prueba otro navegador.");
       return;
     }
 
@@ -1980,18 +2003,20 @@ export function BookBuilderPage() {
     }
   }
 
-  async function handleOpenAppendCamera() {
+  async function handleOpenAppendCamera(multiple: boolean) {
     if (isAppending || isAppendCameraStarting) {
       return;
     }
 
-    if (shouldPreferNativeCameraCapture()) {
+    setIsMultipleCameraCapture(multiple);
+    setCameraCapturedFiles([]);
+    if (!multiple && shouldPreferNativeCameraCapture()) {
       appendCameraInputRef.current?.click();
       return;
     }
 
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setAppendError("Este navegador no puede abrir la camara en escritorio. Usa la subida de archivos o prueba otro navegador.");
+      setAppendError("Este navegador no puede abrir la cámara integrada. Usa Una foto o la subida de archivos, o prueba otro navegador.");
       return;
     }
 
@@ -2034,6 +2059,7 @@ export function BookBuilderPage() {
   }
 
   function handleCaptureCreateCameraFrame() {
+    if (pendingCameraPhoto || isCreateCameraCapturing) return;
     const videoElement = createCameraVideoRef.current;
     const canvasElement = createCameraCanvasRef.current;
 
@@ -2061,12 +2087,14 @@ export function BookBuilderPage() {
       }
 
       const fileName = `camara-${new Date().toISOString().replace(/[:.]/gu, "-")}.jpg`;
-      createFiles([new File([blob], fileName, { type: "image/jpeg" })]);
-      closeCreateCameraModal();
+      setPendingCameraPhoto(new File([blob], fileName, { type: "image/jpeg" }));
+      setCreateError(null);
+      setIsCreateCameraCapturing(false);
     }, "image/jpeg", 0.92);
   }
 
   function handleCaptureAppendCameraFrame() {
+    if (pendingCameraPhoto || isAppendCameraCapturing) return;
     const videoElement = appendCameraVideoRef.current;
     const canvasElement = appendCameraCanvasRef.current;
 
@@ -2094,9 +2122,24 @@ export function BookBuilderPage() {
       }
 
       const fileName = `camara-${new Date().toISOString().replace(/[:.]/gu, "-")}.jpg`;
-      appendFiles([new File([blob], fileName, { type: "image/jpeg" })]);
-      closeAppendCameraModal();
+      setPendingCameraPhoto(new File([blob], fileName, { type: "image/jpeg" }));
+      setAppendError(null);
+      setIsAppendCameraCapturing(false);
     }, "image/jpeg", 0.92);
+  }
+
+  function confirmCameraPhoto(target: ScannerTarget) {
+    if (!pendingCameraPhoto) return;
+    if (isMultipleCameraCapture) {
+      setCameraCapturedFiles((files) => [...files, pendingCameraPhoto]);
+      setPendingCameraPhoto(null);
+    } else if (target === "create") {
+      createFiles([pendingCameraPhoto]);
+      closeCreateCameraModal();
+    } else {
+      appendFiles([pendingCameraPhoto]);
+      closeAppendCameraModal();
+    }
   }
 
   function clearAppendSelection() {
@@ -3439,7 +3482,7 @@ export function BookBuilderPage() {
                       aria-label="Añadir desde cámara"
                       className="capture-action-card capture-action-card-icon-only"
                       disabled={isCreating || isCreateCameraStarting}
-                      onClick={handleOpenCreateCamera}
+                      onClick={() => setCameraModeTarget("create")}
                       title="Añadir desde cámara"
                       type="button"
                     >
@@ -3684,7 +3727,7 @@ export function BookBuilderPage() {
                       aria-label="Añadir desde cámara"
                       className="capture-action-card capture-action-card-icon-only"
                       disabled={isAppending || isAppendCameraStarting}
-                      onClick={handleOpenAppendCamera}
+                      onClick={() => setCameraModeTarget("append")}
                       title="Añadir desde cámara"
                       type="button"
                     >
@@ -4005,13 +4048,26 @@ export function BookBuilderPage() {
             </div>, document.body
           ) : null}
 
-          {isCreateCameraModalOpen ? (
+          {cameraModeTarget ? (
+            <CameraCaptureModeDialog
+              onCancel={() => setCameraModeTarget(null)}
+              onChoose={(multiple) => {
+                const target = cameraModeTarget;
+                setCameraModeTarget(null);
+                if (target === "create") void handleOpenCreateCamera(multiple);
+                else void handleOpenAppendCamera(multiple);
+              }}
+            />
+          ) : null}
+
+          {isCreateCameraModalOpen ? createPortal(
             <div className="camera-capture-backdrop" role="presentation">
               <div aria-label="Captura desde camara" aria-modal="true" className="camera-capture-modal" role="dialog">
                 <div className="camera-capture-header">
                   <div>
                     <p className="eyebrow">Camara</p>
-                    <h3>Capturar pagina</h3>
+                    <h3>{pendingCameraPhoto ? "¿Te quedas con esta foto?" : isMultipleCameraCapture ? "Capturar varias páginas" : "Capturar página"}</h3>
+                    {isMultipleCameraCapture ? <p className="camera-capture-count" role="status">{cameraCapturedFiles.length} fotos capturadas</p> : null}
                   </div>
                   <button
                     aria-label="Cerrar camara"
@@ -4028,7 +4084,14 @@ export function BookBuilderPage() {
                   {createCameraStream ? (
                     <>
                       <video muted playsInline ref={createCameraVideoRef} />
-                      <div className="camera-capture-overlay-actions">
+                      {pendingCameraPhoto ? <CameraPhotoPreview file={pendingCameraPhoto} /> : null}
+                      {cameraCapturedFiles.length > 0 ? (
+                        <div className="camera-capture-feedback" key={cameraCapturedFiles.length}>
+                          <div className="camera-capture-flash" />
+                          <span className="camera-capture-saved">✓ Foto {cameraCapturedFiles.length} guardada</span>
+                        </div>
+                      ) : null}
+                      <div className="camera-capture-overlay-actions" hidden={!!pendingCameraPhoto}>
                         <button
                           className="primary-button camera-capture-primary-button"
                           disabled={!createCameraStream || isCreateCameraCapturing}
@@ -4045,23 +4108,32 @@ export function BookBuilderPage() {
                 </div>
 
                 <canvas className="camera-capture-canvas" ref={createCameraCanvasRef} />
+                {createError ? <p role="alert">{createError}</p> : null}
 
                 <div className="camera-capture-actions">
+                  {pendingCameraPhoto ? (
+                    <>
+                      <button className="secondary-button" onClick={() => setPendingCameraPhoto(null)} type="button">Descartar y repetir</button>
+                      <button className="primary-button" onClick={() => confirmCameraPhoto("create")} type="button">Usar foto</button>
+                    </>
+                  ) : (
                   <button className="secondary-button" disabled={isCreateCameraCapturing} onClick={closeCreateCameraModal} type="button">
-                    Cancelar
+                    {isMultipleCameraCapture && cameraCapturedFiles.length ? `Terminar · ${cameraCapturedFiles.length} fotos` : "Cancelar"}
                   </button>
+                  )}
                 </div>
               </div>
-            </div>
+            </div>, document.body
           ) : null}
 
-          {isAppendCameraModalOpen ? (
+          {isAppendCameraModalOpen ? createPortal(
             <div className="camera-capture-backdrop" role="presentation">
               <div aria-label="Captura desde camara" aria-modal="true" className="camera-capture-modal" role="dialog">
                 <div className="camera-capture-header">
                   <div>
                     <p className="eyebrow">Camara</p>
-                    <h3>Capturar pagina</h3>
+                    <h3>{pendingCameraPhoto ? "¿Te quedas con esta foto?" : isMultipleCameraCapture ? "Capturar varias páginas" : "Capturar página"}</h3>
+                    {isMultipleCameraCapture ? <p className="camera-capture-count" role="status">{cameraCapturedFiles.length} fotos capturadas</p> : null}
                   </div>
                   <button
                     aria-label="Cerrar camara"
@@ -4078,7 +4150,14 @@ export function BookBuilderPage() {
                   {appendCameraStream ? (
                     <>
                       <video muted playsInline ref={appendCameraVideoRef} />
-                      <div className="camera-capture-overlay-actions">
+                      {pendingCameraPhoto ? <CameraPhotoPreview file={pendingCameraPhoto} /> : null}
+                      {cameraCapturedFiles.length > 0 ? (
+                        <div className="camera-capture-feedback" key={cameraCapturedFiles.length}>
+                          <div className="camera-capture-flash" />
+                          <span className="camera-capture-saved">✓ Foto {cameraCapturedFiles.length} guardada</span>
+                        </div>
+                      ) : null}
+                      <div className="camera-capture-overlay-actions" hidden={!!pendingCameraPhoto}>
                         <button
                           className="primary-button camera-capture-primary-button"
                           disabled={!appendCameraStream || isAppendCameraCapturing}
@@ -4095,14 +4174,22 @@ export function BookBuilderPage() {
                 </div>
 
                 <canvas className="camera-capture-canvas" ref={appendCameraCanvasRef} />
+                {appendError ? <p role="alert">{appendError}</p> : null}
 
                 <div className="camera-capture-actions">
+                  {pendingCameraPhoto ? (
+                    <>
+                      <button className="secondary-button" onClick={() => setPendingCameraPhoto(null)} type="button">Descartar y repetir</button>
+                      <button className="primary-button" onClick={() => confirmCameraPhoto("append")} type="button">Usar foto</button>
+                    </>
+                  ) : (
                   <button className="secondary-button" disabled={isAppendCameraCapturing} onClick={closeAppendCameraModal} type="button">
-                    Cancelar
+                    {isMultipleCameraCapture && cameraCapturedFiles.length ? `Terminar · ${cameraCapturedFiles.length} fotos` : "Cancelar"}
                   </button>
+                  )}
                 </div>
               </div>
-            </div>
+            </div>, document.body
           ) : null}
 
           {scannerRequest ? (

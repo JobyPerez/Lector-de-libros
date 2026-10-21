@@ -8615,7 +8615,12 @@ textarea {
 
 .camera-capture-modal {
   width: min(680px, 100%);
-  display: grid;
+  height: min(800px, calc(100dvh - 2rem));
+  max-height: calc(100dvh - 2rem);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
   gap: 1rem;
   padding: 1rem;
   border-radius: 30px;
@@ -8629,11 +8634,16 @@ textarea {
   align-items: start;
   justify-content: space-between;
   gap: 1rem;
+  flex-shrink: 0;
 }
+
+.camera-capture-header h3 { margin: 0; }
+.camera-capture-count { margin: 0.35rem 0 0; font-size: 0.9rem; }
 
 .camera-capture-preview {
   position: relative;
-  min-height: min(60vh, 28rem);
+  min-height: 0;
+  flex: 1;
   border-radius: 24px;
   overflow: hidden;
   display: grid;
@@ -8642,6 +8652,8 @@ textarea {
 }
 
 .camera-capture-preview video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -8658,6 +8670,22 @@ textarea {
   background: linear-gradient(180deg, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.42));
 }
 
+.camera-capture-overlay-actions[hidden] { display: none; }
+
+.camera-photo-review {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: #10251b;
+}
+
+.camera-photo-review img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .camera-capture-primary-button {
   min-width: 11rem;
 }
@@ -8670,6 +8698,70 @@ textarea {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.camera-capture-actions > button {
+  flex: 1;
+  min-width: 0;
+}
+
+.camera-capture-feedback {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.camera-capture-flash {
+  position: absolute;
+  inset: 0;
+  background: white;
+  animation: camera-shutter-flash 450ms ease-out forwards;
+}
+
+.camera-capture-saved {
+  position: absolute;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.65rem 1rem;
+  border-radius: 999px;
+  background: #224937;
+  color: white;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 20px #0006;
+  animation: camera-saved-confirmation 1800ms ease-out forwards;
+}
+
+@keyframes camera-shutter-flash {
+  from { opacity: 0.85; }
+  to { opacity: 0; }
+}
+
+@keyframes camera-saved-confirmation {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .camera-capture-flash { display: none; }
+}
+
+@media (max-width: 640px) {
+  .camera-capture-backdrop {
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.5rem, env(safe-area-inset-right)) max(0.5rem, env(safe-area-inset-bottom)) max(0.5rem, env(safe-area-inset-left));
+  }
+  .camera-capture-modal {
+    height: 100%;
+    max-height: 100%;
+    padding: 0.75rem;
+    border-radius: 20px;
+    gap: 0.65rem;
+  }
+  .camera-capture-header h3 { font-size: 1.15rem; }
+  .camera-capture-header .eyebrow { margin: 0 0 0.25rem; }
+  .camera-capture-actions button { width: 100%; }
 }
 
 .document-scanner-backdrop {
@@ -10769,6 +10861,16 @@ textarea {
 }
 
 .pdf-download-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.camera-mode-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  max-height: calc(100dvh - 2rem);
+  overflow: auto;
+  padding: 1.25rem;
+  box-sizing: border-box;
+}
 .pdf-download-dialog fieldset { border: 0; padding: 0; margin: 1rem 0; min-width: 0; }
 .pdf-download-dialog legend { font-weight: 700; margin-bottom: 0.5rem; }
 .pdf-download-dialog .pdf-download-choice {
