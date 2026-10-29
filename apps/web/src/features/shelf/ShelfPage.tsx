@@ -910,7 +910,7 @@ export function ShelfPage() {
       return;
     }
 
-    if (book.sourceType === "IMAGES") {
+    if (book.sourceType === "IMAGES" || book.sourceType === "EPUB") {
       setDownloadMenuBookId((current) => current === book.bookId ? null : book.bookId);
       return;
     }
@@ -1209,14 +1209,14 @@ export function ShelfPage() {
               }}
             >
               <button
-                aria-expanded={book.sourceType === "IMAGES" ? downloadMenuBookId === book.bookId : undefined}
-                aria-haspopup={book.sourceType === "IMAGES" ? "menu" : undefined}
+                aria-expanded={book.sourceType === "IMAGES" || book.sourceType === "EPUB" ? downloadMenuBookId === book.bookId : undefined}
+                aria-haspopup={book.sourceType === "IMAGES" || book.sourceType === "EPUB" ? "menu" : undefined}
                 aria-busy={downloadingBookId === book.bookId || exportingBookId === book.bookId}
-                aria-label={downloadingBookId === book.bookId || exportingBookId === book.bookId ? `Preparando descarga de ${book.title}` : book.sourceType === "IMAGES" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
+                aria-label={downloadingBookId === book.bookId || exportingBookId === book.bookId ? `Preparando descarga de ${book.title}` : book.sourceType === "IMAGES" || book.sourceType === "EPUB" ? `Descargar ${book.title} como EPUB o PDF` : `Descargar ${book.title}`}
                 className={["book-card-icon-button book-card-download-button", downloadingBookId === book.bookId || exportingBookId === book.bookId ? "icon-spin" : ""].filter(Boolean).join(" ")}
                 disabled={isBookRemoving || downloadTitle !== null}
                 onClick={(event) => handleDownloadAction(book, event)}
-                title={downloadingBookId === book.bookId || exportingBookId === book.bookId ? "Preparando descarga..." : book.sourceType === "IMAGES" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
+                title={downloadingBookId === book.bookId || exportingBookId === book.bookId ? "Preparando descarga..." : book.sourceType === "IMAGES" || book.sourceType === "EPUB" ? "Descargar como EPUB o PDF" : "Descargar archivo original"}
                 type="button"
               >
                 <DownloadIcon />
@@ -1281,19 +1281,23 @@ export function ShelfPage() {
 
               {downloadMenuBookId === book.bookId ? (
                 <div className="book-card-download-menu" role="menu">
-                  <p className="book-card-download-menu-title">Descargar libro de imágenes</p>
+                  <p className="book-card-download-menu-title">{book.sourceType === "IMAGES" ? "Descargar libro de imágenes" : "Descargar libro"}</p>
                   <button
                     className="menu-item book-card-download-option"
                     disabled={exportingBookId === book.bookId}
                     onClick={(event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      void handleExportFromCard(book, "epub");
+                      if (book.sourceType === "EPUB") {
+                        void handleDownloadOriginal(book);
+                      } else {
+                        void handleExportFromCard(book, "epub");
+                      }
                     }}
                     role="menuitem"
                     type="button"
                   >
-                    {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : "EPUB (OCR)"}
+                    {exportingBookId === book.bookId && exportingFormatCard === "epub" ? "Exportando EPUB..." : book.sourceType === "EPUB" ? "EPUB original" : "EPUB (OCR)"}
                   </button>
                   <button
                     className="menu-item book-card-download-option"
@@ -1306,8 +1310,9 @@ export function ShelfPage() {
                     role="menuitem"
                     type="button"
                   >
-                    {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : "PDF (OCR)"}
+                    {exportingBookId === book.bookId && exportingFormatCard === "pdf" ? "Exportando PDF..." : book.sourceType === "EPUB" ? "Exportar PDF" : "PDF (OCR)"}
                   </button>
+                  {book.sourceType === "IMAGES" ? (
                   <button
                     className="menu-item book-card-download-option"
                     disabled={exportingBookId === book.bookId}
@@ -1322,6 +1327,7 @@ export function ShelfPage() {
                   >
                     {exportingBookId === book.bookId && exportingFormatCard === "pdf-images" ? "Exportando imágenes..." : "PDF de imágenes"}
                   </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
