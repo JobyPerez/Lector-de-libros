@@ -209,12 +209,23 @@ function normalizeDocumentHeadingsFromToc(
   const offsets: number[] = [];
 
   for (const entry of matchingEntries) {
+    const fragmentNode = findDocumentFragmentNode(document, entry.fragment);
+    // Some publishers (notably InDesign exports) use styled paragraphs for
+    // chapter titles. Only promote the explicit TOC target, never body text.
+    const targetParagraph = fragmentNode ? document(fragmentNode).closest("p").first() : document([]);
+    const comparisonKey = (text: string) => normalizeHeadingComparison(text).replace(/\s+/gu, "");
+    if (targetParagraph.length > 0 && comparisonKey(targetParagraph.text())
+      && comparisonKey(targetParagraph.text()) === comparisonKey(entry.title)) {
+      setHeadingLevel(targetParagraph.get(0)!, entry.level);
+      targetParagraph.attr(tocNormalizedHeadingAttribute, "true");
+      continue;
+    }
+
     const headings = document(headingSelector).toArray();
     if (headings.length === 0) {
       continue;
     }
 
-    const fragmentNode = findDocumentFragmentNode(document, entry.fragment);
     const allBodyNodes = document("body *").toArray();
     const fragmentNodeIndex = fragmentNode ? allBodyNodes.indexOf(fragmentNode as (typeof allBodyNodes)[number]) : -1;
     const headingFragmentNode = fragmentNode && headingLevel(fragmentNode)

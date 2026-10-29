@@ -90,6 +90,25 @@ test("normaliza títulos EPUB con el TOC antes de paginar", async () => {
   assert.deepEqual(imported.pages[0]?.paragraphs, ["1. Revelación de un nuevo camino", "Subsección", "Detalle visual"]);
 });
 
+test("convierte párrafos enlazados desde el TOC en títulos sin perder su contenido", async () => {
+  const imported = await parseEpubBuffer(createEpub(
+    '<p id="chapter" class="BM_CAPITULO"><span>Prefacio</span><br/>Mi historia</p><p>Texto normal</p><p class="BM_LADILLO"><a id="section"></a><em>Subtítulo</em></p>',
+    '<nav epub:type="toc"><ol><li><a href="chapter.xhtml#chapter">PrefacioMi historia</a><ol><li><a href="chapter.xhtml#section">Subtítulo</a></li></ol></li></ol></nav>'
+  ));
+  const document = load(imported.pages[0]?.htmlContent ?? "");
+  assert.equal(document("h1#chapter.BM_CAPITULO span").text(), "Prefacio");
+  assert.match(document("h1").text(), /Prefacio\s+Mi historia/u);
+  assert.equal(document("h2 em").text(), "Subtítulo");
+  assert.equal(document("p").text(), "Texto normal");
+  assert.equal(imported.outlineEntries?.length, 2);
+});
+
+test("no convierte un párrafo de contenido cuyo texto no coincide con el TOC", async () => {
+  const imported = await parseEpubBuffer(createEpub('<p id="target">Texto del cuerpo</p>',
+    '<nav epub:type="toc"><ol><li><a href="chapter.xhtml#target">Título ausente</a></li></ol></nav>'));
+  assert.equal(load(imported.pages[0]?.htmlContent ?? "")("h1,h2,h3").length, 0);
+});
+
 test("convierte enlaces internos EPUB en destinos navegables del lector", async () => {
   const fillerParagraphs = Array.from({ length: 18 }, (_, index) => `<p>${`Contenido ${index + 1} `.repeat(35)}</p>`).join("");
   const imported = await parseEpubBuffer(createEpub(`
