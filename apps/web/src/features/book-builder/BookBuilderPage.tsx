@@ -8,6 +8,7 @@ import {
   cancelAppendImagesImport,
   createImageBook,
   deleteBookPage,
+  deleteBookmark,
   fetchAppendImagesImportProgress,
   fetchAwsCostMonthToDate,
   fetchBookPage,
@@ -26,21 +27,16 @@ import {
   type ImageRotation,
   type ImageOcrMode,
   type OcrWaitReason,
-  type ReaderBookmark,
-  type ReaderHighlight,
-  type ReaderNote,
   type ReaderTocEntry,
-  type VisualPageDocument,
-  type HighlightColor
+  type VisualPageDocument
 } from "../../app/api";
 import { useAuthStore } from "../../app/auth-store";
 import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, normalizeBookLanguageCode, type BookLanguageCode } from "../../app/book-language";
-import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { playCompletionSound, prepareCompletionSound, type CompletionSound } from "../../app/notification-sound";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
-import { filterTocByMaxLevel, useTocMaxLevel } from "../../app/toc-level";
-import { TocLevelSelector } from "../../components/TocLevelSelector";
-import { bookmarkToneClassName } from "../reader/ReaderFloatingPanels";
+import { useTocMaxLevel } from "../../app/toc-level";
+import { ReaderNavigationPanelContent } from "../reader/ReaderFloatingPanels";
+import { buildReaderNavigationItems, tocEntryKey } from "../reader/reader-navigation";
 import { AiMissingBanner } from "../../components/AiMissingBanner";
 import { AwsCostBadge } from "../../components/AwsCostBadge";
 import { ImageViewerModal } from "../../components/ImageViewerModal";
@@ -361,122 +357,12 @@ function transferContainsFiles(dataTransfer: DataTransfer | null): boolean {
   return (dataTransfer.files?.length ?? 0) > 0;
 }
 
-type ReviewNavigationItem =
-  | {
-      isActive: boolean;
-      key: string;
-      level: number;
-      pageNumber: number;
-      paragraphNumber: number;
-      title: string;
-      type: "toc";
-    }
-  | {
-      bookmarkId: string;
-      createdAt: string;
-      isActive: boolean;
-      key: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      title: string;
-      type: "bookmark";
-    }
-  | {
-      color: HighlightColor;
-      excerpt: string;
-      highlightId: string;
-      isActive: boolean;
-      key: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      type: "highlight";
-    }
-  | {
-      color: HighlightColor | null;
-      excerpt: string;
-      isActive: boolean;
-      key: string;
-      noteId: string;
-      noteText: string;
-      pageNumber: number;
-      paragraphNumber: number;
-      type: "note";
-    };
-
-function formatAnnotationAnchor(pageNumber: number, paragraphNumber: number, toc: ReaderTocEntry[]) {
-  const section = toc.reduce<ReaderTocEntry | null>((currentSection, entry) => {
-    const startsBeforeAnnotation = entry.pageNumber < pageNumber
-      || (entry.pageNumber === pageNumber && entry.paragraphNumber <= paragraphNumber);
-
-    if (!startsBeforeAnnotation) {
-      return currentSection;
-    }
-
-    if (!currentSection
-      || entry.pageNumber > currentSection.pageNumber
-      || (entry.pageNumber === currentSection.pageNumber && entry.paragraphNumber >= currentSection.paragraphNumber)) {
-      return entry;
-    }
-
-    return currentSection;
-  }, null);
-
-  const sectionTitle = formatSectionTitleWithAncestors(section, toc);
-  return `Pág. ${pageNumber} · ${sectionTitle ? `Sección: ${sectionTitle}` : "Sin sección"}`;
-}
-
-function formatPageAnchor(pageNumber: number) {
-  return `Pág. ${pageNumber}`;
-}
-
 function isReviewKeyboardNavigationEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
 
   return Boolean(target.closest("input,textarea,select,[contenteditable],[role='textbox'],[role='combobox'],[role='listbox']"));
-}
-
-function notePreview(note: ReaderNote) {
-  const sourceExcerpt = note.highlightedText?.trim();
-  if (sourceExcerpt) {
-    return sourceExcerpt;
-  }
-
-  return note.noteText;
-}
-
-function highlightPreview(highlight: ReaderHighlight) {
-  return highlight.highlightedText.trim() || "Resaltado sin texto";
-}
-
-function tocEntryKey(entry: ReaderTocEntry) {
-  return `${entry.pageNumber}:${entry.paragraphNumber}:${entry.title}`;
-}
-
-function highlightClassName(color: HighlightColor) {
-  switch (color) {
-    case "GREEN":
-      return "reader-text-highlight-green";
-    case "BLUE":
-      return "reader-text-highlight-blue";
-    case "PINK":
-      return "reader-text-highlight-pink";
-    case "YELLOW":
-    default:
-      return "reader-text-highlight-yellow";
-  }
-}
-
-function getPostItColorClass(color?: string | null) {
-  if (!color) return "postit-yellow";
-  const c = color.toLowerCase();
-  if (c.includes("green") || c.includes("verde")) return "postit-green";
-  if (c.includes("blue") || c.includes("azul")) return "postit-blue";
-  if (c.includes("pink") || c.includes("rosa") || c.includes("rose")) return "postit-pink";
-  if (c.includes("orange") || c.includes("naranja")) return "postit-orange";
-  if (c.includes("purple") || c.includes("morado") || c.includes("púrpura") || c.includes("violeta")) return "postit-purple";
-  return "postit-yellow";
 }
 
 type AppendInsertionSide = "before" | "after";
@@ -915,6 +801,7 @@ export function BookBuilderPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [appendError, setAppendError] = useState<string | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewBookmarkError, setReviewBookmarkError] = useState<string | null>(null);
   const [reviewMessage, setReviewMessage] = useState<string | null>(null);
   const [reviewOcrToast, setReviewOcrToast] = useState<ReviewOcrToastState | null>(null);
   const [selectedViewerImage, setSelectedViewerImage] = useState<{ alt?: string; src: string; title?: string } | null>(null);
@@ -925,7 +812,6 @@ export function BookBuilderPage() {
   const [isRerunningOcr, setIsRerunningOcr] = useState(false);
   const [ocrRetryState, setOcrRetryState] = useState<OcrRetryState | null>(null);
   const [isReviewIndexVisible, setIsReviewIndexVisible] = useState(false);
-  const [reviewNavigationTab, setReviewNavigationTab] = useState<"index" | "notes">("index");
   const [isReviewOcrMenuVisible, setIsReviewOcrMenuVisible] = useState(false);
   const [isReviewPageJumpActive, setIsReviewPageJumpActive] = useState(false);
   const [isFloatingReviewHeaderExpanded, setIsFloatingReviewHeaderExpanded] = useState(false);
@@ -1306,7 +1192,7 @@ export function BookBuilderPage() {
 
   const reviewNavigationQuery = useQuery({
     enabled: Boolean(accessToken && reviewBookId && isReviewOnlyMode),
-    queryKey: ["builder-navigation", reviewBookId],
+    queryKey: ["reader-navigation", reviewBookId],
     queryFn: async () => {
       if (!accessToken || !reviewBookId) {
         throw new Error("Missing access token.");
@@ -1410,6 +1296,7 @@ export function BookBuilderPage() {
 
   useEffect(() => {
     setReviewError(null);
+    setReviewBookmarkError(null);
     setReviewMessage(null);
   }, [reviewBookId, reviewPageNumber]);
 
@@ -3059,6 +2946,23 @@ export function BookBuilderPage() {
     setReviewError(null);
   }
 
+  async function handleDeleteReviewBookmark(bookmarkId: string) {
+    if (!accessToken || !reviewBookId) {
+      return;
+    }
+
+    setReviewBookmarkError(null);
+    try {
+      await deleteBookmark(accessToken, reviewBookId, bookmarkId);
+      // Refresh annotations, not page content: an unsaved editor draft must stay intact.
+      await Promise.all(["reader-navigation", "reader-annotations", "builder-page-annotations"].map((key) =>
+        queryClient.invalidateQueries({ queryKey: [key, reviewBookId] })
+      ));
+    } catch (error) {
+      setReviewBookmarkError(error instanceof Error ? error.message : "No se pudo borrar el marcador.");
+    }
+  }
+
   async function jumpToReviewPage(pageNumber: number) {
     if (reviewPageNavigationPendingRef.current) return;
     reviewPageNavigationPendingRef.current = true;
@@ -3297,81 +3201,10 @@ export function BookBuilderPage() {
   const reviewNextChapterPageNumber = reviewActiveTocEntry
     ? reviewActiveReadingSection?.nextStartPageNumber ?? null
     : reviewNavigationQuery.data?.toc[0]?.pageNumber ?? null;
-  const orderedNavigationItems = useMemo<ReviewNavigationItem[]>(() => {
-    const tocItems: ReviewNavigationItem[] = filterTocByMaxLevel(reviewNavigationQuery.data?.toc ?? [], reviewTocMaxLevel).map((entry) => ({
-      isActive: activeTocEntryKey === tocEntryKey(entry),
-      key: `toc:${tocEntryKey(entry)}`,
-      level: entry.level,
-      pageNumber: entry.pageNumber,
-      paragraphNumber: entry.paragraphNumber,
-      title: entry.title,
-      type: "toc"
-    }));
-
-    const bookmarkItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.bookmarks ?? []).map((bookmark: ReaderBookmark) => ({
-      bookmarkId: bookmark.bookmarkId,
-      createdAt: bookmark.createdAt,
-      isActive: bookmark.pageNumber === reviewPageNumber,
-      key: `bookmark:${bookmark.bookmarkId}`,
-      pageNumber: bookmark.pageNumber,
-      paragraphNumber: bookmark.paragraphNumber,
-      title: "Marcador guardado",
-      type: "bookmark"
-    }));
-
-    const noteItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.notes ?? []).map((note: ReaderNote) => ({
-      color: note.highlightColor,
-      excerpt: notePreview(note),
-      isActive: note.pageNumber === reviewPageNumber,
-      key: `note:${note.noteId}`,
-      noteId: note.noteId,
-      noteText: note.noteText,
-      pageNumber: note.pageNumber,
-      paragraphNumber: note.paragraphNumber ?? 1,
-      type: "note"
-    }));
-
-    const notedHighlightIds = new Set(
-      (reviewNavigationQuery.data?.notes ?? [])
-        .map((note) => note.highlightId)
-        .filter((highlightId): highlightId is string => Boolean(highlightId))
-    );
-    const highlightItems: ReviewNavigationItem[] = (reviewNavigationQuery.data?.highlights ?? [])
-      .filter((highlight) => !notedHighlightIds.has(highlight.highlightId))
-      .map((highlight: ReaderHighlight) => ({
-        color: highlight.color,
-        excerpt: highlightPreview(highlight),
-        highlightId: highlight.highlightId,
-        isActive: highlight.pageNumber === reviewPageNumber,
-        key: `highlight:${highlight.highlightId}`,
-        pageNumber: highlight.pageNumber,
-        paragraphNumber: highlight.paragraphNumber,
-        type: "highlight"
-      }));
-
-    const sortWeight = { bookmark: 1, highlight: 2, note: 3, toc: 0 } as const;
-
-    return [...tocItems, ...bookmarkItems, ...highlightItems, ...noteItems].sort((left, right) => {
-      if (left.pageNumber !== right.pageNumber) {
-        return left.pageNumber - right.pageNumber;
-      }
-
-      if (left.paragraphNumber !== right.paragraphNumber) {
-        return left.paragraphNumber - right.paragraphNumber;
-      }
-
-      return sortWeight[left.type] - sortWeight[right.type];
-    });
-  }, [activeTocEntryKey, reviewNavigationQuery.data?.bookmarks, reviewNavigationQuery.data?.highlights, reviewNavigationQuery.data?.notes, reviewNavigationQuery.data?.toc, reviewPageNumber, reviewTocMaxLevel]);
-  const fullReviewTocCount = (reviewNavigationQuery.data?.toc ?? []).length;
-  const visibleReviewTocCount = orderedNavigationItems.filter((item) => item.type === "toc").length;
-  const reviewIndexItems = orderedNavigationItems.filter(
-    (item): item is Extract<ReviewNavigationItem, { type: "bookmark" | "toc" }> => item.type === "toc" || item.type === "bookmark"
-  );
-  const reviewNoteItems = orderedNavigationItems.filter(
-    (item): item is Extract<ReviewNavigationItem, { type: "highlight" | "note" }> => item.type === "note" || item.type === "highlight"
-  );
-
+  const orderedNavigationItems = useMemo(() => buildReaderNavigationItems(reviewNavigationQuery.data, {
+    activeTocEntryKey,
+    pageNumber: reviewPageNumber
+  }), [activeTocEntryKey, reviewNavigationQuery.data, reviewPageNumber]);
 
   useEffect(() => {
     if (!isReviewIndexVisible) {
@@ -3379,7 +3212,7 @@ export function BookBuilderPage() {
     }
 
     activeReviewNavItemRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [activeTocEntryKey, isReviewIndexVisible, reviewNavigationTab, reviewPageNumber]);
+  }, [activeTocEntryKey, isReviewIndexVisible, reviewPageNumber]);
 
   return (
     <div className="page-stack builder-layout">
@@ -4449,160 +4282,18 @@ export function BookBuilderPage() {
                 </button>
               </div>
 
-              <section className="reader-navigation-section">
-                <div aria-label="Contenido de navegación" className="reader-navigation-tabs" role="tablist">
-                  <button
-                    aria-controls="review-navigation-index-panel"
-                    aria-selected={reviewNavigationTab === "index"}
-                    className={reviewNavigationTab === "index" ? "reader-navigation-tab active" : "reader-navigation-tab"}
-                    id="review-navigation-index-tab"
-                    onClick={() => setReviewNavigationTab("index")}
-                    role="tab"
-                    type="button"
-                  >
-                    <span>Índice</span>
-                    <span className="reader-navigation-tab-count">{reviewIndexItems.length}</span>
-                  </button>
-                  <button
-                    aria-controls="review-navigation-notes-panel"
-                    aria-selected={reviewNavigationTab === "notes"}
-                    className={reviewNavigationTab === "notes" ? "reader-navigation-tab active" : "reader-navigation-tab"}
-                    id="review-navigation-notes-tab"
-                    onClick={() => setReviewNavigationTab("notes")}
-                    role="tab"
-                    type="button"
-                  >
-                    <span>Notas</span>
-                    <span className="reader-navigation-tab-count">{reviewNoteItems.length}</span>
-                  </button>
-                </div>
-
-                {reviewNavigationTab === "index" ? (
-                  <div aria-labelledby="review-navigation-index-tab" className="reader-navigation-tab-panel" id="review-navigation-index-panel" role="tabpanel">
-                    <div className="reader-navigation-section-heading">
-                      <div className="reader-navigation-section-heading-copy">
-                        <strong>Índice del libro</strong>
-                      </div>
-                      <span title={fullReviewTocCount !== visibleReviewTocCount ? `${visibleReviewTocCount} de ${fullReviewTocCount} apartados` : undefined}>{visibleReviewTocCount}</span>
-                    </div>
-                    <TocLevelSelector id="review-navigation-toc-level" onChange={setReviewTocMaxLevel} value={reviewTocMaxLevel} />
-                    {reviewIndexItems.length ? (
-                      <div className="reader-navigation-list">
-                        {reviewIndexItems.map((item) => item.type === "bookmark" ? (
-                          <article className={item.isActive ? "reader-note-card reader-navigation-item-bookmark-card active" : "reader-note-card reader-navigation-item-bookmark-card"} key={item.key}>
-                            <button
-                              className="reader-navigation-item reader-navigation-item-bookmark"
-                              onClick={() => jumpToReviewPage(item.pageNumber)}
-                              ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                              type="button"
-                            >
-                              <div className="reader-navigation-item-topline">
-                                <span className={`reader-navigation-chip reader-navigation-chip-bookmark ${bookmarkToneClassName(item.bookmarkId)}`}>■</span>
-                                <strong className="reader-navigation-title">
-                                  {item.title}
-                                  <span className="reader-navigation-page-badge">{formatPageAnchor(item.pageNumber)}</span>
-                                </strong>
-                              </div>
-                              {item.createdAt ? (
-                                <div className="reader-navigation-item-subline">
-                                  <span
-                                    className="reader-navigation-inline-meta"
-                                    title={formatExactDate(item.createdAt) ? `Guardado el ${formatExactDate(item.createdAt)}` : undefined}
-                                  >
-                                    {formatRelativeDate(item.createdAt)}
-                                  </span>
-                                </div>
-                              ) : null}
-                            </button>
-                          </article>
-                        ) : (
-                          <article className={item.isActive ? "reader-navigation-item-toc-card active" : "reader-navigation-item-toc-card"} key={item.key}>
-                            <button
-                              className={item.isActive ? "reader-navigation-item active" : "reader-navigation-item"}
-                              data-level={item.level}
-                              onClick={() => jumpToReviewPage(item.pageNumber)}
-                              ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                              style={{ "--toc-level": String(Math.max(0, item.level - 1)) } as React.CSSProperties}
-                              type="button"
-                            >
-                              <div className="reader-navigation-item-topline">
-                                <strong className="reader-navigation-title">
-                                  {item.title}
-                                  <span className="reader-navigation-page-badge">{formatPageAnchor(item.pageNumber)}</span>
-                                </strong>
-                              </div>
-                            </button>
-                          </article>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="reader-navigation-empty">Este libro no tiene capítulos ni marcadores.</p>
-                    )}
-                  </div>
-                ) : (
-                  <div aria-labelledby="review-navigation-notes-tab" className="reader-navigation-tab-panel" id="review-navigation-notes-panel" role="tabpanel">
-                    <div className="reader-navigation-section-heading">
-                      <strong>Notas y resaltados</strong>
-                      <span>{reviewNoteItems.length}</span>
-                    </div>
-                    {reviewNoteItems.length ? (
-                      <div className="reader-navigation-list reader-navigation-notes-list">
-                        {reviewNoteItems.map((item) => {
-                          const colorClass = getPostItColorClass(item.color);
-                          return (
-                            <article
-                              className={`reader-note-card reader-postit-card reader-navigation-item-note reader-navigation-note-entry ${colorClass} ${item.isActive ? "active" : ""}`}
-                              key={item.key}
-                            >
-                              <div className="reader-postit-tape" />
-
-                              {/* 1. TEXTO ARRIBA */}
-                              <div className="reader-postit-note-text">
-                                {item.type === "note" && item.noteText ? (
-                                  <p>{item.noteText}</p>
-                                ) : (
-                                  <span className="reader-postit-highlight-title">
-                                    {item.type === "highlight" ? "Resaltado" : "(Sin nota escrita)"}
-                                  </span>
-                                )}
-                              </div>
-
-                              {/* 2. LO ANOTADO DEBAJO */}
-                              <div className="reader-postit-excerpt-block">
-                                <div className="reader-postit-excerpt-header">
-                                  <span className={item.color ? `reader-navigation-chip reader-navigation-chip-note ${highlightClassName(item.color)}` : "reader-navigation-chip reader-navigation-chip-note"} />
-                                  <span className="reader-postit-excerpt-label">Texto anotado</span>
-                                </div>
-                                <blockquote className="reader-postit-excerpt-quote">
-                                  "{item.excerpt}"
-                                </blockquote>
-                                <div className="reader-navigation-note-meta">
-                                  <span>{formatAnnotationAnchor(item.pageNumber, item.paragraphNumber, filterTocByMaxLevel(reviewNavigationQuery.data?.toc ?? [], reviewTocMaxLevel))}</span>
-                                </div>
-                              </div>
-
-                              {/* 3. LOS BOTONES ABAJO */}
-                              <div className="reader-postit-footer">
-                                <button
-                                  className="reader-postit-jump-btn"
-                                  onClick={() => jumpToReviewPage(item.pageNumber)}
-                                  ref={item.isActive ? (element) => { activeReviewNavItemRef.current = element; } : undefined}
-                                  type="button"
-                                  title="Ir a esta página"
-                                >
-                                  <span>Ir al texto</span>
-                                </button>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="reader-navigation-empty">Todavía no hay notas ni resaltados en este libro.</p>
-                    )}
-                  </div>
-                )}
-              </section>
+              {reviewBookmarkError ? <p className="error-text" role="alert">{reviewBookmarkError}</p> : null}
+              <ReaderNavigationPanelContent
+                activeItemRef={activeReviewNavItemRef}
+                items={orderedNavigationItems}
+                onDeleteBookmark={handleDeleteReviewBookmark}
+                onSelectBookmark={(item) => void jumpToReviewPage(item.pageNumber)}
+                onSelectHighlight={(item) => void jumpToReviewPage(item.pageNumber)}
+                onSelectNote={(item) => void jumpToReviewPage(item.pageNumber)}
+                onSelectToc={(item) => void jumpToReviewPage(item.pageNumber)}
+                onTocMaxLevelChange={setReviewTocMaxLevel}
+                tocMaxLevel={reviewTocMaxLevel}
+              />
             </aside>
           ) : null}
 

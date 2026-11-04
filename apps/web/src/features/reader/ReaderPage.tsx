@@ -56,6 +56,7 @@ import { ImageViewerModal } from "../../components/ImageViewerModal";
 import { useBookContentImageHtml } from "../../hooks/useBookContentImageHtml";
 import { usePageSwipe } from "../../hooks/usePageSwipe";
 import { ReaderAudioSettingsContent, ReaderFloatingAudioPopover, ReaderNavigationPanelContent, ReaderNavigationPopover, type ReaderAudioReadingTimeStats } from "./ReaderFloatingPanels";
+import { buildReaderNavigationItems, highlightPreview, notePreview, tocEntryKey } from "./reader-navigation";
 import { createStoredZip } from "./audio-zip";
 import { getOfflineChapterAudioStatus, invalidateOfflineBookAudioIfChanged, isOfflineAudioRevisionError, loadOfflineAudioBlockContaining, loadOfflineChapterAudioExport, normalizeContentRevision, OfflineAudioRevisionError, saveChapterAudioBlock } from "./offline-audio-cache";
 import { OriginalPageView } from "./OriginalPageView";
@@ -167,77 +168,6 @@ type ActiveAudioBlock = {
   startSequenceNumber: number;
   voiceModel: string;
 };
-
-type NavigationListItem =
-  | {
-    chapterId: string | null;
-    isActive: boolean;
-    key: string;
-    level: number;
-    pageNumber: number;
-    paragraphNumber: number;
-    title: string;
-    type: "toc";
-  }
-  | {
-    authorLabel: string | null;
-    bookmarkId: string;
-    createdAt: string;
-    isActive: boolean;
-    isOwnedByCurrentUser: boolean;
-    key: string;
-    pageNumber: number;
-    paragraphNumber: number;
-    sharedWithUserIds: string[];
-    title: string;
-    type: "bookmark";
-    visibilitySource: "OWN" | "DIRECT" | "BOOK";
-  }
-  | {
-    color: HighlightColor;
-    excerpt: string;
-    highlightId: string;
-    isActive: boolean;
-    key: string;
-    pageNumber: number;
-    paragraphNumber: number;
-    type: "highlight";
-  }
-  | {
-    authorLabel: string | null;
-    color: HighlightColor | null;
-    excerpt: string;
-    isActive: boolean;
-    isReadOnly: boolean;
-    key: string;
-    noteId: string;
-    noteText: string;
-    pageNumber: number;
-    paragraphNumber: number;
-    sharedWithUserIds?: string[];
-    type: "note";
-  };
-
-function excerptPreview(value: string | null | undefined, fallback: string) {
-  const normalizedValue = value?.replace(/\s+/gu, " ").trim();
-  if (!normalizedValue) {
-    return fallback;
-  }
-
-  return normalizedValue.length > 120 ? `${normalizedValue.slice(0, 117).trimEnd()}...` : normalizedValue;
-}
-
-function tocEntryKey(entry: ReaderTocEntry) {
-  return entry.chapterId ?? `${entry.pageNumber}:${entry.paragraphNumber}:${entry.sequenceNumber ?? "na"}:${entry.title}`;
-}
-
-function notePreview(note: Pick<ReaderNote, "highlightedText" | "noteText">) {
-  return excerptPreview(note.highlightedText ?? note.noteText, "Nota sin extracto");
-}
-
-function highlightPreview(highlight: Pick<ReaderHighlight, "highlightedText">) {
-  return excerptPreview(highlight.highlightedText, "Resaltado sin texto");
-}
 
 function formatPageAnchor(pageNumber: number) {
   return `Pág. ${pageNumber}`;
@@ -2486,81 +2416,11 @@ export function ReaderPage() {
     }
   }
 
-  const orderedNavigationItems = useMemo<NavigationListItem[]>(() => {
-    const tocItems: NavigationListItem[] = (navigationQuery.data?.toc ?? []).map((entry) => ({
-      chapterId: entry.chapterId ?? null,
-      isActive: activeTocEntryKey === tocEntryKey(entry),
-      key: `toc:${tocEntryKey(entry)}`,
-      level: entry.level,
-      pageNumber: entry.pageNumber,
-      paragraphNumber: entry.paragraphNumber,
-      title: entry.title,
-      type: "toc"
-    }));
-
-    const bookmarkItems: NavigationListItem[] = (navigationQuery.data?.bookmarks ?? []).map((bookmark) => ({
-      authorLabel: bookmark.userDisplayName?.trim() || (bookmark.username ? `@${bookmark.username}` : null),
-      bookmarkId: bookmark.bookmarkId,
-      createdAt: bookmark.createdAt,
-      isActive: bookmark.pageNumber === currentPageNumber && bookmark.paragraphNumber === currentParagraphNumber,
-      isOwnedByCurrentUser: bookmark.isOwnedByCurrentUser ?? true,
-      key: `bookmark:${bookmark.bookmarkId}`,
-      pageNumber: bookmark.pageNumber,
-      paragraphNumber: bookmark.paragraphNumber,
-      sharedWithUserIds: bookmark.sharedWithUserIds ?? [],
-      title: "Marcador guardado",
-      type: "bookmark",
-      visibilitySource: bookmark.visibilitySource ?? (bookmark.isOwnedByCurrentUser === false ? "DIRECT" : "OWN")
-    }));
-
-    const noteItems: NavigationListItem[] = (navigationQuery.data?.notes ?? []).map((note) => ({
-      authorLabel: note.userDisplayName?.trim() || (note.username ? `@${note.username}` : null),
-      color: note.highlightColor,
-      excerpt: notePreview(note),
-      isActive: note.pageNumber === currentPageNumber && (note.paragraphNumber ?? currentParagraphNumber) === currentParagraphNumber,
-      isReadOnly: note.isOwnedByCurrentUser === false,
-      key: `note:${note.noteId}`,
-      noteId: note.noteId,
-      noteText: note.noteText,
-      pageNumber: note.pageNumber,
-      paragraphNumber: note.paragraphNumber ?? 1,
-      sharedWithUserIds: note.sharedWithUserIds ?? [],
-      type: "note"
-    }));
-
-    const notedHighlightIds = new Set(
-      (navigationQuery.data?.notes ?? [])
-        .map((note) => note.highlightId)
-        .filter((highlightId): highlightId is string => Boolean(highlightId))
-    );
-
-    const standaloneHighlightItems: NavigationListItem[] = (navigationQuery.data?.highlights ?? [])
-      .filter((highlight) => !notedHighlightIds.has(highlight.highlightId))
-      .map((highlight) => ({
-        color: highlight.color,
-        excerpt: highlightPreview(highlight),
-        highlightId: highlight.highlightId,
-        isActive: highlight.pageNumber === currentPageNumber && highlight.paragraphNumber === currentParagraphNumber,
-        key: `highlight:${highlight.highlightId}`,
-        pageNumber: highlight.pageNumber,
-        paragraphNumber: highlight.paragraphNumber,
-        type: "highlight"
-      }));
-
-    const sortWeight = { bookmark: 1, highlight: 2, note: 3, toc: 0 } as const;
-
-    return [...tocItems, ...bookmarkItems, ...standaloneHighlightItems, ...noteItems].sort((left, right) => {
-      if (left.pageNumber !== right.pageNumber) {
-        return left.pageNumber - right.pageNumber;
-      }
-
-      if (left.paragraphNumber !== right.paragraphNumber) {
-        return left.paragraphNumber - right.paragraphNumber;
-      }
-
-      return sortWeight[left.type] - sortWeight[right.type];
-    });
-  }, [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data?.bookmarks, navigationQuery.data?.highlights, navigationQuery.data?.notes, navigationQuery.data?.toc]);
+  const orderedNavigationItems = useMemo(() => buildReaderNavigationItems(navigationQuery.data, {
+    activeTocEntryKey,
+    pageNumber: currentPageNumber,
+    paragraphNumber: currentParagraphNumber
+  }), [activeTocEntryKey, currentPageNumber, currentParagraphNumber, navigationQuery.data]);
 
   useEffect(() => {
     setSelectionDraft(null);
