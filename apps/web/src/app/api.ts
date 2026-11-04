@@ -293,6 +293,8 @@ export type ShareRole = "viewer" | "commenter" | "editor";
 export type ReadingStatus = "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
 
 export type BookSummary = {
+  publicationYear?: number | null;
+  readingDate?: string | null;
   authorName: string | null;
   bookId: string;
   createdAt?: string;
@@ -1024,6 +1026,8 @@ export function fetchBookImportProgress(accessToken: string, progressId: string)
 }
 
 export type UpdateBookInput = {
+  publicationYear?: number | null;
+  readingDate?: string | null;
   authorName?: string;
   languageCode?: BookLanguageCode;
   notionBookUrl?: string | null;

@@ -140,6 +140,8 @@ const aiRequestParamsSchema = z.object({
 });
 
 const updateBookSchema = z.object({
+  publicationYear: z.number().int().min(1).max(9999).nullable().optional(),
+  readingDate: z.string().date().refine((value) => !value.startsWith("0000-") && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, { message: "Fecha de lectura no válida." }).nullable().optional(),
   title: z.string().trim().min(1).max(500),
   authorName: z.string().trim().min(1).max(255).optional(),
   synopsis: z.string().trim().max(5000).optional(),
@@ -218,6 +220,8 @@ type ProcessedImagePage = UploadedBinaryFile & {
 };
 
 type OwnedBookRecord = {
+  publicationYear?: number | null;
+  readingDate?: string | null;
   authorName: string | null;
   bookId: string;
   languageCode: BookLanguageCode;
@@ -2101,6 +2105,8 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
         us.notion_book_url AS "notionBookUrl",
         NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
         us.rating AS "rating",
+        TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
+        b.publication_year AS "publicationYear",
         us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
@@ -2139,6 +2145,8 @@ async function findAccessibleBook(
         us.notion_book_url AS "notionBookUrl",
         NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
         us.rating AS "rating",
+        TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
+        b.publication_year AS "publicationYear",
         us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
@@ -2168,6 +2176,7 @@ async function upsertUserBookSettings(
     bookId: string;
     notionBookUrl: string | null;
     rating?: number | null;
+    readingDate?: string | null;
     readingStatus?: "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
     userComments?: string | null;
     userId: string;
@@ -2181,6 +2190,7 @@ async function upsertUserBookSettings(
                :bookId AS book_id,
                :notionBookUrl AS notion_book_url,
                :readingStatus AS reading_status,
+               TO_DATE(:readingDate, 'YYYY-MM-DD') AS reading_date,
                :rating AS rating,
                :userComments AS user_comments
         FROM dual
@@ -2188,19 +2198,21 @@ async function upsertUserBookSettings(
       ON (target.user_id = source.user_id AND target.book_id = source.book_id)
       WHEN MATCHED THEN
         UPDATE SET notion_book_url = source.notion_book_url,
-                   reading_status = NVL(source.reading_status, target.reading_status),
+                    reading_status = NVL(source.reading_status, target.reading_status),
+                    reading_date = source.reading_date,
                    rating = source.rating,
                    user_comments = source.user_comments,
                    updated_at = SYSTIMESTAMP
       WHEN NOT MATCHED THEN
-        INSERT (user_id, book_id, notion_book_url, reading_status, rating, user_comments)
-        VALUES (source.user_id, source.book_id, source.notion_book_url, NVL(source.reading_status, 'WANT_TO_READ'), source.rating, source.user_comments)
+        INSERT (user_id, book_id, notion_book_url, reading_status, reading_date, rating, user_comments)
+        VALUES (source.user_id, source.book_id, source.notion_book_url, NVL(source.reading_status, 'WANT_TO_READ'), source.reading_date, source.rating, source.user_comments)
     `,
     {
       bookId: input.bookId,
       notionBookUrl: input.notionBookUrl,
       rating: input.rating !== undefined ? input.rating : null,
       readingStatus: input.readingStatus ?? null,
+      readingDate: input.readingDate ?? null,
       userComments: input.userComments !== undefined ? input.userComments : null,
       userId: input.userId
     }
@@ -4095,6 +4107,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
+            TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
+            b.publication_year AS "publicationYear",
             us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
@@ -4227,6 +4241,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const nextAuthorName = payload.authorName ?? null;
       const nextSynopsis = payload.synopsis !== undefined ? payload.synopsis : (existingBook.synopsis ?? null);
       const nextLanguageCode = payload.languageCode ?? existingBook.languageCode;
+      const nextPublicationYear = payload.publicationYear !== undefined ? payload.publicationYear : (existingBook.publicationYear ?? null);
+      const nextReadingDate = payload.readingDate !== undefined ? payload.readingDate : (existingBook.readingDate ?? null);
       const nextNotionBookUrl = payload.notionBookUrl ?? null;
       const nextReadingStatus = payload.readingStatus ?? existingBook.readingStatus ?? "WANT_TO_READ";
       const nextRating = payload.rating !== undefined ? payload.rating : (existingBook.rating ?? null);
@@ -4234,6 +4250,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const hasMetadataChanges = payload.title !== existingBook.title
         || nextAuthorName !== existingBook.authorName
         || nextLanguageCode !== existingBook.languageCode
+        || nextPublicationYear !== (existingBook.publicationYear ?? null)
         || (payload.synopsis !== undefined && nextSynopsis !== existingBook.synopsis);
 
       if (hasMetadataChanges && request.bookAccess?.role !== "OWNER") {
@@ -4247,7 +4264,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             SET title = :title,
                 author_name = :authorName,
                 synopsis = :synopsis,
-                language_code = :languageCode
+                language_code = :languageCode,
+                publication_year = :publicationYear
             WHERE book_id = :bookId
               AND owner_user_id = :ownerUserId
           `,
@@ -4255,6 +4273,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             authorName: nextAuthorName,
             bookId: params.bookId,
             languageCode: nextLanguageCode,
+            publicationYear: nextPublicationYear,
             ownerUserId: request.currentUser.userId,
             synopsis: nextSynopsis,
             title: payload.title
@@ -4271,6 +4290,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         notionBookUrl: nextNotionBookUrl,
         rating: nextRating,
         readingStatus: nextReadingStatus,
+        readingDate: nextReadingDate,
         userComments: nextUserComments,
         userId: request.currentUser.userId
       });
@@ -4322,6 +4342,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           notionBookUrl: nextNotionBookUrl,
           rating: nextRating,
           readingStatus: nextReadingStatus,
+          readingDate: nextReadingDate,
+          publicationYear: nextPublicationYear,
           synopsis: request.bookAccess?.role === "OWNER" ? nextSynopsis : existingBook.synopsis,
           title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title,
           userComments: nextUserComments
@@ -5587,6 +5609,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
+            TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
+            b.publication_year AS "publicationYear",
             us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
@@ -5655,6 +5679,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.notion_book_url AS "notionBookUrl",
             NVL(us.reading_status, 'WANT_TO_READ') AS "readingStatus",
             us.rating AS "rating",
+            TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
+            b.publication_year AS "publicationYear",
             us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",

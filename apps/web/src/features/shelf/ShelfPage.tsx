@@ -11,9 +11,11 @@ import notionIconUrl from "../../assets/notion.svg";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { ShareBookModal } from "../sharing/ShareBookModal";
 
-export type ShelfSortMode = "lastOpened" | "rating";
+export type ShelfSortMode = "lastOpened" | "rating" | "readingDate" | "publicationYear";
 
 type BookEditFormState = {
+  publicationYear: string;
+  readingDate: string;
   authorName: string;
   languageCode: BookLanguageCode;
   notionBookUrl: string;
@@ -27,6 +29,8 @@ type ShelfView = "edit" | "import" | "shelf";
 type ShelfViewTransitionDirection = "back" | "forward";
 
 const emptyBookEditForm: BookEditFormState = {
+  publicationYear: "",
+  readingDate: "",
   authorName: "",
   languageCode: "es",
   notionBookUrl: "",
@@ -755,6 +759,8 @@ export function ShelfPage() {
     setViewTransitionDirection("forward");
     setEditingBook(book);
     setBookForm({
+      publicationYear: book.publicationYear?.toString() ?? "",
+      readingDate: book.readingDate ?? "",
       authorName: book.authorName ?? "",
       languageCode: book.languageCode,
       notionBookUrl: book.notionBookUrl ?? "",
@@ -786,6 +792,8 @@ export function ShelfPage() {
       bookForm.title.trim() !== originalTitle ||
       bookForm.authorName.trim() !== originalAuthor ||
       bookForm.languageCode !== originalLanguageCode ||
+      bookForm.publicationYear !== (editingBook.publicationYear?.toString() ?? "") ||
+      bookForm.readingDate !== (editingBook.readingDate ?? "") ||
       bookForm.notionBookUrl.trim() !== originalNotion ||
       bookForm.readingStatus !== originalStatus ||
       bookForm.rating !== originalRating ||
@@ -943,6 +951,8 @@ export function ShelfPage() {
         title: bookForm.title.trim(),
         ...(bookForm.authorName.trim() ? { authorName: bookForm.authorName.trim() } : {}),
         languageCode: bookForm.languageCode,
+        publicationYear: bookForm.publicationYear ? Number(bookForm.publicationYear) : null,
+        readingDate: bookForm.readingDate || null,
         notionBookUrl: bookForm.notionBookUrl.trim() || null,
         rating: bookForm.rating,
         readingStatus: bookForm.readingStatus,
@@ -1063,6 +1073,14 @@ export function ShelfPage() {
 
   const sortBooks = (books: BookSummary[]) => {
     return [...books].sort((a, b) => {
+      if (sortMode === "readingDate") {
+        const difference = (b.readingDate ?? "").localeCompare(a.readingDate ?? "");
+        if (difference) return difference;
+      }
+      if (sortMode === "publicationYear") {
+        const difference = (b.publicationYear ?? 0) - (a.publicationYear ?? 0);
+        if (difference) return difference;
+      }
       if (sortMode === "rating") {
         const ratingA = a.rating ?? 0;
         const ratingB = b.rating ?? 0;
@@ -1476,6 +1494,8 @@ export function ShelfPage() {
             >
               <option value="lastOpened">Última lectura</option>
               <option value="rating">Calificación</option>
+              <option value="readingDate">Fecha de lectura (más reciente)</option>
+              <option value="publicationYear">Año de publicación (más reciente)</option>
             </select>
           </div>
         </div>
@@ -1620,6 +1640,19 @@ export function ShelfPage() {
               <span className="helper-text">Cambiarlo elimina el audio generado anteriormente; el OCR existente no se reprocesa.</span>
             </label>
             <label>
+              Año de publicación
+              <input
+                disabled={!canEditBookMetadata}
+                min="1"
+                max="9999"
+                step="1"
+                type="number"
+                onChange={(event) => setBookForm((current) => ({ ...current, publicationYear: event.target.value }))}
+                value={bookForm.publicationYear}
+              />
+              <span className="helper-text">Dato compartido con todos los usuarios del libro.</span>
+            </label>
+            <label>
               URL en Notion personal
               <input
                 onChange={(event) => setBookForm((current) => ({ ...current, notionBookUrl: event.target.value }))}
@@ -1647,6 +1680,18 @@ export function ShelfPage() {
                     </option>
                   ))}
                 </select>
+              </label>
+
+              <label>
+                Fecha de lectura
+                <input
+                  type="date"
+                  min="0001-01-01"
+                  max="9999-12-31"
+                  onChange={(event) => setBookForm((current) => ({ ...current, readingDate: event.target.value }))}
+                  value={bookForm.readingDate}
+                />
+                <span className="helper-text">Fecha personal, independiente para cada usuario.</span>
               </label>
 
               <div className="shelf-rating-form-group">
