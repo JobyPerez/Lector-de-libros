@@ -108,6 +108,7 @@ test("review UI switches providers, resets LOCAL opt-in and exposes only the sel
   const calls: unknown[][] = [];
   function render() {
     const bindings = { React, ...loadOcrConfig(), ...state, reviewBookId: "book", isReviewCropMode: false, reviewOcrPanelRef: { current: null },
+      selectedReviewBook: { sourceType: "IMAGES" },
       reviewOcrModelLabel: "Selected Vision", selectedOcrModel: "selected", selectedOcrModelOption: { pricing: "Synthetic pricing" },
       ocrModelOptions: [{ id: "selected", name: "Selected Vision", pricing: "Synthetic pricing", supportsVision: true, visionStatus: "supported" }], awsTextractCostLabel: "Synthetic cost",
       canRunOcr: () => true, compatibilityMessage: null,

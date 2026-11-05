@@ -396,7 +396,22 @@ export function buildVisualDocumentFromPage(
     return content;
   };
   for (const paragraph of [...storedParagraphs].sort((a, b) => a.paragraphNumber - b.paragraphNumber)) {
-    const element = numbered.filter((_, node) => Number(html(node).attr("data-paragraph-number")) === paragraph.paragraphNumber).first();
+    let element = numbered.filter((_, node) => Number(html(node).attr("data-paragraph-number")) === paragraph.paragraphNumber).first();
+    // Historical PDF imports split long SQL paragraphs without renumbering
+    // their HTML atoms. Recover only a unique exact text/image match; never
+    // bind an image to whichever unrelated paragraph inherited its old number.
+    const matchesStoredText = (candidate: typeof element): boolean => {
+      const plain = candidate.attr("data-reader-text") ?? candidate.clone().find("br").replaceWith("\n").end().text();
+      if (normalizeWhitespace(plain) === normalizeWhitespace(paragraph.paragraphText)) return true;
+      const image = candidate.is("img,image,svg") ? candidate : candidate.find("img,image,svg").first();
+      if (!image.length) return false;
+      const alt = image.attr("alt") ?? candidate.find("figcaption").text();
+      return ["Imagen.", "Immagine."].some((label) => normalizeWhitespace(`${label} ${alt}`) === normalizeWhitespace(paragraph.paragraphText));
+    };
+    if (!aligned && (!element.length || !matchesStoredText(element))) {
+      const candidates = numbered.filter((_, node) => matchesStoredText(html(node)));
+      if (candidates.length === 1) element = candidates.first();
+    }
     const tag = element[0]?.type === "tag" ? element[0].name : "";
     const headingLevel = /^h[1-6]$/u.test(tag) ? Number(tag.slice(1)) : undefined;
     const image = element.is("img,image,svg") ? element : element.find("img, image, svg").first();

@@ -48,6 +48,7 @@ import { CameraCaptureModeDialog } from "./CameraCaptureModeDialog";
 import { CameraPhotoPreview } from "./CameraPhotoPreview";
 import { readingDraftSyncAction, type ReadingDraftVersion } from "./reading-blocks";
 import { VisualPageEditor } from "./VisualPageEditor";
+import { PdfPreparationControl } from "../../components/PdfPreparationControl";
 import { clearVisualGeometry, pushVisualHistory, redoVisualHistory, undoVisualHistory, visualDocumentFromPage, visualDocumentSaveError, type VisualHistory } from "./visual-page";
 
 function BackIcon() {
@@ -734,6 +735,7 @@ export function BookBuilderPage() {
   const savedVisualDocument = useMemo(() => originalVisualDocument ? JSON.parse(originalVisualDocument) as VisualPageDocument : null, [originalVisualDocument]);
   const visualDocument = visualHistory?.present ?? null;
   const visualDocumentDirty = Boolean(visualDocument && JSON.stringify(visualDocument) !== originalVisualDocument);
+  const [isPreparingPdf, setIsPreparingPdf] = useState(false);
   const [selectedElementKey, setSelectedElementKey] = useState<string | null>(null);
   const [isVisualEditorBusy, setIsVisualEditorBusy] = useState(false);
   const [reviewBlockLoadError, setReviewBlockLoadError] = useState<string | null>(null);
@@ -3130,9 +3132,9 @@ export function BookBuilderPage() {
     }
     : null;
   const shouldShowReviewSourcePanel = hasReviewImage || selectedReviewBook?.sourceType === "IMAGES";
-  const canRerunReviewOcr = hasReviewImage && selectedReviewBook?.sourceType === "IMAGES";
+  const canRerunReviewOcr = !isPreparingPdf && hasReviewImage && (selectedReviewBook?.sourceType === "IMAGES" || selectedReviewBook?.sourceType === "PDF");
   const hasPendingReviewImageEdits = reviewImageRotationDirty || reviewImageCropDirty;
-  const isReviewDirty = visualDocumentDirty || hasPendingReviewImageEdits || reviewPartialSave;
+  const isReviewDirty = visualDocumentDirty || hasPendingReviewImageEdits || reviewPartialSave || isPreparingPdf;
   const hasPendingReviewCrop = isReviewCropMode && !equalReviewImageCrop(reviewRectToCrop(reviewCropDraft), reviewImageCrop);
   const reviewSaveUnavailableReason = reviewPartialSave
     ? "El guardado anterior fue parcial. Reconcilia el borrador con la version remota antes de guardar."
@@ -4054,6 +4056,10 @@ export function BookBuilderPage() {
           <>
             {reviewPageQuery.isLoading ? <p className="subdued">Cargando página para revisión...</p> : null}
             {reviewPageQuery.isError ? <p className="error-text">No se pudo cargar la página seleccionada.</p> : null}
+            {selectedReviewBook?.sourceType === "PDF" && reviewPageQuery.data?.page && accessToken ? <PdfPreparationControl
+              key={reviewPageIdentity} accessToken={accessToken} bookId={reviewBookId} page={reviewPageQuery.data.page}
+              disabled={visualDocumentDirty || isSavingReview || isVisualEditorBusy || reviewPageQuery.isFetching}
+              onBusyChange={setIsPreparingPdf} onPrepared={async () => { await reviewPageQuery.refetch(); }} /> : null}
 
             <form id="ocr-review-form" onSubmit={handleSaveOcr} ref={reviewSwipeSurfaceRef}>
               {visualDocument && visualHistory && savedVisualDocument && reviewPageQuery.data?.page && reviewDraftVersionRef.current?.identity === reviewPageIdentity ? <VisualPageEditor
@@ -4063,7 +4069,7 @@ export function BookBuilderPage() {
                 selectedId={selectedElementKey} onSelect={setSelectedElementKey}
                 onChange={(document) => setVisualHistory((history) => history ? pushVisualHistory(history, document) : history)}
                 sourceImage={reviewImageUrl} accessToken={accessToken} bookId={reviewBookId}
-                disabled={Boolean(reviewBlockLoadError) || reviewPartialSave || isSavingReview || isRerunningOcr || isDeletingReviewPage || reviewPageQuery.isFetching}
+                disabled={Boolean(reviewBlockLoadError) || reviewPartialSave || isSavingReview || isPreparingPdf || isRerunningOcr || isDeletingReviewPage || reviewPageQuery.isFetching}
                 geometryDisabled={!reviewImageUrl || hasPendingReviewImageEdits || isReviewCropMode || isReviewImageLoading}
                 canUndo={visualHistory.past.length > 0} canRedo={visualHistory.future.length > 0}
                 onUndo={() => setVisualHistory((history) => history ? undoVisualHistory(history) : history)}
@@ -4074,7 +4080,7 @@ export function BookBuilderPage() {
               <article className={isRerunningOcr ? "review-panel review-panel-processing" : "review-panel"}>
                 <div className="source-panel-header">
                   <div>
-                    <p className="page-label">{hasReviewImage ? "Imagen de trabajo" : "Contenido fuente"}</p>
+                    <p className="page-label">{selectedReviewBook?.sourceType === "PDF" ? "PDF original" : hasReviewImage ? "Imagen de trabajo" : "Contenido fuente"}</p>
                     {hasReviewImage ? (
                       <p className={hasPendingReviewImageEdits ? "helper-text review-image-rotation-status is-pending" : "helper-text review-image-rotation-status"}>
                         {isReviewCropMode
@@ -4083,12 +4089,12 @@ export function BookBuilderPage() {
                             ? "Cargando imagen de la página..."
                           : hasPendingReviewImageEdits
                             ? "Ajustes pendientes por guardar."
-                            : "Imagen guardada."}
+                             : selectedReviewBook?.sourceType === "PDF" ? "PDF original intacto; los cambios se aplican a la vista adaptable." : "Imagen guardada."}
                       </p>
                     ) : null}
                   </div>
 
-                  {hasReviewImage ? (
+                  {hasReviewImage && selectedReviewBook?.sourceType === "IMAGES" ? (
                     <div aria-label="Controles de imagen" className="review-image-rotation-controls" role="toolbar">
                       <button
                         aria-label="Girar 90° a la izquierda"
@@ -4379,6 +4385,7 @@ export function BookBuilderPage() {
               {isReviewOcrMenuVisible ? (
                 <div aria-label="Opciones de OCR" className="review-floating-ocr-panel" ref={reviewOcrPanelRef} role="dialog">
                   <p className="review-floating-ocr-title">Volver a reconocer con</p>
+                  {selectedReviewBook?.sourceType === "PDF" ? <p className="helper-text">OCR opcional para páginas escaneadas o difíciles. Actualiza el contenido adaptable de esta página sin modificar el PDF. Textract y Vision pueden tener coste según tus credenciales.</p> : null}
                   <label>
                     <span>Modo OCR</span>
                     <select value={reviewOcrMode} disabled={isSavingReview || !reviewBookId || isReviewCropMode} onChange={(event) => {

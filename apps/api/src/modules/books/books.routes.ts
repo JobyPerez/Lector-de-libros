@@ -31,6 +31,7 @@ import { registerGalleryOcrJobs } from "./gallery-ocr-jobs.js";
 import { parsePageStyle } from "./page-style.js";
 import { annotatePageElementHtml, geometrySchema, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml, type ParagraphElementMetadata } from "./page-elements.js";
 import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualLayoutNode, type VisualPageDocument } from "./visual-document.js";
+import { analyzePdfPageSource, findPdfPageSource, inferPdfElement, matchPdfBlock, renderPdfPageSource, resolvePdfSheet } from "./pdf-page-preparation.js";
 import { generateAiRequestResponse, generateSectionSummary, getDefaultBookAiRequestPrompt, getDefaultSectionAiRequestPrompt, getDefaultSectionSummaryPrompt, type AiRequestKind } from "./section-summary.js";
 
 const createBookSchema = z.object({
@@ -343,6 +344,7 @@ function consumeDownloadToken(token: string): DownloadTokenRecord | null {
 }
 
 type BookPageRecord = {
+  sourcePdfPageNumber?: number | null;
   visualDocumentJson?: string | null;
   sourceHtmlContent?: string | null;
   editedText: string | null;
@@ -2913,6 +2915,7 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         page_id AS "pageId",
         page_number AS "pageNumber",
         source_file_id AS "sourceFileId",
+        source_pdf_page_number AS "sourcePdfPageNumber",
         raw_text AS "rawText",
         html_content AS "htmlContent",
         edited_text AS "editedText",
@@ -2923,7 +2926,10 @@ async function findBookPage(connection: Awaited<ReturnType<typeof getConnection>
         page_type AS "pageType",
         ocr_status AS "ocrStatus",
         TO_CHAR(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6') AS "updatedAt",
-        CASE WHEN source_file_id IS NOT NULL THEN 1 ELSE 0 END AS "hasSourceImage"
+        CASE WHEN source_file_id IS NOT NULL OR EXISTS (
+          SELECT 1 FROM book_files f JOIN books b ON b.book_id = f.book_id
+          WHERE f.book_id = book_pages.book_id AND b.source_type = 'PDF' AND f.file_kind = 'ORIGINAL_PDF'
+        ) THEN 1 ELSE 0 END AS "hasSourceImage"
       FROM book_pages
       WHERE book_id = :bookId
         AND page_number = :pageNumber
@@ -4363,6 +4369,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     const connection = await getConnection();
 
     try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId AND owner_user_id = :ownerUserId FOR UPDATE",
+        { bookId: params.bookId, ownerUserId: request.currentUser.userId });
       const existingBook = await findOwnedBook(connection, params.bookId, request.currentUser.userId);
       if (!existingBook) {
         return reply.status(404).send({ message: "Book not found." });
@@ -4404,6 +4412,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       await connection.commit();
 
       return reply.status(204).send();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
@@ -4718,6 +4729,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 raw_text,
                 html_content,
                 edited_text,
+                source_file_id,
+                source_pdf_page_number,
                 ocr_status
               ) VALUES (
                 :pageId,
@@ -4726,6 +4739,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 :rawText,
                 :htmlContent,
                 :editedText,
+                :sourceFileId,
+                :sourcePdfPageNumber,
                 'SKIPPED'
               )
             `,
@@ -4735,7 +4750,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
               htmlContent: page.htmlContent ?? null,
               pageId,
               pageNumber: page.pageNumber,
-              rawText: page.rawText
+              rawText: page.rawText,
+              sourceFileId: sourceType === "PDF" ? originalFileId : null,
+              sourcePdfPageNumber: sourceType === "PDF" ? page.sourcePdfPageNumber ?? page.pageNumber : null
             }
           );
 
@@ -5766,6 +5783,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           pageNumber: params.pageNumber,
           readingOffset,
           sourceFileId: pageRecord.sourceFileId,
+          sourcePdfPageNumber: pageRecord.sourcePdfPageNumber ?? null,
           sourceImageRotation: pageRecord.sourceImageRotation,
           updatedAt: pageRecord.updatedAt,
           rawText: rendered?.rawText ?? (hasInactive && !includeInactive ? projectedText : pageRecord.rawText),
@@ -5775,6 +5793,68 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     } finally {
       await connection.close();
     }
+  });
+
+  app.post("/:bookId/pages/:pageNumber/prepare-pdf", { preHandler: [authenticateRequest, requireBookRole("EDITOR")] }, async (request, reply) => {
+    if (!request.currentUser) return reply.status(401).send({ message: "Unauthenticated request." });
+    const params = pageParamsSchema.parse(request.params);
+    const payload = z.object({ expectedUpdatedAt: z.string().min(1), sourcePdfPageNumber: z.number().int().min(1).max(999999).optional() }).strict().parse(request.body);
+    const connection = await getConnection();
+    try {
+      await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
+      if ((request.query as { pageId?: string })?.pageId) await resolveGalleryPage(connection, params, request.query);
+      await connection.execute("SELECT page_id FROM book_pages WHERE book_id = :bookId AND page_number = :pageNumber FOR UPDATE", params);
+      const page = await findBookPage(connection, params.bookId, params.pageNumber);
+      if (!page) return reply.status(404).send({ message: "Page not found." });
+      if (page.updatedAt !== payload.expectedUpdatedAt) return reply.status(409).send({ message: "La página ha cambiado. Recarga antes de prepararla." });
+      const source = await findPdfPageSource(connection, params.bookId, params.pageNumber, page.pageId);
+      if (!source) return reply.status(409).send({ message: "Esta página no dispone de un PDF original." });
+      const detected = await analyzePdfPageSource(connection, params.bookId, source, payload.sourcePdfPageNumber);
+      const paragraphs = await listPageParagraphs(connection, params.bookId, params.pageNumber);
+      const document = page.visualDocumentJson ? visualPageDocumentSchema.parse(JSON.parse(page.visualDocumentJson)) : buildVisualDocumentFromPage(page.htmlContent, paragraphs);
+      const imageBlocks = document.blocks.filter((block) => block.kind === "image");
+      let preparedElements = 0;
+      let narrationChanged = false;
+      for (const paragraph of paragraphs) {
+        const block = document.blocks.find((item) => item.id === paragraph.paragraphId);
+        const match = block?.kind === "image" ? null : matchPdfBlock(paragraph.paragraphText, detected.blocks);
+        let metadata = inferPdfElement(paragraph, match, Boolean(page.visualDocumentJson));
+        if (block?.kind === "image" && imageBlocks.length === detected.images.length) {
+          metadata = { ...metadata, geometry: metadata.geometry ?? detected.images[imageBlocks.indexOf(block)] ?? null,
+            ...(!page.visualDocumentJson && paragraph.role === "body" && paragraph.readAloud && paragraph.active !== false && paragraph.includeInToc == null
+              ? { role: "image" as const, readAloud: false } : {}) };
+        }
+        if (metadata.geometry) preparedElements++;
+        if (metadata === paragraph) continue;
+        narrationChanged ||= metadata.readAloud !== paragraph.readAloud;
+        await connection.execute(`UPDATE book_paragraphs SET element_role = :elementRole, read_aloud = :readAloud,
+          geometry_json = :geometryJson, include_in_toc = :includeInToc WHERE book_id = :bookId AND page_id = :pageId AND paragraph_id = :paragraphId`,
+        { bookId: params.bookId, pageId: page.pageId, paragraphId: paragraph.paragraphId, elementRole: metadata.role,
+          readAloud: metadata.readAloud ? 1 : 0, geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
+          includeInToc: metadata.includeInToc == null ? null : metadata.includeInToc ? 1 : 0 });
+        if (block) { block.geometry = metadata.geometry; block.role = metadata.role; block.readAloud = metadata.readAloud; if (metadata.includeInToc != null) block.includeInToc = metadata.includeInToc; }
+      }
+      if (page.visualDocumentJson) {
+        visualPageDocumentSchema.parse(document);
+        await connection.execute("UPDATE book_pages SET visual_document_json = :document WHERE page_id = :pageId", { pageId: page.pageId, document: JSON.stringify(document) });
+      }
+      await connection.execute(`UPDATE book_pages SET source_file_id = :fileId, source_pdf_page_number = :sheet WHERE page_id = :pageId`,
+      { fileId: source.fileId, sheet: detected.number, pageId: page.pageId });
+      if (narrationChanged) {
+        await invalidateBookAudioCache(connection, params.bookId);
+        await connection.execute("UPDATE user_book_ai_requests SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+        await connection.execute("UPDATE user_book_section_summaries SET is_stale = 1 WHERE book_id = :bookId", { bookId: params.bookId });
+      }
+      await connection.execute("UPDATE books SET status = status WHERE book_id = :bookId", { bookId: params.bookId });
+      await recordUserActivity(connection, { action: "BOOK_UPDATED", bookId: params.bookId, pageNumber: params.pageNumber,
+        detail: `Bloques PDF preparados desde la hoja física ${detected.number}; texto e IDs conservados.`, userId: request.currentUser.userId });
+      await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
+      const saved = await findBookPage(connection, params.bookId, params.pageNumber);
+      await connection.commit();
+      return reply.send({ updatedAt: saved!.updatedAt, preparedElements, sourcePdfPageNumber: detected.number });
+    } catch (error) { await connection.rollback(); throw error; }
+    finally { await connection.close(); }
   });
 
   app.put("/:bookId/pages/:pageNumber/visual-document", { preHandler: [authenticateRequest, requireBookRole("EDITOR")], bodyLimit: maximumUploadedImageBytes * 2 }, async (request, reply) => {
@@ -5812,11 +5892,18 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const cropBlocks = document.blocks.filter((block) => block.source === "page-crop");
       const sourceSnapshot = visualSourceHtml(page.sourceHtmlContent ?? page.htmlContent, paragraphs, document);
       if (cropBlocks.length) {
-        if (book.sourceType !== "IMAGES" || !page.sourceFileId) return reply.status(409).send({ message: "Los recortes requieren una pagina con imagen de un libro IMAGES." });
-        const imageResult = await connection.execute(`SELECT content_blob AS "buffer" FROM book_files
+        if (!["IMAGES", "PDF"].includes(book.sourceType)) return reply.status(409).send({ message: "Los recortes requieren una página con original." });
+        let buffer: Buffer | undefined;
+        if (book.sourceType === "PDF") {
+          const source = await findPdfPageSource(connection, params.bookId, params.pageNumber, page.pageId);
+          if (source) buffer = await renderPdfPageSource(connection, params.bookId, source);
+          await assertBookRole(connection, params.bookId, request.currentUser.userId, "EDITOR");
+        } else {
+          const imageResult = await connection.execute(`SELECT content_blob AS "buffer" FROM book_files
           WHERE file_id = :fileId AND book_id = :bookId AND file_kind = 'PAGE_IMAGE'`,
-        { fileId: page.sourceFileId, bookId: params.bookId }, { fetchInfo: { buffer: { type: oracledb.BUFFER } } });
-        const buffer = imageResult.rows?.[0]?.buffer as Buffer | undefined;
+          { fileId: page.sourceFileId, bookId: params.bookId }, { fetchInfo: { buffer: { type: oracledb.BUFFER } } });
+          buffer = imageResult.rows?.[0]?.buffer as Buffer | undefined;
+        }
         if (!buffer) return reply.status(409).send({ message: "No se encuentra la imagen de la pagina." });
         for (const block of cropBlocks) {
           const crop = await cropVisualPageImage(buffer, block.geometry!, page.sourceImageRotation);
@@ -6015,13 +6102,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const result = await connection.execute(
         `
           SELECT
-            bf.mime_type AS "mimeType",
+            CASE WHEN bf.file_kind = 'ORIGINAL_PDF' THEN 'application/pdf' ELSE bf.mime_type END AS "mimeType",
             bf.checksum_sha256 AS "checksum",
             bf.file_id AS "fileId",
             bp.page_id AS "pageId",
             bp.source_image_rotation AS "sourceImageRotation",
+            bp.source_pdf_page_number AS "sourcePageNumber",
+            bp.raw_text AS "rawText",
             TO_CHAR(bp.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6') AS "updatedAt",
-            bf.content_blob AS "contentBlob"
+            CASE WHEN bf.file_kind = 'ORIGINAL_PDF' THEN NULL ELSE bf.content_blob END AS "contentBlob"
           FROM books b
           JOIN book_pages bp
             ON bp.book_id = b.book_id
@@ -6031,7 +6120,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             AND original.file_kind = 'ORIGINAL_PAGE_IMAGE'
             AND original.file_name = bp.source_file_id
           JOIN book_files bf
-            ON bf.file_id = COALESCE(original.file_id, bp.source_file_id)
+            ON bf.file_id = COALESCE(COALESCE(original.file_id, bp.source_file_id),
+              (SELECT f.file_id FROM book_files f WHERE f.book_id = b.book_id AND b.source_type = 'PDF'
+                AND f.file_kind = 'ORIGINAL_PDF' FETCH FIRST 1 ROWS ONLY))
             AND bf.book_id = bp.book_id
           WHERE b.book_id = :bookId
             AND ((:pageId IS NOT NULL AND bp.page_id = :pageId) OR (:pageId IS NULL AND bp.page_number = :pageNumber))
@@ -6050,7 +6141,15 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       );
 
       const [image] = (result.rows ?? []) as Array<{ contentBlob?: Buffer; mimeType?: string; checksum?: string | null;
-        fileId: string; pageId: string; sourceImageRotation: number | null; updatedAt: string }>;
+        fileId: string; pageId: string; sourcePageNumber?: number | null; rawText?: string | null; sourceImageRotation: number | null; updatedAt: string }>;
+      if (image?.mimeType === "application/pdf") {
+        const source = { fileId: image.fileId, pageId: image.pageId, pageNumber: params.pageNumber,
+          sourcePageNumber: image.sourcePageNumber ?? null, checksum: image.checksum ?? image.fileId, rawText: image.rawText ?? null };
+        const rendered = await renderPdfPageSource(connection, params.bookId, source);
+        const buffer = query.thumbnail === "true" ? await sharp(rendered).resize({ width: 360, height: 480, fit: "inside", withoutEnlargement: true }).webp({ quality: 75 }).toBuffer() : rendered;
+        return reply.header("Content-Type", query.thumbnail === "true" ? "image/webp" : "image/jpeg")
+          .header("Cache-Control", "private, no-cache").send(buffer);
+      }
       if (!image?.contentBlob || !image.mimeType) {
         return reply.status(404).send({ message: "Source image not found." });
       }
@@ -6411,8 +6510,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Book not found." });
       }
 
-      if (book.sourceType !== "IMAGES") {
-        return reply.status(409).send({ message: "El OCR manual solo está disponible para libros creados desde imágenes." });
+      if (!["IMAGES", "PDF"].includes(book.sourceType)) {
+        return reply.status(409).send({ message: "El OCR manual requiere imágenes o un PDF original." });
       }
 
       await connection.execute("SELECT book_id FROM books WHERE book_id = :bookId FOR UPDATE", { bookId: params.bookId });
@@ -6424,7 +6523,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(404).send({ message: "Page not found." });
       }
 
-      if (!page.sourceFileId) {
+      if (!page.sourceFileId && book.sourceType !== "PDF") {
         return reply.status(409).send({ message: "Esta página no tiene imagen original para volver a reconocer el OCR." });
       }
 
@@ -6432,11 +6531,23 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(409).send({ message: "La pagina ha cambiado. Recarga antes de guardar." });
       }
 
+      if (book.sourceType === "PDF" && !payload.expectedUpdatedAt) return reply.status(400).send({ message: "La versión de la página es obligatoria para ejecutar OCR sobre un PDF." });
+
       const previousParagraphs = payload.advancedLayout ? await listPageParagraphs(connection, params.bookId, params.pageNumber) : [];
       if (payload.advancedLayout && previousParagraphs.length >= 500) {
         return reply.status(400).send({ message: "El OCR avanzado requiere espacio para conservar los parrafos anteriores (limite de 500 bloques)." });
       }
-      const sourceFileResult = await connection.execute(
+      let sourceFile: { contentBlob?: Buffer; fileName?: string | null; mimeType?: string } | undefined;
+      let pdfSource: { fileId: string; sheet: number } | undefined;
+      if (book.sourceType === "PDF") {
+        const source = await findPdfPageSource(connection, params.bookId, params.pageNumber, page.pageId);
+        if (!source) return reply.status(409).send({ message: "No se encuentra el PDF original de esta página." });
+        const sheet = await resolvePdfSheet(connection, params.bookId, source);
+        sourceFile = { contentBlob: await renderPdfPageSource(connection, params.bookId, { ...source, sourcePageNumber: sheet }),
+          mimeType: "image/jpeg", fileName: `pdf-hoja-${sheet}.jpg` };
+        pdfSource = { fileId: source.fileId, sheet };
+      } else {
+        const sourceFileResult = await connection.execute(
         `
           SELECT
             file_name AS "fileName",
@@ -6457,7 +6568,8 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
-      const [sourceFile] = (sourceFileResult.rows ?? []) as Array<{ contentBlob?: Buffer; fileName?: string | null; mimeType?: string }>;
+        [sourceFile] = (sourceFileResult.rows ?? []) as Array<{ contentBlob?: Buffer; fileName?: string | null; mimeType?: string }>;
+      }
       if (!sourceFile?.contentBlob || !sourceFile.mimeType) {
         return reply.status(404).send({ message: "Source image not found." });
       }
@@ -6556,6 +6668,9 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const rendered = document ? renderVisualDocument(document, { includeInactive: true, languageCode: book.languageCode }) : undefined;
 
       await insertContentImageAssets(connection, params.bookId, params.pageNumber, externalized.assets);
+
+      if (pdfSource) await connection.execute(`UPDATE book_pages SET source_file_id = :fileId, source_pdf_page_number = :sheet WHERE page_id = :pageId`,
+        { ...pdfSource, pageId: page.pageId });
 
       await replaceBookPageParagraphs(connection, {
         bookId: params.bookId,

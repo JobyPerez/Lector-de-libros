@@ -4,6 +4,7 @@ import { fetchBookPage, fetchBookPageImage, saveVisualPageDocument, type BookGal
 import { VisualPageEditor } from "../book-builder/VisualPageEditor";
 import { validElementGeometry } from "../../components/PageElementOverlay";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
+import { PdfPreparationControl } from "../../components/PdfPreparationControl";
 import { normalizeVisualDocument, pushVisualHistory, redoVisualHistory, undoVisualHistory, visualDocumentFromPage, visualDocumentSaveError, type VisualHistory } from "../book-builder/visual-page";
 import "./gallery-page-editor.css";
 
@@ -78,6 +79,8 @@ function GalleryPageEditorSession({ accessToken, bookId, page, initialBlockId, o
   const [message, setMessage] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isPdf, setIsPdf] = useState(false);
+  const [preparingPdf, setPreparingPdf] = useState(false);
   const [saving, setSaving] = useState(false);
   const [interacting, setInteracting] = useState(false);
   const [reload, setReload] = useState(0);
@@ -88,11 +91,11 @@ function GalleryPageEditorSession({ accessToken, bookId, page, initialBlockId, o
   const initialPageNumber = useRef(page.pageNumber);
   const dirty = Boolean(history && savedDocument && JSON.stringify(history.present) !== JSON.stringify(savedDocument));
   // Share the gallery's navigation blocker; React Router supports only one blocker.
-  const pending = dirty || interacting || saving || loading;
+  const pending = dirty || interacting || saving || loading || preparingPdf;
   useEffect(() => { onPendingChange(pending); return () => onPendingChange(false); }, [pending, onPendingChange]);
   const exit: GalleryPageEditorExit = {
     dirty,
-    get busy() { return interacting || savingRef.current || loading; },
+    get busy() { return interacting || savingRef.current || loading || preparingPdf; },
     canSave: dirty && !!history && !!loadedPage && !interacting && !saving && !loading && !conflict,
     unavailableReason: conflict ? "La pagina ha cambiado en el servidor. Recarga antes de guardar." : "Termina la operacion en curso antes de salir.",
     save
@@ -118,6 +121,7 @@ function GalleryPageEditorSession({ accessToken, bookId, page, initialBlockId, o
         if (!active) return;
         if (response.page.pageId !== page.pageId) throw new Error("La identidad de la pagina recibida no coincide.");
         const doc = normalizeVisualDocument(visualDocumentFromPage(response.page));
+        setIsPdf(response.book.sourceType === "PDF");
         if (response.page.hasSourceImage) {
           try {
             const blob = await fetchBookPageImage(accessToken, bookId, response.page.pageNumber, response.page.updatedAt, false, page.pageId);
@@ -201,19 +205,22 @@ function GalleryPageEditorSession({ accessToken, bookId, page, initialBlockId, o
     }
   }
   return <GalleryDialog title={`Editar pagina ${page.pageLabel ?? page.pageNumber}`} onClose={close} actions={<>
-    <button type="button" disabled={saving || loading || interacting} onClick={reloadPage}>Recargar pagina</button>
-    <button type="button" disabled={saving || loading || interacting || conflict || !dirty} onClick={() => void save()}>{saving ? "Guardando..." : "Guardar cambios"}</button>
+    <button type="button" disabled={saving || loading || interacting || preparingPdf} onClick={reloadPage}>Recargar pagina</button>
+    <button type="button" disabled={saving || loading || interacting || preparingPdf || conflict || !dirty} onClick={() => void save()}>{saving ? "Guardando..." : "Guardar cambios"}</button>
   </>}>
     {loading ? <p role="status">Cargando pagina...</p> : null}
     {error ? <p role="alert" className="error-text">{error}</p> : null}
     {imageError ? <p role="alert" className="error-text">{imageError} La edicion de zonas no esta disponible.</p> : null}
     {message ? <p role="status">{message}</p> : null}
+    {isPdf && loadedPage ? <PdfPreparationControl key={loadedPage.pageId} accessToken={accessToken} bookId={bookId} page={loadedPage}
+      disabled={dirty || saving || loading || interacting || conflict} onBusyChange={setPreparingPdf}
+      onPrepared={async () => { await onSaved(); setReload((value) => value + 1); }} /> : null}
     {!loading && sourceImage && history && !history.present.blocks.some((block) => validElementGeometry(block.geometry)) ? <p className="helper-text">Esta pagina no tiene zonas detectadas. Puedes editar los bloques en la previsualizacion o marcar una zona en el original.</p> : null}
     {!loading && loadedPage && history && savedDocument ? <VisualPageEditor key={reload}
       doc={history.present} page={loadedPage} savedDocument={savedDocument} selectedId={selectedId} onSelect={setSelectedId}
       {...(initialBlockId ? { initialEditId: initialBlockId } : {})} simpleTypography accessToken={accessToken} bookId={bookId}
       sourceImage={sourceImage} source={(overlay) => overlay}
-      disabled={saving || conflict} geometryDisabled={!sourceImage || saving || conflict}
+      disabled={saving || conflict || preparingPdf} geometryDisabled={!sourceImage || saving || conflict || preparingPdf}
       onChange={(doc) => { setHistory((current) => current ? pushVisualHistory(current, doc) : current); setMessage(null); setError(null); }}
       canUndo={history.past.length > 0 && !interacting} canRedo={history.future.length > 0 && !interacting}
       onUndo={() => { if (!interacting) setHistory((current) => current ? undoVisualHistory(current) : current); }}

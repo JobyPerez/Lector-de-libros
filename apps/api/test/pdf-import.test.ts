@@ -160,7 +160,7 @@ for (const { name, parse } of parsers) {
   });
 }
 
-test("page numbering alone is extractable text: no conversion even when normalization rejects it", async (t) => {
+test("folios remain editable pageNumber blocks without narration or whole-document OCR conversion", async (t) => {
   const buffer = await pdf((document) => {
     for (const pageNumber of [1, 2]) {
       document.addPage({ size: [240, 180], margin: 0 });
@@ -171,8 +171,107 @@ test("page numbering alone is extractable text: no conversion even when normaliz
   t.after(() => imported.cleanup?.());
   assert.equal(imported.pageImages, undefined);
   assert.equal(imported.totalPages, 2);
-  assert.equal(imported.totalParagraphs, 0);
-  await assert.rejects(parseUploadedBook("PDF", buffer), { statusCode: 422 });
+  assert.equal(imported.totalParagraphs, 2);
+  for (const page of imported.pages) {
+    assert.equal(page.paragraphMetadata?.[0]?.role, "pageNumber");
+    assert.equal(page.paragraphMetadata?.[0]?.readAloud, false);
+  }
+  assert.equal((await parseUploadedBook("PDF", buffer)).totalPages, 2);
+});
+
+test("two-column PDF reads down each column, with full-width headings between bands", async () => {
+  const buffer = await pdf((document) => {
+    document.addPage({ size: [600, 600], margin: 0 });
+    document.font("Helvetica").fontSize(12);
+    for (const [start, prefix] of [[60, "Upper"], [330, "Lower"]] as const) {
+      for (let index = 0; index < 6; index++) {
+        // Draw in row order, deliberately unlike the intended reading order.
+        document.text(`${prefix} left line number ${index}.`, 40, start + index * 18, { lineBreak: false });
+        document.text(`${prefix} right line number ${index}.`, 330, start + index * 18, { lineBreak: false });
+      }
+    }
+    document.fontSize(20).text("A full-width heading between the columns", 70, 260, { lineBreak: false });
+  });
+  const imported = await parsePdfBuffer(buffer);
+  const text = imported.pages[0]!.rawText.replace(/\s+/g, " ");
+  assert.ok(text.indexOf("Upper left line number 5.") < text.indexOf("Upper right line number 0."));
+  assert.ok(text.indexOf("Upper right line number 5.") < text.indexOf("A full-width heading"));
+  assert.ok(text.indexOf("A full-width heading") < text.indexOf("Lower left line number 0."));
+  assert.ok(text.indexOf("Lower left line number 5.") < text.indexOf("Lower right line number 0."));
+  assert.ok(imported.pages[0]!.paragraphs.every((paragraph) => !(paragraph.includes("left line") && paragraph.includes("right line"))));
+});
+
+test("text PDFs retain embedded RGB/RGBA images on multiple pages including shared objects", async () => {
+  const rgb = await scanImage();
+  const rgba = await sharp({ create: { width: 40, height: 40, channels: 4, background: { r: 0, g: 255, b: 0, alpha: 0.5 } } }).png().toBuffer();
+  const buffer = await pdf((document) => {
+    for (let index = 0; index < 3; index++) {
+      document.addPage({ size: [240, 300], margin: 20 });
+      document.text(`Text and pictures on page ${index + 1}.`);
+      document.image(rgb, 20, 80, { width: 160 });
+      document.image(rgba, 20, 180, { width: 40 });
+    }
+  });
+  const imported = await parsePdfBuffer(buffer);
+  assert.equal(imported.totalPages, 3);
+  for (const page of imported.pages) {
+    assert.equal((page.htmlContent!.match(/<img /g) ?? []).length, 2);
+    const images = [...page.rawText.matchAll(/base64,([^)]*)/g)];
+    const rgbPixels = await pixels(Buffer.from(images[0]![1]!, "base64"));
+    near(rgbPixels.at(10, 10), [255, 0, 0]);
+    near(rgbPixels.at(60, 10), [0, 0, 255]);
+    const alpha = await sharp(Buffer.from(images[1]![1]!, "base64")).raw().toBuffer({ resolveWithObject: true });
+    assert.equal(alpha.info.channels, 4);
+    assert.ok(Math.abs(alpha.data[3]! - 128) <= 1);
+  }
+});
+
+test("columns with staggered baselines and different font sizes still read independently", async () => {
+  const buffer = await pdf((document) => {
+    document.addPage({ size: [600, 600], margin: 0 });
+    for (let index = 0; index < 12; index++) {
+      document.fontSize(12).text(`Left column sentence ${index}.`, 40, 60 + index * 19, { lineBreak: false });
+      document.fontSize(10).text(`Right sidebar sentence ${index}.`, 330, 65 + index * 17, { lineBreak: false });
+    }
+  });
+  const imported = await parsePdfBuffer(buffer);
+  const text = imported.pages[0]!.rawText;
+  assert.ok(text.indexOf("Left column sentence 11.") < text.indexOf("Right sidebar sentence 0."));
+});
+
+test("a folio with a chapter name stays after both columns, not in the left-column reading flow", async () => {
+  const buffer = await pdf((document) => {
+    document.addPage({ size: [600, 600], margin: 0 });
+    document.fontSize(12);
+    for (let index = 0; index < 6; index++) {
+      document.text(`Left paragraph line ${index}.`, 40, 60 + index * 18, { lineBreak: false });
+      document.text(`Right paragraph line ${index}.`, 330, 60 + index * 18, { lineBreak: false });
+    }
+    document.text("20", 40, 550, { lineBreak: false });
+    document.text("Running chapter footer", 70, 550, { lineBreak: false });
+  });
+  const imported = await parsePdfBuffer(buffer);
+  const text = imported.pages[0]!.rawText;
+  assert.ok(text.indexOf("Running chapter footer") > text.indexOf("Right paragraph line 5."));
+});
+
+test("mixed PDF normalization preserves physical page numbers including blank and image-only sheets", async () => {
+  const image = await scanImage();
+  const buffer = await pdf((document) => {
+    document.addPage({ size: [240, 180], margin: 18 });
+    document.text("First physical page.");
+    document.addPage({ size: [240, 180], margin: 18 });
+    document.addPage({ size: [240, 180], margin: 18 });
+    document.image(image, 20, 20);
+    document.addPage({ size: [240, 180], margin: 18 });
+    document.text("Fourth physical page.");
+  });
+  const imported = await parseUploadedBook("PDF", buffer);
+  assert.equal(imported.totalPages, 4);
+  assert.deepEqual(imported.pages.map((page) => page.pageNumber), [1, 2, 3, 4]);
+  assert.equal(imported.pages[1]!.rawText, "");
+  assert.match(imported.pages[2]!.htmlContent!, /<img /);
+  assert.match(imported.pages[3]!.rawText, /Fourth physical page/);
 });
 
 test("rasterization bounds large pages while retaining the full page and reporting every page", async (t) => {
@@ -356,6 +455,7 @@ for (const scenario of ["1000 pages", "1001 pages", "render fault", "encode faul
     };
     const dependencies = {
       mockPdfModule: { getDocument: () => ({ promise: Promise.resolve(document) }) },
+      pdfAssetOptions: {},
       normalizeWhitespace: (text: string) => text.trim(),
       tmpdir, join, rm,
       mkdtemp: async (prefix: string) => {

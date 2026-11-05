@@ -80,13 +80,14 @@ test("collector is a bounded read scoped to the same book and other pages, witho
   assert.doesNotMatch(declaration("collectBookOcrMarginHints"), /console|logger/u);
 });
 
-function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: boolean; sourceType?: string } = {}) {
+function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: boolean; sourceType?: string; noVersion?: boolean } = {}) {
   const events: string[] = [];
   let reads = 0;
   let paidCalls = 0;
   let replacement: any;
   const connection = { execute: async (sql: string) => {
     if (sql.includes("FOR UPDATE")) events.push(sql.includes("FROM books") ? "book-lock" : "page-lock");
+    if (sql.includes("SET source_file_id = :fileId, source_pdf_page_number")) events.push("pdf-map");
     if (sql.includes("FROM book_files")) return { rows: [{ contentBlob: Buffer.from("stored-image"), fileName: "page.png", mimeType: "image/png" }] };
     if (sql.includes("FROM book_paragraphs")) { events.push("hints"); return { rows: [row(66), row(94)] }; }
     return { rows: [] };
@@ -96,7 +97,9 @@ function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: 
     pageParamsSchema: { parse: (value: unknown) => value }, rerunOcrPageSchema: { parse: (value: unknown) => value },
     getConnection: async () => connection,
     findAccessibleBook: async () => options.inaccessible ? null : ({ sourceType: options.sourceType ?? "IMAGES", title: "Ef\u00edmera", authorName: "Laura Vil\u00e1n", languageCode: "es" }),
-    findBookPage: async () => ({ sourceFileId: "image", sourceImageRotation: 90, updatedAt: ++reads > 1 && options.concurrent ? "changed" : "original" }),
+    findBookPage: async () => ({ sourceFileId: "image", sourceImageRotation: options.sourceType === "PDF" ? 0 : 90, updatedAt: ++reads > 1 && options.concurrent ? "changed" : "original" }),
+    findPdfPageSource: async () => ({ fileId: "pdf-file" }), resolvePdfSheet: async () => 21,
+    renderPdfPageSource: async () => { events.push("pdf-render"); return Buffer.from("stored-image"); },
     oracledb: { BUFFER: 1 }, collectBookOcrMarginHints: collect,
     getEffectiveUserAiCredentials: async (userId: string, db: unknown) => {
       assert.equal(userId, "editor"); assert.equal(db, connection);
@@ -106,10 +109,10 @@ function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: 
     getSharedSummaryModelViolation: () => null,
     runOcrOnImage: async (bytes: Buffer, fileName: string, mimeType: string, settings: any) => {
       paidCalls++; events.push("ocr");
-      assert.equal(bytes.toString(), "stored-image"); assert.equal(fileName, "page.png"); assert.equal(mimeType, "image/png");
+      assert.equal(bytes.toString(), "stored-image"); assert.equal(fileName, options.sourceType === "PDF" ? "pdf-hoja-21.jpg" : "page.png"); assert.equal(mimeType, options.sourceType === "PDF" ? "image/jpeg" : "image/png");
       assert.deepEqual(settings.marginHints, { headers: ["Lara Vil\u00e1n"], footers: ["Ef\u00edmera"] });
       assert.deepEqual(settings.awsCredentials, { accessKeyId: "shared-key", secretAccessKey: "shared-secret", region: "region" });
-      assert.equal(settings.opencodeApiKey, "ocr-key"); assert.equal(settings.rotation, 90);
+      assert.equal(settings.opencodeApiKey, "ocr-key"); assert.equal(settings.rotation, options.sourceType === "PDF" ? 0 : 90);
       return { editedText: "text", htmlContent: null, rawText: "text", paragraphs: ["text"], paragraphMetadata: [{ role: "body", readAloud: true }] };
     },
     externalizeContentImages: (contents: string[]) => ({ contents, assets: [] }), insertContentImageAssets: async () => {},
@@ -125,7 +128,7 @@ function setup(options: { stale?: boolean; concurrent?: boolean; inaccessible?: 
   return { events, get paidCalls() { return paidCalls; }, get replacement() { return replacement; }, call: async () => {
     const reply = { statusCode: 200, status(code: number) { this.statusCode = code; return this; }, send() { return this; } };
     await handler({ currentUser: { userId: "editor" }, params: { bookId: "existing-book", pageNumber: 67 },
-      body: { expectedUpdatedAt: options.stale ? "stale" : "original", ocrMode: "TEXTRACT" } }, reply);
+      body: { expectedUpdatedAt: options.noVersion ? undefined : options.stale ? "stale" : "original", ocrMode: "TEXTRACT" } }, reply);
     return reply;
   } };
 }
@@ -140,8 +143,8 @@ test("rerun passes hints after locks and version guard, preserves credentials an
   assert.deepEqual(app.replacement.paragraphMetadata, [{ role: "body", readAloud: true }]);
 });
 
-test("stale, inaccessible and non-image books do not collect hints or call OCR; concurrent edits are not replaced", async () => {
-  for (const options of [{ stale: true }, { inaccessible: true }, { sourceType: "PDF" }]) {
+test("stale, inaccessible and unsupported books do not collect hints or call OCR; concurrent edits are not replaced", async () => {
+  for (const options of [{ stale: true }, { inaccessible: true }, { sourceType: "EPUB" }]) {
     const app = setup(options);
     assert.equal((await app.call()).statusCode, options.inaccessible ? 404 : 409);
     assert.equal(app.paidCalls, 0); assert.equal(app.replacement, undefined);
@@ -151,4 +154,15 @@ test("stale, inaccessible and non-image books do not collect hints or call OCR; 
   assert.equal((await concurrent.call()).statusCode, 409);
   assert.equal(concurrent.paidCalls, 1); assert.equal(concurrent.replacement, undefined);
   assert.ok(!concurrent.events.includes("commit"));
+});
+
+test("optional PDF OCR renders only its linked physical sheet and preserves the mapping; version is mandatory", async () => {
+  const pdf = setup({ sourceType: "PDF" });
+  assert.equal((await pdf.call()).statusCode, 200);
+  assert.deepEqual(pdf.events, ["book-lock", "page-lock", "pdf-render", "hints", "ocr", "pdf-map", "replace", "commit"]);
+  assert.equal(pdf.paidCalls, 1);
+  const unversioned = setup({ sourceType: "PDF", noVersion: true });
+  assert.equal((await unversioned.call()).statusCode, 400);
+  assert.equal(unversioned.paidCalls, 0);
+  assert.ok(!unversioned.events.includes("pdf-render"));
 });

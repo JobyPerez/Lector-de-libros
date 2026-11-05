@@ -403,8 +403,9 @@ export function ShelfPage() {
   const confirmingBookExitRef = useRef(false);
   const [isConfirmingBookExit, setIsConfirmingBookExit] = useState(false);
   const bookEditFormRef = useRef<HTMLFormElement>(null);
-  const [deletingBookId, setDeletingBookId] = useState<string | null>(null);
-  const [removingBookId, setRemovingBookId] = useState<string | null>(null);
+  const [deletingBookIds, setDeletingBookIds] = useState<ReadonlySet<string>>(new Set());
+  const [removingBookIds, setRemovingBookIds] = useState<ReadonlySet<string>>(new Set());
+  const pendingBookRemovalsRef = useRef(new Set<string>());
   const [downloadingBookId, setDownloadingBookId] = useState<string | null>(null);
   const downloadInProgressRef = useRef(false);
   const [downloadTitle, setDownloadTitle] = useState<string | null>(null);
@@ -984,8 +985,29 @@ export function ShelfPage() {
     }
   }
 
+  function startBookRemoval(bookId: string) {
+    pendingBookRemovalsRef.current.add(bookId);
+    setDeletingBookIds((ids) => new Set(ids).add(bookId));
+  }
+
+  function finishBookRemoval(bookId: string) {
+    pendingBookRemovalsRef.current.delete(bookId);
+    setDeletingBookIds((ids) => { const next = new Set(ids); next.delete(bookId); return next; });
+    setRemovingBookIds((ids) => { const next = new Set(ids); next.delete(bookId); return next; });
+  }
+
+  async function removeBookFromShelf(bookId: string) {
+    setRemovingBookIds((ids) => new Set(ids).add(bookId));
+    await new Promise<void>((resolve) => window.setTimeout(resolve, removalExitAnimationMs));
+    // A previously started fetch must not restore a book whose deletion has
+    // committed. Update all scopes; refreshing them is not part of deletion.
+    await queryClient.cancelQueries({ queryKey: ["books"] });
+    queryClient.setQueriesData<BookSummary[]>({ queryKey: ["books"] }, (books) => books?.filter((book) => book.bookId !== bookId));
+    void queryClient.invalidateQueries({ queryKey: ["books"] });
+  }
+
   async function handleDeleteBook(book: BookSummary) {
-    if (!accessToken) {
+    if (!accessToken || pendingBookRemovalsRef.current.has(book.bookId)) {
       return;
     }
 
@@ -1004,21 +1026,16 @@ export function ShelfPage() {
 
       setBookActionError(null);
       setBookActionSuccess(null);
-      setDeletingBookId(book.bookId);
+      startBookRemoval(book.bookId);
 
       try {
         await leaveBookShare(accessToken, book.bookId);
-        setRemovingBookId(book.bookId);
-        await new Promise<void>((resolve) => {
-          window.setTimeout(resolve, removalExitAnimationMs);
-        });
-        await booksQuery.refetch();
+        await removeBookFromShelf(book.bookId);
         setBookActionSuccess(`Dejaste de tener acceso al libro "${book.title}".`);
       } catch (error) {
-        setBookActionError(error instanceof Error ? error.message : "No se pudo salir del libro.");
+        setBookActionError(`No se pudo salir de "${book.title}": ${error instanceof Error ? error.message : "Error inesperado."}`);
       } finally {
-        setRemovingBookId(null);
-        setDeletingBookId(null);
+        finishBookRemoval(book.bookId);
       }
       return;
     }
@@ -1030,7 +1047,7 @@ export function ShelfPage() {
 
     setBookActionError(null);
     setBookActionSuccess(null);
-    setDeletingBookId(book.bookId);
+    startBookRemoval(book.bookId);
 
     try {
       try {
@@ -1055,17 +1072,12 @@ export function ShelfPage() {
         setEditingBook(null);
       }
 
-      setRemovingBookId(book.bookId);
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, removalExitAnimationMs);
-      });
-      await booksQuery.refetch();
+      await removeBookFromShelf(book.bookId);
       setBookActionSuccess(`Se eliminó el libro ${book.title}.`);
     } catch (error) {
-      setBookActionError(error instanceof Error ? error.message : "No se pudo eliminar el libro.");
+      setBookActionError(`No se pudo eliminar "${book.title}": ${error instanceof Error ? error.message : "Error inesperado."}`);
     } finally {
-      setRemovingBookId(null);
-      setDeletingBookId(null);
+      finishBookRemoval(book.bookId);
     }
   }
 
@@ -1119,8 +1131,8 @@ export function ShelfPage() {
   const totalFilteredBooks = sectionsWithBooks.reduce((acc, section) => acc + section.books.length, 0);
 
   function renderBookCard(book: BookSummary) {
-    const isDeletingBook = deletingBookId === book.bookId;
-    const removalState = removingBookId === book.bookId
+    const isDeletingBook = deletingBookIds.has(book.bookId);
+    const removalState = removingBookIds.has(book.bookId)
       ? "exiting"
       : isDeletingBook
         ? "pending"

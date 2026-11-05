@@ -29,11 +29,12 @@ function fixture(buffer: Buffer, rotation = 0) {
     assert.equal(binds.bookId, bookId);
     return { rows: binds.pageId && binds.pageId !== pageId ? [] : [image] };
   }, close: async () => { closed++; } };
-  const handler = new Function("z", "pageParamsSchema", "getConnection", "oracledb", "sharp", "createHash", compiled)(
+  let pdfRenders = 0;
+  const handler = new Function("z", "pageParamsSchema", "getConnection", "oracledb", "sharp", "createHash", "renderPdfPageSource", compiled)(
     z, z.object({ bookId: z.string().uuid(), pageNumber: z.coerce.number().int().min(1) }),
-    async () => connection, { BUFFER: 1 }, sharp, createHash
+    async () => connection, { BUFFER: 1 }, sharp, createHash, async () => { pdfRenders++; return buffer; }
   );
-  return { image, calls, handler, get closed() { return closed; }, call: async (query: Record<string, string> = {}, headers: Record<string, string> = {}) => {
+  return { image, calls, handler, get pdfRenders() { return pdfRenders; }, get closed() { return closed; }, call: async (query: Record<string, string> = {}, headers: Record<string, string> = {}) => {
     const reply = { statusCode: 200, headers: {} as Record<string, string>, body: undefined as Buffer | undefined,
       status(code: number) { this.statusCode = code; return this; },
       header(name: string, value: string) { this.headers[name] = value; return this; },
@@ -128,7 +129,10 @@ test("thumbnail flag is validated and foreign stable page IDs never fall back to
   const foreign = await app.call({ thumbnail: "true", pageId: randomUUID() });
   assert.equal(foreign.statusCode, 404);
   app.image.mimeType = "application/pdf";
-  assert.equal((await app.call({ thumbnail: "true" })).statusCode, 409);
+  const pdf = await app.call({ thumbnail: "true" });
+  assert.equal(pdf.statusCode, 200);
+  assert.equal(pdf.headers["Content-Type"], "image/webp");
+  assert.equal(app.pdfRenders, 1);
 });
 
 test("VIEWER authorization is preserved and cache hits cannot bypass book access", async () => {

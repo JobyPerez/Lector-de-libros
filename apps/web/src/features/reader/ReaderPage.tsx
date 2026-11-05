@@ -1941,7 +1941,8 @@ export function ReaderPage() {
   contentRevisionRef.current = contentRevision;
   const audioRevisionRef = useRef({ bookId, revision: "" });
   const isOcrBook = pageQuery.data?.book.sourceType === "IMAGES";
-  const isOriginalView = isOcrBook && readingView === "original" && Boolean(pageQuery.data?.page.hasSourceImage);
+  const supportsOriginalView = isOcrBook || pageQuery.data?.book.sourceType === "PDF";
+  const isOriginalView = supportsOriginalView && readingView === "original" && Boolean(pageQuery.data?.page.hasSourceImage);
   useEffect(() => {
     if (!contentRevision) return;
     const previous = audioRevisionRef.current;
@@ -5026,7 +5027,7 @@ export function ReaderPage() {
           </div>
         </div>
 
-        {isOcrBook ? <div className="reader-view-selector" role="group" aria-label="Vista de la pagina">
+        {supportsOriginalView ? <div className="reader-view-selector" role="group" aria-label="Vista de la pagina">
           <button type="button" className="secondary-button" aria-pressed={!isOriginalView} disabled={Boolean(pageTurnDirection)} onClick={() => setReadingView("adaptable")}>Adaptable</button>
           <button type="button" className="secondary-button" aria-pressed={isOriginalView} disabled={!pageQuery.data?.page.hasSourceImage || Boolean(pageTurnDirection)} onClick={() => { setSelectionDraft(null); setReadingView("original"); }}>Original</button>
           {!pageQuery.isLoading && !pageQuery.data?.page.hasSourceImage ? <p className="helper-text">Esta pagina no tiene una imagen original disponible.</p> : null}

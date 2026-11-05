@@ -13,6 +13,7 @@ export type SupportedBookSourceType = (typeof supportedBookSourceTypes)[number];
 export type BookLanguageCode = (typeof supportedBookLanguageCodes)[number];
 
 export type ImportedPage = {
+  sourcePdfPageNumber?: number;
   paragraphMetadata?: ParagraphElementMetadata[];
   editedText?: string | null;
   htmlContent?: string | null;
@@ -293,13 +294,16 @@ export async function parseUploadedBook(
   const normalizedPages = importedDocument.pages
     .map((page) => ({
       ...normalizeImportedPageParagraphs(page, sourceType),
+      ...(page.sourcePdfPageNumber ? { sourcePdfPageNumber: page.sourcePdfPageNumber } : {}),
       originalPageNumber: page.pageNumber,
       editedText: page.editedText?.trim() || null,
       htmlContent: page.htmlContent?.trim() || null,
       rawText: page.rawText.trim()
     }))
-    .filter((page) => Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
+    // PDF page numbers refer to physical sheets, including blank/image-only ones.
+    .filter((page) => sourceType === "PDF" || Boolean(page.htmlContent) || page.paragraphs.length > 0 || page.rawText.length > 0)
     .map((page, index) => ({
+      ...(page.sourcePdfPageNumber ? { sourcePdfPageNumber: page.sourcePdfPageNumber } : {}),
       editedText: page.editedText,
       htmlContent: page.htmlContent,
       pageNumber: (() => {

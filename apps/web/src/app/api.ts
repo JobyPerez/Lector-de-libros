@@ -781,6 +781,7 @@ export type BookPageResponse = {
     };
     sourceImageRotation: ImageRotation;
     sourceFileId: string | null;
+    sourcePdfPageNumber?: number | null;
     updatedAt: string;
   };
 };
@@ -1342,6 +1343,12 @@ export function saveVisualPageDocument(accessToken: string, bookId: string, page
 }, pageId?: string) {
   return request<{ updatedAt: string; document: VisualPageDocument }>(`/books/${bookId}/pages/${pageNumber}/visual-document${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, {
     accessToken, body: payload, method: "PUT"
+  });
+}
+
+export function preparePdfPage(accessToken: string, bookId: string, pageNumber: number, pageId: string, expectedUpdatedAt: string, sourcePdfPageNumber?: number) {
+  return request<{ updatedAt: string; preparedElements: number; sourcePdfPageNumber: number }>(`/books/${bookId}/pages/${pageNumber}/prepare-pdf?pageId=${encodeURIComponent(pageId)}`, {
+    accessToken, method: "POST", body: { expectedUpdatedAt, ...(sourcePdfPageNumber ? { sourcePdfPageNumber } : {}) }
   });
 }
 

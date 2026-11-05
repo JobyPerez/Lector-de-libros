@@ -1,20 +1,17 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import sharp from "sharp";
 import { createCanvas } from "@napi-rs/canvas";
 import type { BookImportProgressCallback, ImportedDocument, ImportedOutlineEntry, ImportedPage } from "./book-import.js";
 import { buildRichPageFromParagraphs } from "./rich-content.js";
-
-type PdfTextItem = {
-  height?: number;
-  hasEOL?: boolean;
-  str?: string;
-  transform?: number[];
-  width?: number;
-};
+import { extractPdfImages, pdfImageGeometries } from "./pdf-images.js";
+import type { PDFPageProxy } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { annotatePageElementHtml, type Geometry, type PageElementRole } from "./page-elements.js";
+import { sanitizeParagraphs } from "./book-import.js";
+import { pdfAssetOptions } from "./pdf-options.js";
 
 type PositionedTextItem = {
+  geometry?: Geometry;
   height: number;
   hasLineBreak: boolean;
   text: string;
@@ -24,6 +21,7 @@ type PositionedTextItem = {
 };
 
 type PdfLine = {
+  items?: PositionedTextItem[];
   gapFromPrevious: number;
   height: number;
   text: string;
@@ -56,6 +54,31 @@ type PdfOutlineDocument = {
 };
 
 const sameLineTolerance = 2;
+
+// Preserve the detected column-by-column text order. Images are anchored to
+// nearby text in their own horizontal region, not appended after every column.
+export function orderPdfImages<T extends { geometry?: Geometry | null | undefined; image: boolean }>(entries: T[]): T[] {
+  const result = entries.filter((entry) => !entry.image || !entry.geometry);
+  const images = entries.filter((entry) => entry.image && entry.geometry)
+    .sort((a, b) => a.geometry!.bbox.top - b.geometry!.bbox.top || a.geometry!.bbox.left - b.geometry!.bbox.left);
+  for (const image of images) {
+    const box = image.geometry!.bbox;
+    const overlaps = (entry: T) => {
+      const other = entry.geometry?.bbox;
+      return other && Math.min(box.left + box.width, other.left + other.width) - Math.max(box.left, other.left) > Math.min(box.width, other.width) * 0.3;
+    };
+    let index = result.findIndex((entry) => overlaps(entry) && entry.geometry!.bbox.top >= box.top + box.height - 0.005);
+    if (index < 0) {
+      let previous = -1;
+      for (let i = result.length - 1; i >= 0; i--) {
+        if (overlaps(result[i]!) && result[i]!.geometry!.bbox.top + result[i]!.geometry!.bbox.height <= box.top + 0.005) { previous = i; break; }
+      }
+      index = previous < 0 ? result.length : previous + 1;
+    }
+    result.splice(index, 0, image);
+  }
+  return result;
+}
 const minimumFallbackParagraphGap = 14;
 const headingKeywordPattern = /^(cap[ií]tulo|capitolo|chapter|parte|section|sezione|pr[oó]logo|ep[ií]logo|prefacio|prefazione|introducci[oó]n|introduzione)\b/iu;
 const standaloneDatePattern = /^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/u;
@@ -487,6 +510,7 @@ function buildLines(items: PositionedTextItem[]): PdfLine[] {
       previousY = line.y;
 
       return {
+        items: sortedLineParts,
         gapFromPrevious,
         height: lineHeight,
         text: lineText,
@@ -499,7 +523,90 @@ function buildLines(items: PositionedTextItem[]): PdfLine[] {
     .filter((line) => line.text.length > 0);
 }
 
-function linesToParagraphs(lines: PdfLine[]): string[] {
+// Find a recurring *empty* vertical gutter, not just text at similar baselines.
+// Full-width headings separate column bands so they stay above the text they head.
+function buildReadingRegions(items: PositionedTextItem[]): PositionedTextItem[][] {
+  if (items.length === 0) return [];
+  const height = Math.max(6, computeMedian(items.map((item) => item.height)));
+  const minimumGap = height * 1.2;
+  const rows: PositionedTextItem[][] = [];
+  for (const item of [...items].sort((a, b) => b.y - a.y || a.x - b.x)) {
+    const row = rows.at(-1);
+    if (!row || Math.abs(row[0]!.y - item.y) > sameLineTolerance) rows.push([item]);
+    else row.push(item);
+  }
+  const left = Math.min(...items.map((item) => item.x));
+  const right = Math.max(...items.map((item) => item.x + item.width));
+  const gaps: { left: number; right: number; row: number }[] = [];
+  for (const [rowIndex, row] of rows.entries()) {
+    row.sort((a, b) => a.x - b.x);
+    let end = row[0]!.x + row[0]!.width;
+    for (let index = 1; index < row.length; index++) {
+      const item = row[index]!;
+      if (item.x - end >= minimumGap
+        && end > left + (right - left) * 0.2 && item.x < right - (right - left) * 0.2
+        && row.slice(0, index).map((part) => part.text).join("").length >= 10
+        && row.slice(index).map((part) => part.text).join("").length >= 10) {
+        gaps.push({ left: end, right: item.x, row: rowIndex });
+      }
+      end = Math.max(end, item.x + item.width);
+    }
+  }
+  let gutter: number | undefined;
+  let support = 0;
+  for (const gap of gaps) {
+    const candidate = (gap.left + gap.right) / 2;
+    const count = new Set(gaps.filter((other) => other.left <= candidate && other.right >= candidate).map((other) => other.row)).size;
+    if (count > support) {
+      support = count;
+      gutter = candidate;
+    }
+  }
+  // Different font sizes (e.g. sidebars) need not share any baselines. A
+  // recurring right-column start is also a candidate, provided almost no body
+  // text crosses its gutter. Single-column indentation must not qualify.
+  if (support < Math.max(3, rows.length * 0.12)) {
+    const body = items.filter((item) => item.text.length >= 10 && item.width >= height * 5);
+    let best = 0;
+    for (const item of body) {
+      const candidate = item.x - minimumGap / 2;
+      if (candidate < left + (right - left) * 0.25 || candidate > right - (right - left) * 0.25) continue;
+      const before = body.filter((part) => part.x + part.width <= candidate);
+      const after = body.filter((part) => part.x >= candidate + minimumGap / 2);
+      const crossing = body.filter((part) => part.x < candidate && part.x + part.width > candidate);
+      const count = Math.min(before.length, after.length);
+      if (count >= 3 && count >= body.length * 0.2 && crossing.length <= Math.max(1, body.length * 0.08) && count > best) {
+        best = count;
+        gutter = candidate;
+        support = rows.length;
+      }
+    }
+  }
+  if (gutter === undefined || support < Math.max(3, rows.length * 0.12)) return [items];
+  const split = gutter;
+  const regions: PositionedTextItem[][] = [];
+  let leftColumn: PositionedTextItem[] = [];
+  let rightColumn: PositionedTextItem[] = [];
+  const flush = () => {
+    if (leftColumn.length) regions.push(leftColumn);
+    if (rightColumn.length) regions.push(rightColumn);
+    leftColumn = [];
+    rightColumn = [];
+  };
+  for (const row of rows) {
+    if (row.some((item) => item.x < split && item.x + item.width > split)) {
+      flush();
+      regions.push(row);
+    } else {
+      leftColumn.push(...row.filter((item) => item.x < split));
+      rightColumn.push(...row.filter((item) => item.x >= split));
+    }
+  }
+  flush();
+  return regions;
+}
+
+function linesToParagraphs(lines: PdfLine[], onParagraph?: (text: string, lines: PdfLine[]) => void): string[] {
   if (lines.length === 0) {
     return [];
   }
@@ -514,11 +621,11 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
       return;
     }
 
-    paragraphs.push(
-      isVerseLikeParagraph(currentParagraphLines, metrics)
+    const text = isVerseLikeParagraph(currentParagraphLines, metrics)
         ? joinLinesPreservingLineBreaks(currentParagraphLines)
-        : joinLines(currentParagraphLines)
-    );
+        : joinLines(currentParagraphLines);
+    paragraphs.push(text);
+    onParagraph?.(text, currentParagraphLines);
     currentParagraphLines = [];
   };
 
@@ -533,6 +640,7 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
       const headingParagraph = collectHeadingParagraph(lines, lineIndex, metrics);
       if (headingParagraph.text) {
         paragraphs.push(headingParagraph.text);
+        onParagraph?.(headingParagraph.text, lines.slice(lineIndex, headingParagraph.endIndex + 1));
       }
       lineIndex = headingParagraph.endIndex;
       continue;
@@ -543,6 +651,10 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
       flushParagraph();
     }
 
+    // Keep native editable blocks reasonably sized without assigning every
+    // split of a long paragraph the same page-wide bounding box.
+    if (currentParagraphLines.length && currentParagraphLines.reduce((length, item) => length + item.text.length + 1, 0) + line.text.length > 850) flushParagraph();
+
     currentParagraphLines.push(line);
   }
 
@@ -551,6 +663,85 @@ function linesToParagraphs(lines: PdfLine[]): string[] {
   return paragraphs
     .map((paragraph) => paragraph.replace(/\u00a0/g, " ").trim())
     .filter((paragraph) => normalizeWhitespace(paragraph).length > 0);
+}
+
+export type PdfDetectedBlock = { text: string; geometry: Geometry; role: PageElementRole; headingLevel?: number };
+
+function unionGeometry(boxes: Geometry[]): Geometry {
+  const left = Math.max(0, Math.min(...boxes.map((box) => box.bbox.left)));
+  const top = Math.max(0, Math.min(...boxes.map((box) => box.bbox.top)));
+  return { bbox: { left, top,
+    width: Math.max(0.000001, Math.min(1, Math.max(...boxes.map((box) => box.bbox.left + box.bbox.width))) - left),
+    height: Math.max(0.000001, Math.min(1, Math.max(...boxes.map((box) => box.bbox.top + box.bbox.height))) - top) } };
+}
+
+/** Native PDF analysis: no OCR/provider call, all coordinates use the rendered viewport. */
+export async function analyzePdfPage(page: PDFPageProxy, repeatedMargins: ReadonlySet<string> = new Set()): Promise<PdfDetectedBlock[]> {
+  const viewport = page.getViewport({ scale: 1 });
+  const content = await page.getTextContent();
+  const items: PositionedTextItem[] = content.items.flatMap((value) => {
+    if (!("str" in value) || !normalizeWhitespace(value.str)) return [];
+    const height = Math.max(Math.abs(value.height), Math.hypot(value.transform[2] ?? 0, value.transform[3] ?? 0), 1);
+    const x = value.transform[4] ?? 0;
+    const y = value.transform[5] ?? 0;
+    const rectangle = viewport.convertToViewportRectangle([x, y - height * 0.2, x + Math.abs(value.width), y + height * 0.8]);
+    const left = Math.max(0, Math.min(1, Math.min(rectangle[0]!, rectangle[2]!) / viewport.width));
+    const top = Math.max(0, Math.min(1, Math.min(rectangle[1]!, rectangle[3]!) / viewport.height));
+    const right = Math.max(left, Math.min(1, Math.max(rectangle[0]!, rectangle[2]!) / viewport.width));
+    const bottom = Math.max(top, Math.min(1, Math.max(rectangle[1]!, rectangle[3]!) / viewport.height));
+    if (right <= left || bottom <= top) return [];
+    return [{ hasLineBreak: value.hasEOL, text: normalizeWhitespace(value.str), height, width: (right - left) * viewport.width,
+      x: left * viewport.width, y: viewport.height * (1 - top) - height * 0.8,
+      geometry: { bbox: { left, top, width: right - left, height: bottom - top } } }];
+  });
+  const bodyHeight = Math.max(6, computeMedian(items.filter((item) => item.text.length > 15).map((item) => item.height)) || computeMedian(items.map((item) => item.height)));
+  const blocks: PdfDetectedBlock[] = [];
+  const add = (text: string, lines: PdfLine[], forcedRole?: PageElementRole) => {
+    const source = lines.flatMap((line) => line.items ?? []);
+    const boxes = source.flatMap((item) => item.geometry ? [item.geometry] : []);
+    if (!boxes.length) return;
+    const geometry = unionGeometry(boxes);
+    const height = computeMedian(source.map((item) => item.height));
+    const short = text.length < 200;
+    const margin = geometry.bbox.top < 0.2 || geometry.bbox.top + geometry.bbox.height > 0.8;
+    const repeated = repeatedMargins.has(normalizePdfMargin(text));
+    const role = forcedRole ?? (isPdfPageNumberLine(text) && margin ? "pageNumber"
+      : short && margin && (repeated || height <= bodyHeight * 0.9 && (geometry.bbox.top < 0.055 || geometry.bbox.top > 0.93)) ? (geometry.bbox.top < 0.5 ? "header" : "footer")
+      : text.length < 180 && (height >= bodyHeight * 1.12 || headingKeywordPattern.test(text)) ? "heading" : "body");
+    const headingLevel = role === "heading" ? (height >= bodyHeight * 1.65 || headingKeywordPattern.test(text) ? 1 : height >= bodyHeight * 1.35 ? 2 : 3) : undefined;
+    for (const part of sanitizeParagraphs([text])) blocks.push({ text: part, geometry, role, ...(headingLevel ? { headingLevel } : {}) });
+  };
+  // Margins are classified separately, never merged into a body paragraph or column.
+  const folios = items.filter((item) => item.geometry && isPdfPageNumberLine(item.text) && (item.geometry.bbox.top < 0.07 || item.geometry.bbox.top > 0.91));
+  const marginItems = items.filter((item) => item.geometry && item.text.length < 180
+    && (item.geometry.bbox.top < 0.07 || item.geometry.bbox.top > 0.91)
+    && (item.height <= bodyHeight * 0.9 || repeatedMargins.has(normalizePdfMargin(item.text)) || folios.some((folio) => Math.abs(folio.y - item.y) <= sameLineTolerance)));
+  const marginSet = new Set(marginItems);
+  const headers = marginItems.filter((item) => item.geometry!.bbox.top < 0.5);
+  const footers = marginItems.filter((item) => item.geometry!.bbox.top >= 0.5);
+  for (const line of buildLines(headers)) add(line.text, [line], isPdfPageNumberLine(line.text) ? "pageNumber" : "header");
+  for (const region of buildReadingRegions(items.filter((item) => !marginSet.has(item)))) {
+    const lines = buildLines(region);
+    let body: PdfLine[] = [];
+    const flushBody = () => { linesToParagraphs(body, add); body = []; };
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index]!;
+      if (line.height >= bodyHeight * 1.12 && line.text.length < 180) {
+        flushBody();
+        const heading = [line];
+        while (lines[index + 1] && lines[index + 1]!.height >= bodyHeight * 1.12
+          && lines[index + 1]!.gapFromPrevious < line.height * 1.7 && heading.map((item) => item.text).join(" ").length + lines[index + 1]!.text.length < 180) heading.push(lines[++index]!);
+        add(joinLines(heading), heading, "heading");
+      } else body.push(line);
+    }
+    flushBody();
+  }
+  for (const line of buildLines(footers)) add(line.text, [line], isPdfPageNumberLine(line.text) ? "pageNumber" : "footer");
+  return blocks;
+}
+
+export function normalizePdfMargin(text: string): string {
+  return normalizeWhitespace(text).toLocaleLowerCase("es").replace(/\d+/gu, "#");
 }
 
 function normalizeOutlineTitle(value: string): string {
@@ -676,7 +867,7 @@ async function extractPdfOutlineEntries(
 export async function parsePdfBuffer(fileBuffer: Buffer, onProgress?: BookImportProgressCallback): Promise<ImportedDocument> {
   onProgress?.({ completedUnits: null, message: "Abriendo el PDF...", progress: 0, totalUnits: null, unit: null });
   const pdfModule = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const pdfDocument = await pdfModule.getDocument(new Uint8Array(fileBuffer)).promise.catch((error: unknown) => {
+  const pdfDocument = await pdfModule.getDocument({ data: new Uint8Array(fileBuffer), ...pdfAssetOptions }).promise.catch((error: unknown) => {
     if (error instanceof Error && error.name === "InvalidPDFException") {
       throw Object.assign(new Error("No se puede abrir el PDF: su estructura no es válida o el archivo está incompleto. Comprueba que se abre correctamente y vuelve a descargarlo o expórtalo de nuevo como PDF."), {
         statusCode: 422
@@ -779,83 +970,67 @@ export async function parsePdfBuffer(fileBuffer: Buffer, onProgress?: BookImport
 
     const pages: ImportedPage[] = [];
 
+    const marginPages = new Map<string, Set<number>>();
+    for (let number = 1; number <= pdfDocument.numPages; number++) {
+      const page = await pdfDocument.getPage(number);
+      const viewport = page.getViewport({ scale: 1 });
+      const content = await page.getTextContent();
+      for (const item of content.items) if ("str" in item && item.str.trim().length > 2 && item.str.length < 180) {
+        const [, top] = viewport.convertToViewportPoint(item.transform[4]!, item.transform[5]!);
+        if (top! / viewport.height < 0.12 || top! / viewport.height > 0.88) {
+          const key = normalizePdfMargin(item.str);
+          const numbers = marginPages.get(key) ?? new Set<number>();
+          numbers.add(number);
+          marginPages.set(key, numbers);
+        }
+      }
+      page.cleanup();
+    }
+    const repeatedMargins = new Set([...marginPages].filter(([, numbers]) => numbers.size >= 3).map(([key]) => key));
+
     for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
       const page = await pdfDocument.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      const textItems = (textContent.items as PdfTextItem[])
-        .map((item) => ({
-          hasLineBreak: Boolean(item.hasEOL),
-          height: Math.max(Math.abs(item.height ?? 0), Math.abs(item.transform?.[3] ?? 0), 0),
-          text: normalizeWhitespace(item.str ?? ""),
-          width: Math.abs(item.width ?? 0),
-          x: item.transform?.[4] ?? 0,
-          y: item.transform?.[5] ?? 0
-        }))
-        .filter((item) => item.text.length > 0);
-
-      const lines = buildLines(textItems);
-
-      // Heurística para eliminar números de página del encabezado y pie de página
-      if (lines.length > 0 && isPdfPageNumberLine(lines[0]?.text ?? "")) {
-        lines.shift();
-      }
-      if (lines.length > 0 && isPdfPageNumberLine(lines[lines.length - 1]?.text ?? "")) {
-        lines.pop();
-      }
-
-      const paragraphs = linesToParagraphs(lines);
-
-      try {
-        const operatorList = await page.getOperatorList();
-        let imageIndex = 1;
-
-        for (let i = 0; i < operatorList.fnArray.length; i += 1) {
-          const fn = operatorList.fnArray[i];
-          if (fn === pdfModule.OPS.paintImageXObject || fn === pdfModule.OPS.paintInlineImageXObject) {
-            const objId = operatorList.argsArray[i]?.[0];
-            if (!objId) continue;
-
-            try {
-              const imgData = await page.objs.get(objId);
-              if (imgData && imgData.data && imgData.width >= 30 && imgData.height >= 30) {
-                let channels = 3;
-                if (imgData.kind === 1) channels = 1;
-                else if (imgData.kind === 2) channels = 3;
-                else if (imgData.kind === 3) channels = 4;
-
-                const expectedLength = imgData.width * imgData.height * channels;
-                if (imgData.data.length >= expectedLength) {
-                  const pixelBuffer = Buffer.from(imgData.data).subarray(0, expectedLength);
-                  const pngBuffer = await sharp(pixelBuffer, {
-                    raw: {
-                      width: imgData.width,
-                      height: imgData.height,
-                      channels: channels as 1 | 3 | 4
-                    }
-                  }).png().toBuffer();
-
-                  paragraphs.push(`![Imagen ${imageIndex} de la página ${pageNumber}](data:image/png;base64,${pngBuffer.toString("base64")})`);
-                  imageIndex += 1;
-                }
-              }
-            } catch (error) {
-              // Ignorar errores de extracción de imágenes individuales
-            }
+      const blocks = await analyzePdfPage(page, repeatedMargins);
+      const imageBoxes = await pdfImageGeometries(page, pdfModule.OPS);
+      const indices: number[] = [];
+      const images = await extractPdfImages(page, pdfModule.OPS, pageNumber, (index) => indices.push(index));
+      let paragraphs = blocks.map((block) => block.headingLevel ? `${"#".repeat(block.headingLevel)} ${block.text}` : block.text);
+      const paragraphMetadata: NonNullable<ImportedPage["paragraphMetadata"]> = blocks.map((block) => ({
+        role: block.role, geometry: block.geometry, readAloud: !["header", "footer", "pageNumber"].includes(block.role),
+        includeInToc: block.role === "heading"
+      }));
+      for (const [index, image] of images.entries()) {
+        const geometry = imageBoxes.get(indices[index]!);
+        paragraphs.push(image);
+        paragraphMetadata.push({ role: "image", readAloud: false, geometry: geometry ?? null });
+        if (geometry) for (const [blockIndex, block] of blocks.entries()) {
+          const box = block.geometry.bbox;
+          const bottom = geometry.bbox.top + geometry.bbox.height;
+          if (block.role === "body" && block.text.length < 220 && box.top >= bottom && box.top - bottom < 0.035
+            && box.left < geometry.bbox.left + geometry.bbox.width && box.left + box.width > geometry.bbox.left
+            && (/^(?:fig(?:ura)?\.?|foto(?:grafía)?|imagen|fuente)\b/iu.test(block.text) || box.height < 0.035)) {
+            paragraphMetadata[blockIndex]!.role = "imageCaption";
           }
         }
-      } catch (error) {
-        // Ignorar errores al obtener la lista de operadores o de extracción general
       }
-
-      const richContent = buildRichPageFromParagraphs(paragraphs);
+      const ordered = orderPdfImages(paragraphs.map((text, index) => ({ text, metadata: paragraphMetadata[index]!,
+        geometry: paragraphMetadata[index]!.geometry, image: paragraphMetadata[index]!.role === "image" })));
+      paragraphs = ordered.map((entry) => entry.text);
+      paragraphMetadata.splice(0, paragraphMetadata.length, ...ordered.map((entry) => entry.metadata));
+      const richContent = buildRichPageFromParagraphs(paragraphs, { paragraphMetadata, inferHeadings: false });
 
       pages.push({
         editedText: paragraphs.join("\n\n") || richContent.editedText,
-        htmlContent: richContent.htmlContent,
+        htmlContent: annotatePageElementHtml(richContent.htmlContent, paragraphMetadata.map((metadata, index) => ({ ...metadata, paragraphNumber: index + 1 }))),
         pageNumber,
+        sourcePdfPageNumber: pageNumber,
+        paragraphMetadata,
         paragraphs: richContent.paragraphs,
-        rawText: paragraphs.join("\n\n") || lines.map((line) => line.text).join("\n")
+        rawText: paragraphs.join("\n\n")
       });
+
+      page.cleanup();
+      await pdfDocument.cleanup();
 
       onProgress?.({
         completedUnits: pageNumber,

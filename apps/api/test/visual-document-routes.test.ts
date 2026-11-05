@@ -11,6 +11,7 @@ import { buildRichPageFromEditableText, extractEmbeddedImageSources } from "../s
 import { buildVisualDocumentFromPage, cropVisualPageImage, renderVisualDocument, visualSourceHtml, visualPageDocumentSchema, type VisualPageDocument } from "../src/modules/books/visual-document.js";
 import { annotatePageElementHtml, normalizeParagraphMetadata, paragraphElementMetadataSchema, projectActivePageHtml } from "../src/modules/books/page-elements.js";
 import { matchParagraphsWithExplicitIds } from "../src/modules/books/paragraph-ids.js";
+import { validatePdfProfile } from "../src/modules/books/pdf-profile.js";
 
 const routes = readFileSync(new URL("../src/modules/books/books.routes.ts", import.meta.url), "utf8");
 const source = ts.createSourceFile("books.routes.ts", routes, ts.ScriptTarget.Latest, true);
@@ -443,7 +444,7 @@ test("cached AI projections mask stale CLOB text, preserve original records and 
 
 test("export assembly projects active SQL paragraphs and applies legacy metadata/width to HTML without renumbering", async () => {
   let payload: any;
-  const dependencies = { renderVisualDocument, visualPageDocumentSchema, annotatePageElementHtml, projectActivePageHtml,
+  const dependencies = { renderVisualDocument, visualPageDocumentSchema, annotatePageElementHtml, projectActivePageHtml, validatePdfProfile,
     paragraphElementMetadataSchema, resolveBookOutline: async () => [], resolveBookCoverAsset: async () => null,
     hydrateContentImages: (html: string) => html, oracledb: { BUFFER: 1 }, buildDownloadFileName: () => "book.epub",
     buildEpubExport: async (options: any) => { payload = options; return Buffer.from("epub"); } };

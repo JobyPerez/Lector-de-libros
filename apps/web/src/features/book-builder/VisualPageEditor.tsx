@@ -7,6 +7,7 @@ import { VisualBlockInspector, VisualImageSourceFields } from "./VisualBlockInsp
 import { VisualCompositeInspector } from "./VisualCompositeInspector";
 import { appendVisualBlock, applyVisualPreset, compositeForBlock, createVisualBlock, flattenVisualLayout, importedVisualSourceHtml, isCenteredFooterRow, mergeVisualBlocks, moveVisualNode, orderedVisualBlocks, renderVisualBlockHtml, renderVisualCompositeHtml, renderVisualStyle, safeVisualImageSource, updateVisualBlock, visualDocumentSaveError, visualUnits, type VisualContainer, type VisualPreset } from "./visual-page";
 import "./visual-page.css";
+import { placeVisualImagesFromGeometry } from "./visual-page";
 
 function PreviewIcon({ name }: { name: "edit" | "drag" | "zoom" | "undo" | "redo" | "page" | "row" | "column" | "inactive" }) {
   return <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -352,6 +353,11 @@ export function VisualPageEditor({ doc, page, savedDocument, selectedId, onSelec
       <div className="visual-preview-tools"><label>Distribucion<select defaultValue="" disabled={disabled} onChange={(event) => { onChange(applyVisualPreset(doc, event.target.value as VisualPreset)); event.target.value = ""; }}><option value="" disabled>Layout actual</option><option value="one-column">1 columna</option><option value="two-columns">2 columnas</option><option value="two-by-two">2 x 2</option><option value="rows">Fila horizontal</option></select></label>
         <button className="visual-icon-button" type="button" aria-label="Mostrar anulados" title={showInactive ? "Ocultar bloques anulados" : "Mostrar bloques anulados"} aria-pressed={showInactive} onClick={() => setShowInactive((current) => !current)}><PreviewIcon name="inactive" /></button>
       </div>
+      {sourceImage && doc.blocks.some((block) => block.kind === "image" && validElementGeometry(block.geometry)) ? <div className="visual-actions">
+        <button type="button" disabled={disabled || Boolean(editing || marking || dragging || newBlock || joining) || placeVisualImagesFromGeometry(doc) === doc}
+          onClick={() => onChange(placeVisualImagesFromGeometry(doc))}>Colocar imágenes según el original</button>
+        <span className="helper-text">Conserva el orden del texto. Puedes deshacer antes de guardar.</span>
+      </div> : null}
       <p className="helper-text">Selecciona para editar. Arrastra desde el asa a una zona o usa Mover a... en el inspector.</p>
       <div className="visual-preview-canvas">{renderNode(doc.layout, true)}</div>
       {!order.some((block) => block.active) ? <p className="helper-text">No hay bloques activos. Activa Mostrar anulados para restaurarlos o crea uno nuevo.</p> : null}

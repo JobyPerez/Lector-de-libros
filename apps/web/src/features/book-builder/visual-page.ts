@@ -37,6 +37,59 @@ export function orderedVisualBlocks(doc: VisualPageDocument, includeInactive = t
   });
 }
 
+// Explicit, undoable repair for already-imported images. Never flatten columns,
+// split joined blocks, or change the relative reading order of text siblings.
+export function placeVisualImagesFromGeometry(doc: VisualPageDocument): VisualPageDocument {
+  const blocks = new Map(doc.blocks.map((block) => [block.id, block]));
+  const boxOf = (node: VisualLayoutNode) => {
+    const boxes = flattenVisualLayout(node).flatMap((child) => {
+      const box = child.type === "block" ? blocks.get(child.blockId)?.geometry?.bbox : null;
+      return box && [box.top, box.left, box.width, box.height].every(Number.isFinite) && box.width > 0 && box.height > 0 ? [box] : [];
+    });
+    if (!boxes.length) return null;
+    const left = Math.min(...boxes.map((box) => box.left)), top = Math.min(...boxes.map((box) => box.top));
+    return { left, top, width: Math.max(...boxes.map((box) => box.left + box.width)) - left,
+      height: Math.max(...boxes.map((box) => box.top + box.height)) - top };
+  };
+  function visit(node: VisualLayoutNode): VisualLayoutNode {
+    if (node.type === "block" || node.content) return node;
+    let children = node.children.map(visit);
+    if (node.type === "column") {
+      const images = children.filter((child) => {
+        const box = boxOf(child);
+        return child.type === "block" && blocks.get(child.blockId)?.kind === "image" && box && children.some((other) => {
+          if (other === child || other.type === "block" && blocks.get(other.blockId)?.kind === "image") return false;
+          const anchor = boxOf(other);
+          return anchor && Math.min(box.left + box.width, anchor.left + anchor.width) - Math.max(box.left, anchor.left) > Math.min(box.width, anchor.width) * .3
+            && (anchor.top >= box.top + box.height - .005 || anchor.top + anchor.height <= box.top + .005);
+        });
+      })
+        .sort((a, b) => boxOf(a)!.top - boxOf(b)!.top || boxOf(a)!.left - boxOf(b)!.left);
+      children = children.filter((child) => !images.includes(child));
+      for (const image of images) {
+        const box = boxOf(image)!;
+        const overlaps = (child: VisualLayoutNode) => {
+          const other = boxOf(child);
+          return other && Math.min(box.left + box.width, other.left + other.width) - Math.max(box.left, other.left) > Math.min(box.width, other.width) * .3;
+        };
+        let index = children.findIndex((child) => overlaps(child) && boxOf(child)!.top >= box.top + box.height - .005);
+        if (index < 0) {
+          index = children.length;
+          for (let i = children.length - 1; i >= 0; i--) {
+            const previous = boxOf(children[i]!);
+            if (overlaps(children[i]!) && previous!.top + previous!.height <= box.top + .005) { index = i + 1; break; }
+          }
+        }
+        children.splice(index, 0, image);
+      }
+    }
+    if (children.every((child, index) => child === node.children[index])) return node;
+    return { ...node, children, ...(node.weights ? { weights: children.map((child) => node.weights![node.children.findIndex((old) => old.id === child.id)]!) } : {}) };
+  }
+  const layout = visit(doc.layout);
+  return layout === doc.layout ? doc : { ...doc, layout };
+}
+
 export function compositeForBlock(doc: VisualPageDocument, id: string): VisualContainer | undefined {
   return flattenVisualLayout(doc.layout).find((node): node is VisualContainer => node.type !== "block" && Boolean(node.content) && node.children.some((child) => child.type === "block" && child.blockId === id));
 }
