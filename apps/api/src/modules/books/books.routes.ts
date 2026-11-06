@@ -22,6 +22,7 @@ import { deriveTitleFromFileName, inferSourceType, parseUploadedBook, supportedB
 import { resolveBookOutline, resolveBookOutlineWithSource, type BookOutlineEntry } from "./book-outline.js";
 import { externalizeContentImages, hydrateContentImages, type ContentImageAsset, type HydratableContentImage } from "./content-images.js";
 import { extractEpubCover } from "./epub-import.js";
+import { coverThumbnailCache } from "./cover-thumbnail.js";
 import { isRetryableOcrError, isSupportedImageUpload, runOcrOnImage, supportedImageOcrModes, supportedImageRotations, type AwsTextractCredentials, type ImageOcrMode, type ImageRotation } from "./image-ocr.js";
 import type { OcrMarginHints } from "./ocr-margins.js";
 import { buildRichPageFromEditableText, extractEmbeddedImageSources, hasValidReadingBlockMarkers, normalizeWhitespace } from "./rich-content.js";
@@ -221,6 +222,7 @@ type ProcessedImagePage = UploadedBinaryFile & {
 };
 
 type OwnedBookRecord = {
+  updatedAt?: string;
   publicationYear?: number | null;
   readingDate?: string | null;
   authorName: string | null;
@@ -2154,7 +2156,8 @@ async function findAccessibleBook(
         b.source_type AS "sourceType",
         b.status AS "status",
         b.total_pages AS "totalPages",
-        b.total_paragraphs AS "totalParagraphs"
+        b.total_paragraphs AS "totalParagraphs",
+        TO_CHAR(b.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.FF6"Z"') AS "updatedAt"
       FROM books b
       LEFT JOIN user_book_settings us
         ON us.book_id = b.book_id
@@ -7455,12 +7458,31 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const params = bookParamsSchema.parse(request.params);
+    const query = z.object({ thumbnail: z.enum(["true", "false"]).optional() }).parse(request.query);
     const connection = await getConnection();
 
     try {
       const book = await findAccessibleBook(connection, params.bookId, request.currentUser.userId);
       if (!book) {
         return reply.status(404).send({ message: "Book not found." });
+      }
+
+      if (query.thumbnail === "true") {
+        // Access is checked above even on a cache hit. Use the database version, not query.v.
+        const thumbnail = await coverThumbnailCache.get(book.bookId, book.updatedAt ?? "", async () => {
+          const asset = await resolveBookCoverAsset(connection, book);
+          return asset?.contentBlob ?? null;
+        });
+        if (!thumbnail) return reply.status(404).send({ message: "Cover image not found." });
+        reply.header("Content-Type", "image/webp")
+          .header("Cache-Control", "private, max-age=300")
+          .header("ETag", thumbnail.etag)
+          .header("Vary", "Authorization");
+        const matches = request.headers["if-none-match"]?.split(",").some((value) => {
+          const tag = value.trim();
+          return tag === "*" || tag.replace(/^W\//u, "") === thumbnail.etag;
+        });
+        return matches ? reply.status(304).send() : reply.send(thumbnail.buffer);
       }
 
       const coverAsset = await resolveBookCoverAsset(connection, book);

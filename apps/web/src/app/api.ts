@@ -1552,11 +1552,13 @@ export function fetchBookContentImage(accessToken: string, bookId: string, asset
   return requestBlob(`/books/${bookId}/content-images/${encodeURIComponent(assetId)}`, accessToken, signal);
 }
 
-export async function fetchBookCover(accessToken: string, bookId: string, cacheKey?: string | null): Promise<Blob | null> {
-  const query = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : "";
+export async function fetchBookCover(accessToken: string, bookId: string, cacheKey?: string | null, thumbnail = false, signal?: AbortSignal): Promise<Blob | null> {
+  const query = new URLSearchParams();
+  if (cacheKey) query.set("v", cacheKey);
+  if (thumbnail) query.set("thumbnail", "true");
 
   try {
-    return await requestBlob(`/books/${bookId}/cover${query}`, accessToken);
+    return await requestBlob(`/books/${bookId}/cover${query.size ? `?${query}` : ""}`, accessToken, signal);
   } catch (error) {
     if (error instanceof Error && typeof (error as Partial<ApiRequestError>).statusCode === "number" && (error as Partial<ApiRequestError>).statusCode === 404) {
       return null;

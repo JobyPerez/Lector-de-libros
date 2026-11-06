@@ -322,18 +322,36 @@ function describeSourceType(sourceType: BookSummary["sourceType"]): string {
 }
 
 function ShelfBookCover({ accessToken, book }: { accessToken: string | null; book: BookSummary }) {
+  const userId = useAuthStore((state) => state.user?.userId) ?? "";
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setVisible(true);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: "200px" });
+    if (frameRef.current) observer.observe(frameRef.current);
+    return () => observer.disconnect();
+  }, []);
   const cacheKey = book.updatedAt ?? book.createdAt ?? `${book.totalPages}-${book.totalParagraphs}`;
   const coverQuery = useQuery({
-    enabled: Boolean(accessToken),
-    queryKey: ["book-cover", book.bookId, cacheKey],
-    queryFn: async () => {
+    enabled: Boolean(accessToken) && visible,
+    queryKey: ["book-cover", book.bookId, cacheKey, userId, "thumbnail-v1"],
+    queryFn: async ({ signal }) => {
       if (!accessToken) {
         return null;
       }
 
-      return fetchBookCover(accessToken, book.bookId, cacheKey);
+      return fetchBookCover(accessToken, book.bookId, cacheKey, true, signal);
     },
-    staleTime: 60_000
+    staleTime: 300_000,
+    gcTime: 1_800_000
   });
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
   const [coverAspectRatio, setCoverAspectRatio] = useState(10 / 14.4);
@@ -354,6 +372,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
 
   return (
     <div
+      ref={frameRef}
       className="shelf-book-cover-frame"
       data-has-cover={coverUrl ? "true" : "false"}
       data-loading={coverQuery.isLoading ? "true" : undefined}
@@ -363,7 +382,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
         <img
           alt={`Portada de ${book.title}`}
           className="shelf-book-cover-image"
-          loading="lazy"
+          decoding="async"
           onLoad={(event) => {
             const image = event.currentTarget;
             if (image.naturalWidth && image.naturalHeight) {
