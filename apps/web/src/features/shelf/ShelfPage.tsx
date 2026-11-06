@@ -10,8 +10,9 @@ import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { ShareBookModal } from "../sharing/ShareBookModal";
+import { readShelfSortMode, saveShelfSortMode, type ShelfSortMode } from "./shelf-sort";
 
-export type ShelfSortMode = "lastOpened" | "rating" | "readingDate" | "publicationYear";
+export type { ShelfSortMode } from "./shelf-sort";
 
 type BookEditFormState = {
   publicationYear: string;
@@ -334,6 +335,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
     staleTime: 60_000
   });
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
+  const [coverAspectRatio, setCoverAspectRatio] = useState(10 / 14.4);
 
   useEffect(() => {
     if (!coverQuery.data) {
@@ -350,9 +352,25 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
   }, [coverQuery.data]);
 
   return (
-    <div className="shelf-book-cover-frame" data-has-cover={coverUrl ? "true" : "false"} data-loading={coverQuery.isLoading ? "true" : undefined}>
+    <div
+      className="shelf-book-cover-frame"
+      data-has-cover={coverUrl ? "true" : "false"}
+      data-loading={coverQuery.isLoading ? "true" : undefined}
+      style={coverUrl ? { width: `${Math.min(1, coverAspectRatio * 1.44) * 100}%` } : undefined}
+    >
       {coverUrl ? (
-        <img alt={`Portada de ${book.title}`} className="shelf-book-cover-image" loading="lazy" src={coverUrl} />
+        <img
+          alt={`Portada de ${book.title}`}
+          className="shelf-book-cover-image"
+          loading="lazy"
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (image.naturalWidth && image.naturalHeight) {
+              setCoverAspectRatio(image.naturalWidth / image.naturalHeight);
+            }
+          }}
+          src={coverUrl}
+        />
       ) : (
         <div className="shelf-book-cover-placeholder">
           <span aria-hidden="true" className="shelf-book-cover-monogram">{buildBookMonogram(book.title)}</span>
@@ -370,6 +388,7 @@ function ShelfBookCover({ accessToken, book }: { accessToken: string | null; boo
 export function ShelfPage() {
   const queryClient = useQueryClient();
   const accessToken = useAuthStore((state) => state.accessToken);
+  const userId = useAuthStore((state) => state.user?.userId) ?? "";
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -413,7 +432,11 @@ export function ShelfPage() {
   const [expandedBookIds, setExpandedBookIds] = useState<ReadonlySet<string>>(new Set());
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
-  const [sortMode, setSortMode] = useState<ShelfSortMode>("lastOpened");
+  const [sortMode, setSortMode] = useState<ShelfSortMode>(() => readShelfSortMode(userId));
+
+  useEffect(() => {
+    setSortMode(readShelfSortMode(userId));
+  }, [userId]);
   const activeView: ShelfView = editingBook ? "edit" : isImportPanelVisible ? "import" : "shelf";
   const canEditBookMetadata = !editingBook?.currentUserRole || editingBook.currentUserRole === "OWNER";
   const requestedScope = searchParams.get("scope");
@@ -1501,7 +1524,11 @@ export function ShelfPage() {
             <select
               className="shelf-sort-select"
               id="shelf-sort-select"
-              onChange={(e) => setSortMode(e.target.value as ShelfSortMode)}
+              onChange={(e) => {
+                const nextMode = e.target.value as ShelfSortMode;
+                setSortMode(nextMode);
+                saveShelfSortMode(userId, nextMode);
+              }}
               value={sortMode}
             >
               <option value="lastOpened">Última lectura</option>

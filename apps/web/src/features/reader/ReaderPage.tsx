@@ -60,6 +60,7 @@ import { buildReaderNavigationItems, highlightPreview, notePreview, tocEntryKey 
 import { createStoredZip } from "./audio-zip";
 import { getOfflineChapterAudioStatus, invalidateOfflineBookAudioIfChanged, isOfflineAudioRevisionError, loadOfflineAudioBlockContaining, loadOfflineChapterAudioExport, normalizeContentRevision, OfflineAudioRevisionError, saveChapterAudioBlock } from "./offline-audio-cache";
 import { OriginalPageView } from "./OriginalPageView";
+import { ReaderChapterBoundary } from "./ReaderChapterBoundary";
 import { applyReadingElementLayout, buildAudioBlockTimings, findReadableParagraph, isReadable, nextAudioCursor } from "./reading-elements";
 import "./reading-views.css";
 
@@ -2194,9 +2195,6 @@ export function ReaderPage() {
         : section.startSequenceNumber === activeTocEntry.sequenceNumber
     )) ?? null;
   }, [activeTocEntry, navigationQuery.data?.readingMetrics.sections]);
-  const nextChapterPageNumber = activeTocEntry
-    ? activeReadingSection?.nextStartPageNumber ?? null
-    : navigationQuery.data?.toc[0]?.pageNumber ?? null;
   const readingTimeStats = useMemo<ReaderAudioReadingTimeStats | null>(() => {
     const readingMetrics = navigationQuery.data?.readingMetrics;
     const readingOffset = pageQuery.data?.page.readingOffset;
@@ -5413,7 +5411,7 @@ export function ReaderPage() {
         </ReaderFloatingAudioPopover>
         <div aria-live="polite" className="reader-floating-status">
           <form className="reader-page-jump-form" onSubmit={(event) => void handlePageJumpSubmit(event)}>
-            <label className="reader-page-jump-label">
+            <div className="reader-page-jump-label">
               <input
                 aria-label="Página actual"
                 className="reader-page-jump-input"
@@ -5437,21 +5435,17 @@ export function ReaderPage() {
                 type="text"
                 value={isPageJumpActive ? pageJumpValue : String(currentPageNumber)}
               />
-              {nextChapterPageNumber !== null ? (
-                <span
-                  aria-label={`Siguiente capítulo en la página ${nextChapterPageNumber}`}
-                  className="reader-next-chapter-page"
-                  role="img"
-                  title={`Siguiente capítulo · página ${nextChapterPageNumber}`}
-                >
-                  <span aria-hidden="true">→</span>
-                  <strong aria-hidden="true">{nextChapterPageNumber}</strong>
-                </span>
-              ) : null}
+              <ReaderChapterBoundary
+                bookId={bookId}
+                pageNumber={currentPageNumber}
+                paragraphNumber={currentParagraphNumber}
+                toc={navigationQuery.data?.toc ?? []}
+                totalPages={totalPages}
+              />
               <strong aria-label={`Total del libro: ${totalPages} páginas`} className="reader-total-page-count">
                 <span aria-hidden="true">/ {totalPages}</span>
               </strong>
-            </label>
+            </div>
           </form>
           <span className="reader-reading-percentage">{readingPercentage.toFixed(1)}%</span>
         </div>
