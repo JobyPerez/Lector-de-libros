@@ -36,16 +36,17 @@ const emptyBookEditForm: BookEditFormState = {
   languageCode: "es",
   notionBookUrl: "",
   rating: null,
-  readingStatus: "WANT_TO_READ",
+  readingStatus: "SAVED",
   title: "",
   userComments: ""
 };
 
 const READING_STATUS_CONFIG: { id: ReadingStatus; label: string }[] = [
   { id: "READING", label: "Leyendo" },
-  { id: "WANT_TO_READ", label: "Pendiente" },
+  { id: "WANT_TO_READ", label: "Me gustaría leer" },
   { id: "READ", label: "Terminado" },
-  { id: "ABANDONED", label: "Abandonado" }
+  { id: "ABANDONED", label: "Abandonado" },
+  { id: "SAVED", label: "Guardado" }
 ];
 
 const RATING_LABELS: Record<number, string> = {
@@ -789,7 +790,7 @@ export function ShelfPage() {
       languageCode: book.languageCode,
       notionBookUrl: book.notionBookUrl ?? "",
       rating: book.rating ?? null,
-      readingStatus: book.readingStatus ?? "WANT_TO_READ",
+      readingStatus: book.readingStatus ?? "SAVED",
       title: book.title,
       userComments: book.userComments ?? ""
     });
@@ -808,7 +809,7 @@ export function ShelfPage() {
     const originalAuthor = (editingBook.authorName ?? "").trim();
     const originalNotion = (editingBook.notionBookUrl ?? "").trim();
     const originalLanguageCode = editingBook.languageCode;
-    const originalStatus = editingBook.readingStatus ?? "WANT_TO_READ";
+    const originalStatus = editingBook.readingStatus ?? "SAVED";
     const originalRating = editingBook.rating ?? null;
     const originalComments = (editingBook.userComments ?? "").trim();
 
@@ -1142,7 +1143,7 @@ export function ShelfPage() {
 
   const sectionsWithBooks = READING_STATUS_CONFIG.map((statusConfig) => {
     const matchingBooks = allBooks.filter((book) => {
-      const bookStatus = book.readingStatus ?? "WANT_TO_READ";
+      const bookStatus = book.readingStatus ?? "SAVED";
       return bookStatus === statusConfig.id && matchesShelfQuery(book);
     });
     return {

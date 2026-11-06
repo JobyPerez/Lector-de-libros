@@ -14,6 +14,7 @@
     "migrate:content-images": "tsx src/scripts/migrate-content-images.ts",
     "migrate:pdf-page-sources": "tsx src/scripts/migrate-pdf-page-sources.ts",
     "migrate:book-deletion-indexes": "tsx src/scripts/migrate-book-deletion-indexes.ts",
+    "migrate:saved-reading-status": "tsx src/scripts/migrate-saved-reading-status.ts",
     "start": "node dist/server.js",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"

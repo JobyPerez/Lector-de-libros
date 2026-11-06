@@ -290,7 +290,7 @@ export type BookRole = "OWNER" | "EDITOR" | "COMMENTER" | "VIEWER";
 
 export type ShareRole = "viewer" | "commenter" | "editor";
 
-export type ReadingStatus = "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
+export type ReadingStatus = "SAVED" | "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
 
 export type BookSummary = {
   publicationYear?: number | null;
