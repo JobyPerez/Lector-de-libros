@@ -214,6 +214,17 @@ function normalizeDocumentHeadingsFromToc(
     // chapter titles. Only promote the explicit TOC target, never body text.
     const targetParagraph = fragmentNode ? document(fragmentNode).closest("p").first() : document([]);
     const comparisonKey = (text: string) => normalizeHeadingComparison(text).replace(/\s+/gu, "");
+    // Calibre EPUBs can put a chapter label in a span inside an anchored div,
+    // followed by empty layout paragraphs. Promote only an exact TOC label.
+    const labelRoot = fragmentNode ? document(fragmentNode) : document("body");
+    const styledLabel = labelRoot.find("span, p").add(labelRoot.filter("span, p"))
+      .toArray().find((node) => comparisonKey(document(node).text()) === comparisonKey(entry.title)
+        && !document(node).find("p, div, section").length);
+    if (targetParagraph.length === 0 && styledLabel) {
+      setHeadingLevel(styledLabel, entry.level);
+      document(styledLabel).attr(tocNormalizedHeadingAttribute, "true");
+      continue;
+    }
     if (targetParagraph.length > 0 && comparisonKey(targetParagraph.text())
       && comparisonKey(targetParagraph.text()) === comparisonKey(entry.title)) {
       setHeadingLevel(targetParagraph.get(0)!, entry.level);
@@ -1238,9 +1249,16 @@ function registerPageAnchorTargets(
         return;
       }
 
+      const paragraphNumber = resolveParagraphNumberForNode(document, node);
+      // Pagination clones structural wrappers, including their IDs, onto all
+      // chunks. An empty clone is not the destination of the original anchor.
+      if (!paragraphNumber && element.children().length > 0 && !normalizeWhitespace(element.text())
+        && !element.find("img, image, svg").length) {
+        return;
+      }
       const target = {
         pageNumber,
-        paragraphNumber: resolveParagraphNumberForNode(document, node) ?? fallbackTarget.paragraphNumber
+        paragraphNumber: paragraphNumber ?? fallbackTarget.paragraphNumber
       } satisfies PageAnchorTarget;
 
       for (const key of buildFragmentLookupKeys(normalizedEntryPath, fragment)) {
@@ -1608,6 +1626,22 @@ export async function parseEpubBuffer(fileBuffer: Buffer, onProgress?: BookImpor
   const outlineEntries = tocEntries.length > 0
     ? buildOutlineFromTocEntries(tocEntries, pageAnchorLookup)
     : [];
+
+  // An explicit publisher TOC excludes cover/jacket headings and may include
+  // levels T4-T6. Persist that choice rather than the default T1-T3 heuristic.
+  if (outlineEntries.length > 0) {
+    const targets = new Set(outlineEntries.map((entry) => `${entry.pageNumber}:${entry.paragraphNumber}`));
+    for (const page of pages) {
+      const document = load(page.htmlContent ?? "");
+      const headingNumbers = new Set(document(headingSelector).toArray().map((node) =>
+        Number(document(node).attr("data-paragraph-number"))));
+      page.paragraphMetadata = page.paragraphs.map((_, index) => ({
+        role: headingNumbers.has(index + 1) ? "heading" : "body",
+        readAloud: true,
+        includeInToc: targets.has(`${page.pageNumber}:${index + 1}`)
+      }));
+    }
+  }
 
   return {
     coverImage,

@@ -6,6 +6,7 @@ import { load } from "cheerio";
 
 import { parseEpubBuffer } from "../src/modules/books/epub-import.js";
 import { parseUploadedBook } from "../src/modules/books/book-import.js";
+import { buildOutlineFromTitles } from "../src/modules/books/book-outline.js";
 
 function createEpub(chapterMarkup: string, navigationMarkup?: string, language?: string): Buffer {
   const archive = new AdmZip();
@@ -107,6 +108,30 @@ test("no convierte un párrafo de contenido cuyo texto no coincide con el TOC", 
   const imported = await parseEpubBuffer(createEpub('<p id="target">Texto del cuerpo</p>',
     '<nav epub:type="toc"><ol><li><a href="chapter.xhtml#target">Título ausente</a></li></ol></nav>'));
   assert.equal(load(imported.pages[0]?.htmlContent ?? "")("h1,h2,h3").length, 0);
+});
+
+test("respeta el TOC con títulos Calibre, sin incluir la sobrecubierta ni anclas clonadas vacías", async () => {
+  const filler = Array.from({ length: 32 }, (_, index) => `<p>Texto ${index} ${"contenido ".repeat(45)}</p>`).join("");
+  const imported = await parseUploadedBook("EPUB", createEpub(
+    `<h1>Sobrecubierta</h1><div id="first"><span>PRIMERO</span><p></p></div><div>${filler}</div><div id="second"><span><em>SEGUNDO</em></span><p></p></div><p>Final</p>`,
+    '<nav epub:type="toc"><ol><li><a href="chapter.xhtml#first">PRIMERO</a><ol><li><a href="chapter.xhtml#second">SEGUNDO</a></li></ol></li></ol></nav>'
+  ));
+  let sequenceNumber = 0;
+  const paragraphs = imported.pages.flatMap((page) => page.paragraphs.map((_, index) => ({
+    paragraphId: String(++sequenceNumber), sequenceNumber, pageNumber: page.pageNumber,
+    paragraphNumber: index + 1, includeInToc: page.paragraphMetadata?.[index]?.includeInToc
+  })));
+  const outline = buildOutlineFromTitles(imported.pages.map((page) => ({ ...page, htmlContent: page.htmlContent ?? null })), paragraphs);
+  assert.deepEqual(outline.map(({ title, level, pageNumber, paragraphNumber }) => ({ title, level, pageNumber, paragraphNumber })), imported.outlineEntries);
+  assert.deepEqual(outline.map((entry) => entry.title), ["PRIMERO", "SEGUNDO"]);
+  assert.ok(outline[1]!.pageNumber > 1);
+  assert.equal(load(imported.pages.at(-1)?.htmlContent ?? "")("h2 em").text(), "SEGUNDO");
+});
+
+test("reconoce el título estilizado al inicio de un destino TOC sin fragmento", async () => {
+  const imported = await parseEpubBuffer(createEpub('<div><span>CAPÍTULO</span><p></p></div><p>Cuerpo</p>',
+    '<nav epub:type="toc"><ol><li><a href="chapter.xhtml">CAPÍTULO</a></li></ol></nav>'));
+  assert.equal(load(imported.pages[0]?.htmlContent ?? "")("h1").text(), "CAPÍTULO");
 });
 
 test("convierte enlaces internos EPUB en destinos navegables del lector", async () => {

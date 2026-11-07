@@ -4777,7 +4777,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                   sequence_number,
                   paragraph_text,
                   word_count,
-                  tts_character_count, element_role, read_aloud, geometry_json
+                  tts_character_count, element_role, read_aloud, geometry_json, include_in_toc
                 ) VALUES (
                   :paragraphId,
                   :bookId,
@@ -4787,7 +4787,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                   :sequenceNumber,
                   :paragraphText,
                   :wordCount,
-                  :characterCount, :elementRole, :readAloud, :geometryJson
+                  :characterCount, :elementRole, :readAloud, :geometryJson, :includeInToc
                 )
               `,
               {
@@ -4796,6 +4796,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
                 elementRole: metadata.role,
                 readAloud: metadata.readAloud ? 1 : 0,
                 geometryJson: metadata.geometry ? JSON.stringify(metadata.geometry) : null,
+                includeInToc: metadata.includeInToc == null ? null : metadata.includeInToc ? 1 : 0,
                 pageId,
                 pageNumber: page.pageNumber,
                 paragraphId: randomUUID(),
