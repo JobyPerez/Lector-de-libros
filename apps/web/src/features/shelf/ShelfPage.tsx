@@ -5,11 +5,13 @@ import { Link, useLocation, useNavigate, useSearchParams } from "react-router-do
 import { deleteBook, fetchBookCover, fetchBookImportProgress, fetchBooks, importBook, leaveBookShare, updateBook, type BookImportProgress, type BookRole, type BookScope, type BookSummary, type ReadingStatus } from "../../app/api";
 import { downloadBookToDevice } from "../../app/book-download";
 import { choosePdfDownloadProfile } from "../../components/choosePdfDownloadProfile";
-import { BOOK_LANGUAGE_OPTIONS, getBookLanguageLabel, type BookLanguageCode } from "../../app/book-language";
+import { BOOK_LANGUAGE_OPTIONS, type BookLanguageCode } from "../../app/book-language";
 import { useAuthStore } from "../../app/auth-store";
 import notionIconUrl from "../../assets/notion.svg";
 import { confirmUnsavedChanges } from "../../components/confirmUnsavedChanges";
 import { ShareBookModal } from "../sharing/ShareBookModal";
+import { BookInfoDialog } from "./BookInfoDialog";
+import { BookInfoMetadata } from "./BookInfoMetadata";
 import { readShelfSortMode, saveShelfSortMode, type ShelfSortMode } from "./shelf-sort";
 
 export type { ShelfSortMode } from "./shelf-sort";
@@ -58,7 +60,6 @@ const RATING_LABELS: Record<number, string> = {
 };
 
 const removalExitAnimationMs = 280;
-const shelfNumberFormatter = new Intl.NumberFormat("es-ES");
 
 function EditIcon() {
   return (
@@ -449,10 +450,17 @@ export function ShelfPage() {
   const downloadInProgressRef = useRef(false);
   const [downloadTitle, setDownloadTitle] = useState<string | null>(null);
   const [downloadMenuBookId, setDownloadMenuBookId] = useState<string | null>(null);
-  const [expandedBookIds, setExpandedBookIds] = useState<ReadonlySet<string>>(new Set());
+  const downloadMenuRef = useRef<HTMLDivElement>(null);
+  const [infoBook, setInfoBook] = useState<{ book: BookSummary; origin: HTMLElement } | null>(null);
   const [viewTransitionDirection, setViewTransitionDirection] = useState<ShelfViewTransitionDirection>("forward");
   const [shareBook, setShareBook] = useState<BookSummary | null>(null);
   const [sortMode, setSortMode] = useState<ShelfSortMode>(() => readShelfSortMode(userId));
+
+  useEffect(() => {
+    if (downloadMenuBookId) {
+      downloadMenuRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [downloadMenuBookId]);
 
   useEffect(() => {
     setSortMode(readShelfSortMode(userId));
@@ -502,18 +510,6 @@ export function ShelfPage() {
       window.clearInterval(intervalId);
     };
   }, [accessToken, importProgressId]);
-
-  function toggleBookDetails(bookId: string) {
-    setExpandedBookIds((current) => {
-      const next = new Set(current);
-      if (next.has(bookId)) {
-        next.delete(bookId);
-      } else {
-        next.add(bookId);
-      }
-      return next;
-    });
-  }
 
   function selectScope(nextScope: BookScope) {
     // Selección manual del usuario: tiene prioridad sobre cualquier
@@ -1181,16 +1177,13 @@ export function ShelfPage() {
         ? "pending"
         : undefined;
     const isBookRemoving = removalState !== undefined;
-    const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
-    const isExpanded = expandedBookIds.has(book.bookId);
-    const detailsId = `shelf-book-details-${book.bookId}`;
 
     return (
       <article
         aria-busy={isBookRemoving}
         className="book-card shelf-book-card"
         data-download-menu-open={downloadMenuBookId === book.bookId ? "true" : undefined}
-        data-expanded={isExpanded ? "true" : undefined}
+        data-info-open={infoBook?.book.bookId === book.bookId ? "true" : undefined}
         data-removing={removalState}
         id={`shelf-book-${book.bookId}`}
         key={book.bookId}
@@ -1210,69 +1203,43 @@ export function ShelfPage() {
 
         <div className="shelf-book-plank-row">
           <button
-            aria-controls={detailsId}
-            aria-expanded={isExpanded}
-            aria-label={isExpanded ? `Ocultar información de ${book.title}` : `Mostrar información de ${book.title}`}
+            aria-haspopup="dialog"
+            aria-label={`Mostrar información de ${book.title}`}
             className="shelf-book-expand-button"
             disabled={isBookRemoving}
-            onClick={() => toggleBookDetails(book.bookId)}
-            title={isExpanded ? "Ocultar información" : "Mostrar información"}
+            onClick={(event) => {
+              const origin = event.currentTarget.closest("article")?.querySelector<HTMLElement>(".shelf-book-cover-shell");
+              if (origin) setInfoBook({ book, origin });
+            }}
+            title="Mostrar información"
             type="button"
           >
             <ChevronDownIcon />
           </button>
         </div>
-        <div className="shelf-book-details" id={detailsId}>
+        <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
+          <span className="book-card-removing-dot" />
+          {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
+        </div>
+      </article>
+    );
+  }
+
+  function renderBookDetails(book: BookSummary) {
+    const isBookRemoving = deletingBookIds.has(book.bookId) || removingBookIds.has(book.bookId);
+    const isBookOwner = !book.currentUserRole || book.currentUserRole === "OWNER";
+    return (
           <div className="shelf-book-details-inner">
-            <span className="book-spine shelf-book-source-badge">{book.sourceType === "IMAGES" ? "OCR" : book.sourceType}</span>
-            <div className="book-card-copy shelf-book-copy">
-              <h3>{book.title}</h3>
-              <p>{book.authorName ?? "Autor pendiente"}</p>
-              {book.currentUserRole && book.currentUserRole !== "OWNER" && book.ownerUsername ? (
-                <p className="shelf-book-shared-by">
-                  Compartido por <strong>@{book.ownerUsername}</strong>
-                </p>
-              ) : null}
-            </div>
-
-            {book.rating ? (
-              <div className="shelf-book-rating-badge" title={RATING_LABELS[book.rating] ?? `Calificación: ${book.rating}/5`}>
-                <span className="shelf-book-rating-stars">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <span className={star <= (book.rating ?? 0) ? "star-active" : "star-inactive"} key={star}>★</span>
-                  ))}
-                </span>
-                <span className="shelf-book-rating-text">{RATING_LABELS[book.rating]}</span>
-              </div>
-            ) : null}
-
-            {book.userComments?.trim() ? (
-              <div className="shelf-book-user-comments">
-                <p className="shelf-book-user-comments-label">Comentarios:</p>
-                <p className="shelf-book-user-comments-text">{book.userComments.trim()}</p>
-              </div>
-            ) : null}
-
-            <dl className="shelf-book-stats">
-              <div>
-                <dt>Idioma</dt>
-                <dd>{getBookLanguageLabel(book.languageCode)}</dd>
-              </div>
-              <div>
-                <dt>Páginas</dt>
-                <dd>{shelfNumberFormatter.format(book.totalPages)}</dd>
-              </div>
-              <div>
-                <dt>Palabras</dt>
-                <dd>{shelfNumberFormatter.format(book.totalWords)}</dd>
-              </div>
-              {book.lastOpenedAt ? (
-                <div>
-                  <dt>Última lectura</dt>
-                  <dd>{new Date(book.lastOpenedAt).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}</dd>
-                </div>
-              ) : null}
-            </dl>
+            <BookInfoMetadata
+              book={book}
+              onOpenNavigation={() => {
+                writeShelfAnchorToSession(book.bookId, location.pathname + location.search);
+                setInfoBook(null);
+                setDownloadMenuBookId(null);
+              }}
+              ratingLabel={book.rating ? RATING_LABELS[book.rating] : undefined}
+              shelfReturnTo={location.pathname + location.search}
+            />
             <div
               className="book-card-actions"
               onBlur={(event) => {
@@ -1315,6 +1282,7 @@ export function ShelfPage() {
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
+                    setInfoBook(null);
                     setShareBook(book);
                   }}
                   title="Compartir"
@@ -1330,6 +1298,7 @@ export function ShelfPage() {
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  setInfoBook(null);
                   startEditingBook(book);
                 }}
                 title="Editar libro"
@@ -1344,6 +1313,7 @@ export function ShelfPage() {
                 onClick={(event) => {
                   event.preventDefault();
                   event.stopPropagation();
+                  setInfoBook(null);
                   void handleDeleteBook(book);
                 }}
                 title={isBookOwner ? "Eliminar libro" : "Salir del libro compartido"}
@@ -1353,7 +1323,7 @@ export function ShelfPage() {
               </button>
 
               {downloadMenuBookId === book.bookId ? (
-                <div className="book-card-download-menu" role="menu">
+                <div className="book-card-download-menu" ref={downloadMenuRef} role="menu">
                   <p className="book-card-download-menu-title">{book.sourceType === "IMAGES" ? "Descargar libro de imágenes" : "Descargar libro"}</p>
                   <button
                     className="menu-item book-card-download-option"
@@ -1405,17 +1375,24 @@ export function ShelfPage() {
               ) : null}
             </div>
           </div>
-        </div>
-        <div aria-hidden={!isBookRemoving} className="book-card-removing-badge">
-          <span className="book-card-removing-dot" />
-          {removalState === "exiting" ? "Retirando de la estantería..." : "Eliminando..."}
-        </div>
-      </article>
     );
   }
 
   return (
     <div className="page-stack shelf-layout">
+      {infoBook ? (
+        <BookInfoDialog
+          cover={<ShelfBookCover accessToken={accessToken} book={infoBook.book} />}
+          onClose={() => { setInfoBook(null); setDownloadMenuBookId(null); }}
+          origin={infoBook.origin}
+          title={infoBook.book.title}
+        >
+          {renderBookDetails(allBooks.find((book) => book.bookId === infoBook.book.bookId) ?? infoBook.book)}
+          {downloadTitle !== null ? <p role="status">Preparando descarga de {downloadTitle}…</p> : null}
+          {bookActionError ? <p className="error-text" role="alert">{bookActionError}</p> : null}
+          {bookActionSuccess ? <p role="status">{bookActionSuccess}</p> : null}
+        </BookInfoDialog>
+      ) : null}
       {downloadTitle !== null ? (
         <div className="book-download-progress" role="status" aria-live="polite" aria-atomic="true">
           <span className="book-download-spinner" aria-hidden="true" />

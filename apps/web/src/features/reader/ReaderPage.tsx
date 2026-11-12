@@ -1164,8 +1164,8 @@ export function ReaderPage() {
   const [pageTurnSnapshot, setPageTurnSnapshot] = useState<PageTurnSnapshot | null>(null);
   const [bookmarkAnimationState, setBookmarkAnimationState] = useState<ReaderBookmarkAnimationState>(null);
   const [bookmarkToast, setBookmarkToast] = useState<string | null>(null);
-  const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(false);
-  const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(false);
+  const [isNavigationPanelRendered, setIsNavigationPanelRendered] = useState(searchParams.get("panel") === "index-notes");
+  const [isNavigationPanelVisible, setIsNavigationPanelVisible] = useState(searchParams.get("panel") === "index-notes");
   const [isFloatingHeaderActionsVisible, setIsFloatingHeaderActionsVisible] = useState(false);
   const [isFloatingHeaderActionsExpanded, setIsFloatingHeaderActionsExpanded] = useState(false);
   const [floatingHeaderDockStyle, setFloatingHeaderDockStyle] = useState<CSSProperties | null>(null);

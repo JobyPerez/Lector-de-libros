@@ -3616,45 +3616,260 @@ textarea {
   transition: transform 240ms ease;
 }
 
-.shelf-book-card[data-expanded="true"] .shelf-book-expand-button svg {
-  transform: rotate(180deg);
-}
-
-.shelf-book-details {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 340ms ease;
-}
-
-.shelf-book-card[data-expanded="true"] .shelf-book-details {
-  grid-template-rows: 1fr;
-}
-
 .shelf-book-details-inner {
-  overflow: hidden;
   min-height: 0;
   display: grid;
   gap: 0.95rem;
-  padding-inline: 0.95rem;
+  padding: 0 1.4rem 1rem;
+}
+
+.shelf-book-card[data-info-open="true"] .shelf-book-cover-shell {
   visibility: hidden;
-  opacity: 0;
-  transform: perspective(1200px) rotateX(-78deg);
-  transform-origin: top center;
-  transition:
-    transform 340ms ease,
-    opacity 260ms ease,
-    visibility 0s linear 340ms;
 }
 
-.shelf-book-card[data-expanded="true"] .shelf-book-details-inner {
-  visibility: visible;
-  opacity: 1;
-  transform: perspective(1200px) rotateX(0deg);
-  transition-delay: 0s;
+.shelf-book-info-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  overflow: hidden;
 }
 
-.shelf-book-card[data-download-menu-open="true"] .shelf-book-details-inner {
+.shelf-book-info-dialog[open] {
+  display: grid;
+  place-items: center;
+}
+
+.shelf-book-info-dialog::backdrop {
+  background: rgba(10, 18, 14, 0.68);
+  animation: shelf-info-backdrop-in 560ms ease both;
+}
+
+.shelf-book-info-flight {
+  width: min(440px, calc(100vw - 32px));
+  height: min(640px, calc(100dvh - 48px));
+  perspective: 1400px;
+  animation: shelf-info-flight-in 560ms cubic-bezier(0.22, 0.68, 0.2, 1) both;
+}
+
+.shelf-book-info-flipper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  animation: shelf-info-flip-in 560ms cubic-bezier(0.22, 0.68, 0.2, 1) both;
+}
+
+.shelf-book-info-front,
+.shelf-book-info-back {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: 8px 18px 18px 8px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.4);
+}
+
+.shelf-book-info-front {
+  overflow: hidden;
+  background: var(--paper);
+}
+
+.shelf-book-info-front .shelf-book-cover-frame,
+.shelf-book-info-front .shelf-book-cover-image {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: fill;
+}
+
+.shelf-book-info-back {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transform: rotateY(180deg);
+  background: var(--paper-strong);
+  border: 1px solid var(--border-subtle);
+  border-left: 7px solid var(--forest-700);
+}
+
+.shelf-book-info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.9rem 1rem 0.5rem 1.4rem;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+}
+
+.shelf-book-info-close {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+}
+
+.shelf-book-info-content {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.shelf-book-info-metadata {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding-top: 0.4rem;
+  font-size: 0.95rem;
+}
+
+.shelf-book-info-metadata > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.4rem;
+}
+
+.shelf-book-info-metadata dt {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.shelf-book-info-metadata dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.shelf-book-info-metadata > .shelf-book-info-field-stacked {
+  display: grid;
+  gap: 0.25rem;
+  margin-block: 0.15rem;
+}
+
+.shelf-book-info-title {
+  margin: 0;
+  font-size: 1.4rem;
+  line-height: 1.25;
+}
+
+.shelf-book-info-author {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.35;
+}
+
+.shelf-book-info-comments {
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.shelf-book-info-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0;
+  border-block: 1px solid var(--border-subtle);
+  color: var(--forest-700);
+  font-weight: 600;
+}
+
+.shelf-book-info-content .shelf-book-copy {
+  min-height: 0;
+}
+
+.shelf-book-info-content .shelf-book-copy h3 {
+  display: block;
   overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.shelf-book-info-content .book-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.shelf-book-info-content .book-card-download-menu {
+  position: static;
+  transform: none;
+  flex-basis: 100%;
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.5rem;
+}
+
+.shelf-book-info-dialog[data-closing="true"]::backdrop {
+  animation-name: shelf-info-backdrop-out;
+}
+
+.shelf-book-info-dialog[data-closing="true"] .shelf-book-info-flight {
+  animation-name: shelf-info-flight-out;
+}
+
+.shelf-book-info-dialog[data-closing="true"] .shelf-book-info-flipper {
+  animation-name: shelf-info-flip-out;
+}
+
+@keyframes shelf-info-flight-in {
+  from { transform: translate(var(--book-offset-x), var(--book-offset-y)) scale(var(--book-scale-x), var(--book-scale-y)); }
+  to { transform: translate(0, 0) scale(1); }
+}
+
+@keyframes shelf-info-flight-out {
+  from { transform: translate(0, 0) scale(1); }
+  to { transform: translate(var(--book-offset-x), var(--book-offset-y)) scale(var(--book-scale-x), var(--book-scale-y)); }
+}
+
+@keyframes shelf-info-flip-in {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(180deg); }
+}
+
+@keyframes shelf-info-flip-out {
+  from { transform: rotateY(180deg); }
+  to { transform: rotateY(0deg); }
+}
+
+@keyframes shelf-info-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes shelf-info-backdrop-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shelf-book-info-dialog::backdrop,
+  .shelf-book-info-dialog .shelf-book-info-flight,
+  .shelf-book-info-dialog .shelf-book-info-flipper {
+    animation: none;
+  }
+
+  .shelf-book-info-dialog .shelf-book-info-flipper {
+    transform: rotateY(180deg);
+  }
 }
 
 .shelf-book-source-badge {
