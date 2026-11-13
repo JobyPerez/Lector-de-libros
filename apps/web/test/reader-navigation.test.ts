@@ -6,9 +6,14 @@ import { MemoryRouter } from "react-router-dom";
 import ts from "typescript";
 
 import type { ReaderNavigationSummary } from "../src/app/api";
-import { ReaderNavigationPanelContent, type ReaderNavigationListItem } from "../src/features/reader/ReaderFloatingPanels";
+import type { ReaderNavigationListItem } from "../src/features/reader/ReaderFloatingPanels";
 import { buildReaderNavigationItems, tocEntryKey } from "../src/features/reader/reader-navigation";
-import { deferred, withUnsavedDom } from "./unsaved-changes-fixture";
+import { deferred, loadTestModule, withUnsavedDom } from "./unsaved-changes-fixture";
+
+const { ReaderNavigationPanelContent } = loadTestModule("../src/features/reader/ReaderFloatingPanels.tsx", {
+  "./BookCommentsPanel": { BookCommentsPanel: () => null },
+  "./SortableNotesList": { SortableNotesList: () => null }
+}) as typeof import("../src/features/reader/ReaderFloatingPanels");
 
 function fixture(): Pick<ReaderNavigationSummary, "toc" | "bookmarks" | "highlights" | "notes"> {
   const date = "2026-01-01T12:00:00Z";

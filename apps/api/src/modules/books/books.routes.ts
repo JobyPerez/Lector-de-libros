@@ -150,8 +150,7 @@ const updateBookSchema = z.object({
   notionBookUrl: z.string().trim().url().max(2000).nullable().optional(),
   languageCode: z.enum(supportedBookLanguageCodes).optional(),
   readingStatus: z.enum(["SAVED", "READING", "WANT_TO_READ", "READ", "ABANDONED"]).optional(),
-  rating: z.number().int().min(1).max(5).nullable().optional(),
-  userComments: z.string().trim().max(10000).nullable().optional()
+  rating: z.number().int().min(1).max(5).nullable().optional()
 });
 
 const pageParamsSchema = z.object({
@@ -237,7 +236,6 @@ type OwnedBookRecord = {
   title: string;
   totalPages: number;
   totalParagraphs: number;
-  userComments?: string | null;
 };
 
 type DatabaseConnection = Awaited<ReturnType<typeof getConnection>>;
@@ -2111,7 +2109,6 @@ async function findOwnedBook(connection: Awaited<ReturnType<typeof getConnection
         us.rating AS "rating",
         TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
         b.publication_year AS "publicationYear",
-        us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
         b.status AS "status",
@@ -2151,7 +2148,6 @@ async function findAccessibleBook(
         us.rating AS "rating",
         TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
         b.publication_year AS "publicationYear",
-        us.user_comments AS "userComments",
         b.synopsis AS "synopsis",
         b.source_type AS "sourceType",
         b.status AS "status",
@@ -2183,7 +2179,6 @@ async function upsertUserBookSettings(
     rating?: number | null;
     readingDate?: string | null;
     readingStatus?: "SAVED" | "READING" | "WANT_TO_READ" | "READ" | "ABANDONED";
-    userComments?: string | null;
     userId: string;
   }
 ): Promise<void> {
@@ -2196,8 +2191,7 @@ async function upsertUserBookSettings(
                :notionBookUrl AS notion_book_url,
                :readingStatus AS reading_status,
                TO_DATE(:readingDate, 'YYYY-MM-DD') AS reading_date,
-               :rating AS rating,
-               :userComments AS user_comments
+               :rating AS rating
         FROM dual
       ) source
       ON (target.user_id = source.user_id AND target.book_id = source.book_id)
@@ -2206,11 +2200,10 @@ async function upsertUserBookSettings(
                     reading_status = NVL(source.reading_status, target.reading_status),
                     reading_date = source.reading_date,
                    rating = source.rating,
-                   user_comments = source.user_comments,
                    updated_at = SYSTIMESTAMP
       WHEN NOT MATCHED THEN
-        INSERT (user_id, book_id, notion_book_url, reading_status, reading_date, rating, user_comments)
-        VALUES (source.user_id, source.book_id, source.notion_book_url, NVL(source.reading_status, 'SAVED'), source.reading_date, source.rating, source.user_comments)
+        INSERT (user_id, book_id, notion_book_url, reading_status, reading_date, rating)
+        VALUES (source.user_id, source.book_id, source.notion_book_url, NVL(source.reading_status, 'SAVED'), source.reading_date, source.rating)
     `,
     {
       bookId: input.bookId,
@@ -2218,7 +2211,6 @@ async function upsertUserBookSettings(
       rating: input.rating !== undefined ? input.rating : null,
       readingStatus: input.readingStatus ?? null,
       readingDate: input.readingDate ?? null,
-      userComments: input.userComments !== undefined ? input.userComments : null,
       userId: input.userId
     }
   );
@@ -4118,7 +4110,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.rating AS "rating",
             TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
             b.publication_year AS "publicationYear",
-            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -4255,7 +4246,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
       const nextNotionBookUrl = payload.notionBookUrl ?? null;
       const nextReadingStatus = payload.readingStatus ?? existingBook.readingStatus ?? "SAVED";
       const nextRating = payload.rating !== undefined ? payload.rating : (existingBook.rating ?? null);
-      const nextUserComments = payload.userComments !== undefined ? payload.userComments : (existingBook.userComments ?? null);
       const hasMetadataChanges = payload.title !== existingBook.title
         || nextAuthorName !== existingBook.authorName
         || nextLanguageCode !== existingBook.languageCode
@@ -4300,7 +4290,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
         rating: nextRating,
         readingStatus: nextReadingStatus,
         readingDate: nextReadingDate,
-        userComments: nextUserComments,
         userId: request.currentUser.userId
       });
 
@@ -4355,8 +4344,7 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
           readingDate: nextReadingDate,
           publicationYear: nextPublicationYear,
           synopsis: request.bookAccess?.role === "OWNER" ? nextSynopsis : existingBook.synopsis,
-          title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title,
-          userComments: nextUserComments
+          title: request.bookAccess?.role === "OWNER" ? payload.title : existingBook.title
         }
       });
     } finally {
@@ -5633,7 +5621,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.rating AS "rating",
             TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
             b.publication_year AS "publicationYear",
-            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",
@@ -5703,7 +5690,6 @@ export const registerBookRoutes: FastifyPluginAsync = async (app) => {
             us.rating AS "rating",
             TO_CHAR(us.reading_date, 'YYYY-MM-DD') AS "readingDate",
             b.publication_year AS "publicationYear",
-            us.user_comments AS "userComments",
             b.synopsis AS "synopsis",
             b.source_type AS "sourceType",
             b.status AS "status",

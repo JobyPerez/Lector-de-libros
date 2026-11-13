@@ -309,7 +309,6 @@ export type BookSummary = {
   readingStatus?: ReadingStatus;
   shareUserAnnotations?: boolean;
   synopsis?: string | null;
-  userComments?: string | null;
   sourceType: "PDF" | "EPUB" | "IMAGES";
   status: string;
   title: string;
@@ -640,6 +639,50 @@ export type ReaderNote = {
   userId?: string;
   username?: string;
 };
+
+export type BookComment = {
+  commentId: string;
+  title: string;
+  commentText: string;
+  userId: string;
+  username: string;
+  userDisplayName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  isOwnedByCurrentUser: boolean;
+  sharedWithUserIds: string[];
+  visibilitySource: "OWN" | "DIRECT" | "BOOK";
+};
+
+export type BookCommentContent = Pick<BookComment, "title" | "commentText">;
+
+export function fetchBookComments(accessToken: string, bookId: string) {
+  return request<{ canComment: boolean; comments: BookComment[] }>(`/books/${bookId}/comments`, { accessToken });
+}
+
+export function createBookComment(accessToken: string, bookId: string, body: BookCommentContent) {
+  return request<{ commentId: string }>(`/books/${bookId}/comments`, { accessToken, method: "POST", body });
+}
+
+export function updateBookComment(accessToken: string, bookId: string, commentId: string, body: BookCommentContent) {
+  return request<void>(`/books/${bookId}/comments/${commentId}`, { accessToken, method: "PUT", body });
+}
+
+export function updateBookCommentShares(accessToken: string, bookId: string, commentId: string, sharedWithUserIds: string[]) {
+  return request<void>(`/books/${bookId}/comments/${commentId}/shares`, { accessToken, method: "PUT", body: { sharedWithUserIds } });
+}
+
+export function deleteBookComment(accessToken: string, bookId: string, commentId: string) {
+  return request<void>(`/books/${bookId}/comments/${commentId}`, { accessToken, method: "DELETE" });
+}
+
+export function fetchAnnotationOrder(accessToken: string, bookId: string, scope: "notes" | "comments" = "notes") {
+  return request<{ keys: string[] }>(`/books/${bookId}/annotation-order${scope === "comments" ? "?scope=comments" : ""}`, { accessToken });
+}
+
+export function saveAnnotationOrder(accessToken: string, bookId: string, keys: string[], scope: "notes" | "comments" = "notes") {
+  return request<void>(`/books/${bookId}/annotation-order${scope === "comments" ? "?scope=comments" : ""}`, { accessToken, method: "PUT", body: { keys } });
+}
 
 
 export type ReaderTocEntry = {
@@ -1036,7 +1079,6 @@ export type UpdateBookInput = {
   readingStatus?: ReadingStatus;
   synopsis?: string;
   title: string;
-  userComments?: string | null;
 };
 
 export function updateBook(accessToken: string, bookId: string, payload: UpdateBookInput) {

@@ -14,8 +14,9 @@ export function loadTestModule(path: string, mocks: Record<string, unknown> = {}
   const source = transform(readFileSync(new URL(path, import.meta.url), "utf8"));
   const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
   const exports: any = {};
+  const moduleRequire = createRequire(new URL(path, import.meta.url));
   // Keep transpiled CommonJS modules on the same router contexts as the ESM test renderer.
-  new Function("exports", "require", code)(exports, (id: string) => Object.hasOwn(mocks, id) ? mocks[id] : id === "react-router-dom" ? router : require(id));
+  new Function("exports", "require", code)(exports, (id: string) => Object.hasOwn(mocks, id) ? mocks[id] : id === "react-router-dom" ? router : moduleRequire(id));
   return exports;
 }
 

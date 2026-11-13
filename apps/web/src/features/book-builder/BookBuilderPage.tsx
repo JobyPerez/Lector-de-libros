@@ -4276,7 +4276,7 @@ export function BookBuilderPage() {
               <div className="reader-navigation-header">
                 <div>
                   <p className="eyebrow">Navegación</p>
-                  <h3>Índice y notas</h3>
+                  <h3>Índice, notas y comentarios</h3>
                 </div>
                 <button
                   aria-label="Cerrar índice"
@@ -4290,6 +4290,7 @@ export function BookBuilderPage() {
 
               {reviewBookmarkError ? <p className="error-text" role="alert">{reviewBookmarkError}</p> : null}
               <ReaderNavigationPanelContent
+                bookId={reviewBookId}
                 activeItemRef={activeReviewNavItemRef}
                 items={orderedNavigationItems}
                 onDeleteBookmark={handleDeleteReviewBookmark}

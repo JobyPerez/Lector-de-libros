@@ -316,6 +316,13 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
                      AND n.book_id = :bookId
                 )
               )
+              OR (
+                s.annotation_type = 'comment'
+                AND EXISTS (
+                  SELECT 1 FROM user_book_comments c
+                  WHERE c.comment_id = s.annotation_id AND c.book_id = :bookId
+                )
+              )
             )`,
         { bookId, userId }
       );
@@ -396,6 +403,13 @@ export const registerSharingRoutes: FastifyPluginAsync = async (app) => {
                     FROM user_notes n
                    WHERE n.note_id = s.annotation_id
                      AND n.book_id = :bookId
+                )
+              )
+              OR (
+                s.annotation_type = 'comment'
+                AND EXISTS (
+                  SELECT 1 FROM user_book_comments c
+                  WHERE c.comment_id = s.annotation_id AND c.book_id = :bookId
                 )
               )
             )`,

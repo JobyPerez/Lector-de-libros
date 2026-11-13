@@ -5,7 +5,11 @@ import { formatExactDate, formatRelativeDate } from "../../app/date-format";
 import { formatSectionTitleWithAncestors } from "../../app/outline-source";
 import { TOC_DEFAULT_MAX_LEVEL, filterTocByMaxLevel, type TocMaxLevel } from "../../app/toc-level";
 import { ShareWithSelector } from "../../components/ShareWithSelector";
+import { AnnotationShareEditor } from "../../components/AnnotationShareEditor";
 import { TocLevelSelector } from "../../components/TocLevelSelector";
+import { BookCommentsCount, BookCommentsPanel } from "./BookCommentsPanel";
+import { SortableNotesList } from "./SortableNotesList";
+import { DeletePageIcon, EditIcon, ShareIcon } from "./ReaderAnnotationIcons";
 
 type AudioEngineOption = {
   description: string;
@@ -183,6 +187,7 @@ export type ReaderNavigationListItem =
     };
 
 type NavigationPanelContentProps = {
+  bookId?: string;
   activeItemRef?: MutableRefObject<HTMLButtonElement | null>;
   editingHighlightId?: string | null;
   editingHighlightText?: string;
@@ -311,55 +316,10 @@ function NoteShareEditor({ id, item, onUpdateShares, sharableUsers }: {
   onUpdateShares: (noteId: string, sharedWithUserIds: string[]) => Promise<void>;
   sharableUsers: { displayName: string | null; userId: string; username: string }[];
 }) {
-  const [draft, setDraft] = useState<string[] | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const currentShares = item.sharedWithUserIds ?? [];
-  const selected = draft ?? currentShares;
-  const hasChanges = draft !== null && !haveSameUserIds(draft, currentShares);
-
-  async function handleSave() {
-    if (isSaving) {
-      return;
-    }
-
-    setIsSaving(true);
-    setError(null);
-    try {
-      await onUpdateShares(item.noteId, selected);
-      setDraft(null);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "No se pudo actualizar con quién se comparte la nota.");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
   return (
-    <div className="ai-request-share-editor reader-bookmark-share-editor" id={id}>
-      <ShareWithSelector
-        disabled={isSaving}
-        emptyLabel="Esta nota solo la verás tú (Privada)."
-        label="Compartida con"
-        onChange={(userIds) => {
-          setDraft(userIds);
-          setError(null);
-        }}
-        options={sharableUsers}
-        selected={selected}
-      />
-      {error ? <p className="error-text" role="alert">{error}</p> : null}
-      {hasChanges ? (
-        <button
-          className="secondary-button ai-request-share-save"
-          disabled={isSaving}
-          onClick={() => void handleSave()}
-          type="button"
-        >
-          {isSaving ? "Guardando..." : "Guardar destinatarios"}
-        </button>
-      ) : null}
-    </div>
+    <AnnotationShareEditor currentShares={item.sharedWithUserIds ?? []} id={id}
+      onUpdateShares={(userIds) => onUpdateShares(item.noteId, userIds)}
+      privateLabel="Esta nota solo la verás tú (Privada)." sharableUsers={sharableUsers} />
   );
 }
 
@@ -421,44 +381,11 @@ function BookmarkIcon() {
   );
 }
 
-function ShareIcon() {
-  return (
-    <ReaderControlIcon>
-      <circle cx="6" cy="12" r="2.5" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="18" cy="6" r="2.5" stroke="currentColor" strokeWidth="1.8" />
-      <circle cx="18" cy="18" r="2.5" stroke="currentColor" strokeWidth="1.8" />
-      <path d="m8.2 10.9 7.6-3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-      <path d="m8.2 13.1 7.6 3.8" stroke="currentColor" strokeLinecap="round" strokeWidth="1.8" />
-    </ReaderControlIcon>
-  );
-}
-
-function DeletePageIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M8 7.25H16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M9 7.25V5.75C9 5.34 9.34 5 9.75 5H14.25C14.66 5 15 5.34 15 5.75V7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M7.25 7.25L8 18.25C8.03 18.67 8.38 19 8.8 19H15.2C15.62 19 15.97 18.67 16 18.25L16.75 7.25" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M10.25 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M13.75 10.25V16" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-    </ReaderControlIcon>
-  );
-}
-
 function EyeIcon() {
   return (
     <ReaderControlIcon>
       <path d="M2.75 12C4.82 8.66 8.11 6.75 12 6.75C15.89 6.75 19.18 8.66 21.25 12C19.18 15.34 15.89 17.25 12 17.25C8.11 17.25 4.82 15.34 2.75 12Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
       <circle cx="12" cy="12" fill="currentColor" r="2.2" />
-    </ReaderControlIcon>
-  );
-}
-
-function EditIcon() {
-  return (
-    <ReaderControlIcon>
-      <path d="M4.75 19.25L8.35 18.45L17.55 9.25C18.12 8.68 18.12 7.76 17.55 7.19L16.81 6.45C16.24 5.88 15.32 5.88 14.75 6.45L5.55 15.65L4.75 19.25Z" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
-      <path d="M13.9 7.3L16.7 10.1" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" />
     </ReaderControlIcon>
   );
 }
@@ -818,6 +745,7 @@ export function ReaderNavigationTocCard({ buttonRef, isActive, isExpanded, level
 
 export function ReaderNavigationPanelContent({
   activeItemRef,
+  bookId,
   editingHighlightId = null,
   editingHighlightText = "",
   editingNoteId = null,
@@ -859,7 +787,7 @@ export function ReaderNavigationPanelContent({
   const indexItems = allIndexItems.filter((item) => item.type === "bookmark" || visibleTocIds.has(item.key));
   const tocItemCount = tocItems.length;
   const tabsId = useId();
-  const [activeTab, setActiveTab] = useState<"index" | "notes">("index");
+  const [activeTab, setActiveTab] = useState<"index" | "notes" | "comments">("index");
   const [deletingBookmarkIds, setDeletingBookmarkIds] = useState<Set<string>>(new Set());
   const [openBookmarkShareId, setOpenBookmarkShareId] = useState<string | null>(null);
   const [openNoteShareId, setOpenNoteShareId] = useState<string | null>(null);
@@ -1280,6 +1208,15 @@ export function ReaderNavigationPanelContent({
           <span>Notas</span>
           <span className="reader-navigation-tab-count">{noteItems.length}</span>
         </button>
+        {bookId ? <button
+          aria-controls={`${tabsId}-comments-panel`}
+          aria-selected={activeTab === "comments"}
+          className={activeTab === "comments" ? "reader-navigation-tab active" : "reader-navigation-tab"}
+          id={`${tabsId}-comments-tab`}
+          onClick={() => setActiveTab("comments")}
+          role="tab"
+          type="button"
+        ><span>Comentarios</span><BookCommentsCount bookId={bookId} /></button> : null}
       </div>
 
       {activeTab === "index" ? (
@@ -1321,21 +1258,25 @@ export function ReaderNavigationPanelContent({
             <p className="reader-navigation-empty">Este libro no tiene capítulos ni marcadores.</p>
           )}
         </div>
-      ) : (
+      ) : activeTab === "notes" ? (
         <div aria-labelledby={`${tabsId}-notes-tab`} className="reader-navigation-tab-panel" id={`${tabsId}-notes-panel`} role="tabpanel">
           <div className="reader-navigation-section-heading">
             <strong>Notas y resaltados</strong>
             <span>{noteItems.length}</span>
           </div>
           {noteItems.length ? (
-            <div className="reader-navigation-list reader-navigation-notes-list">
+            bookId ? <SortableNotesList bookId={bookId} items={noteItems} key={bookId} renderItem={(item) => item.type === "highlight" ? renderHighlightCard(item) : renderNoteCard(item)} /> : <div className="reader-navigation-list reader-navigation-notes-list">
               {noteItems.map((item) => item.type === "highlight" ? renderHighlightCard(item) : renderNoteCard(item))}
             </div>
           ) : (
             <p className="reader-navigation-empty">Todavía no hay notas ni resaltados en este libro.</p>
           )}
         </div>
-      )}
+      ) : bookId ? (
+        <div aria-labelledby={`${tabsId}-comments-tab`} className="reader-navigation-tab-panel" id={`${tabsId}-comments-panel`} role="tabpanel">
+          <BookCommentsPanel bookId={bookId} key={bookId} />
+        </div>
+      ) : null}
     </section>
   );
 }

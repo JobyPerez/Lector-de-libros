@@ -26,7 +26,7 @@ test("book metadata follows the requested order, highlights title/author and lin
     const document = dom.window.document;
     assert.deepEqual([...document.querySelectorAll("dt")].map((node) => node.textContent), [
       "Formato:", "Título:", "Autor:", "Idioma:", "Año de publicación:", "Calificación:", "Páginas:", "Palabras:",
-      "Tiempo estimado de lectura:", "Última lectura:", "Fecha de lectura:", "Comentarios:"
+      "Tiempo estimado de lectura:", "Última lectura:", "Fecha de lectura:"
     ]);
     const values = [...document.querySelectorAll("dd")].map((node) => node.textContent);
     assert.equal(values[0], "EPUB");
@@ -35,10 +35,11 @@ test("book metadata follows the requested order, highlights title/author and lin
     assert.equal(values[6], "212");
     assert.equal(values[7], "143.158");
     assert.equal(values[8], "15 h 24 min");
-    assert.equal(values[11], "Comentario\nSegunda línea");
+    assert.equal(values.length, 11, "legacy comments are no longer shown in the book metadata");
     assert.equal(document.querySelector("h3")?.textContent, book.title);
     assert.equal(document.querySelector(".shelf-book-info-author")?.textContent, book.authorName);
     assert.equal(document.querySelector("a")?.getAttribute("href"), "/books/sample?panel=index-notes");
+    assert.match(document.querySelector("a")?.textContent ?? "", /Índice, notas y comentarios/);
   } finally { dom.window.close(); }
 });
 
@@ -47,7 +48,7 @@ test("empty metadata remains visible with explicit placeholders and invalid esti
     book: { bookId: "empty", title: "Libro", sourceType: "IMAGES", totalPages: 0, totalWords: 0 },
     shelfReturnTo: "/", onOpenNavigation() {}
   }));
-  for (const label of ["Imágenes (OCR)", "Autor pendiente", "Sin especificar", "Sin calificar", "Sin registrar", "Sin comentarios", "No disponible"]) {
+  for (const label of ["Imágenes (OCR)", "Autor pendiente", "Sin especificar", "Sin calificar", "Sin registrar", "No disponible"]) {
     assert.ok(html.includes(label), label);
   }
   assert.equal(formatBookReadingTime(Number.NaN), "No disponible");

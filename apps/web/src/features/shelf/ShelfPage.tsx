@@ -25,7 +25,6 @@ type BookEditFormState = {
   rating: number | null;
   readingStatus: ReadingStatus;
   title: string;
-  userComments: string;
 };
 
 type ShelfView = "edit" | "import" | "shelf";
@@ -39,8 +38,7 @@ const emptyBookEditForm: BookEditFormState = {
   notionBookUrl: "",
   rating: null,
   readingStatus: "SAVED",
-  title: "",
-  userComments: ""
+  title: ""
 };
 
 const READING_STATUS_CONFIG: { id: ReadingStatus; label: string }[] = [
@@ -806,8 +804,7 @@ export function ShelfPage() {
       notionBookUrl: book.notionBookUrl ?? "",
       rating: book.rating ?? null,
       readingStatus: book.readingStatus ?? "SAVED",
-      title: book.title,
-      userComments: book.userComments ?? ""
+      title: book.title
     });
     setIsCreateMenuOpen(false);
     setIsImportPanelVisible(false);
@@ -826,7 +823,6 @@ export function ShelfPage() {
     const originalLanguageCode = editingBook.languageCode;
     const originalStatus = editingBook.readingStatus ?? "SAVED";
     const originalRating = editingBook.rating ?? null;
-    const originalComments = (editingBook.userComments ?? "").trim();
 
     return (
       bookForm.title.trim() !== originalTitle ||
@@ -836,8 +832,7 @@ export function ShelfPage() {
       bookForm.readingDate !== (editingBook.readingDate ?? "") ||
       bookForm.notionBookUrl.trim() !== originalNotion ||
       bookForm.readingStatus !== originalStatus ||
-      bookForm.rating !== originalRating ||
-      bookForm.userComments.trim() !== originalComments
+      bookForm.rating !== originalRating
     );
   }
 
@@ -995,8 +990,7 @@ export function ShelfPage() {
         readingDate: bookForm.readingDate || null,
         notionBookUrl: bookForm.notionBookUrl.trim() || null,
         rating: bookForm.rating,
-        readingStatus: bookForm.readingStatus,
-        userComments: bookForm.userComments.trim() || null
+        readingStatus: bookForm.readingStatus
       });
 
       try {
@@ -1743,16 +1737,6 @@ export function ShelfPage() {
                 />
               </div>
             </div>
-
-            <label>
-              Comentarios sobre el libro
-              <textarea
-                onChange={(event) => setBookForm((current) => ({ ...current, userComments: event.target.value }))}
-                placeholder="¿Qué te ha parecido el libro? Escribe aquí tus notas o impresiones..."
-                rows={5}
-                value={bookForm.userComments}
-              />
-            </label>
 
             {bookActionError ? <p className="error-text">{bookActionError}</p> : null}
             {bookActionSuccess ? <p className="success-text" role="status">{bookActionSuccess}</p> : null}

@@ -8,6 +8,7 @@ import { registerAiConfigRoutes } from "./modules/ai-config/ai-config.routes.js"
 import { registerAiSettingsRoutes } from "./modules/ai-settings/ai-settings.routes.js";
 import { registerAppVersionRoutes } from "./modules/app-version/app-version.routes.js";
 import { registerAnnotationRoutes } from "./modules/annotations/annotations.routes.js";
+import { registerBookCommentRoutes } from "./modules/annotations/book-comments.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerAwsCostRoutes } from "./modules/aws-cost/aws-cost.routes.js";
 import { registerBookRoutes } from "./modules/books/books.routes.js";
@@ -50,6 +51,7 @@ export function buildApp(): FastifyInstance {
   });
 
   void app.register(registerAnnotationRoutes);
+  void app.register(registerBookCommentRoutes);
   void app.register(registerAppVersionRoutes);
   void app.register(registerAiConfigRoutes);
   void app.register(registerAiSettingsRoutes);

@@ -5457,7 +5457,7 @@ export function ReaderPage() {
         <ReaderNavigationPopover
           aiRequestsHref={`/books/${bookId}/ai-requests`}
           aiRequestsLabel="Peticiones IA del libro"
-          buttonLabel="Abrir panel de índice, marcadores y notas"
+          buttonLabel="Abrir panel de índice, notas y comentarios"
           closeLabel="Cerrar panel de navegación"
           eyebrow={bookTitle}
           isOpen={isNavigationPanelVisible}
@@ -5465,11 +5465,12 @@ export function ReaderPage() {
           onAiRequestsClick={closeNavigationPanel}
           onClose={closeNavigationPanel}
           onToggle={toggleNavigationPanel}
-          panelAriaLabel="Índice, marcadores y notas"
+          panelAriaLabel="Índice, notas y comentarios"
           panelRef={navigationPanelRef}
-          title="Índice y notas"
+          title="Índice, notas y comentarios"
         >
           <ReaderNavigationPanelContent
+            bookId={bookId}
             activeItemRef={activeNavigationItemRef}
             editingHighlightId={editingNavigationHighlightId}
             editingHighlightText={editingNavigationHighlightText}

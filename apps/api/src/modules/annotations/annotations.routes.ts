@@ -251,10 +251,10 @@ type OwnedNoteRecord = {
   noteId: string;
 };
 
-async function insertAnnotationShares(
+export async function insertAnnotationShares(
   connection: Awaited<ReturnType<typeof getConnection>>,
   annotationId: string,
-  annotationType: "bookmark" | "note",
+  annotationType: "bookmark" | "note" | "comment",
   bookId: string,
   sharedWithUserIds: string[]
 ): Promise<void> {
@@ -298,7 +298,7 @@ async function insertAnnotationShares(
   );
 }
 
-async function validateAnnotationShareRecipients(
+export async function validateAnnotationShareRecipients(
   connection: Awaited<ReturnType<typeof getConnection>>,
   bookId: string,
   creatorUserId: string,
@@ -356,7 +356,7 @@ async function replaceBookmarkShares(
   }
 }
 
-async function findAccessibleBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, userId: string): Promise<OwnedBookRecord & { shareUserAnnotations: boolean } | null> {
+export async function findAccessibleBook(connection: Awaited<ReturnType<typeof getConnection>>, bookId: string, userId: string): Promise<OwnedBookRecord & { shareUserAnnotations: boolean } | null> {
   const result = await connection.execute(
     `
       SELECT
@@ -676,7 +676,7 @@ async function listHighlights(
   return (result.rows ?? []) as HighlightRecord[];
 }
 
-async function listHighlightsShared(
+export async function listHighlightsShared(
   connection: Awaited<ReturnType<typeof getConnection>>,
   userId: string,
   bookId: string,
@@ -793,7 +793,7 @@ async function listNotes(
   return (result.rows ?? []) as NoteRecord[];
 }
 
-async function listNotesShared(
+export async function listNotesShared(
   connection: Awaited<ReturnType<typeof getConnection>>,
   userId: string,
   bookId: string,

@@ -66,10 +66,6 @@ export function BookInfoMetadata({ book, ratingLabel, shelfReturnTo, onOpenNavig
         <div><dt>Tiempo estimado de lectura:</dt><dd title="Estimación a 155 palabras por minuto">{formatBookReadingTime(book.totalWords)}</dd></div>
         <div><dt>Última lectura:</dt><dd>{formatDate(book.lastOpenedAt)}</dd></div>
         <div><dt>Fecha de lectura:</dt><dd>{formatDate(book.readingDate)}</dd></div>
-        <div className="shelf-book-info-field-stacked">
-          <dt>Comentarios:</dt>
-          <dd className="shelf-book-info-comments">{book.userComments?.trim() || "Sin comentarios"}</dd>
-        </div>
       </dl>
       <Link
         className="shelf-book-info-navigation"
@@ -77,7 +73,7 @@ export function BookInfoMetadata({ book, ratingLabel, shelfReturnTo, onOpenNavig
         state={{ shelfAnchorBookId: book.bookId, shelfReturnTo }}
         to={`/books/${book.bookId}?panel=index-notes`}
       >
-        Índice y notas <span aria-hidden="true">→</span>
+        Índice, notas y comentarios <span aria-hidden="true">→</span>
       </Link>
     </>
   );
