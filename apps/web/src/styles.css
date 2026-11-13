@@ -2418,7 +2418,211 @@ textarea {
 }
 
 .profile-layout {
-  grid-template-columns: minmax(0, 860px);
+  grid-template-columns: minmax(0, 900px);
+}
+
+.profile-panel-card {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.profile-header-block {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.profile-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.profile-user-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.9rem;
+  border-radius: 999px;
+  background: var(--paper-strong);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 8px 24px var(--shadow-ambient);
+}
+
+.profile-user-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  background: var(--forest-100);
+  color: var(--forest-900);
+  font-weight: 800;
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.profile-user-meta {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+}
+
+.profile-user-meta strong {
+  font-size: 0.92rem;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.profile-user-meta span {
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.profile-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+  padding: 0.4rem;
+  border-radius: 999px;
+  background: var(--paper);
+  border: 1px solid var(--border-subtle);
+}
+
+.profile-tab-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0.6rem 1rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 180ms ease, color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+}
+
+.profile-tab-button:hover {
+  color: var(--ink);
+  background: var(--forest-100);
+}
+
+.profile-tab-button.active {
+  background: var(--paper-strong);
+  color: var(--forest-900);
+  border-color: var(--border-subtle);
+  box-shadow: 0 8px 22px var(--shadow-ambient);
+}
+
+.profile-tab-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--border-focus);
+}
+
+.profile-tab-panel {
+  display: grid;
+  gap: 1.15rem;
+  animation: app-panel-enter-forward 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.profile-tab-panel .stack-form {
+  margin-top: 0;
+}
+
+.profile-section-banner {
+  margin-top: 0;
+}
+
+.profile-theme-settings-block {
+  margin-bottom: 0;
+}
+
+.profile-readonly-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.profile-readonly-item {
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.75rem 1rem;
+  border-radius: 16px;
+  background: var(--paper);
+  border: 1px solid var(--border-subtle);
+}
+
+.profile-readonly-item span {
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+}
+
+.profile-readonly-item strong {
+  color: var(--ink);
+  font-size: 0.95rem;
+}
+
+.profile-ai-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.85rem;
+}
+
+.profile-ai-card {
+  display: grid;
+  gap: 0.5rem;
+  padding: 1.1rem 1.2rem;
+  border-radius: 20px;
+  background: var(--paper-strong);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 8px 24px var(--shadow-ambient);
+}
+
+.profile-ai-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.profile-ai-card-header strong {
+  color: var(--forest-900);
+  font-size: 0.96rem;
+}
+
+.profile-ai-chip-shared {
+  background: var(--forest-100);
+  color: var(--forest-700);
+}
+
+@media (max-width: 720px) {
+  .profile-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-radius: 22px;
+  }
+
+  .profile-user-summary {
+    width: 100%;
+    border-radius: 20px;
+    justify-content: flex-start;
+  }
+
+  .profile-user-summary .role-pill {
+    margin-left: auto;
+  }
+
+  .profile-section-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
 .profile-form {
@@ -2767,6 +2971,23 @@ textarea {
 .password-toggle-button:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(42, 87, 66, 0.15);
+}
+
+.recovery-card {
+  margin-top: 1.15rem;
+  position: relative;
+  z-index: 1;
+}
+
+.recovery-card label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.recovery-card-actions {
+  display: grid;
+  gap: 0.65rem;
+  justify-items: center;
 }
 
 .auth-actions,

@@ -478,6 +478,9 @@ function ProfileMenu({ onLogout, user }: { onLogout: () => void; user: SessionUs
           <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/profile">
             Perfil
           </NavLink>
+          <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/profile#password">
+            Cambiar contraseña
+          </NavLink>
           <NavLink className="secondary-button profile-panel-action" onClick={() => setIsOpen(false)} to="/ai-settings">
             Configuración IA
           </NavLink>
@@ -600,9 +603,9 @@ const router = createBrowserRouter(createRoutesFromElements(
     <Route
       path="/reset-password"
       element={(
-        <PublicOnlyRoute>
+        <RouteScene>
           <ResetPasswordPage />
-        </PublicOnlyRoute>
+        </RouteScene>
       )}
     />
     <Route element={<ProtectedShell />}>

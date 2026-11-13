@@ -954,8 +954,34 @@ export function forgotPassword(payload: { email: string }) {
   return request<{ message: string }>("/auth/forgot-password", { body: payload, method: "POST" });
 }
 
+export function validateResetPasswordToken(token: string) {
+  const params = new URLSearchParams({ token });
+  return request<{ valid: boolean }>(`/auth/reset-password/validate?${params.toString()}`);
+}
+
 export function resetPassword(payload: { password: string; token: string }) {
-  return request<void>("/auth/reset-password", { body: payload, method: "POST" });
+  return request<{ message: string }>("/auth/reset-password", { body: payload, method: "POST" });
+}
+
+export function changeCurrentUserPassword(
+  accessToken: string,
+  payload: {
+    confirmPassword: string;
+    currentPassword: string;
+    newPassword: string;
+    refreshToken?: string | null;
+  }
+) {
+  return request<{ message: string }>("/auth/me/password", {
+    accessToken,
+    body: {
+      confirmPassword: payload.confirmPassword,
+      currentPassword: payload.currentPassword,
+      newPassword: payload.newPassword,
+      ...(payload.refreshToken ? { refreshToken: payload.refreshToken } : {})
+    },
+    method: "PUT"
+  });
 }
 
 export function fetchCurrentUser(accessToken: string) {

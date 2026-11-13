@@ -1,7 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
-import { resetPassword } from "../../app/api";
+import { resetPassword, validateResetPasswordToken } from "../../app/api";
+import { useAuthStore } from "../../app/auth-store";
+import { PasswordInput } from "../../components/PasswordInput";
 import { RabbitMark } from "../../components/RabbitMark";
 
 export function ResetPasswordPage() {
@@ -13,12 +16,24 @@ export function ResetPasswordPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
+  const tokenValidationQuery = useQuery({
+    enabled: Boolean(token) && !isSuccess,
+    queryKey: ["validate-reset-token", token],
+    queryFn: () => validateResetPasswordToken(token),
+    retry: false
+  });
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setErrorMessage(null);
 
     if (!token) {
       setErrorMessage("Falta el token de recuperación en el enlace.");
+      return;
+    }
+
+    if (password.length < 8) {
+      setErrorMessage("La contraseña debe tener al menos 8 caracteres.");
       return;
     }
 
@@ -31,6 +46,7 @@ export function ResetPasswordPage() {
 
     try {
       await resetPassword({ password, token });
+      useAuthStore.getState().clearSession();
       setIsSuccess(true);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "No se pudo restablecer la contraseña.");
@@ -50,7 +66,7 @@ export function ResetPasswordPage() {
           </div>
         </div>
         <p className="hero-copy">
-          El enlace enviado por correo te lleva aquí. Cuando completes el cambio, el sistema invalidará las sesiones anteriores de tu usuario.
+          El enlace enviado por correo te lleva aquí y caduca a los 60 minutos. Cuando completes el cambio, el sistema invalidará las sesiones anteriores de tu usuario y te enviará un correo de confirmación.
         </p>
       </section>
 
@@ -61,37 +77,66 @@ export function ResetPasswordPage() {
         </div>
 
         {isSuccess ? (
-          <div className="status-card success">
-            <p>La contraseña se actualizó correctamente.</p>
+          <div className="status-card success" role="status">
+            <p>Contraseña actualizada correctamente. Ahora puedes iniciar sesión con tu nueva contraseña.</p>
             <Link className="primary-button link-button" to="/login">
               Volver al inicio de sesión
+            </Link>
+          </div>
+        ) : !token ? (
+          <div className="status-card" role="alert">
+            <p className="error-text">El enlace de recuperación no incluye un token válido.</p>
+            <Link className="secondary-button link-button" to="/login">
+              Volver al inicio de sesión
+            </Link>
+          </div>
+        ) : tokenValidationQuery.isLoading ? (
+          <div className="status-card">
+            <p className="subdued">Verificando enlace de recuperación...</p>
+          </div>
+        ) : tokenValidationQuery.isError ? (
+          <div className="status-card" role="alert">
+            <p className="error-text">
+              {tokenValidationQuery.error instanceof Error
+                ? tokenValidationQuery.error.message
+                : "El enlace de recuperación es inválido o ha expirado."}
+            </p>
+            <Link className="secondary-button link-button" to="/login">
+              Solicitar un nuevo enlace
             </Link>
           </div>
         ) : (
           <form className="auth-form" onSubmit={handleSubmit}>
             <label>
               Nueva contraseña
-              <input
+              <PasswordInput
+                autoComplete="new-password"
+                autoFocus
+                maxLength={72}
                 minLength={8}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder="Mínimo 8 caracteres"
                 required
-                type="password"
                 value={password}
               />
             </label>
 
             <label>
               Confirmar contraseña
-              <input
+              <PasswordInput
+                autoComplete="new-password"
+                maxLength={72}
                 minLength={8}
                 onChange={(event) => setConfirmPassword(event.target.value)}
                 placeholder="Repite la contraseña"
                 required
-                type="password"
                 value={confirmPassword}
               />
             </label>
+
+            <p className="helper-text">
+              Recibirás un correo de confirmación una vez actualizada tu contraseña.
+            </p>
 
             {errorMessage ? <p className="error-text">{errorMessage}</p> : null}
 

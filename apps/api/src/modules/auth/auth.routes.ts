@@ -7,7 +7,7 @@ import { z } from "zod";
 
 import { getConnection } from "../../config/database.js";
 import { appEnv, ITALIAN_DEEPGRAM_TTS_MODELS, SPANISH_DEEPGRAM_TTS_MODELS } from "../../config/env.js";
-import { sendPasswordResetEmail } from "../../services/mailer.js";
+import { sendPasswordChangedEmail, sendPasswordResetEmail } from "../../services/mailer.js";
 import { recordUserActivity } from "../../services/user-activity.js";
 import { encryptOptionalSecret, getUserAiCredentialSummary, serializeVisibleModels } from "../../services/user-ai-credentials.js";
 
@@ -57,14 +57,59 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1)
 });
 
-const forgotPasswordSchema = z.object({
-  email: z.string().email()
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().email("Introduce un correo electrónico válido.")
 });
 
-const resetPasswordSchema = z.object({
-  password: z.string().min(8).max(72),
-  token: z.string().min(1)
+export const resetPasswordSchema = z.object({
+  password: z.string().min(8, "La contraseña debe tener al menos 8 caracteres.").max(72, "La contraseña no puede superar los 72 caracteres."),
+  token: z.string().trim().min(1, "Falta el token de recuperación.")
 });
+
+export const changePasswordSchema = z.object({
+  confirmPassword: z.string().min(1, "Debes confirmar la nueva contraseña.").max(72),
+  currentPassword: z.string().min(1, "Debes introducir tu contraseña actual.").max(72),
+  newPassword: z.string().min(8, "La nueva contraseña debe tener al menos 8 caracteres.").max(72, "La nueva contraseña no puede superar los 72 caracteres."),
+  refreshToken: z.string().min(1).optional()
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "Las contraseñas no coinciden.",
+  path: ["confirmPassword"]
+});
+
+const RECOVERY_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RECOVERY_RATE_LIMIT_MAX_ATTEMPTS = 3;
+const recoveryRateLimitMap = new Map<string, number[]>();
+
+function pruneRecoveryRateLimit(now: number): void {
+  for (const [email, attempts] of recoveryRateLimitMap.entries()) {
+    const recent = attempts.filter((timestamp) => now - timestamp < RECOVERY_RATE_LIMIT_WINDOW_MS);
+    if (recent.length === 0) {
+      recoveryRateLimitMap.delete(email);
+    } else {
+      recoveryRateLimitMap.set(email, recent);
+    }
+  }
+}
+
+export function checkPasswordRecoveryRateLimit(email: string, now = Date.now()): boolean {
+  pruneRecoveryRateLimit(now);
+  const normalizedEmail = email.trim().toLowerCase();
+  const recent = (recoveryRateLimitMap.get(normalizedEmail) ?? []).filter(
+    (timestamp) => now - timestamp < RECOVERY_RATE_LIMIT_WINDOW_MS
+  );
+
+  if (recent.length >= RECOVERY_RATE_LIMIT_MAX_ATTEMPTS) {
+    return false;
+  }
+
+  recent.push(now);
+  recoveryRateLimitMap.set(normalizedEmail, recent);
+  return true;
+}
+
+export function resetPasswordRecoveryRateLimitForTests(): void {
+  recoveryRateLimitMap.clear();
+}
 
 const themeModeSchema = z.enum(["light", "dark", "system"]);
 const themePaletteSchema = z.enum(["default", "ocean", "amethyst", "coffee", "graphite"]);
@@ -536,9 +581,24 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/forgot-password", async (request, reply) => {
-    const payload = forgotPasswordSchema.parse(request.body);
+    const parsed = forgotPasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        message: parsed.error.issues[0]?.message ?? "Introduce un correo electrónico válido."
+      });
+    }
+
+    const normalizedEmail = parsed.data.email.toLowerCase();
+    if (!checkPasswordRecoveryRateLimit(normalizedEmail)) {
+      return reply.status(429).send({
+        message: "Has excedido el límite de intentos. Intenta de nuevo en 10 minutos."
+      });
+    }
+
     const connection = await getConnection();
-    const genericResponse = { message: "Si existe una cuenta para ese correo, recibirás un mensaje con instrucciones para recuperar la contraseña." };
+    const genericResponse = {
+      message: "Si existe una cuenta para ese correo, recibirás un enlace de recuperación. Revisa la carpeta de SPAM si no lo ves en tu bandeja de entrada."
+    };
 
     try {
       const result = await connection.execute(
@@ -551,7 +611,7 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
           WHERE LOWER(email) = :email
         `,
         {
-          email: payload.email.toLowerCase()
+          email: normalizedEmail
         }
       );
 
@@ -577,8 +637,53 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.get("/reset-password/validate", async (request, reply) => {
+    const parsed = z.object({ token: z.string().trim().min(1) }).safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        message: "El enlace de recuperación es inválido o ha expirado.",
+        valid: false
+      });
+    }
+
+    const connection = await getConnection();
+
+    try {
+      const result = await connection.execute(
+        `
+          SELECT reset_token_id AS "resetTokenId"
+          FROM password_reset_tokens
+          WHERE token_hash = :tokenHash
+            AND used_at IS NULL
+            AND expires_at > SYSTIMESTAMP
+        `,
+        {
+          tokenHash: hashToken(parsed.data.token)
+        }
+      );
+
+      if ((result.rows ?? []).length === 0) {
+        return reply.status(400).send({
+          message: "El enlace de recuperación es inválido o ha expirado.",
+          valid: false
+        });
+      }
+
+      return reply.send({ valid: true });
+    } finally {
+      await connection.close();
+    }
+  });
+
   app.post("/reset-password", async (request, reply) => {
-    const payload = resetPasswordSchema.parse(request.body);
+    const parsed = resetPasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        message: parsed.error.issues[0]?.message ?? "Los datos para restablecer la contraseña no son válidos."
+      });
+    }
+
+    const payload = parsed.data;
     const connection = await getConnection();
 
     try {
@@ -586,8 +691,11 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         `
           SELECT
             prt.reset_token_id AS "resetTokenId",
-            prt.user_id AS "userId"
+            prt.user_id AS "userId",
+            u.email AS "email",
+            u.display_name AS "displayName"
           FROM password_reset_tokens prt
+          JOIN users u ON u.user_id = prt.user_id
           WHERE prt.token_hash = :tokenHash
             AND prt.used_at IS NULL
             AND prt.expires_at > SYSTIMESTAMP
@@ -597,9 +705,14 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
         }
       );
 
-      const [tokenRow] = (result.rows ?? []) as Array<{ resetTokenId: string; userId: string }>;
+      const [tokenRow] = (result.rows ?? []) as Array<{
+        displayName: string | null;
+        email: string;
+        resetTokenId: string;
+        userId: string;
+      }>;
       if (!tokenRow) {
-        return reply.status(400).send({ message: "El enlace de recuperación ya no es válido." });
+        return reply.status(400).send({ message: "El enlace de recuperación es inválido o ha expirado." });
       }
 
       const passwordHash = await bcrypt.hash(payload.password, 12);
@@ -642,12 +755,23 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
 
       await recordUserActivity(connection, {
         action: "PASSWORD_RESET",
+        detail: "Restablecimiento de contraseña mediante enlace",
         ipAddress: request.ip ?? null,
         userAgent: request.headers["user-agent"] ?? null,
         userId: tokenRow.userId
       });
 
       await connection.commit();
+
+      try {
+        await sendPasswordChangedEmail({
+          source: "reset",
+          toEmail: tokenRow.email,
+          toName: tokenRow.displayName
+        });
+      } catch (mailError) {
+        request.log.warn({ err: mailError }, "No se pudo enviar el correo de confirmación tras restablecer la contraseña.");
+      }
 
       return reply.send({ message: "Contraseña actualizada correctamente." });
     } catch (error) {
@@ -700,6 +824,114 @@ export const registerAuthRoutes: FastifyPluginAsync = async (app) => {
 
       const aiCredentials = await getUserAiCredentialSummary(user.userId, connection);
       return reply.send({ user: { ...user, aiCredentials } });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  app.put("/me/password", { preHandler: authenticateRequest }, async (request, reply) => {
+    if (!request.currentUser) {
+      return reply.status(401).send({ message: "Unauthenticated request." });
+    }
+
+    const parsed = changePasswordSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({
+        message: parsed.error.issues[0]?.message ?? "Los datos para cambiar la contraseña no son válidos."
+      });
+    }
+
+    const payload = parsed.data;
+    const currentUserId = request.currentUser.userId;
+    const connection = await getConnection();
+
+    try {
+      const userResult = await connection.execute(
+        `
+          SELECT
+            user_id AS "userId",
+            email AS "email",
+            display_name AS "displayName",
+            password_hash AS "passwordHash"
+          FROM users
+          WHERE user_id = :userId
+        `,
+        {
+          userId: currentUserId
+        }
+      );
+
+      const [user] = (userResult.rows ?? []) as Array<{
+        displayName: string | null;
+        email: string;
+        passwordHash: string;
+        userId: string;
+      }>;
+
+      if (!user) {
+        return reply.status(404).send({ message: "Usuario no encontrado." });
+      }
+
+      const currentPasswordValid = await bcrypt.compare(payload.currentPassword, user.passwordHash);
+      if (!currentPasswordValid) {
+        return reply.status(401).send({ message: "La contraseña actual es incorrecta." });
+      }
+
+      const nextPasswordHash = await bcrypt.hash(payload.newPassword, 12);
+
+      await connection.execute(
+        `
+          UPDATE users
+          SET password_hash = :passwordHash
+          WHERE user_id = :userId
+        `,
+        {
+          passwordHash: nextPasswordHash,
+          userId: currentUserId
+        }
+      );
+
+      if (payload.refreshToken) {
+        await connection.execute(
+          `
+            UPDATE user_refresh_tokens
+            SET revoked_at = SYSTIMESTAMP,
+                last_used_at = SYSTIMESTAMP
+            WHERE user_id = :userId
+              AND revoked_at IS NULL
+              AND token_hash <> :currentRefreshTokenHash
+          `,
+          {
+            currentRefreshTokenHash: hashToken(payload.refreshToken),
+            userId: currentUserId
+          }
+        );
+      }
+
+      await recordUserActivity(connection, {
+        action: "PASSWORD_RESET",
+        detail: "Cambio de contraseña desde perfil",
+        ipAddress: request.ip ?? null,
+        userAgent: request.headers["user-agent"] ?? null,
+        userId: currentUserId
+      });
+
+      await connection.commit();
+
+      try {
+        await sendPasswordChangedEmail({
+          source: "profile",
+          toEmail: user.email,
+          toName: user.displayName
+        });
+      } catch (mailError) {
+        request.log.warn({ err: mailError }, "No se pudo enviar el correo de confirmación tras cambiar la contraseña.");
+      }
+
+      return reply.send({ message: "Contraseña actualizada correctamente." });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
     } finally {
       await connection.close();
     }
